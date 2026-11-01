@@ -2082,6 +2082,19 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImportsWithShadowSnap
             transformer.allocator,
             ast.getText(output_node.span),
         ) catch return false;
+        if (transformer.erased_type_import_external_references.contains(@intCast(raw))) {
+            if (!type_imports_only or is_output_binding or
+                output_export_local_reference_nodes.contains(@intCast(raw)) or
+                !exactErasedTypeImportExternalReference(
+                    transformer,
+                    output_reachable,
+                    &output_nodes,
+                    &output_reference_nodes,
+                    @intCast(raw),
+                    output_name,
+                )) return false;
+            continue;
+        }
         if (!import_names.contains(output_name)) continue;
         if (is_output_binding) {
             if (!type_imports_only or !exactDistinctOutputTypeImportShadowIdentity(
@@ -2898,6 +2911,303 @@ fn hasReachableOutputBindingNamed(
             Scanner.identifierValueEquals(transformer.ast.getText(node.span), decoded_name)) return true;
     }
     return false;
+}
+
+const ErasedTypeImportExternalCandidate = struct {
+    import_node_index: ast_mod.NodeIndex,
+    import_node: ast_mod.Node,
+    import_local_node_index: ast_mod.NodeIndex,
+    import_local_node: ast_mod.Node,
+    import_symbol_id: u32,
+    import_symbol: SemanticSymbol,
+    reference_node_index: ast_mod.NodeIndex,
+    reference_node: ast_mod.Node,
+    reference: SemanticReference,
+};
+
+/// A declaration-level `import type` is absent from runtime output. If a
+/// malformed value read survives anyway, detach only that exact source read
+/// from the erased import SymbolId and carry explicit external-name evidence.
+/// Writes, generated aliases, captures, and same-named output bindings stay on
+/// the analyzer fallback path.
+fn detachErasedTypeImportExternalReads(
+    allocator: std.mem.Allocator,
+    transformer: *Transformer,
+    analyzer: *SemanticAnalyzer,
+    root: ast_mod.NodeIndex,
+    maybe_shadow_snapshot: ?TypeImportShadowIdentitySnapshot,
+) Transformer.Error!bool {
+    if (maybe_shadow_snapshot == null) return false;
+    if (root.isNone() or transformer.parser_node_count == 0 or
+        transformer.parser_node_count > transformer.ast.nodes.items.len or
+        transformer.parser_node_count > transformer.symbol_ids.items.len) return false;
+
+    const reachable = ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, root) catch
+        return error.OutOfMemory;
+    defer allocator.free(reachable);
+    var reachable_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer reachable_nodes.deinit(allocator);
+    for (reachable) |raw| try reachable_nodes.put(allocator, raw, {});
+
+    const output_references = reference_walk.collectIdentifierReferences(
+        allocator,
+        transformer.ast,
+        root,
+    ) catch return error.OutOfMemory;
+    defer allocator.free(output_references);
+    var output_reference_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer output_reference_nodes.deinit(allocator);
+    for (output_references) |reference| try output_reference_nodes.put(allocator, @backingInt(reference), {});
+
+    var candidates: std.ArrayListUnmanaged(ErasedTypeImportExternalCandidate) = .empty;
+    defer candidates.deinit(allocator);
+    var candidate_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer candidate_nodes.deinit(allocator);
+    var seen_import_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen_import_symbols.deinit(allocator);
+
+    for (transformer.ast.nodes.items[0..transformer.parser_node_count], 0..) |import_node, import_raw| {
+        if (import_node.tag != .import_declaration or import_node.data.extra >= transformer.ast.extra_data.items.len or
+            transformer.ast.extra_data.items.len - import_node.data.extra < 6) continue;
+        const import_decl = module_parser.readImportDeclExtras(transformer.ast, import_node.data.extra);
+        if (!import_decl.is_type_only or import_decl.phase != .none or
+            import_decl.specs_start > transformer.ast.extra_data.items.len or
+            import_decl.specs_len > transformer.ast.extra_data.items.len - import_decl.specs_start) continue;
+
+        var spec_offset: u32 = 0;
+        while (spec_offset < import_decl.specs_len) : (spec_offset += 1) {
+            const spec_raw = transformer.ast.extra_data.items[import_decl.specs_start + spec_offset];
+            if (spec_raw >= transformer.parser_node_count) continue;
+            const spec_index: ast_mod.NodeIndex = @fromBackingInt(@intCast(spec_raw));
+            const spec_node = transformer.ast.getNode(spec_index);
+            if (spec_node.tag != .import_specifier or spec_node.data.binary.flags != 0) continue;
+            const local_index = spec_node.data.binary.right;
+            if (local_index.isNone() or @backingInt(local_index) >= transformer.parser_node_count) continue;
+            const local_raw = @backingInt(local_index);
+            const local_node = transformer.ast.getNode(local_index);
+            if (local_node.tag != .identifier_reference or !isValidSourceTextSpan(transformer.ast, local_node.span) or
+                local_raw >= transformer.symbol_ids.items.len) continue;
+            const symbol_id = transformer.symbol_ids.items[local_raw] orelse continue;
+            if (symbol_id >= transformer.symbols.len or seen_import_symbols.contains(symbol_id)) continue;
+            const raw_local_name = transformer.ast.getText(local_node.span);
+            const local_name = Scanner.decodeIdentifierEscapesAlloc(allocator, raw_local_name) catch continue;
+            defer if (local_name.ptr != raw_local_name.ptr) allocator.free(local_name);
+            if (local_name.len == 0) continue;
+            const symbol = transformer.symbols[symbol_id];
+            if (symbol.kind != .import_binding or symbol.scope_id.isNone() or
+                symbol.scope_id.toIndex() >= transformer.scope_maps.len or
+                transformer.scope_maps[symbol.scope_id.toIndex()].get(local_name) != @as(?usize, @intCast(symbol_id)) or
+                symbol.name.start != local_node.span.start or symbol.name.end != local_node.span.end or
+                symbol.declaration_span.start < import_node.span.start or
+                symbol.declaration_span.end > import_node.span.end) continue;
+
+            if (hasReachableOutputBindingNamed(transformer, reachable, local_name)) continue;
+
+            var found_reference = false;
+            var safe = true;
+            for (transformer.references) |reference| {
+                if (@backingInt(reference.symbol_id) != symbol_id or reference.flags.declare) continue;
+                if (reference.node_index.isNone()) {
+                    safe = false;
+                    break;
+                }
+                const reference_raw = @backingInt(reference.node_index);
+                if (!reachable_nodes.contains(reference_raw)) continue;
+                if (reference_raw >= transformer.parser_node_count or
+                    reference_raw >= transformer.ast.nodes.items.len or
+                    reference_raw >= transformer.symbol_ids.items.len or
+                    transformer.symbol_ids.items[reference_raw] != @as(?u32, symbol_id) or
+                    !output_reference_nodes.contains(reference_raw) or
+                    transformer.ast.getNode(reference.node_index).tag != .identifier_reference or
+                    !std.meta.eql(reference.flags, .{ .read = true }) or
+                    reference.scope_id.isNone() or reference.scope_id.toIndex() >= transformer.scopes.len or
+                    !scopeResolvesNameToSymbol(transformer, reference.scope_id, local_name, symbol_id) or
+                    !Scanner.identifierNamesEqual(
+                        transformer.ast.getText(transformer.ast.getNode(reference.node_index).span),
+                        local_name,
+                    ) or
+                    (transformer.reference_origin_map.get(reference_raw) orelse reference_raw) != reference_raw or
+                    transformer.erased_type_import_external_references.contains(reference_raw) or
+                    candidate_nodes.contains(reference_raw))
+                {
+                    safe = false;
+                    break;
+                }
+                try candidate_nodes.put(allocator, reference_raw, {});
+                try candidates.append(allocator, .{
+                    .import_node_index = @fromBackingInt(@intCast(import_raw)),
+                    .import_node = import_node,
+                    .import_local_node_index = local_index,
+                    .import_local_node = local_node,
+                    .import_symbol_id = symbol_id,
+                    .import_symbol = symbol,
+                    .reference_node_index = reference.node_index,
+                    .reference_node = transformer.ast.getNode(reference.node_index),
+                    .reference = reference,
+                });
+                found_reference = true;
+            }
+            if (!safe or !found_reference) {
+                // Candidates are committed only after every live read for this
+                // imported SymbolId passes the exact source-node checks.
+                if (!safe) return false;
+                continue;
+            }
+            try seen_import_symbols.put(allocator, symbol_id, {});
+        }
+    }
+    if (candidates.items.len == 0) return false;
+
+    // A source ID with any other reachable output reference cannot be detached
+    // as an external name, even if the ordinary reference table omitted it.
+    for (output_references) |reference_index| {
+        const raw = @backingInt(reference_index);
+        if (raw >= transformer.symbol_ids.items.len) continue;
+        const maybe_id = transformer.symbol_ids.items[raw] orelse continue;
+        if (!seen_import_symbols.contains(maybe_id)) continue;
+        if (!candidate_nodes.contains(raw)) return false;
+    }
+
+    const SemanticEditor = @import("semantic/editor.zig").SemanticEditor;
+    var editor = SemanticEditor.init(
+        allocator,
+        transformer.ast,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.symbol_ids.items,
+        analyzer.helper_scope_map,
+    ) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else false;
+    defer editor.deinit();
+
+    try transformer.explicit_global_reference_nodes.ensureUnusedCapacity(allocator, @intCast(candidates.items.len));
+    try transformer.erased_type_import_external_references.ensureUnusedCapacity(allocator, @intCast(candidates.items.len));
+    for (candidates.items) |candidate| {
+        editor.removeReference(candidate.reference_node_index) catch |err| {
+            return if (err == error.OutOfMemory) error.OutOfMemory else false;
+        };
+    }
+    const edited = editor.finish() catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else false;
+    analyzer.applyEdit(edited);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    for (candidates.items) |candidate| {
+        const reference_raw = @backingInt(candidate.reference_node_index);
+        if (reference_raw < transformer.symbol_ids.items.len) transformer.symbol_ids.items[reference_raw] = null;
+        transformer.explicit_global_reference_nodes.putAssumeCapacity(reference_raw, {});
+        transformer.erased_type_import_external_references.putAssumeCapacity(reference_raw, .{
+            .import_node = candidate.import_node,
+            .import_node_index = candidate.import_node_index,
+            .import_local_node = candidate.import_local_node,
+            .import_local_node_index = candidate.import_local_node_index,
+            .import_symbol_id = candidate.import_symbol_id,
+            .import_symbol = candidate.import_symbol,
+            .reference_node = candidate.reference_node,
+            .reference = candidate.reference,
+        });
+    }
+    return true;
+}
+
+fn exactErasedTypeImportExternalReference(
+    transformer: *const Transformer,
+    output_reachable: []const u32,
+    output_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    output_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    output_reference_raw: u32,
+    decoded_name: []const u8,
+) bool {
+    if (output_reference_raw >= transformer.ast.nodes.items.len or
+        output_reference_raw >= transformer.symbol_ids.items.len or
+        !output_nodes.contains(output_reference_raw) or
+        !output_reference_nodes.contains(output_reference_raw) or
+        transformer.ast.getNode(@fromBackingInt(output_reference_raw)).tag != .identifier_reference or
+        transformer.symbol_ids.items[output_reference_raw] != null or
+        !transformer.explicit_global_reference_nodes.contains(output_reference_raw) or
+        hasReachableOutputBindingNamed(transformer, output_reachable, decoded_name)) return false;
+
+    const proof = transformer.erased_type_import_external_references.get(output_reference_raw) orelse return false;
+    const import_raw = @backingInt(proof.import_node_index);
+    const local_raw = @backingInt(proof.import_local_node_index);
+    if (import_raw >= transformer.parser_node_count or import_raw >= transformer.ast.nodes.items.len or
+        local_raw >= transformer.parser_node_count or local_raw >= transformer.ast.nodes.items.len or
+        proof.import_node_index.isNone() or proof.import_local_node_index.isNone() or
+        output_reference_raw >= transformer.parser_node_count or
+        proof.import_symbol_id >= transformer.symbols.len or
+        proof.import_node.tag != .import_declaration or
+        transformer.ast.getNode(proof.import_node_index).tag != .import_declaration or
+        !std.meta.eql(proof.import_node.span, transformer.ast.getNode(proof.import_node_index).span) or
+        proof.import_node.data.extra != transformer.ast.getNode(proof.import_node_index).data.extra or
+        !sameNodeValue(proof.import_local_node, transformer.ast.getNode(proof.import_local_node_index)) or
+        !sameNodeValue(proof.reference_node, transformer.ast.getNode(@fromBackingInt(output_reference_raw))) or
+        proof.import_local_node.tag != .identifier_reference or
+        proof.reference_node.tag != .identifier_reference or
+        transformer.symbol_ids.items[local_raw] != @as(?u32, proof.import_symbol_id) or
+        proof.reference.node_index != @as(ast_mod.NodeIndex, @fromBackingInt(output_reference_raw)) or
+        @backingInt(proof.reference.symbol_id) != proof.import_symbol_id or
+        !std.meta.eql(proof.reference.flags, .{ .read = true }) or
+        proof.reference.scope_id.isNone() or
+        proof.reference.scope_id.toIndex() >= transformer.scopes.len) return false;
+
+    const import_decl = module_parser.readImportDeclExtras(transformer.ast, proof.import_node.data.extra);
+    if (!import_decl.is_type_only or import_decl.phase != .none or
+        import_decl.specs_start > transformer.ast.extra_data.items.len or
+        import_decl.specs_len > transformer.ast.extra_data.items.len - import_decl.specs_start) return false;
+    var local_specifier_matches: usize = 0;
+    var spec_offset: u32 = 0;
+    while (spec_offset < import_decl.specs_len) : (spec_offset += 1) {
+        const spec_raw = transformer.ast.extra_data.items[import_decl.specs_start + spec_offset];
+        if (spec_raw >= transformer.parser_node_count) return false;
+        const spec = transformer.ast.getNode(@fromBackingInt(@intCast(spec_raw)));
+        if (spec.tag != .import_specifier or spec.data.binary.flags != 0 or
+            spec.data.binary.right != proof.import_local_node_index) continue;
+        local_specifier_matches += 1;
+    }
+    if (local_specifier_matches != 1) return false;
+
+    const ast_local_name = Scanner.decodeIdentifierEscapesAlloc(
+        transformer.allocator,
+        transformer.ast.getText(proof.import_local_node.span),
+    ) catch return false;
+    const output_name = Scanner.decodeIdentifierEscapesAlloc(
+        transformer.allocator,
+        transformer.ast.getText(proof.reference_node.span),
+    ) catch {
+        if (ast_local_name.ptr != transformer.ast.getText(proof.import_local_node.span).ptr)
+            transformer.allocator.free(ast_local_name);
+        return false;
+    };
+    defer if (output_name.ptr != transformer.ast.getText(proof.reference_node.span).ptr)
+        transformer.allocator.free(output_name);
+    defer if (ast_local_name.ptr != transformer.ast.getText(proof.import_local_node.span).ptr)
+        transformer.allocator.free(ast_local_name);
+    if (!std.mem.eql(u8, ast_local_name, decoded_name) or
+        !std.mem.eql(u8, output_name, decoded_name)) return false;
+
+    if (!scopeResolvesNameToSymbol(
+        transformer,
+        proof.reference.scope_id,
+        ast_local_name,
+        proof.import_symbol_id,
+    )) return false;
+
+    const symbol = transformer.symbols[proof.import_symbol_id];
+    if (!typeImportShadowSymbolMatches(proof.import_symbol, symbol) or
+        symbol.kind != .import_binding or symbol.scope_id.isNone() or
+        symbol.scope_id.toIndex() >= transformer.scope_maps.len or
+        transformer.scope_maps[symbol.scope_id.toIndex()].get(ast_local_name) !=
+            @as(?usize, @intCast(proof.import_symbol_id))) return false;
+    for (transformer.references) |reference| {
+        if (reference.node_index == @as(ast_mod.NodeIndex, @fromBackingInt(output_reference_raw))) return false;
+    }
+    return true;
 }
 
 fn hasExactErasedConstEnumExternalReferenceOrigin(
@@ -4592,6 +4902,17 @@ fn transpileWithCallbackInternal(
             transformer.helper_scope_map = analyzer.helper_scope_map;
         }
     }
+    if (options.minify_identifiers) {
+        if (analyzer_storage) |*analyzer| {
+            _ = try detachErasedTypeImportExternalReads(
+                arena_alloc,
+                &transformer,
+                analyzer,
+                root,
+                type_import_shadow_snapshot,
+            );
+        }
+    }
     mem_profile.snap(&arena, "transform");
 
     // #4760: 트랜스포머가 새로 만든 사용자 식별자 노드의 심볼 ID 누락 측정(디버그 전용).
@@ -5828,6 +6149,181 @@ test "#6193 declaration-level type import reuse requires exact output erasure pr
         &hostile_transformer,
         hostile_output_root,
     ));
+}
+
+test "#6193 detached erased type import proof rejects fourteen graph mutations" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "import type { Shape } from './types'; globalThis.Shape = 21; console.log(Shape);";
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    const source_root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_ts = true;
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    const shadow_snapshot = (try captureTypeImportShadowIdentitySnapshot(
+        allocator,
+        &parser,
+        &analyzer,
+    )) orelse return error.MissingTypeImportShadowSnapshot;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
+    const output_root = try transformer.visitNode(source_root);
+    if (try transformer.finishSemanticEdit()) |edited| {
+        analyzer.applyEdit(edited);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
+        transformer.helper_scope_map = analyzer.helper_scope_map;
+    }
+    try std.testing.expect(try detachErasedTypeImportExternalReads(
+        allocator,
+        &transformer,
+        &analyzer,
+        output_root,
+        shadow_snapshot,
+    ));
+
+    const GraphProof = struct {
+        fn accepts(
+            output_transformer: *const Transformer,
+            root: ast_mod.NodeIndex,
+            snapshot: TypeImportShadowIdentitySnapshot,
+        ) bool {
+            return erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImportsWithShadowSnapshot(
+                output_transformer,
+                root,
+                true,
+                false,
+                false,
+                snapshot,
+            );
+        }
+    };
+    try std.testing.expect(GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+
+    var proof_iterator = transformer.erased_type_import_external_references.iterator();
+    const proof_entry = proof_iterator.next() orelse return error.MissingDetachedExternalReferenceProof;
+    const reference_raw = proof_entry.key_ptr.*;
+    const original_proof = proof_entry.value_ptr.*;
+    try std.testing.expect(proof_iterator.next() == null);
+    var detected_mutations: usize = 0;
+
+    _ = transformer.explicit_global_reference_nodes.remove(reference_raw);
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+    try transformer.explicit_global_reference_nodes.put(allocator, reference_raw, {});
+    detected_mutations += 1;
+
+    _ = transformer.erased_type_import_external_references.remove(reference_raw);
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+    try transformer.erased_type_import_external_references.put(allocator, reference_raw, original_proof);
+    detected_mutations += 1;
+
+    const proof = transformer.erased_type_import_external_references.getPtr(reference_raw).?;
+    proof.import_node_index = .none;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+    proof.* = original_proof;
+    detected_mutations += 1;
+
+    proof.import_node.data.extra += 1;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+    proof.* = original_proof;
+    detected_mutations += 1;
+
+    proof.import_local_node_index = .none;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+    proof.* = original_proof;
+    detected_mutations += 1;
+
+    proof.import_symbol_id ^= 1;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+    proof.* = original_proof;
+    detected_mutations += 1;
+
+    proof.reference.node_index = .none;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+    proof.* = original_proof;
+    detected_mutations += 1;
+
+    proof.reference.symbol_id = @fromBackingInt(@intCast(original_proof.import_symbol_id ^ 1));
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+    proof.* = original_proof;
+    detected_mutations += 1;
+
+    proof.reference.flags = .{ .write = true };
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+    proof.* = original_proof;
+    detected_mutations += 1;
+
+    proof.reference.scope_id = .none;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+    proof.* = original_proof;
+    detected_mutations += 1;
+
+    const reference_node_raw = @backingInt(original_proof.reference.node_index);
+    const original_reference_node = transformer.ast.nodes.items[reference_node_raw];
+    transformer.ast.nodes.items[reference_node_raw].span.end -= 1;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+    transformer.ast.nodes.items[reference_node_raw] = original_reference_node;
+    detected_mutations += 1;
+
+    const local_raw = @backingInt(original_proof.import_local_node_index);
+    const original_local_symbol_id = transformer.symbol_ids.items[local_raw];
+    transformer.symbol_ids.items[local_raw] = null;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+    transformer.symbol_ids.items[local_raw] = original_local_symbol_id;
+    detected_mutations += 1;
+
+    const import_symbol_scope = transformer.symbols[original_proof.import_symbol_id].scope_id.toIndex();
+    const import_scope_name = transformer.ast.getText(original_proof.import_local_node.span);
+    const mutable_scope_maps = @constCast(transformer.scope_maps);
+    const original_scope_symbol = mutable_scope_maps[import_symbol_scope].get("Shape");
+    _ = mutable_scope_maps[import_symbol_scope].remove("Shape");
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+    try mutable_scope_maps[import_symbol_scope].put(
+        allocator,
+        import_scope_name,
+        original_scope_symbol orelse return error.MissingOriginalImportedScopeBinding,
+    );
+    detected_mutations += 1;
+
+    const original_references = transformer.references;
+    const residual_references = try allocator.alloc(SemanticReference, original_references.len + 1);
+    @memcpy(residual_references[0..original_references.len], original_references);
+    residual_references[original_references.len] = original_proof.reference;
+    transformer.references = residual_references;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+    transformer.references = original_references;
+    detected_mutations += 1;
+
+    try std.testing.expectEqual(@as(usize, 14), detected_mutations);
 }
 
 test "#6193 erased type import permits only exact same-name runtime bindings" {
