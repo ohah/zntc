@@ -63,6 +63,14 @@ const cases = {
     }
     console.log(new Box('current', 6).value, reads);
   `,
+  'derived constructor string super-property lexical read': `
+    var reads = 0;
+    class Base { get current() { reads++; return 7; } }
+    class Box extends Base {
+      constructor() { super(); const local = super['current']; this.value = local; }
+    }
+    console.log(new Box().value, reads);
+  `,
   'nested closures in computed method': `
     const key = 'make';
     class Box {
