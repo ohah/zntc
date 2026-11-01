@@ -5297,9 +5297,11 @@ fn transpileWithCallbackInternal(
         };
         minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
         // S4b: 단일 파일 모드에서도 const → let 변환 후 mergeDecls — esbuild parity.
-        if (options.minify_syntax) minify_mod.convertConstToLetPreserving(
+        if (options.minify_syntax) try minify_mod.convertConstToLetPreservingFromRoot(
             transformer.ast,
+            root,
             transformer.ast.preserve_lexical_declaration_indices.items,
+            arena_alloc,
         );
         minify_mod.mergeDecls(transformer.ast, root, null, arena_alloc);
         // Reopen the same producer graph; minification reports exact source/

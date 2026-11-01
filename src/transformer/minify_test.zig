@@ -884,6 +884,31 @@ test "S6-step1: if (no else) multi-stmt block — block 유지 (&& 변환은 별
     );
 }
 
+test "const conversion follows the actual output root and preserves detached source payloads" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "const removed=1;const live=2;const preserved=3;");
+    var parser = Parser.init(a, &scanner);
+    const original = try parser.parse();
+    const ast = &parser.ast;
+    const list = ast.getNode(original).data.list;
+    const removed = ast.readExtraNode(list.start, 0);
+    const live = ast.readExtraNode(list.start, 1);
+    const preserved = ast.readExtraNode(list.start, 2);
+    const frozen = @import("../semantic/source_drop_registry.zig").Node.capture(ast, removed).?;
+    const root = try ast.addNode(.{ .tag = .program, .span = ast.getNode(original).span, .data = .{ .list = try ast.addNodeList(&.{ live, preserved }) } });
+    // An unrelated later program cannot choose which declarations are output.
+    _ = try ast.addNode(ast.getNode(original));
+    try minify_mod.convertConstToLetPreservingFromRoot(ast, root, &.{@backingInt(preserved)}, std.testing.allocator);
+    try std.testing.expect(frozen.matches(ast));
+    try std.testing.expectEqual(.@"const", ast.variableDeclarationKind(ast.getNode(removed)));
+    try std.testing.expectEqual(.let, ast.variableDeclarationKind(ast.getNode(live)));
+    try std.testing.expectEqual(.@"const", ast.variableDeclarationKind(ast.getNode(preserved)));
+    var cg = Codegen.initWithOptions(a, ast, .{ .minify_whitespace = true });
+    try std.testing.expectEqualStrings("let live=2;const preserved=3;", std.mem.trimEnd(u8, try cg.generate(root), "\n"));
+}
+
 test "S4b: convertConstToLet + mergeDecls — const/let 섞임 → let 합침" {
     // S4b: minify_syntax 시 const → let 변환 후 mergeDecls 가 동일 kind 로 합침.
     // 호출자 (transpile.zig / emitter.zig) 가 convertConstToLet 직후 mergeDecls 실행.
