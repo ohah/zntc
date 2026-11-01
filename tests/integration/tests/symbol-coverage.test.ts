@@ -1987,6 +1987,71 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('standalone post-minify audit follows collision-free runtime helper aliases', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-post-minify-helper-alias-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'out.js');
+    const collisions = [
+      { sourceNames: ['__wrapRegExp'], outputName: '__wrapRegExp2' },
+      { sourceNames: ['__wrapRegExp', '__wrapRegExp2'], outputName: '__wrapRegExp3' },
+    ];
+    const modes = [
+      { name: 'syntax', minifyIdentifiers: false, args: ['--minify-syntax'] },
+      { name: 'identifiers', minifyIdentifiers: true, args: [] },
+      { name: 'combined', minifyIdentifiers: true, args: ['--minify-syntax'] },
+    ];
+
+    try {
+      for (const collision of collisions) {
+        writeFileSync(
+          input,
+          [
+            ...collision.sourceNames.map(
+              (sourceName) => `var ${sourceName} = function (value) { return 'source:' + value; };`,
+            ),
+            'function word(input) {',
+            '  var match = /(?<word>[a-z]+)-\\d+/.exec(input);',
+            '  return match && match.groups.word;',
+            '}',
+            `console.log(word('abc-42'), ${collision.sourceNames
+              .map((sourceName, index) => `${sourceName}('value${index}')`)
+              .join(', ')});`,
+          ].join('\n'),
+        );
+        const baseline = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(baseline.status, baseline.stderr).toBe(0);
+        expect(baseline.stdout).toBe(
+          `abc ${collision.sourceNames.map((_, index) => `source:value${index}`).join(' ')}\n`,
+        );
+
+        for (const mode of modes) {
+          const label = `${collision.sourceNames.join('+')} collision ${mode.name}`;
+          const { stderr, exitCode } = runCoverage(
+            input,
+            TARGETS[0],
+            dir,
+            mode.minifyIdentifiers,
+            mode.args,
+          );
+          expect(exitCode, `${label}: ${stderr}`).toBe(0);
+          expect(transformIdentityAuditProblems(stderr), `${label}: ${stderr}`).toEqual([]);
+
+          const emitted = readFileSync(output, 'utf8');
+          if (mode.name === 'syntax') {
+            expect(emitted.match(/var (__wrapRegExp\d*) = function/)?.[1], label).toBe(
+              collision.outputName,
+            );
+          }
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${label}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, label).toBe(baseline.stdout);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 prehoisted computed field name reference reuses its key SymbolId', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-computed-field-name-symbol-'));
     const input = join(dir, 'entry.js');
