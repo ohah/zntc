@@ -40839,11 +40839,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2 0 3\n',
       },
       {
-        name: 'derived constructor lexical super-property conditional stays on reanalysis',
+        name: 'derived constructor lexical super-property conditional retains branch order and getter count',
         source:
-          'class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor(flag) { super(); const value = flag ? super.current : 0; this.value = value; } } console.log(new DerivedLocal(true).value);',
-        graph: 'reanalyzed',
-        output: '1\n',
+          'var reads = 0; class Base { constructor() { this.cursor = 0; } get current() { reads++; return ++this.cursor; } } class DerivedLocal extends Base { constructor(flag) { super(); const value = flag ? super.current : 0; this.value = value; } } var first = new DerivedLocal(true), second = new DerivedLocal(false); console.log(first.value, second.value, reads);',
+        graph: 'retained',
+        output: '1 0 1\n',
       },
       {
         name: 'derived constructor lexical conditional call branch stays on reanalysis',
@@ -40888,10 +40888,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2\n',
       },
       {
-        name: 'derived constructor composite super-property initializer stays on reanalysis',
+        name: 'derived constructor composite super-property initializer retains its graph',
         source:
           'class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current + 1; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
@@ -40900,6 +40900,83 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class DerivedLocal extends Base { constructor(key) { super(); const first = this[key] + 10, second = this.current + 20; this.value = first + second; } } console.log(new DerivedLocal("current").value);',
         graph: 'retained',
         output: '33\n',
+      },
+      {
+        name: 'derived constructor multi-declarator composed super reads retain order and graph',
+        source:
+          'var reads = 0; class Base { constructor() { this.cursor = 0; } get current() { reads++; return ++this.cursor; } } class DerivedLocal extends Base { constructor(flag) { super(); const first = super.current + 10, second = flag && super.current + 20; this.value = first + second; } } var skipped = new DerivedLocal(false), taken = new DerivedLocal(true); console.log(skipped.value, taken.value, reads);',
+        graph: 'retained',
+        output: '11 33 3\n',
+      },
+      {
+        name: 'derived constructor mixed super read and literal lexical declaration stays on reanalysis',
+        source:
+          'class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = 2; this.value = first + second; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '3\n',
+      },
+      {
+        name: 'derived constructor uninitialized lexical declarator with super read stays on reanalysis',
+        source:
+          'class Base { get current() { return 3; } } class DerivedLocal extends Base { constructor() { super(); let first = super.current, second; this.value = first; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '3\n',
+      },
+      {
+        name: 'derived constructor chained super lexical read stays on reanalysis',
+        source:
+          'class Base { get current() { return { value: 2 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current.value; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'derived constructor optional super lexical read stays on reanalysis',
+        source:
+          'class Base { get current() { return { value: 2 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current?.value; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'derived constructor assignment in super lexical initializer stays on reanalysis',
+        source:
+          'class Base { get current() { return 3; } } class DerivedLocal extends Base { constructor() { super(); const first = (this.local = super.current), second = super.current; this.value = first + second; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '6\n',
+      },
+      {
+        name: 'derived constructor update in super lexical initializer stays on reanalysis',
+        source:
+          'class Base { constructor() { this.cursor = 0; } get current() { return this.cursor; } set current(value) { this.cursor = value; } } class DerivedLocal extends Base { constructor() { super(); const first = super.current++, second = super.current; this.value = first + second; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '1\n',
+      },
+      {
+        name: 'derived constructor effectful super computed key stays on reanalysis',
+        source:
+          'class Base { get current() { return 3; } key() { return "current"; } } class DerivedLocal extends Base { constructor() { super(); const first = super[this.key()], second = super.current; this.value = first + second; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '6\n',
+      },
+      {
+        name: 'derived constructor sequence in super lexical initializer stays on reanalysis',
+        source:
+          'class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class DerivedLocal extends Base { constructor() { super(); const first = (super.current, super.current), second = super.current; this.value = first + second; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '5\n',
+      },
+      {
+        name: 'derived constructor template super lexical initializer stays on reanalysis',
+        source:
+          'class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class DerivedLocal extends Base { constructor() { super(); const first = `${super.current}`, second = super.current; this.value = first + ":" + second; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '1:2\n',
+      },
+      {
+        name: 'derived constructor object super lexical initializer stays on reanalysis',
+        source:
+          'class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class DerivedLocal extends Base { constructor() { super(); const first = { value: super.current }, second = super.current; this.value = first.value + second; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '3\n',
       },
       {
         name: 'derived constructor escaped lexical this-property initializer stays on reanalysis',
@@ -44021,15 +44098,15 @@ console.log(new DerivedReader().values);`;
     }
   }, 60_000);
 
-  test('derived constructor direct super-property lexical initializers retain exact output identities', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-derived-super-lexical-retained-'));
+  test('derived constructor composed super-property lexical initializers retain exact output identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-derived-super-lexical-composed-retained-'));
     const input = join(dir, 'entry.mjs');
     const output = join(dir, 'output.cjs');
     const names = Array.from({ length: 10 }, (_, index) => `superValue${index}`);
     const declarations = names
-      .map((name, index) => `${index === 0 ? 'let' : 'const'} ${name} = super.current;`)
+      .map((name, index) => `${index === 0 ? 'let' : 'const'} ${name} = super.current + ${index};`)
       .join('\n');
-    const expected = `${names.map((_, index) => index + 1).join(' ')}\n`;
+    const expected = `${names.map((_, index) => index * 2 + 1).join(' ')}\n`;
     const valueExpression = names.join(" + ' ' + ");
     const source = `class DerivedBase { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } }\nclass DerivedReader extends DerivedBase { constructor() {\n  super();\n${declarations}\n  this.values = ${valueExpression};\n} }\nconsole.log(new DerivedReader().values);`;
     try {
