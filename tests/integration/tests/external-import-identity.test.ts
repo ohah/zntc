@@ -29,6 +29,11 @@ const cases = [
     expected: '20',
   },
   {
+    name: 'same declaration sibling aliases',
+    source: "import {value as a,value as b} from './dep.mjs';console.log(a+b);",
+    expected: '14',
+  },
+  {
     name: 'escaped local',
     source: String.raw`import {value as l\u006fcal} from './dep.mjs';console.log(local);`,
     expected: '7',
