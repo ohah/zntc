@@ -571,12 +571,16 @@ fn tryDiskLoadHit(
     if (!self.disk_load_enabled) return false;
     if (loadUnsafeSource(module.source)) return false;
     const dc = self.disk_cache orelse return false;
-    const restored = (dc.load(io, self.allocator, arena_alloc, module.disk_cache_key) catch return false) orelse return false;
+    var restored = (dc.load(io, self.allocator, arena_alloc, module.disk_cache_key) catch return false) orelse return false;
 
     module.runtime_helper_cache_source = null;
     module.self_namespace_source_receipt = null;
     module.ast = restored.ast;
     module.semantic = restored.semantic;
+    // Decode intentionally drops process-local ownership. Assign it at this
+    // actual source installation, before either installed-pair receipt borrows
+    // that semantic header. Later registration preserves this exact owner.
+    restored.semantic.owner_token = module.semantic.?.captureOwnerToken();
     @import("../self_namespace_ast.zig").captureInstalledDiskSource(module, &restored);
     _ = @import("../../transformer/virtual_helper_provider_certificate.zig").recordInstalledDiskSource(module, &restored, self.helper_plugin_opts);
     module.line_offsets = Scanner.computeLineOffsets(arena_alloc, module.source) catch {
