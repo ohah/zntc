@@ -25,6 +25,7 @@ const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const helpers = @import("es_helpers.zig");
+const es2015_spread = @import("es2015_spread.zig");
 const emotion = @import("transformer/emotion.zig");
 const styled_components_mod = @import("transformer/styled_components.zig");
 
@@ -600,15 +601,30 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const key_node = try helpers.makePropertyName(self, "children");
 
             if (childrenAreStaticArray(self, children_start, children_len)) {
-                // 배열로 감싸기 (다중 child 또는 단일 spread). 단일 spread 는
-                // collectChildren 이 [spread_element] 로 모아 `[...arr]` 가 된다.
-                const children = try collectChildren(self, children_start, children_len);
+                // 배열로 감싸기 (다중 child 또는 단일 spread). Downlevel
+                // spread children 은 별도 수집 후 일반 배열-spread lowerer로 보낸다.
+                const lower_spread_child = self.options.unsupported.spread and
+                    self.options.jsx_runtime != .classic and
+                    hasJsxSpreadChild(self, children_start, children_len);
+                const children = if (lower_spread_child)
+                    try collectChildrenForDownlevelSpreadArray(self, children_start, children_len)
+                else
+                    try collectChildren(self, children_start, children_len);
                 const list = try self.ast.addNodeList(children);
-                const arr_node = try self.ast.addNode(.{
+                const source_array = try self.ast.addNode(.{
                     .tag = .array_expression,
                     .span = span,
                     .data = .{ .list = list },
                 });
+                // JSX lowering creates this array after normal node dispatch,
+                // so it would otherwise retain ES2015 spread in ES5 output.
+                // Reuse the source array-spread lowerer while it can still
+                // visit each original child exactly once and register exact
+                // helper/reference identities in the active semantic editor.
+                const arr_node = if (lower_spread_child)
+                    try es2015_spread.ES2015Spread(Transformer).lowerSpreadArray(self, self.ast.getNode(source_array))
+                else
+                    source_array;
                 return self.ast.addNode(.{
                     .tag = .object_property,
                     .span = span,
@@ -751,6 +767,64 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const copy = try self.allocator.alloc(NodeIndex, result.len);
             @memcpy(copy, result);
             self.scratch.shrinkRetainingCapacity(scratch_top);
+            return copy;
+        }
+
+        fn hasJsxSpreadChild(self: *const Transformer, start: u32, len: u32) bool {
+            if (len == 0 or start > self.ast.extra_data.items.len or
+                len > self.ast.extra_data.items.len - start) return false;
+            for (self.ast.extra_data.items[start .. start + len]) |raw_idx| {
+                if (raw_idx >= self.ast.nodes.items.len) return false;
+                if (self.ast.nodes.items[raw_idx].tag == .jsx_spread_child) return true;
+            }
+            return false;
+        }
+
+        /// Build the children array without visiting its expressions. The
+        /// array spread lowerer below owns the single visit of every child,
+        /// including nested JSX and ordinary child expressions.
+        fn collectChildrenForDownlevelSpreadArray(
+            self: *Transformer,
+            start: u32,
+            len: u32,
+        ) Transformer.Error![]const NodeIndex {
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            if (len == 0 or start > self.ast.extra_data.items.len or
+                len > self.ast.extra_data.items.len - start) return &.{};
+
+            var j: u32 = 0;
+            while (j < len) : (j += 1) {
+                const raw_idx = self.ast.extra_data.items[start + j];
+                if (raw_idx >= self.ast.nodes.items.len)
+                    std.debug.panic("JSX children list contains an out-of-range node index", .{});
+                const child_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+                const child = self.ast.getNode(child_idx);
+                switch (child.tag) {
+                    .jsx_text => {
+                        const text = try lowerJSXText(self, child);
+                        if (!text.isNone()) try self.scratch.append(self.allocator, text);
+                    },
+                    .jsx_expression_container => {
+                        if (!child.data.unary.operand.isNone())
+                            try self.scratch.append(self.allocator, child.data.unary.operand);
+                    },
+                    .jsx_spread_child => {
+                        const spread = try self.ast.addNode(.{
+                            .tag = .spread_element,
+                            .span = child.span,
+                            .data = .{ .unary = .{ .operand = child.data.unary.operand, .flags = 0 } },
+                        });
+                        try self.scratch.append(self.allocator, spread);
+                    },
+                    .jsx_empty_expression => {},
+                    else => try self.scratch.append(self.allocator, child_idx),
+                }
+            }
+
+            const result = self.scratch.items[scratch_top..];
+            const copy = try self.allocator.alloc(NodeIndex, result.len);
+            @memcpy(copy, result);
             return copy;
         }
 

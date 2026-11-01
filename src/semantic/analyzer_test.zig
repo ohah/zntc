@@ -7,7 +7,8 @@ const symbol_mod = @import("symbol.zig");
 const SymbolKind = symbol_mod.SymbolKind;
 const ScopeId = @import("scope.zig").ScopeId;
 const SemanticScopeKind = @import("scope.zig").ScopeKind;
-const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const ast_mod = @import("../parser/ast.zig");
+const NodeIndex = ast_mod.NodeIndex;
 const Parser = @import("../parser/parser.zig").Parser;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 
@@ -3102,6 +3103,23 @@ test "JSX: bare lowercase tag <div/> is intrinsic, not a variable ref" {
     try fx.collectRefs("div", &refs);
 
     try std.testing.expectEqual(@as(usize, 0), refs.items.len);
+}
+
+test "JSX spread child records its operand as a runtime read" {
+    var fx = try RefFixture.initOpts(
+        "function F(items) { return <div>{...items}</div>; }",
+        .{ .jsx = true },
+    );
+    defer fx.deinit();
+
+    var refs: std.ArrayList(symbol_mod.Reference) = .empty;
+    defer refs.deinit(std.testing.allocator);
+    try fx.collectRefs("items", &refs);
+
+    try std.testing.expectEqual(@as(usize, 1), refs.items.len);
+    try std.testing.expect(refs.items[0].flags.read);
+    const operand = refs.items[0].node_index;
+    try std.testing.expectEqual(ast_mod.Node.Tag.identifier_reference, fx.parser.ast.getNode(operand).tag);
 }
 
 // ============================================================

@@ -2472,6 +2472,13 @@ pub const SemanticAnalyzer = struct {
             .jsx_expression_container => {
                 try self.visitNode(node.data.unary.operand);
             },
+            .jsx_spread_child => {
+                // `{...items}` is a runtime read in the JSX child position.
+                // The JSX lowerer moves this exact source expression into a
+                // generated children array, so give it its source SymbolId
+                // before transforms begin.
+                try self.visitNode(node.data.unary.operand);
+            },
             .jsx_attribute => {
                 // binary: { left=name, right=value }
                 try self.visitNode(node.data.binary.right);
