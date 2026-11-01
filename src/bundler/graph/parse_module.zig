@@ -577,12 +577,14 @@ fn tryDiskLoadHit(
     module.self_namespace_source_receipt = null;
     module.ast = restored.ast;
     module.semantic = restored.semantic;
+    // The winning virtual-helper load producer validates the untouched decoder
+    // pair before assigning its installed owner. Preserve that owner below.
+    _ = @import("../../transformer/virtual_helper_provider_certificate.zig").recordInstalledDiskSource(module, &restored, self.helper_plugin_opts);
     // Decode intentionally drops process-local ownership. Assign it at this
     // actual source installation, before either installed-pair receipt borrows
     // that semantic header. Later registration preserves this exact owner.
     restored.semantic.owner_token = module.semantic.?.captureOwnerToken();
     @import("../self_namespace_ast.zig").captureInstalledDiskSource(module, &restored);
-    _ = @import("../../transformer/virtual_helper_provider_certificate.zig").recordInstalledDiskSource(module, &restored, self.helper_plugin_opts);
     module.line_offsets = Scanner.computeLineOffsets(arena_alloc, module.source) catch {
         // OOM — 캐시 무관 자원고갈. 부분 복원이라 parse 로 degrade 불가 → 모듈만 비우고 진행.
         module.state = .ready;
