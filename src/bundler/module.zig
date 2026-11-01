@@ -1311,6 +1311,18 @@ pub const Module = struct {
         if (ib.local_role != .import_binding) return true; // typed storage handoff has its own declaration role
         const declaration = ib.local_declaration_node orelse return false;
         const local = ib.local_symbol_node orelse return false;
+        // The source declaration may import the same property under several
+        // distinct local names. A genuine sibling node/SID pair is not the
+        // scanner's binding unless its original local datum also agrees.
+        if (local.isNone() or @backingInt(local) >= ast.nodes.items.len) return false;
+        const local_span = ast.identifierNameSpan(ast.getNode(local));
+        const local_table = local_span.start & Ast.STRING_TABLE_BIT != 0;
+        if ((local_span.end & Ast.STRING_TABLE_BIT != 0) != local_table) return false;
+        const local_start = local_span.start & ~Ast.STRING_TABLE_BIT;
+        const local_end = local_span.end & ~Ast.STRING_TABLE_BIT;
+        const local_limit = if (local_table) ast.string_table.items.len else ast.source.len;
+        if (local_start > local_end or local_end > local_limit) return false;
+        if (!@import("../lexer/scanner.zig").Scanner.identifierValueEquals(ast.getText(local_span), ib.local_name)) return false;
         if (declaration.isNone() or @backingInt(declaration) >= ast.nodes.items.len or ib.import_record_index >= self.import_records.len) return false;
         const owner = ast.getNode(declaration);
         if (owner.tag != .import_declaration) return false;

@@ -267,7 +267,6 @@ fn checkPairedForeignImportCarrier(source: []const u8) !void {
     for (bindings) |*binding| binding.local_symbol = @import("../binding_scanner.zig").resolveImportLocalSymbol(binding.*, .{ .module_index = module.index, .ast = &module.ast.?, .symbol_ids = analyzer.symbol_ids.items, .symbols = analyzer.symbols.items });
     try testing.expect(bindings[0].local_symbol.isValid() and bindings[1].local_symbol.isValid());
     try testing.expect(!bindings[0].local_symbol.eql(bindings[1].local_symbol));
-    try testing.expect(bindings[0].local_declaration_node != bindings[1].local_declaration_node);
     var selected = [_]ImportBinding{bindings[0]};
     module.import_bindings = &selected;
     var output: std.ArrayList(u8) = .empty;
@@ -290,6 +289,10 @@ test "external exact import writer rejects paired foreign declaration anchor and
 
 test "external exact import writer rejects paired same-specifier declaration anchor and SID" {
     try checkPairedForeignImportCarrier("import{basename as local}from'node:path';import{dirname as other}from'node:path';console.log(local,other);");
+}
+
+test "external exact import writer rejects paired aliases of the same imported property" {
+    try checkPairedForeignImportCarrier("import{basename as local,basename as other}from'node:path';console.log(local,other);");
 }
 
 test "external exact import writer preserves quoted and escaped imported property roles" {
