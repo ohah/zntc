@@ -29,6 +29,7 @@ const PluginState = plugin_state.PluginState;
 const jsx_lowering_mod = @import("jsx_lowering.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 const SymbolId = @import("../semantic/symbol.zig").SymbolId;
+const SemanticReference = @import("../semantic/symbol.zig").Reference;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const SemanticEditor = @import("../semantic/editor.zig").SemanticEditor;
 const ReferenceFlags = @import("../semantic/symbol.zig").ReferenceFlags;
@@ -46,6 +47,17 @@ pub const AstTransformCtx = ast_plugin_mod.AstTransformCtx;
 pub const FunctionInfo = ast_plugin_mod.FunctionInfo;
 pub const AutoLabelMode = options_mod.AutoLabelMode;
 pub const BindingLite = options_mod.BindingLite;
+
+pub const ErasedTypeImportExternalReferenceProof = struct {
+    import_node: Node,
+    import_node_index: NodeIndex,
+    import_local_node: Node,
+    import_local_node_index: NodeIndex,
+    import_symbol_id: u32,
+    import_symbol: Symbol,
+    reference_node: Node,
+    reference: SemanticReference,
+};
 pub const DefineEntry = options_mod.DefineEntry;
 pub const ModuleSpecifierMapEntry = options_mod.ModuleSpecifierMapEntry;
 pub const Plugin = options_mod.Plugin;
@@ -317,6 +329,9 @@ pub const Transformer = struct {
     /// the same spelling survives. The value is the source enum binding node.
     erased_const_enum_external_reference_origins: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     detach_erased_const_enum_external_reads: bool = false,
+    /// Exact source proof for reads detached from an erased declaration-level
+    /// type import. The key is the surviving external output reference node.
+    erased_type_import_external_references: std.AutoHashMapUnmanaged(u32, ErasedTypeImportExternalReferenceProof) = .empty,
     /// Graph prepass can retain this provenance across a later semantic resync.
     record_explicit_global_references: bool = false,
     /// Bundler retention must not treat opaque define text as an exact graph
