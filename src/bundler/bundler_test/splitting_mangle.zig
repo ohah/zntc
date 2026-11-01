@@ -14,6 +14,36 @@ const test_helpers = @import("../test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
 
+test "cross chunk anonymous default facade remains declared after identifier mangling" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "Promise.all([import('./a.mjs'),import('./b.mjs')]).then(([a,b])=>console.log(a.value,b.value));");
+    try writeFile(tmp.dir, "a.mjs", "import read from'./provider.mjs';export const value=read();");
+    try writeFile(tmp.dir, "b.mjs", "import read from'./provider.mjs';export const value=read();");
+    try writeFile(tmp.dir, "provider.mjs", "export default function(){return 'FACADE_LIVE_MARKER'}");
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    var bundler = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .code_splitting = true,
+        .minify_identifiers = true,
+    });
+    defer bundler.deinit();
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    var providers: usize = 0;
+    for (result.outputs orelse return error.MissingFacadeOutputs) |output| {
+        if (std.mem.indexOf(u8, output.contents, "//#region provider.mjs") == null) continue;
+        providers += 1;
+        try std.testing.expect(std.mem.indexOf(u8, output.contents, "FACADE_LIVE_MARKER") != null);
+        const local = try splitExportLocalName(output.contents, "_default");
+        try std.testing.expect(outputDeclaresIdentifier(output.contents, local));
+    }
+    try std.testing.expectEqual(@as(usize, 1), providers);
+}
+
 fn isIdentifierByte(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '_' or c == '$';
 }
