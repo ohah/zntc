@@ -39,6 +39,7 @@ test "empty runtime module clauses agree in initial and AST source records" {
         parser.configureFromExtension(".ts");
         parser.enable_scan = true;
         _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
         const rescanned = try extractImports(a, &parser.ast);
         const expected: usize = if (case.kind != null) 1 else 0;
         try std.testing.expectEqual(expected, parser.scan_import_records.items.len);
