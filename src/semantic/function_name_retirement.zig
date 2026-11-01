@@ -169,10 +169,58 @@ pub fn validateOwnerAliases(w: Witness, ast: *const ast_mod.Ast, live: *const st
     return true;
 }
 
-fn actualEngine(editor: anytype, body_scope: ScopeId, origins: *const std.AutoHashMapUnmanaged(u32, ScopeId)) !?Engine {
+// Initial Analyzer engines have no lowering receipt: their storage and
+// origin are the same original function frame. Authenticate that birth from
+// the sealed initial frame/owner edges, never from a later equal-shaped scope.
+fn originalEngineBirth(editor: anytype, owner: NodeIndex, name_scope: ScopeId, body_scope: ScopeId, id: u32, before: symbol.Symbol) bool {
+    if (owner.isNone() or name_scope.isNone() or body_scope.isNone() or
+        before.origin_scope != body_scope or before.scope_id != body_scope or
+        !std.meta.eql(before.decl_flags, symbol.SymbolKind.parameter.declFlags()) or
+        @backingInt(owner) >= editor.ast.nodes.items.len or
+        editor.scope_owner_map.get(@backingInt(owner)) != @as(?u32, @backingInt(body_scope))) return false;
+    const node = editor.ast.getNode(owner);
+    if (node.tag != .function_expression or !editor.ast.hasExtra(node.data.extra, ast_mod.FunctionExtra.flags) or
+        !std.meta.eql(before.declaration_span, node.span)) return false;
+    const name = editor.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name);
+    if (name.isNone() or editor.scope_owner_map.get(@backingInt(name)) != @as(?u32, @backingInt(name_scope))) return false;
+    const history = editor.scopeHistoryView();
+    if (body_scope.toIndex() >= history.source_scopes.len or name_scope.toIndex() >= history.source_scopes.len or
+        !History.sameFrame(history.source_scopes[body_scope.toIndex()], editor.scopes.items[body_scope.toIndex()]) or
+        !History.sameFrame(history.source_scopes[name_scope.toIndex()], editor.scopes.items[name_scope.toIndex()]) or
+        history.source_scopes[body_scope.toIndex()].kind != .function or
+        history.source_scopes[body_scope.toIndex()].parent != name_scope or
+        history.source_scopes[name_scope.toIndex()].kind != .block) return false;
+    const actual_owner = History.Owner.capture(editor.ast, owner) catch return false;
+    const actual_name = History.Owner.capture(editor.ast, name) catch return false;
+    if (actual_owner == null or actual_name == null) return false;
+    var function_births: usize = 0;
+    var name_births: usize = 0;
+    for (history.source_owners) |birth| {
+        if (birth.owner.node == owner) {
+            if (birth.scope != body_scope or !std.meta.eql(birth.owner, actual_owner.?) or
+                birth.edges.parameters != editor.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.params) or
+                birth.edges.body != editor.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.body)) return false;
+            function_births += 1;
+        }
+        if (birth.owner.node == name) {
+            if (birth.scope != name_scope or !std.meta.eql(birth.owner, actual_name.?)) return false;
+            name_births += 1;
+        }
+    }
+    if (function_births != 1 or name_births != 1 or editor.scope_maps.items[body_scope.toIndex()].get("arguments") != @as(?usize, id)) return false;
+    var entries = editor.scope_maps.items[body_scope.toIndex()].iterator();
+    while (entries.next()) |entry| if (entry.value_ptr.* == id and !std.mem.eql(u8, entry.key_ptr.*, "arguments")) return false;
+    return true;
+}
+
+fn actualEngine(editor: anytype, body_scope: ScopeId, origins: *const std.AutoHashMapUnmanaged(u32, ScopeId), original_owner: NodeIndex, name_scope: ScopeId) !?Engine {
     var result: ?Engine = null;
     for (editor.symbols.items, 0..) |before, id| if (before.scope_id == body_scope and before.synthetic_kind == .implicit_arguments) {
-        if (result != null or before.kind != .parameter or !std.mem.eql(u8, before.synthetic_name, "arguments") or origins.get(@intCast(id)) != body_scope) return error.InvalidSymbol;
+        if (result != null or before.kind != .parameter or !std.mem.eql(u8, before.synthetic_name, "arguments")) return error.InvalidSymbol;
+        if (origins.get(@intCast(id))) |origin| {
+            // A present but conflicting lowering receipt must never fall back.
+            if (origin != body_scope) return error.InvalidSymbol;
+        } else if (!originalEngineBirth(editor, original_owner, name_scope, body_scope, @intCast(id), before)) return error.InvalidSymbol;
         var declaration: ?Reference = null;
         for (editor.references.items) |row| if (@backingInt(row.symbol_id) == id and row.flags.declare) {
             if (declaration != null or row.scope_id != body_scope or !row.node_index.isNone() or !row.declaration_node_index.isNone() or !std.meta.eql(row.flags, @as(symbol.ReferenceFlags, .{ .declare = true }))) return error.InvalidSymbol;
@@ -287,7 +335,7 @@ pub fn captureAll(a: std.mem.Allocator, editor: anytype, root: NodeIndex, origin
         const formal_scope = if (!p.isNone() and !retire_parameters) p else g;
         const formals = (try actualFormals(a, editor, params, formal_scope, !p.isNone() and !retire_parameters)) orelse continue;
         errdefer a.free(formals);
-        const engine = try actualEngine(editor, formal_scope, origins);
+        const engine = try actualEngine(editor, formal_scope, origins, if (p.isNone()) @fromBackingInt(raw) else .none, n);
         const owner_rows = try ownerAliases(a, editor, &live, n, if (retire_parameters) p else .none, name, params, formals);
         errdefer a.free(owner_rows);
         const event: Elision = .{ .owner = @fromBackingInt(raw), .owner_node = node, .name = name, .name_node = editor.ast.getNode(name), .symbol_id = @fromBackingInt(sid), .parameters = params, .body = body };
@@ -340,4 +388,62 @@ pub fn validateState(retired: anytype, ast: *const ast_mod.Ast, live: *const std
     return @import("source_owned_retirement.zig").equalSymbol(retired.before, symbols[sid]) and retired.declaration.symbol_id == e.symbol_id and retired.declaration.scope_id == w.name_scope and
         retired.declaration.node_index.isNone() and retired.declaration.declaration_node_index == e.name and std.meta.eql(retired.declaration.flags, @as(symbol.ReferenceFlags, .{ .declare = true })) and
         std.meta.eql(retired.before.name, e.name_node.data.string_ref) and std.meta.eql(retired.before.declaration_span, e.name_node.span);
+}
+
+test "original Analyzer arguments engine requires exact initial G name-owner birth" {
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+    const Analyzer = @import("analyzer.zig").SemanticAnalyzer;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "(function unused(p){const local=arguments[0];return local});console.log(42);");
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.enable_source_external_origins = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var editor = try analyzer.beginEdit();
+    var owner: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| if (node.tag == .function_expression) {
+        owner = @fromBackingInt(@as(u32, @intCast(raw)));
+    };
+    try std.testing.expect(!owner.isNone());
+    const g: ScopeId = @fromBackingInt(editor.scope_owner_map.get(@backingInt(owner)).?);
+    const n = editor.scopes.items[g.toIndex()].parent;
+    const id: u32 = @intCast(editor.scope_maps.items[g.toIndex()].get("arguments").?);
+    var origins: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty;
+    const positive = (try actualEngine(&editor, g, &origins, owner, n)).?;
+    try std.testing.expectEqual(id, @backingInt(positive.symbol_id));
+    try std.testing.expect(positive.before.origin_scope == g and positive.declaration.declaration_node_index.isNone());
+
+    // A real but conflicting lowering receipt is authoritative rejection.
+    try origins.put(a, id, n);
+    try std.testing.expectError(error.InvalidSymbol, actualEngine(&editor, g, &origins, owner, n));
+    _ = origins.remove(id);
+    const before = editor.symbols.items[id];
+    editor.symbols.items[id].origin_scope = n;
+    try std.testing.expectError(error.InvalidSymbol, actualEngine(&editor, g, &origins, owner, n));
+    editor.symbols.items[id] = before;
+    editor.symbols.items[id].declaration_span.end += 1;
+    try std.testing.expectError(error.InvalidSymbol, actualEngine(&editor, g, &origins, owner, n));
+    editor.symbols.items[id] = before;
+    const map = &editor.scope_maps.items[g.toIndex()];
+    _ = map.remove("arguments");
+    try std.testing.expectError(error.InvalidSymbol, actualEngine(&editor, g, &origins, owner, n));
+    try map.put(a, "arguments", id + 1);
+    try std.testing.expectError(error.InvalidSymbol, actualEngine(&editor, g, &origins, owner, n));
+    try map.put(a, "arguments", id);
+    const parent = editor.scopes.items[g.toIndex()].parent;
+    editor.scopes.items[g.toIndex()].parent = editor.scopes.items[n.toIndex()].parent;
+    try std.testing.expectError(error.InvalidSymbol, actualEngine(&editor, g, &origins, owner, n));
+    editor.scopes.items[g.toIndex()].parent = parent;
+    try std.testing.expectError(error.InvalidSymbol, actualEngine(&editor, g, &origins, .none, n));
+    const rows = editor.references.items.len;
+    try editor.references.append(a, positive.declaration);
+    try std.testing.expectError(error.InvalidSymbol, actualEngine(&editor, g, &origins, owner, n));
+    editor.references.shrinkRetainingCapacity(rows);
+    try std.testing.expect((try actualEngine(&editor, g, &origins, owner, n)) != null);
 }
