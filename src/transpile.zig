@@ -16,6 +16,9 @@ const Ast = ast_mod.Ast;
 const ast_walk = @import("parser/ast_walk.zig");
 const reference_walk = @import("semantic/reference_walk.zig");
 const SemanticAnalyzer = @import("semantic/mod.zig").SemanticAnalyzer;
+const SemanticSymbol = @import("semantic/symbol.zig").Symbol;
+const ScopeId = @import("semantic/scope.zig").ScopeId;
+const SemanticReference = @import("semantic/symbol.zig").Reference;
 const Transformer = @import("transformer/transformer.zig").Transformer;
 const es_helpers = @import("transformer/es_helpers.zig");
 const runtime_helper_names = @import("runtime_helper_names.zig");
@@ -831,6 +834,26 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
     runtime_import_equals_graph_proof: ?bool,
     runtime_import_identity_snapshot: ?RuntimeImportIdentitySnapshot,
 ) bool {
+    return canMangleWithTransformSemanticAfterEditWithTypeImportShadowSnapshot(
+        options,
+        parser,
+        transformer,
+        root,
+        runtime_import_equals_graph_proof,
+        runtime_import_identity_snapshot,
+        null,
+    );
+}
+
+fn canMangleWithTransformSemanticAfterEditWithTypeImportShadowSnapshot(
+    options: TranspileOptions,
+    parser: *const Parser,
+    transformer: *const Transformer,
+    root: ast_mod.NodeIndex,
+    runtime_import_equals_graph_proof: ?bool,
+    runtime_import_identity_snapshot: ?RuntimeImportIdentitySnapshot,
+    type_import_shadow_snapshot: ?TypeImportShadowIdentitySnapshot,
+) bool {
     const facts = collectAstFacts(parser.allocator, &parser.ast) catch return false;
     const may_admit_erased_const_enum = facts.has_lenient_const_enum_runtime_syntax and
         !facts.has_lenient_unhandled_runtime_syntax and
@@ -846,14 +869,22 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
     const may_admit_erased_ts_type_imports = parser.source_mode == .ts and
         (facts.has_declaration_level_type_import or facts.has_inline_type_import_specifier) and
         ((onlyErasableTypeImports(&parser.ast) and
-            erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(transformer, root)) or
+            erasedTypeImportDeclarationsHaveNoOutputSemanticFactsWithShadowSnapshot(
+                transformer,
+                root,
+                type_import_shadow_snapshot,
+            )) or
             (onlyErasableTypeImportsAndStableRuntimeImports(
                 parser.allocator,
                 &parser.ast,
                 transformer.parser_node_count,
             ) and
                 (!facts.has_declaration_level_type_import or
-                    erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(transformer, root)) and
+                    erasedTypeImportDeclarationsHaveNoOutputSemanticFactsWithShadowSnapshot(
+                        transformer,
+                        root,
+                        type_import_shadow_snapshot,
+                    )) and
                 erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
                     transformer,
                     root,
@@ -1062,6 +1093,163 @@ const RuntimeImportIdentitySnapshot = struct {
     references: []const RuntimeImportReferenceIdentity,
     inline_type_specifiers: []const RuntimeImportSpecifierIdentity,
 };
+
+const TypeImportShadowIdentity = struct {
+    name: []const u8,
+    node_index: u32,
+    node: ast_mod.Node,
+    is_binding: bool,
+    symbol_id: u32,
+    symbol: SemanticSymbol,
+    reference: ?SemanticReference,
+};
+
+const TypeImportShadowIdentitySnapshot = struct {
+    identities: []const TypeImportShadowIdentity,
+};
+
+/// Capture source runtime bindings and value references that share a decoded
+/// name with an erased type import. The transform proof later compares these
+/// exact node, SymbolId, symbol metadata, and ScopeId identities before it
+/// allows a same-name output occurrence to retain the semantic graph.
+fn captureTypeImportShadowIdentitySnapshot(
+    allocator: std.mem.Allocator,
+    parser: *const Parser,
+    analyzer: *const SemanticAnalyzer,
+) error{OutOfMemory}!?TypeImportShadowIdentitySnapshot {
+    const ast = &parser.ast;
+    const source_count = @min(ast.nodes.items.len, analyzer.symbol_ids.items.len);
+    if (source_count == 0) return null;
+
+    var imported_names: std.StringHashMapUnmanaged(void) = .empty;
+    defer imported_names.deinit(allocator);
+    var imported_symbol_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer imported_symbol_ids.deinit(allocator);
+
+    for (ast.nodes.items[0..source_count]) |node| {
+        if (node.tag != .import_declaration) continue;
+        if (node.data.extra >= ast.extra_data.items.len or ast.extra_data.items.len - node.data.extra < 6)
+            return null;
+        const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
+        if (import_decl.phase != .none or import_decl.specs_start > ast.extra_data.items.len or
+            import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start) return null;
+        if (import_decl.specs_len == 0) continue;
+
+        var i: u32 = 0;
+        while (i < import_decl.specs_len) : (i += 1) {
+            const specifier_index: ast_mod.NodeIndex = @fromBackingInt(
+                @intCast(ast.extra_data.items[import_decl.specs_start + i]),
+            );
+            if (specifier_index.isNone() or @backingInt(specifier_index) >= source_count) return null;
+            const specifier = ast.getNode(specifier_index);
+            const local_index, const local_node, const is_type_local = switch (specifier.tag) {
+                .import_default_specifier, .import_namespace_specifier => .{
+                    specifier_index,
+                    specifier,
+                    import_decl.is_type_only,
+                },
+                .import_specifier => blk: {
+                    const flags = specifier.data.binary.flags;
+                    if (flags != 0 and flags != module_parser.SPEC_FLAG_TYPE_ONLY) return null;
+                    const local = specifier.data.binary.right;
+                    if (local.isNone() or @backingInt(local) >= source_count) return null;
+                    const local_node = ast.getNode(local);
+                    if (local_node.tag != .identifier_reference) return null;
+                    break :blk .{
+                        local,
+                        local_node,
+                        import_decl.is_type_only or flags == module_parser.SPEC_FLAG_TYPE_ONLY,
+                    };
+                },
+                else => return null,
+            };
+            if (!is_type_local) continue;
+            if (!isValidSourceTextSpan(ast, local_node.span) or
+                local_node.span.start < node.span.start or local_node.span.end > node.span.end) return null;
+            const name = Scanner.decodeIdentifierEscapesAlloc(allocator, ast.getText(local_node.span)) catch return null;
+            if (name.len == 0 or imported_names.contains(name)) return null;
+            imported_names.put(allocator, name, {}) catch return error.OutOfMemory;
+
+            const raw = @backingInt(local_index);
+            if (raw >= analyzer.symbol_ids.items.len) return null;
+            const symbol_id = analyzer.symbol_ids.items[raw] orelse return null;
+            if (symbol_id >= analyzer.symbols.items.len or imported_symbol_ids.contains(symbol_id)) return null;
+            const symbol = analyzer.symbols.items[symbol_id];
+            if (symbol.kind != .import_binding or symbol.scope_id.isNone() or
+                symbol.scope_id.toIndex() >= analyzer.scope_maps.items.len or
+                symbol.name.start != local_node.span.start or symbol.name.end != local_node.span.end or
+                symbol.declaration_span.start < node.span.start or
+                symbol.declaration_span.end > node.span.end or
+                symbol.declaration_span.end <= symbol.declaration_span.start or
+                analyzer.scope_maps.items[symbol.scope_id.toIndex()].get(name) != @as(?usize, @intCast(symbol_id))) return null;
+            imported_symbol_ids.put(allocator, symbol_id, {}) catch return error.OutOfMemory;
+        }
+    }
+    if (imported_names.count() == 0) return null;
+
+    var identities: std.ArrayListUnmanaged(TypeImportShadowIdentity) = .empty;
+    defer identities.deinit(allocator);
+    var seen_reference_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen_reference_nodes.deinit(allocator);
+
+    for (ast.nodes.items[0..source_count], 0..) |node, raw| {
+        if (node.tag != .binding_identifier or !isValidSourceTextSpan(ast, node.span)) continue;
+        const name = Scanner.decodeIdentifierEscapesAlloc(allocator, ast.getText(node.span)) catch return null;
+        if (!imported_names.contains(name)) continue;
+        const symbol_id = analyzer.symbol_ids.items[raw] orelse continue;
+        if (imported_symbol_ids.contains(symbol_id) or symbol_id >= analyzer.symbols.items.len) continue;
+        const symbol = analyzer.symbols.items[symbol_id];
+        if (symbol.kind == .import_binding or symbol.synthetic_kind != null or
+            symbol.synthetic_owner_id != null or symbol.synthetic_name.len != 0 or
+            symbol.scope_id.isNone() or symbol.scope_id.toIndex() >= analyzer.scope_maps.items.len or
+            !isValidSourceTextSpan(ast, symbol.name) or !isValidSourceTextSpan(ast, symbol.declaration_span) or
+            symbol.name.start != node.span.start or symbol.name.end != node.span.end or
+            symbol.declaration_span.start > node.span.start or symbol.declaration_span.end < node.span.end or
+            analyzer.scope_maps.items[symbol.scope_id.toIndex()].get(name) != @as(?usize, @intCast(symbol_id))) return null;
+        identities.append(allocator, .{
+            .name = name,
+            .node_index = @intCast(raw),
+            .node = node,
+            .is_binding = true,
+            .symbol_id = symbol_id,
+            .symbol = symbol,
+            .reference = null,
+        }) catch return error.OutOfMemory;
+    }
+
+    for (analyzer.references.items) |reference| {
+        if (!reference.isValueUse() or reference.node_index.isNone()) continue;
+        const raw = @backingInt(reference.node_index);
+        if (raw >= source_count or seen_reference_nodes.contains(raw)) continue;
+        const node = ast.getNode(reference.node_index);
+        if (node.tag != .identifier_reference or !isValidSourceTextSpan(ast, node.span)) continue;
+        const name = Scanner.decodeIdentifierEscapesAlloc(allocator, ast.getText(node.span)) catch return null;
+        if (!imported_names.contains(name)) continue;
+        if (@backingInt(reference.symbol_id) >= analyzer.symbols.items.len or
+            analyzer.symbol_ids.items[raw] != @as(?u32, @intCast(@backingInt(reference.symbol_id)))) return null;
+        const symbol_id = @backingInt(reference.symbol_id);
+        if (imported_symbol_ids.contains(symbol_id)) continue;
+        const symbol = analyzer.symbols.items[symbol_id];
+        if (symbol.kind == .import_binding or symbol.synthetic_kind != null or
+            symbol.synthetic_owner_id != null or symbol.synthetic_name.len != 0 or
+            symbol.scope_id.isNone() or symbol.scope_id.toIndex() >= analyzer.scope_maps.items.len or
+            reference.scope_id.isNone() or reference.scope_id.toIndex() >= analyzer.scopes.items.len or
+            !isValidSourceTextSpan(ast, symbol.name) or !isValidSourceTextSpan(ast, symbol.declaration_span) or
+            analyzer.scope_maps.items[symbol.scope_id.toIndex()].get(name) != @as(?usize, @intCast(symbol_id))) return null;
+        try seen_reference_nodes.put(allocator, raw, {});
+        try identities.append(allocator, .{
+            .name = name,
+            .node_index = raw,
+            .node = node,
+            .is_binding = false,
+            .symbol_id = symbol_id,
+            .symbol = symbol,
+            .reference = reference,
+        });
+    }
+
+    return .{ .identities = try identities.toOwnedSlice(allocator) };
+}
 
 /// Capture exact source identities before the standalone transformer takes
 /// ownership of and mutates the parser AST. Side-effect imports contribute an
@@ -1284,8 +1472,9 @@ fn captureRuntimeImportIdentitySnapshot(
 /// structurally inside an erased ambient namespace. Attributes on type-only
 /// imports are admitted only when the same proof establishes that their full
 /// declaration is erased. Import SymbolIds may not survive; a same-named output
-/// reference is allowed only as an exact unresolved source read from an erased
-/// ambient-namespace import.
+/// reference is allowed in TypeScript only when it resolves through an exact,
+/// distinct runtime SymbolId. Lenient ambient imports may retain only their
+/// exact unresolved source reads.
 fn erasedImportDeclarationsHaveNoOutputSemanticFacts(
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
@@ -1305,6 +1494,21 @@ fn erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(
     root: ast_mod.NodeIndex,
 ) bool {
     return erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(transformer, root, true, false, false);
+}
+
+fn erasedTypeImportDeclarationsHaveNoOutputSemanticFactsWithShadowSnapshot(
+    transformer: *const Transformer,
+    root: ast_mod.NodeIndex,
+    snapshot: ?TypeImportShadowIdentitySnapshot,
+) bool {
+    return erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImportsWithShadowSnapshot(
+        transformer,
+        root,
+        true,
+        false,
+        false,
+        snapshot,
+    );
 }
 
 fn isExactUnresolvedSourceRead(
@@ -1384,6 +1588,156 @@ fn importAttributesHaveExactSourceStructure(
             value_node.span.start < attribute.span.start or value_node.span.end > attribute.span.end) return false;
     }
     return true;
+}
+
+/// A TypeScript type import may share its spelling with a nested runtime
+/// binding. Once the import is erased, that spelling is safe only when the
+/// surviving source node still names a different, exact local SymbolId and
+/// every surviving value reference resolves to that same binding.
+fn scopeResolvesNameToSymbol(
+    transformer: *const Transformer,
+    start: ScopeId,
+    name: []const u8,
+    expected_symbol_id: u32,
+) bool {
+    var current = start;
+    var hops: usize = 0;
+    while (!current.isNone() and hops <= transformer.scopes.len) : (hops += 1) {
+        const scope_index = current.toIndex();
+        if (scope_index >= transformer.scopes.len or scope_index >= transformer.scope_maps.len) return false;
+        if (transformer.scope_maps[scope_index].get(name)) |symbol_id| {
+            return symbol_id == expected_symbol_id;
+        }
+        current = transformer.scopes[scope_index].parent;
+    }
+    return false;
+}
+
+fn typeImportShadowSymbolMatches(expected: SemanticSymbol, actual: SemanticSymbol) bool {
+    return expected.name.start == actual.name.start and expected.name.end == actual.name.end and
+        expected.scope_id == actual.scope_id and expected.origin_scope == actual.origin_scope and
+        expected.kind == actual.kind and std.meta.eql(expected.decl_flags, actual.decl_flags) and
+        expected.declaration_span.start == actual.declaration_span.start and
+        expected.declaration_span.end == actual.declaration_span.end and
+        expected.synthetic_kind == actual.synthetic_kind and
+        std.mem.eql(u8, expected.synthetic_name, actual.synthetic_name) and
+        std.mem.eql(u8, expected.output_name_hint, actual.output_name_hint) and
+        expected.synthetic_owner_id == actual.synthetic_owner_id;
+}
+
+fn exactTypeImportShadowSnapshotIdentity(
+    maybe_snapshot: ?TypeImportShadowIdentitySnapshot,
+    raw: u32,
+    node: ast_mod.Node,
+    expected_name: []const u8,
+    symbol_id: u32,
+    symbol: SemanticSymbol,
+    is_binding: bool,
+    reference: ?SemanticReference,
+) bool {
+    const snapshot = maybe_snapshot orelse return false;
+    var match: ?TypeImportShadowIdentity = null;
+    for (snapshot.identities) |identity| {
+        if (identity.node_index != raw or identity.is_binding != is_binding or
+            !std.mem.eql(u8, identity.name, expected_name)) continue;
+        if (match != null) return false;
+        match = identity;
+    }
+    const expected = match orelse return false;
+    if (!sameNodeValue(expected.node, node) or expected.symbol_id != symbol_id or
+        !typeImportShadowSymbolMatches(expected.symbol, symbol)) return false;
+    if (is_binding) return expected.reference == null and reference == null;
+
+    const expected_reference = expected.reference orelse return false;
+    const actual_reference = reference orelse return false;
+    // Type-import erasure may shift statement ordinals. The semantic identity
+    // proof therefore fixes the exact node, symbol, scope, and use flags while
+    // deliberately excluding stmt_idx/scope_stmt_idx.
+    return expected_reference.node_index == actual_reference.node_index and
+        expected_reference.declaration_node_index == actual_reference.declaration_node_index and
+        expected_reference.scope_id == actual_reference.scope_id and
+        expected_reference.symbol_id == actual_reference.symbol_id and
+        std.meta.eql(expected_reference.flags, actual_reference.flags);
+}
+
+fn exactDistinctOutputTypeImportShadowIdentity(
+    transformer: *const Transformer,
+    raw: u32,
+    node: ast_mod.Node,
+    expected_name: []const u8,
+    erased_import_symbol_ids: *const std.AutoHashMapUnmanaged(u32, void),
+    is_binding: bool,
+    maybe_shadow_snapshot: ?TypeImportShadowIdentitySnapshot,
+) bool {
+    const ast = transformer.ast;
+    if (raw >= transformer.parser_node_count or raw >= transformer.symbol_ids.items.len or
+        !isValidAstTextSpan(ast, node.span)) return false;
+    if (is_binding) {
+        if (node.tag != .binding_identifier) return false;
+    } else if (node.tag != .identifier_reference) return false;
+
+    const node_name = Scanner.decodeIdentifierEscapesAlloc(transformer.allocator, ast.getText(node.span)) catch return false;
+    if (!std.mem.eql(u8, node_name, expected_name)) return false;
+    const symbol_id = transformer.symbol_ids.items[raw] orelse return false;
+    if (erased_import_symbol_ids.contains(symbol_id) or symbol_id >= transformer.symbols.len) return false;
+    const symbol = transformer.symbols[symbol_id];
+    if (symbol.kind == .import_binding or symbol.synthetic_kind != null or
+        symbol.synthetic_owner_id != null or symbol.synthetic_name.len != 0 or
+        symbol.scope_id.isNone() or symbol.scope_id.toIndex() >= transformer.scopes.len or
+        symbol.scope_id.toIndex() >= transformer.scope_maps.len or
+        !isValidAstTextSpan(ast, symbol.name) or !isValidAstTextSpan(ast, symbol.declaration_span)) return false;
+    const symbol_name = Scanner.decodeIdentifierEscapesAlloc(
+        transformer.allocator,
+        ast.getText(symbol.name),
+    ) catch return false;
+    if (!std.mem.eql(u8, symbol_name, expected_name) or
+        transformer.scope_maps[symbol.scope_id.toIndex()].get(expected_name) != @as(?usize, @intCast(symbol_id))) return false;
+
+    if (is_binding) {
+        if (symbol.name.start != node.span.start or symbol.name.end != node.span.end or
+            symbol.declaration_span.start > node.span.start or symbol.declaration_span.end < node.span.end) return false;
+        return exactTypeImportShadowSnapshotIdentity(
+            maybe_shadow_snapshot,
+            raw,
+            node,
+            expected_name,
+            symbol_id,
+            symbol,
+            true,
+            null,
+        );
+    }
+
+    if (transformer.reference_origin_map.get(raw)) |origin| {
+        if (origin != raw) return false;
+    }
+    if (transformer.unresolved_reference_nodes) |unresolved| {
+        if (unresolved.contains(raw)) return false;
+    }
+    if (transformer.unresolved_reference_write_nodes) |unresolved_writes| {
+        if (unresolved_writes.contains(raw)) return false;
+    }
+
+    var matching_reference: ?SemanticReference = null;
+    for (transformer.references) |reference| {
+        if (reference.node_index.isNone() or @backingInt(reference.node_index) != raw) continue;
+        if (matching_reference != null) return false;
+        matching_reference = reference;
+    }
+    const reference = matching_reference orelse return false;
+    if (@backingInt(reference.symbol_id) != symbol_id or !reference.isValueUse() or
+        reference.scope_id.isNone() or reference.scope_id.toIndex() >= transformer.scopes.len or
+        !scopeResolvesNameToSymbol(transformer, reference.scope_id, expected_name, symbol_id)) return false;
+    return exactTypeImportShadowSnapshotIdentity(
+        maybe_shadow_snapshot,
+        raw,
+        node,
+        expected_name,
+        symbol_id,
+        symbol,
+        false,
+        reference,
+    );
 }
 
 /// Prove that inline `type` specifiers mixed into a surviving TypeScript value
@@ -1524,6 +1878,24 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(
     type_imports_only: bool,
     allow_attributed_lenient_type_imports: bool,
     allow_exact_unresolved_ambient_namespace_reads: bool,
+) bool {
+    return erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImportsWithShadowSnapshot(
+        transformer,
+        root,
+        type_imports_only,
+        allow_attributed_lenient_type_imports,
+        allow_exact_unresolved_ambient_namespace_reads,
+        null,
+    );
+}
+
+fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImportsWithShadowSnapshot(
+    transformer: *const Transformer,
+    root: ast_mod.NodeIndex,
+    type_imports_only: bool,
+    allow_attributed_lenient_type_imports: bool,
+    allow_exact_unresolved_ambient_namespace_reads: bool,
+    maybe_shadow_snapshot: ?TypeImportShadowIdentitySnapshot,
 ) bool {
     const ast = transformer.ast;
     const source_count = transformer.parser_node_count;
@@ -1711,12 +2083,33 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(
             ast.getText(output_node.span),
         ) catch return false;
         if (!import_names.contains(output_name)) continue;
-        if (is_output_binding) return false;
+        if (is_output_binding) {
+            if (!type_imports_only or !exactDistinctOutputTypeImportShadowIdentity(
+                transformer,
+                @intCast(raw),
+                output_node,
+                output_name,
+                &import_symbol_ids,
+                true,
+                maybe_shadow_snapshot,
+            )) return false;
+            continue;
+        }
         if (allow_exact_unresolved_ambient_namespace_reads and
             unresolved_ambient_import_read_names.contains(output_name) and
             !output_export_local_reference_nodes.contains(@intCast(raw)) and
             output_node.tag == .identifier_reference and
             isExactUnresolvedSourceRead(transformer, &output_reference_nodes, @intCast(raw), output_name)) continue;
+        if (type_imports_only and !output_export_local_reference_nodes.contains(@intCast(raw)) and
+            exactDistinctOutputTypeImportShadowIdentity(
+                transformer,
+                @intCast(raw),
+                output_node,
+                output_name,
+                &import_symbol_ids,
+                false,
+                maybe_shadow_snapshot,
+            )) continue;
         return false;
     }
     return true;
@@ -1926,6 +2319,7 @@ fn sameNodeValue(expected: ast_mod.Node, actual: ast_mod.Node) bool {
     if (expected.tag != actual.tag or !std.meta.eql(expected.span, actual.span)) return false;
     return switch (expected.tag) {
         .identifier_reference,
+        .binding_identifier,
         .string_literal,
         .assignment_target_identifier,
         .import_default_specifier,
@@ -4047,8 +4441,14 @@ fn transpileWithCallbackInternal(
     // 여기서 별도 defer 불필요 — parser.ast 와 transformer.ast 가 같은 instance.
     const pre_transform_scope_count = if (analyzer_storage) |*analyzer| analyzer.scopes.items.len else 0;
     var runtime_import_identity_snapshot: ?RuntimeImportIdentitySnapshot = null;
+    var type_import_shadow_snapshot: ?TypeImportShadowIdentitySnapshot = null;
     if (options.minify_identifiers and parser.source_mode == .ts) {
         if (analyzer_storage) |*analyzer| {
+            type_import_shadow_snapshot = captureTypeImportShadowIdentitySnapshot(
+                arena_alloc,
+                &parser,
+                analyzer,
+            ) catch return error.OutOfMemory;
             runtime_import_identity_snapshot = captureRuntimeImportIdentitySnapshot(
                 arena_alloc,
                 &parser,
@@ -4300,13 +4700,14 @@ fn transpileWithCallbackInternal(
     var mangle_analyzer: ?*SemanticAnalyzer = null;
     var mangle_uses_transform_semantic = false;
     if (options.minify_identifiers and analyzer_storage != null) {
-        if (canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
+        if (canMangleWithTransformSemanticAfterEditWithTypeImportShadowSnapshot(
             options,
             &parser,
             &transformer,
             root,
             runtime_import_equals_graph_proof,
             runtime_import_identity_snapshot,
+            type_import_shadow_snapshot,
         )) {
             mangle_uses_transform_semantic = true;
             mangle_analyzer = &analyzer_storage.?;
@@ -5354,6 +5755,223 @@ test "#6193 declaration-level type import reuse requires exact output erasure pr
         &hostile_transformer,
         hostile_output_root,
     ));
+}
+
+test "#6193 erased type import permits only exact same-name runtime bindings" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "import type { Model } from './types'; " ++
+        "function read(Model: number) { function nested() { return Model; } " ++
+        "const value: Model = Model + 1; return nested() + value; } " ++
+        "console.log(read(4));";
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    const source_root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_ts = true;
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    const shadow_snapshot = (try captureTypeImportShadowIdentitySnapshot(
+        allocator,
+        &parser,
+        &analyzer,
+    )) orelse return error.MissingTypeImportShadowSnapshot;
+    const TypeImportProof = struct {
+        fn canMangle(
+            options: TranspileOptions,
+            source_parser: *const Parser,
+            output_transformer: *const Transformer,
+            output_root: ast_mod.NodeIndex,
+            snapshot: TypeImportShadowIdentitySnapshot,
+        ) bool {
+            return canMangleWithTransformSemanticAfterEditWithTypeImportShadowSnapshot(
+                options,
+                source_parser,
+                output_transformer,
+                output_root,
+                null,
+                null,
+                snapshot,
+            );
+        }
+    };
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
+    const output_root = try transformer.visitNode(source_root);
+
+    var type_import_local_raw: ?u32 = null;
+    var runtime_binding_raw: ?u32 = null;
+    for (transformer.ast.nodes.items[0..transformer.parser_node_count], 0..) |node, raw| {
+        if (node.tag == .import_declaration) {
+            const import_decl = module_parser.readImportDeclExtras(transformer.ast, node.data.extra);
+            if (import_decl.specs_len != 1) return error.UnexpectedTypeImportSpecifierCount;
+            const spec_index: ast_mod.NodeIndex = @fromBackingInt(
+                @intCast(transformer.ast.extra_data.items[import_decl.specs_start]),
+            );
+            const specifier = transformer.ast.getNode(spec_index);
+            if (specifier.tag != .import_specifier) return error.UnexpectedTypeImportSpecifier;
+            type_import_local_raw = @backingInt(specifier.data.binary.right);
+        } else if (node.tag == .binding_identifier and isValidAstTextSpan(transformer.ast, node.span) and
+            std.mem.eql(u8, transformer.ast.getText(node.span), "Model"))
+        {
+            runtime_binding_raw = @intCast(raw);
+        }
+    }
+    const import_raw = type_import_local_raw orelse return error.MissingTypeImportBinding;
+    const binding_raw = runtime_binding_raw orelse return error.MissingRuntimeShadowBinding;
+    const imported_symbol_id = transformer.symbol_ids.items[import_raw] orelse return error.MissingTypeImportSymbol;
+    const binding_symbol_id = transformer.symbol_ids.items[binding_raw] orelse return error.MissingRuntimeShadowSymbol;
+    if (imported_symbol_id == binding_symbol_id) return error.TypeImportAndRuntimeBindingShareSymbol;
+
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, output_root);
+    defer allocator.free(reachable);
+    const closure_name_start = (std.mem.indexOf(u8, source, "return Model;") orelse return error.MissingClosureRead) + "return ".len;
+    var runtime_reference_raw: ?u32 = null;
+    var runtime_reference_row: ?usize = null;
+    var alternate_reference_scope: ?ScopeId = null;
+    for (reachable) |raw| {
+        const node = transformer.ast.getNode(@fromBackingInt(@intCast(raw)));
+        if (node.tag != .identifier_reference or !isValidAstTextSpan(transformer.ast, node.span) or
+            !std.mem.eql(u8, transformer.ast.getText(node.span), "Model") or
+            raw >= transformer.symbol_ids.items.len or transformer.symbol_ids.items[raw] != binding_symbol_id) continue;
+        var matching_row: ?usize = null;
+        for (transformer.references, 0..) |reference, index| {
+            if (!reference.node_index.isNone() and @backingInt(reference.node_index) == raw) {
+                if (matching_row != null) return error.DuplicateRuntimeShadowReference;
+                matching_row = index;
+            }
+        }
+        const reference_row = matching_row orelse return error.MissingRuntimeShadowReferenceRow;
+        if (node.span.start == closure_name_start) {
+            runtime_reference_raw = @intCast(raw);
+            runtime_reference_row = reference_row;
+        } else if (alternate_reference_scope == null) {
+            alternate_reference_scope = transformer.references[reference_row].scope_id;
+        }
+    }
+    const reference_raw = runtime_reference_raw orelse return error.MissingRuntimeShadowReference;
+    const reference_index = runtime_reference_row orelse return error.MissingRuntimeShadowReferenceRow;
+    const alternate_scope = alternate_reference_scope orelse return error.MissingAlternateRuntimeShadowScope;
+    const binding_symbol = transformer.symbols[binding_symbol_id];
+    const binding_scope = binding_symbol.scope_id.toIndex();
+    if (binding_scope >= transformer.scope_maps.len or
+        transformer.scope_maps[binding_scope].get("Model") != @as(?usize, @intCast(binding_symbol_id)))
+    {
+        return error.MissingRuntimeShadowScopeBinding;
+    }
+    try std.testing.expect(alternate_scope != transformer.references[reference_index].scope_id);
+    try std.testing.expect(scopeResolvesNameToSymbol(
+        &transformer,
+        alternate_scope,
+        "Model",
+        @intCast(binding_symbol_id),
+    ));
+
+    try std.testing.expect(erasedTypeImportDeclarationsHaveNoOutputSemanticFactsWithShadowSnapshot(
+        &transformer,
+        output_root,
+        shadow_snapshot,
+    ));
+    try std.testing.expect(TypeImportProof.canMangle(minify, &parser, &transformer, output_root, shadow_snapshot));
+    try std.testing.expect(!canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+
+    // Each mutation is independently restored so the next hostile case starts
+    // from the exact valid graph. These target the output binding, value edge,
+    // reference scope, and the lexical map used to disambiguate the shared name.
+    const original_reference_symbol_id = transformer.symbol_ids.items[reference_raw];
+    transformer.symbol_ids.items[reference_raw] = null;
+    try std.testing.expect(!TypeImportProof.canMangle(minify, &parser, &transformer, output_root, shadow_snapshot));
+    transformer.symbol_ids.items[reference_raw] = original_reference_symbol_id;
+
+    transformer.symbol_ids.items[reference_raw] = imported_symbol_id;
+    try std.testing.expect(!TypeImportProof.canMangle(minify, &parser, &transformer, output_root, shadow_snapshot));
+    transformer.symbol_ids.items[reference_raw] = original_reference_symbol_id;
+
+    const original_binding_symbol_id = transformer.symbol_ids.items[binding_raw];
+    transformer.symbol_ids.items[binding_raw] = imported_symbol_id;
+    try std.testing.expect(!TypeImportProof.canMangle(minify, &parser, &transformer, output_root, shadow_snapshot));
+    transformer.symbol_ids.items[binding_raw] = original_binding_symbol_id;
+
+    const original_reference = transformer.references[reference_index];
+    const mutable_references = @constCast(transformer.references);
+    mutable_references[reference_index].symbol_id = @fromBackingInt(@intCast(imported_symbol_id));
+    try std.testing.expect(!TypeImportProof.canMangle(minify, &parser, &transformer, output_root, shadow_snapshot));
+    mutable_references[reference_index] = original_reference;
+
+    mutable_references[reference_index].scope_id = @fromBackingInt(@intCast(0));
+    try std.testing.expect(!TypeImportProof.canMangle(minify, &parser, &transformer, output_root, shadow_snapshot));
+    mutable_references[reference_index] = original_reference;
+
+    // A different valid nested scope still resolves to the same parameter ID.
+    // Name-resolution alone accepts this mutation; the source ScopeId snapshot
+    // must reject it as an identity change.
+    mutable_references[reference_index].scope_id = alternate_scope;
+    try std.testing.expect(scopeResolvesNameToSymbol(&transformer, alternate_scope, "Model", binding_symbol_id));
+    try std.testing.expect(!TypeImportProof.canMangle(minify, &parser, &transformer, output_root, shadow_snapshot));
+    mutable_references[reference_index] = original_reference;
+
+    mutable_references[reference_index].scope_id = @fromBackingInt(@intCast(transformer.scopes.len + 1));
+    try std.testing.expect(!TypeImportProof.canMangle(minify, &parser, &transformer, output_root, shadow_snapshot));
+    mutable_references[reference_index] = original_reference;
+
+    const original_binding_name = binding_symbol.name;
+    const mutable_symbols = @constCast(transformer.symbols);
+    mutable_symbols[binding_symbol_id].name.end -= 1;
+    try std.testing.expect(!TypeImportProof.canMangle(minify, &parser, &transformer, output_root, shadow_snapshot));
+    mutable_symbols[binding_symbol_id].name = original_binding_name;
+
+    const mutable_scope_maps = @constCast(transformer.scope_maps);
+    const original_scope_binding = mutable_scope_maps[binding_scope].get("Model");
+    _ = mutable_scope_maps[binding_scope].remove("Model");
+    try std.testing.expect(!TypeImportProof.canMangle(minify, &parser, &transformer, output_root, shadow_snapshot));
+    try mutable_scope_maps[binding_scope].put(allocator, "Model", original_scope_binding orelse return error.MissingOriginalScopeBinding);
+
+    const original_reference_origin = transformer.reference_origin_map.get(reference_raw);
+    try transformer.reference_origin_map.put(allocator, reference_raw, reference_raw + 1);
+    try std.testing.expect(!TypeImportProof.canMangle(minify, &parser, &transformer, output_root, shadow_snapshot));
+    if (original_reference_origin) |origin| {
+        try transformer.reference_origin_map.put(allocator, reference_raw, origin);
+    } else {
+        _ = transformer.reference_origin_map.remove(reference_raw);
+    }
+
+    const original_references = transformer.references;
+    const missing_reference_rows = try allocator.alloc(SemanticReference, original_references.len - 1);
+    @memcpy(missing_reference_rows[0..reference_index], original_references[0..reference_index]);
+    @memcpy(missing_reference_rows[reference_index..], original_references[reference_index + 1 ..]);
+    transformer.references = missing_reference_rows;
+    try std.testing.expect(!TypeImportProof.canMangle(minify, &parser, &transformer, output_root, shadow_snapshot));
+    transformer.references = original_references;
+
+    const duplicate_reference_rows = try allocator.alloc(SemanticReference, original_references.len + 1);
+    @memcpy(duplicate_reference_rows[0..original_references.len], original_references);
+    duplicate_reference_rows[original_references.len] = original_reference;
+    transformer.references = duplicate_reference_rows;
+    try std.testing.expect(!TypeImportProof.canMangle(minify, &parser, &transformer, output_root, shadow_snapshot));
 }
 
 test "#6193 erased ambient namespace import-equals requires exact subtree proof" {
@@ -13128,7 +13746,6 @@ test "define callback environments preserve ten native and lexical contexts" {
 }
 
 fn checkDefineCallbackBirth(a: std.mem.Allocator, source: []const u8, replacement: []const u8, target: TransformOptions.compat.ESTarget, expected_native_reads: usize) !void {
-    const ScopeId = @import("semantic/scope.zig").ScopeId;
     const utils = @import("transformer/output_scope_test_utils.zig");
     const symbol_mod = @import("semantic/symbol.zig");
     var scanner = try Scanner.init(a, source);

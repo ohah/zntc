@@ -1239,6 +1239,14 @@ pub fn buildIncrementalPreserved(
     if (self.changed_emit_paths) |*s| s.deinit(self.allocator);
     self.changed_emit_paths = null;
 
+    // Error diagnostics are latched by diagnostics.addDiag. Check before the
+    // per-build diagnostic reset and every no-change/cache-reuse fast path,
+    // or a failed graph could become a successful retained no-op.
+    if (self.preserved_graph_invalidated) {
+        self.topology_fallback_count += 1;
+        return rebuildInvalidPreservedGraphFromSource(self, io, entry_points);
+    }
+
     // (#4557 B-precise) store 소비 전에 baked 소비자 정밀 무효화(buildIncremental 와 동형). 보존
     // 모드는 tree-shake OFF(dev) 라 baked 모듈이 없어 통상 fast-path no-op 이지만, fallbackFullRebuild
     // → transferModulesToStore(예외적 1회) 후 buildIncremental 이 다시 무효화하는 경로와 정합. store
@@ -1519,6 +1527,23 @@ fn fallbackFullRebuild(
     transferModulesToStore(self, io, store);
     self.prepareForPreservedRebuild();
     return buildIncremental(self, io, entry_points, store, changed_files);
+}
+
+/// A failed retained graph cannot be transferred to the module store: its
+/// transformed AST and transform_cache may describe a graph that never passed
+/// the post-transform proof. Clear it first, then parse from source without a
+/// cache-assisted replay.
+fn rebuildInvalidPreservedGraphFromSource(
+    self: *ModuleGraph,
+    io: std.Io,
+    entry_points: []const []const u8,
+) !IncrementalBuildResult {
+    self.prepareForPreservedRebuild();
+    try build(self, io, entry_points);
+    const n = self.modules.count();
+    const reparsed = try self.allocator.alloc(types.ModuleIndex, n);
+    for (0..n) |i| reparsed[i] = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
+    return .{ .graph_changed = true, .reparsed_indices = reparsed };
 }
 
 /// 위상 보존(edge-reuse) 경로가 안전한 빌드인지 판정. false 면 full fallback.

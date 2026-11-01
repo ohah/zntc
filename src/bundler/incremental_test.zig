@@ -3,10 +3,37 @@ const Bundler = @import("bundler.zig").Bundler;
 const IncrementalBundler = @import("incremental.zig").IncrementalBundler;
 const BundleResult = @import("bundler.zig").BundleResult;
 const CompiledOutputCache = @import("compiled_cache.zig").CompiledOutputCache;
+const plugin_mod = @import("plugin.zig");
 const module_store = @import("module_store.zig");
 const test_helpers = @import("test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
+
+fn corruptTrackedFunctionSymbol(ctx: ?*anyopaque, api: *plugin_mod.AstTransformCtx, func: plugin_mod.FunctionInfo) plugin_mod.PluginError!void {
+    const calls: *usize = @ptrCast(@alignCast(ctx orelse return error.PluginFailed));
+    calls.* += 1;
+    if (func.node_tag != .function_declaration) return;
+
+    const raw: usize = @intCast(@backingInt(func.node_idx));
+    if (raw >= api.transformer.symbol_ids.items.len) return error.PluginFailed;
+    // Deliberately violate the tracked-function graph contract after the AST
+    // transform has started. The exact post-transform audit must reject this
+    // retained graph and leave the module with a build error.
+    api.transformer.symbol_ids.items[raw] = null;
+}
+
+fn failFirstLegacyTransform(
+    ctx: ?*anyopaque,
+    _: []const u8,
+    _: []const u8,
+    _: std.mem.Allocator,
+    _: *plugin_mod.HookContext,
+) plugin_mod.PluginError!?[]const u8 {
+    const calls: *usize = @ptrCast(@alignCast(ctx orelse return error.PluginFailed));
+    calls.* += 1;
+    if (calls.* == 1) return error.PluginFailed;
+    return null;
+}
 
 /// RebuildSuccess.changed_modules ownership 을 받아 안전하게 해제.
 /// id/code/map 이 allocator.dupe 복사본이므로 freeAll 필수.
@@ -628,6 +655,222 @@ test "IncrementalBundler: build error returns error message" {
         },
         .fatal => {},
     }
+}
+
+test "IncrementalBundler: retained graph refresh failure forces a fresh same-input build" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.js", "function retained() { return 1; }\nconsole.log(retained());");
+
+    const entry = try absPath(&tmp, "index.js");
+    defer std.testing.allocator.free(entry);
+
+    var hook_calls: usize = 0;
+    const plugins = [_]plugin_mod.Plugin{.{
+        .name = "corrupt-tracked-function-identity",
+        .context = &hook_calls,
+        .onFunction = corruptTrackedFunctionSymbol,
+        .ast_graph_contract = .tracked_function_edits,
+    }};
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+        .plugins = &plugins,
+    });
+    ib.enable_persistence = true;
+    defer ib.deinit();
+
+    // First cold build reaches failRetainedGraphRefresh after the transformed
+    // AST and transform_cache have been installed. The failed graph must not
+    // become a successful no-change result on the next same-input rebuild.
+    {
+        const first = try ib.rebuild(std.testing.io);
+        switch (first) {
+            .build_error => |message| {
+                defer std.testing.allocator.free(message);
+                try std.testing.expect(std.mem.indexOf(u8, message, "Post-transform semantic graph refresh failed") != null);
+            },
+            .success => |success| {
+                freeChanged(success.changed_modules);
+                return error.ExpectedRetainedGraphRefreshFailure;
+            },
+            .fatal => return error.UnexpectedFatalBuild,
+        }
+    }
+
+    try std.testing.expect(ib.needs_full_rebuild);
+    try std.testing.expectEqual(@as(usize, 1), hook_calls);
+    const failed_graph = &(ib.persistent_graph orelse return error.MissingPersistentGraph);
+    const failed_module = failed_graph.findModuleByPath(entry) orelse return error.MissingFailedModule;
+    try std.testing.expectEqual(@import("module.zig").Module.State.ready, failed_module.state);
+    try std.testing.expect(failed_module.transform_cache != null);
+
+    // This is the same source and no file notification is supplied. The real
+    // IncrementalBundler error recovery must choose a cold graph preparation,
+    // discard that transformed AST/cache, and execute the faulty hook again.
+    {
+        const second = try ib.rebuild(std.testing.io);
+        switch (second) {
+            .build_error => |message| {
+                defer std.testing.allocator.free(message);
+                try std.testing.expect(std.mem.indexOf(u8, message, "Post-transform semantic graph refresh failed") != null);
+            },
+            .success => |success| {
+                freeChanged(success.changed_modules);
+                return error.StaleRetainedGraphWasReused;
+            },
+            .fatal => return error.UnexpectedFatalBuild,
+        }
+    }
+
+    try std.testing.expect(ib.needs_full_rebuild);
+    try std.testing.expectEqual(@as(usize, 2), hook_calls);
+    const rebuilt_graph = &(ib.persistent_graph orelse return error.MissingPersistentGraph);
+    const rebuilt_module = rebuilt_graph.findModuleByPath(entry) orelse return error.MissingRebuiltModule;
+    try std.testing.expectEqual(@import("module.zig").Module.State.ready, rebuilt_module.state);
+    try std.testing.expect(rebuilt_module.transform_cache != null);
+}
+
+test "persistent Bundler: retained graph refresh error cannot become same-input preserved success" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.js", "function retained() { return 1; }\nconsole.log(retained());");
+
+    const entry = try absPath(&tmp, "index.js");
+    defer std.testing.allocator.free(entry);
+
+    var hook_calls: usize = 0;
+    const plugins = [_]plugin_mod.Plugin{.{
+        .name = "corrupt-tracked-function-identity",
+        .context = &hook_calls,
+        .onFunction = corruptTrackedFunctionSymbol,
+        .ast_graph_contract = .tracked_function_edits,
+    }};
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    const base_options: @import("bundler.zig").BundleOptions = .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+        .plugins = &plugins,
+        .module_store = &store,
+        .preserve_topology = true,
+    };
+    var resolve_cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, base_options);
+    defer resolve_cache.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &resolve_cache);
+    defer graph.deinit();
+
+    // The first real persistent-graph build reaches failRetainedGraphRefresh
+    // after the transformed AST and transform_cache have been installed.
+    {
+        var bundler = Bundler.initWithGraph(std.testing.allocator, base_options, &resolve_cache, &graph);
+        defer bundler.deinit();
+        var result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(result.hasErrors());
+        var saw_refresh_error = false;
+        for (result.getDiagnostics()) |diag| {
+            if (std.mem.indexOf(u8, diag.message, "Post-transform semantic graph refresh failed") != null)
+                saw_refresh_error = true;
+        }
+        try std.testing.expect(saw_refresh_error);
+    }
+
+    try std.testing.expect(graph.preserved_graph_invalidated);
+    const failed_module = graph.findModuleByPath(entry) orelse return error.MissingFailedModule;
+    try std.testing.expectEqual(@import("module.zig").Module.State.ready, failed_module.state);
+    try std.testing.expect(failed_module.transform_cache != null);
+    try std.testing.expectEqual(@as(usize, 1), hook_calls);
+
+    // Match the NAPI watch caller: same source, preserve_topology still enabled,
+    // but this retry has no changed-file entries. The graph must be prepared and
+    // parsed from source before the no-change fast path can clear the diagnostic.
+    var unchanged_files: std.StringHashMapUnmanaged(void) = .empty;
+    var retry_options = base_options;
+    retry_options.changed_files = &unchanged_files;
+    {
+        var bundler = Bundler.initWithGraph(std.testing.allocator, retry_options, &resolve_cache, &graph);
+        defer bundler.deinit();
+        var result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(result.hasErrors());
+        var saw_refresh_error = false;
+        for (result.getDiagnostics()) |diag| {
+            if (std.mem.indexOf(u8, diag.message, "Post-transform semantic graph refresh failed") != null)
+                saw_refresh_error = true;
+        }
+        try std.testing.expect(saw_refresh_error);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), graph.topology_fallback_count);
+    try std.testing.expectEqual(@as(usize, 2), hook_calls);
+    try std.testing.expect(graph.preserved_graph_invalidated);
+    const retried_module = graph.findModuleByPath(entry) orelse return error.MissingRetriedModule;
+    try std.testing.expectEqual(@import("module.zig").Module.State.ready, retried_module.state);
+    try std.testing.expect(retried_module.transform_cache != null);
+}
+
+test "persistent Bundler: legacy transform error retries from source on unchanged input" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.js", "function legacy() { return 4; }\nconsole.log(legacy());");
+
+    const entry = try absPath(&tmp, "index.js");
+    defer std.testing.allocator.free(entry);
+
+    var hook_calls: usize = 0;
+    const plugins = [_]plugin_mod.Plugin{.{
+        .name = "legacy-fail-once-transform",
+        .context = &hook_calls,
+        .transform = failFirstLegacyTransform,
+    }};
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    const base_options: @import("bundler.zig").BundleOptions = .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+        .plugins = &plugins,
+        .module_store = &store,
+        .preserve_topology = true,
+    };
+    var resolve_cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, base_options);
+    defer resolve_cache.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &resolve_cache);
+    defer graph.deinit();
+
+    // A Rollup-style string transform hook may fail before parsing, leaving a
+    // ready module and an error diagnostic in the persistent graph.
+    {
+        var bundler = Bundler.initWithGraph(std.testing.allocator, base_options, &resolve_cache, &graph);
+        defer bundler.deinit();
+        var result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(result.hasErrors());
+    }
+    try std.testing.expect(graph.preserved_graph_invalidated);
+    try std.testing.expectEqual(@as(usize, 1), hook_calls);
+
+    // No changed-file notification is present. The next build must discard the
+    // errored state, rerun the legacy hook, and publish the now-valid source.
+    var unchanged_files: std.StringHashMapUnmanaged(void) = .empty;
+    var retry_options = base_options;
+    retry_options.changed_files = &unchanged_files;
+    {
+        var bundler = Bundler.initWithGraph(std.testing.allocator, retry_options, &resolve_cache, &graph);
+        defer bundler.deinit();
+        var result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), graph.topology_fallback_count);
+    try std.testing.expectEqual(@as(usize, 2), hook_calls);
+    try std.testing.expect(!graph.preserved_graph_invalidated);
+    const rebuilt_module = graph.findModuleByPath(entry) orelse return error.MissingRebuiltModule;
+    try std.testing.expectEqual(@import("module.zig").Module.State.ready, rebuilt_module.state);
 }
 
 test "IncrementalBundler: cache-hit 충돌 모듈의 rename 이 fresh 빌드와 byte-identical (RFC #3940 L.5c)" {

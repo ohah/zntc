@@ -173,6 +173,10 @@ pub const ModuleGraph = struct {
     /// resolve target 변화)면 안에서 full fallback. enable_persistence(IncrementalBundler) /
     /// RN watch worker 가 set. default false → 기존 경로(Phase A) 영향 0.
     preserve_topology: bool = false,
+    /// A graph error can leave a module marked ready after its AST and
+    /// transform_cache have already changed. Such a graph must be cleared
+    /// before a later preserve-topology build can publish output.
+    preserved_graph_invalidated: bool = false,
     /// Phase B 관측용 카운터(누적). edge-reuse short-circuit 가 성공(보존-hit)한 빌드 수와
     /// 위상 변화/불확실로 full fallback 한 빌드 수. ZNTC_DEBUG / 단위 테스트가 "이번 rebuild 가
     /// 실제 보존 경로를 탔는지(전량 fallback 이 아닌지)" 검증하는 데 사용. 빌드 정확성과 무관.
