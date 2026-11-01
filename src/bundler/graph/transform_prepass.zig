@@ -5742,10 +5742,106 @@ fn isSafePostSuperInitializerValue(
         isSafePostSuperInitializerValue(ast, semantic, value.data.binary.right);
 }
 
+fn isSafePostSuperMultiVarInitializerValue(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    value_idx: ast_mod.NodeIndex,
+) bool {
+    var contains_direct_property_read = false;
+    return isSafePostSuperMultiVarInitializerValueInner(
+        ast,
+        semantic,
+        value_idx,
+        &contains_direct_property_read,
+    ) and contains_direct_property_read;
+}
+
+fn isSafePostSuperMultiVarInitializerValueInner(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    value_idx: ast_mod.NodeIndex,
+    contains_direct_property_read: *bool,
+) bool {
+    if (isSafePostSuperLexicalInitializer(ast, semantic, value_idx)) {
+        contains_direct_property_read.* = true;
+        return true;
+    }
+    if (isSafeConstructorValue(ast, semantic, value_idx)) return true;
+    if (value_idx.isNone() or @backingInt(value_idx) >= ast.nodes.items.len) return false;
+    const value = ast.getNode(value_idx);
+    if (value.tag == .binary_expression) {
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(value.data.binary.flags));
+        return isSafeConstructorBinaryOperator(operator) and
+            isSafePostSuperMultiVarInitializerValueInner(
+                ast,
+                semantic,
+                value.data.binary.left,
+                contains_direct_property_read,
+            ) and
+            isSafePostSuperMultiVarInitializerValueInner(
+                ast,
+                semantic,
+                value.data.binary.right,
+                contains_direct_property_read,
+            );
+    }
+    if (value.tag == .logical_expression) {
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(value.data.binary.flags));
+        return isSafeConstructorLogicalOperator(operator) and
+            isSafePostSuperMultiVarInitializerValueInner(
+                ast,
+                semantic,
+                value.data.binary.left,
+                contains_direct_property_read,
+            ) and
+            isSafePostSuperMultiVarInitializerValueInner(
+                ast,
+                semantic,
+                value.data.binary.right,
+                contains_direct_property_read,
+            );
+    }
+    if (value.tag == .unary_expression) {
+        const extras = ast.extra_data.items;
+        const extra = value.data.extra;
+        if (extra > extras.len or extras.len - extra < 2) return false;
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(@as(u8, @truncate(extras[extra + 1]))));
+        const operand_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+        return isSafeConstructorUnaryOperator(operator) and
+            isSafePostSuperMultiVarInitializerValueInner(
+                ast,
+                semantic,
+                operand_idx,
+                contains_direct_property_read,
+            );
+    }
+    if (value.tag == .conditional_expression) {
+        return isSafePostSuperMultiVarInitializerValueInner(
+            ast,
+            semantic,
+            value.data.ternary.a,
+            contains_direct_property_read,
+        ) and
+            isSafePostSuperMultiVarInitializerValueInner(
+                ast,
+                semantic,
+                value.data.ternary.b,
+                contains_direct_property_read,
+            ) and
+            isSafePostSuperMultiVarInitializerValueInner(
+                ast,
+                semantic,
+                value.data.ternary.c,
+                contains_direct_property_read,
+            );
+    }
+    return false;
+}
+
 /// A single simple `var` initializer may use the bounded post-super value
-/// expression set. Multiple declarators are limited to direct property reads
-/// in every initializer so their source order remains explicit. Direct lexical
-/// declarations use a separate exact same-var-scope proof.
+/// expression set. Multiple declarators may use bounded expressions when each
+/// initializer contains a direct property read, keeping source order explicit.
+/// Direct lexical declarations use a separate exact same-var-scope proof.
 fn isSafePostSuperVarDeclaration(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -5789,7 +5885,7 @@ fn isSafePostSuperVarDeclaration(
         const initializer_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
         if (!type_annotation_idx.isNone() or
             !isBoundSourceIdentifierBinding(ast, semantic, binding_idx) or
-            !isSafePostSuperLexicalInitializer(ast, semantic, initializer_idx)) return false;
+            !isSafePostSuperMultiVarInitializerValue(ast, semantic, initializer_idx)) return false;
     }
     return true;
 }
@@ -23218,6 +23314,8 @@ test "ES5 audited constructor lexical initializers retain the production semanti
         "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor(key) { super(); const first = this[key] + 10, second = this.current + 20; this.value = first + second; } } console.log(new Read('current').value);",
         "class Base { constructor(flag) { this.flag = flag; } get current() { return 19; } } class Read extends Base { constructor(flag) { super(flag); const local = this.flag ? this.current : 0; this.value = local; } } console.log(new Read(true).value);",
         "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor(key) { super(); var first = super[key], second = this[key]; this.value = first + second; } } console.log(new Read('current').value);",
+        "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor(key, flag) { super(); var first = super[key] + 10, second = flag && this[key] + 20; this.value = first + second; } } console.log(new Read('current', true).value);",
+        "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor(key, flag) { super(); var first = flag ? super[key] : 0, second = !flag ? this[key] : 0; this.value = first + second; } } console.log(new Read('current', true).value);",
     };
     for (sources) |source| {
         var tmp = std.testing.tmpDir(.{});

@@ -41833,6 +41833,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '3 2\n',
       },
       {
+        name: 'post-super multi-var composed property reads preserve source and short-circuit order',
+        source:
+          'var reads = 0; class Base { constructor() { this.cursor = 0; } get current() { reads++; return ++this.cursor; } } class Child extends Base { constructor(key, flag) { super(); var first = super[key] + 10, second = flag && this[key] + 20; this.value = first + second; } } var skipped = new Child("current", false), taken = new Child("current", true); console.log(skipped.value, taken.value, reads);',
+        graph: 'retained',
+        output: '11 33 3\n',
+      },
+      {
+        name: 'post-super multi-var conditional property reads retain only the selected branch',
+        source:
+          'var reads = 0; class Base { constructor() { this.cursor = 0; } get current() { reads++; return ++this.cursor; } } class Child extends Base { constructor(key, flag) { super(); var first = flag ? super[key] : 0, second = !flag ? this[key] : 0; this.value = first + second; } } var first = new Child("current", true), second = new Child("current", false); console.log(first.value, second.value, reads);',
+        graph: 'retained',
+        output: '1 1 2\n',
+      },
+      {
         name: 'post-super multi-var property and literal initializer mixture stays on reanalysis',
         source:
           'class Base { get current() { return 1; } } class Child extends Base { constructor() { super(); var first = super.current, second = 2; this.value = first + second; } } console.log(new Child().value);',
@@ -41840,11 +41854,67 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '3\n',
       },
       {
+        name: 'post-super multi-var compound property key stays on reanalysis',
+        source:
+          'class Base { get current() { return 1; } } class Child extends Base { constructor(key) { super(); var first = super[key + ""] + 1, second = super.current + 2; this.value = first + second; } } console.log(new Child("current").value);',
+        graph: 'reanalyzed',
+        output: '5\n',
+      },
+      {
         name: 'post-super multi-var call initializer stays on reanalysis',
         source:
           'var calls = 0; function current() { calls++; return 2; } class Base { get current() { return 1; } } class Child extends Base { constructor() { super(); var first = super.current, second = current(); this.value = first + second; } } console.log(new Child().value, calls);',
         graph: 'reanalyzed',
         output: '3 1\n',
+      },
+      {
+        name: 'post-super multi-var uninitialized declarator stays on reanalysis',
+        source:
+          'class Base { get current() { return 3; } } class Child extends Base { constructor() { super(); var first = super.current, second; this.value = first; } } console.log(new Child().value);',
+        graph: 'reanalyzed',
+        output: '3\n',
+      },
+      {
+        name: 'post-super multi-var chained property read stays on reanalysis',
+        source:
+          'class Base { get current() { return { value: 2 }; } } class Child extends Base { constructor() { super(); var first = super.current.value, second = super.current.value; this.value = first + second; } } console.log(new Child().value);',
+        graph: 'reanalyzed',
+        output: '4\n',
+      },
+      {
+        name: 'post-super multi-var optional property chain stays on reanalysis',
+        source:
+          'class Base { get current() { return { value: 2 }; } } class Child extends Base { constructor() { super(); var first = super.current?.value, second = super.current?.value; this.value = first + second; } } console.log(new Child().value);',
+        graph: 'reanalyzed',
+        output: '4\n',
+      },
+      {
+        name: 'post-super multi-var assignment initializer stays on reanalysis',
+        source:
+          'class Base { get current() { return 3; } } class Child extends Base { constructor() { super(); var first = (this.local = super.current), second = super.current; this.value = first + second; } } console.log(new Child().value);',
+        graph: 'reanalyzed',
+        output: '6\n',
+      },
+      {
+        name: 'post-super multi-var update initializer stays on reanalysis',
+        source:
+          'class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Child extends Base { constructor() { super(); var first = ++this.cursor, second = super.current; this.value = first + second; } } console.log(new Child().value);',
+        graph: 'reanalyzed',
+        output: '3\n',
+      },
+      {
+        name: 'post-super multi-var effectful computed key stays on reanalysis',
+        source:
+          'class Base { get current() { return 3; } key() { return "current"; } } class Child extends Base { constructor() { super(); var first = super[this.key()], second = super.current; this.value = first + second; } } console.log(new Child().value);',
+        graph: 'reanalyzed',
+        output: '6\n',
+      },
+      {
+        name: 'post-super multi-var sequence initializer stays on reanalysis',
+        source:
+          'class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Child extends Base { constructor() { super(); var first = (super.current, super.current), second = super.current; this.value = first + second; } } console.log(new Child().value);',
+        graph: 'reanalyzed',
+        output: '5\n',
       },
       {
         name: 'post-super local updates retain their exact helper-colliding binding',
@@ -43666,13 +43736,13 @@ describe('ES5 same-var-scope lexical declarations retain the bundler graph (#619
     }
   }, 60_000);
 
-  test('derived constructor multi-var post-super property reads retain exact output identities', () => {
+  test('derived constructor multi-var composed post-super property reads retain exact output identities', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-derived-multivar-super-retained-'));
     const input = join(dir, 'entry.mjs');
     const output = join(dir, 'output.cjs');
     const names = Array.from({ length: 10 }, (_, index) => `multiVarValue${index}`);
-    const declarators = names.map((name) => `${name} = super.current`).join(', ');
-    const expected = `${names.map((_, index) => index + 1).join(' ')}\n`;
+    const declarators = names.map((name, index) => `${name} = super.current + ${index}`).join(', ');
+    const expected = `${names.map((_, index) => index * 2 + 1).join(' ')}\n`;
     const valueExpression = names.join(" + ' ' + ");
     const source = `class DerivedBase { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } }\nclass DerivedReader extends DerivedBase { constructor() {\n  super();\n  var ${declarators};\n  this.values = ${valueExpression};\n} }\nconsole.log(new DerivedReader().values);`;
     try {
