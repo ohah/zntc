@@ -1447,10 +1447,10 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         graph: 'reanalyzed' as const,
       },
       {
-        name: 'attributed erased inline type binding still used as a runtime reference',
+        name: 'attributed erased inline type binding keeps its exact external runtime read',
         file: 'inline-type-import-used-as-value-with-attributes.ts',
         expected: '14',
-        graph: 'reanalyzed' as const,
+        graph: 'retained' as const,
       },
       {
         name: 'erased declaration type import preserves an attributed runtime import graph',
