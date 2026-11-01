@@ -463,5 +463,18 @@ test "original Analyzer arguments engine requires exact initial G name-owner bir
     try editor.references.append(a, positive.declaration);
     try std.testing.expectError(error.InvalidSymbol, actualEngine(&editor, g, &origins, owner, n));
     editor.references.shrinkRetainingCapacity(rows);
+    var source_owner_index: ?usize = null;
+    for (editor.scope_history.source_owners, 0..) |birth, index| if (birth.owner.node == owner) {
+        source_owner_index = index;
+    };
+    const birth_index = source_owner_index orelse return error.MissingActualFunctionBirth;
+    const birth = editor.scope_history.source_owners[birth_index];
+    editor.scope_history.source_owners[birth_index].scope = n;
+    try std.testing.expectError(error.InvalidSymbol, actualEngine(&editor, g, &origins, owner, n));
+    editor.scope_history.source_owners[birth_index] = birth;
+    const source_frame = editor.scope_history.source_scopes[g.toIndex()];
+    editor.scope_history.source_scopes[g.toIndex()].parent = editor.scopes.items[n.toIndex()].parent;
+    try std.testing.expectError(error.InvalidSymbol, actualEngine(&editor, g, &origins, owner, n));
+    editor.scope_history.source_scopes[g.toIndex()] = source_frame;
     try std.testing.expect((try actualEngine(&editor, g, &origins, owner, n)) != null);
 }
