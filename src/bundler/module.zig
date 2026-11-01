@@ -1272,6 +1272,75 @@ pub const Module = struct {
         @panic("Module semantic symbol name requires AST text storage");
     }
 
+    /// Compare the actual imported child with the scanner's ModuleExportName
+    /// field. Identifier metadata is already StringValue. Literal metadata uses
+    /// parser.moduleExportName's exact syntax-preserving representation; equal
+    /// source syntax proves equal StringValue without decoding its data twice.
+    fn importPropertyMatches(ast: *const Ast, index: @import("../parser/ast.zig").NodeIndex, value: []const u8) bool {
+        if (index.isNone() or @backingInt(index) >= ast.nodes.items.len) return false;
+        const node = ast.getNode(index);
+        if (node.tag != .identifier_reference and node.tag != .binding_identifier and node.tag != .string_literal) return false;
+        const from_table = node.span.start & Ast.STRING_TABLE_BIT != 0;
+        if ((node.span.end & Ast.STRING_TABLE_BIT != 0) != from_table) return false;
+        const start = node.span.start & ~Ast.STRING_TABLE_BIT;
+        const end = node.span.end & ~Ast.STRING_TABLE_BIT;
+        const text_len = if (from_table) ast.string_table.items.len else ast.source.len;
+        if (start > end or end > text_len) return false;
+        const raw = ast.getText(node.span);
+        switch (node.tag) {
+            .identifier_reference, .binding_identifier => return @import("../lexer/scanner.zig").Scanner.identifierValueEquals(raw, value),
+            .string_literal => {
+                if (raw.len < 2 or (raw[0] != '"' and raw[0] != 39) or raw[raw.len - 1] != raw[0]) return false;
+                const inner = raw[1 .. raw.len - 1];
+                if (std.mem.indexOfAny(u8, inner, "\\\"'") != null) return std.mem.eql(u8, raw, value);
+                var plain = inner.len > 0;
+                for (inner, 0..) |c, i| {
+                    if (!(std.ascii.isAlphabetic(c) or c == '_' or c == '$' or (i > 0 and std.ascii.isDigit(c)))) plain = false;
+                }
+                if (plain) return std.mem.eql(u8, inner, value);
+                return value.len == raw.len and value[0] == '"' and value[value.len - 1] == '"' and std.mem.eql(u8, inner, value[1 .. value.len - 1]);
+            },
+            else => return false,
+        }
+    }
+
+    /// Check only the declaration supplied by the scanner. No AST-wide owner
+    /// discovery or name-to-SID search participates in import authority.
+    fn importBindingOwnsSource(self: *const Module, ib: ImportBinding, ast: *const Ast) bool {
+        if (ib.local_role != .import_binding) return true; // typed storage handoff has its own declaration role
+        const declaration = ib.local_declaration_node orelse return false;
+        const local = ib.local_symbol_node orelse return false;
+        if (declaration.isNone() or @backingInt(declaration) >= ast.nodes.items.len or ib.import_record_index >= self.import_records.len) return false;
+        const owner = ast.getNode(declaration);
+        if (owner.tag != .import_declaration) return false;
+        const e = owner.data.extra;
+        if (e > ast.extra_data.items.len or ast.extra_data.items.len - e < 6) return false;
+        const x = @import("../parser/module.zig").readImportDeclExtras(ast, e);
+        if (x.specs_start > ast.extra_data.items.len or x.specs_len > ast.extra_data.items.len - x.specs_start) return false;
+        const record = self.import_records[ib.import_record_index];
+        if (record.source_node != x.source or x.source.isNone() or @backingInt(x.source) >= ast.nodes.items.len or ast.getNode(x.source).tag != .string_literal) return false;
+        var matches: usize = 0;
+        for (ast.extra_data.items[x.specs_start..][0..x.specs_len]) |raw| {
+            if (raw >= ast.nodes.items.len) return false;
+            const spec: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(raw);
+            const node = ast.getNode(spec);
+            const actual_local = switch (node.tag) {
+                .import_default_specifier, .import_namespace_specifier => spec,
+                .import_specifier => if (!node.data.binary.right.isNone()) node.data.binary.right else node.data.binary.left,
+                else => return false,
+            };
+            if (actual_local != local) continue;
+            switch (node.tag) {
+                .import_default_specifier => if (ib.kind != .default or !std.mem.eql(u8, ib.imported_name, "default")) return false,
+                .import_namespace_specifier => if (ib.kind != .namespace or !std.mem.eql(u8, ib.imported_name, "*")) return false,
+                .import_specifier => if (ib.kind != .named or node.data.binary.flags & @import("../parser/module.zig").SPEC_FLAG_TYPE_ONLY != 0 or !importPropertyMatches(ast, node.data.binary.left, ib.imported_name)) return false,
+                else => unreachable,
+            }
+            matches += 1;
+        }
+        return matches == 1;
+    }
+
     /// Validate the scanner-owned local node against the stored current-module
     /// reference before any canonical/output-name consumer may use it. A null
     /// canonical rename means no rename; it never relaxes identity validation.
@@ -1285,6 +1354,7 @@ pub const Module = struct {
                 .symbols = sem.symbols.items,
             });
             if (!actual.isValid() or !actual.eql(ib.local_symbol)) return error.InvalidImportLocalSymbol;
+            if (!self.importBindingOwnsSource(ib, ast)) return error.InvalidImportLocalSymbol;
             return self.refName(actual) orelse error.InvalidImportLocalSymbol;
         }
         // Explicit graphless helper compatibility has no analyzer identity.
