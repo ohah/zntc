@@ -39,8 +39,8 @@ fn invalid() Error {
     return error.InvalidProviderPreservation;
 }
 
-// Only called for the closed super-get/set catalogs. Both walks consume actual
-// scope owners; copied syntax never selects a new scope from a name.
+// These walks consume actual scope owners; copied syntax never selects a new
+// scope from a name.
 fn nearestOwner(a: std.mem.Allocator, tree: *const ast.Ast, root: NodeIndex, target: u32, scopes: []const scopes_mod.Scope, owners: *const std.AutoHashMapUnmanaged(u32, u32)) Error!?Owner {
     const Work = struct { node: NodeIndex, owner: ?Owner };
     var stack: std.ArrayList(Work) = .empty;
@@ -56,7 +56,7 @@ fn nearestOwner(a: std.mem.Allocator, tree: *const ast.Ast, root: NodeIndex, tar
             const kind = scopes[scope].kind;
             const valid = switch (tree.nodes.items[raw].tag) {
                 .program => kind == .module,
-                .function_expression => kind == .function,
+                .function_expression, .function_declaration, .function => kind == .function,
                 .block_statement, .while_statement => kind == .block,
                 else => false,
             };
@@ -79,12 +79,15 @@ fn nearestOwner(a: std.mem.Allocator, tree: *const ast.Ast, root: NodeIndex, tar
     return null;
 }
 
-const ExternalRole = enum(u1) { object, type_error };
-fn expectedExternalCounts(catalog: origin_mod.Catalog) [2]usize {
+const ExternalRole = enum(u3) { object, type_error, regexp, weak_map, symbol, array, undefined };
+fn expectedExternalCounts(catalog: origin_mod.Catalog) [7]usize {
     return switch (catalog) {
-        .super_get => .{ 2, 0 },
-        .super_set => .{ 2, 1 },
-        else => .{ 0, 0 },
+        .super_get => .{ 2, 0, 0, 0, 0, 0, 0 },
+        .super_set => .{ 2, 1, 0, 0, 0, 0, 0 },
+        // The current ES5 named-capture provider normalizes helper pair arrays
+        // with Array.isArray/Object.create(null) before constructing groups.
+        .wrap_regex => .{ 6, 0, 4, 1, 5, 2, 3 },
+        else => .{ 0, 0, 0, 0, 0, 0, 0 },
     };
 }
 // The winning sealed catalog and actual runtime edge select this source role.
@@ -93,8 +96,19 @@ fn externalRole(catalog: origin_mod.Catalog, tree: *const ast.Ast, leaves: []con
     if (node.isNone() or @backingInt(node) >= tree.nodes.items.len or
         std.mem.indexOfScalar(NodeIndex, leaves, node) == null or tree.getNode(node).tag != .identifier_reference) return null;
     const text = tree.getText(tree.getNode(node).data.string_ref);
-    if ((catalog == .super_get or catalog == .super_set) and std.mem.eql(u8, text, "Object")) return .object;
-    if (catalog == .super_set and std.mem.eql(u8, text, "TypeError")) return .type_error;
+    if (catalog == .super_get or catalog == .super_set) {
+        if (std.mem.eql(u8, text, "Object")) return .object;
+        if (catalog == .super_set and std.mem.eql(u8, text, "TypeError")) return .type_error;
+        return null;
+    }
+    if (catalog == .wrap_regex) {
+        if (std.mem.eql(u8, text, "Object")) return .object;
+        if (std.mem.eql(u8, text, "RegExp")) return .regexp;
+        if (std.mem.eql(u8, text, "WeakMap")) return .weak_map;
+        if (std.mem.eql(u8, text, "Symbol")) return .symbol;
+        if (std.mem.eql(u8, text, "Array")) return .array;
+        if (std.mem.eql(u8, text, "undefined")) return .undefined;
+    }
     return null;
 }
 
@@ -139,9 +153,13 @@ fn eligible(tree: *const ast.Ast, nodes: []const u32, options: @import("transfor
             .export_named_declaration,
             .export_specifier,
             => {},
-            .while_statement => if (catalog != .super_get and catalog != .super_set) return false,
-            .throw_statement, .new_expression => if (catalog != .super_set) return false,
-            .regexp_literal => if (!std.mem.eql(u8, tree.getText(node.data.string_ref), "/./")) return false,
+            .while_statement => if (catalog != .super_get and catalog != .super_set and catalog != .wrap_regex) return false,
+            .throw_statement, .new_expression => if (catalog != .super_set and catalog != .wrap_regex) return false,
+            .regexp_literal => {
+                const text = tree.getText(node.data.string_ref);
+                if (!std.mem.eql(u8, text, "/./") and
+                    !(catalog == .wrap_regex and std.mem.eql(u8, text, "/\\$<([^>]+)(>|$)/g"))) return false;
+            },
             else => return false,
         }
         const Token = @import("../lexer/token.zig").Kind;
@@ -260,7 +278,7 @@ fn captureInput(a: std.mem.Allocator, tree: *const ast.Ast, semantic: *module.Mo
     for (nodes) |raw| try node_set.put(a, raw, {});
     const leaves = try refs_walk.collectIdentifierReferences(a, tree, root);
     var externals: std.ArrayList(External) = .empty;
-    var external_counts: [2]usize = .{ 0, 0 };
+    var external_counts: [7]usize = .{ 0, 0, 0, 0, 0, 0, 0 };
     for (leaves) |leaf| {
         const raw = @backingInt(leaf);
         if (raw >= semantic.symbol_ids.len) return null;
@@ -480,7 +498,7 @@ fn validate(self: anytype, source: Source, view: View, root: NodeIndex) Error!vo
         }
         if (matches != 1) return invalid();
     }
-    var external_counts: [2]usize = .{ 0, 0 };
+    var external_counts: [7]usize = .{ 0, 0, 0, 0, 0, 0, 0 };
     for (source.externals) |external| {
         const role = externalRole(source.origin.catalog, &source.syntax, source.leaves, @fromBackingInt(external.node)) orelse return invalid();
         external_counts[@backingInt(role)] += 1;
