@@ -502,4 +502,22 @@ test "original Analyzer arguments engine requires exact initial G name-owner bir
     try std.testing.expectError(error.InvalidSymbol, actualEngine(&editor, g, &origins, owner, n));
     editor.scope_history.source_scopes[g.toIndex()] = source_frame;
     try std.testing.expect((try actualEngine(&editor, g, &origins, owner, n)) != null);
+
+    // A real Editor copy emits the exact owner transfer used by production.
+    const copied = try parser.ast.addNode(parser.ast.getNode(owner));
+    try editor.remapScopeOwner(owner, copied);
+    try std.testing.expect((try actualEngine(&editor, g, &origins, copied, n)) != null);
+    const last = editor.scope_history.events.items.len - 1;
+    const event = editor.scope_history.events.items[last];
+    try std.testing.expect(event.kind == .owner and event.owner_before.?.node == owner and event.owner_after.?.node == copied);
+    editor.scope_history.events.items[last].owner_before.?.node = copied;
+    try std.testing.expectError(error.InvalidSymbol, actualEngine(&editor, g, &origins, copied, n));
+    editor.scope_history.events.items[last] = event;
+    editor.scope_history.events.items[last].owner_edges.parameters = .none;
+    try std.testing.expectError(error.InvalidSymbol, actualEngine(&editor, g, &origins, copied, n));
+    editor.scope_history.events.items[last] = event;
+    editor.scope_history.events.shrinkRetainingCapacity(last);
+    try std.testing.expectError(error.InvalidSymbol, actualEngine(&editor, g, &origins, copied, n));
+    try editor.scope_history.events.append(a, event);
+    try std.testing.expect((try actualEngine(&editor, g, &origins, copied, n)) != null);
 }
