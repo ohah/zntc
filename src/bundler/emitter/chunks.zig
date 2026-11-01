@@ -583,6 +583,9 @@ fn cjsDepDefaultOnly(allocator: std.mem.Allocator, graph: *const ModuleGraph, de
 /// 못 찾으면 null(호출부가 다른 owner 또는 export 명 fallback 으로 진행). single-owner·collision
 /// 양 경로 공용 — 분리돼 있던 단순 해석/full 해석을 하나로 통일.
 fn resolveOwnerLocal(l: *Linker, graph: *const ModuleGraph, mod_idx: ModuleIndex, mi: u32, name: []const u8) ?[]const u8 {
+    if (l.graph != graph or mod_idx.toU32() != mi) return null;
+    const owner = graph.getModule(mod_idx) orelse return null;
+    if (l.getModule(mi) != owner) return null;
     // A lazy shared namespace object is a generated binding keyed by its exact target module.
     // Its global alias must match the provider preamble; it has no ExportBinding to resolve.
     if (l.getSharedNamespaceGlobalName(mi, name)) |global_name| return global_name;
@@ -590,18 +593,15 @@ fn resolveOwnerLocal(l: *Linker, graph: *const ModuleGraph, mod_idx: ModuleIndex
         // ensureSharedNsVar OOM 은 무시하고 canonical fallback 으로 진행(기존 패턴과 일관).
         if (l.ensureSharedNsVar(ns_t)) |ns_var| return ns_var else |_| {}
     }
-    if (graph.getModule(mod_idx)) |m| {
-        if (m.findExportBinding(name)) |eb| {
-            if (eb.kind == .local or eb.hasSyntheticDefault(m.semanticSymbols()))
-                return l.getCanonicalForExport(eb.*, mi);
-        }
+    const binding = owner.findExportBinding(name) orelse return null;
+    if (binding.kind != .local and !binding.hasSyntheticDefault(owner.semanticSymbols())) return null;
+    const sid = owner.exportBindingSemanticIndex(binding.*) orelse return null;
+    const sem = owner.semantic orelse return null;
+    if (binding.kind == .local) {
+        const anchor = (if (binding.has_default_export_facade) binding.default_export_node else binding.local_symbol_node) orelse return null;
+        if (anchor.isNone() or @backingInt(anchor) >= sem.symbol_ids.len or sem.symbol_ids[@backingInt(anchor)] != sid) return null;
     }
-    if (l.getCanonicalName(mi, name)) |renamed| return renamed;
-    if (l.getExportLocalName(mi, name)) |local| {
-        if (l.getCanonicalName(mi, local)) |renamed| return renamed;
-        if (!Linker.isReservedName(local)) return local;
-    }
-    return null;
+    return l.getCanonicalForExport(binding.*, mi);
 }
 
 /// 모듈이 ESM-wrap + top-level await 인가. 그 `init_X()` 호출은 `await` 를 요구하므로 비-async
