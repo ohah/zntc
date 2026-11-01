@@ -15511,8 +15511,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '1\n2\n',
       },
       {
-        name: 'additional-runtime-helper-for-in',
+        name: 'named-regexp helper with audited lexical for-in',
         target: '--target=es5',
+        graph: 'retained',
         source: [
           'var match = /(?<word>\\w+)/.exec("hello");',
           'var source = { first: 1 };',
@@ -15521,8 +15522,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: 'hello first\n',
       },
       {
-        name: 'additional-runtime-helper',
+        name: 'named-regexp helper with audited for-of values helper',
         target: '--target=es5',
+        graph: 'retained',
         source: [
           'var match = /(?<word>\\w+)/.exec("hello");',
           'for (var value of [match.groups.word]) console.log(value);',
@@ -33857,6 +33859,276 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+    }
+  });
+
+  test('ES5 named-regexp helper imports retain exact edited graphs', () => {
+    const cases = [
+      {
+        name: 'dotAll rewrite stays a literal leaf',
+        source: [
+          'function matches(input) { return (() => /a.b/s.test(input))(); }',
+          "console.log(matches('a\\nb'));",
+        ].join('\n'),
+        graph: 'retained',
+        output: 'true\n',
+      },
+      {
+        name: 'named capture wrapper uses the retained helper SID',
+        source: [
+          "var __wrapRegExp = function () { return 'source-helper'; };",
+          'function word(input) {',
+          '  return (() => {',
+          '    var match = /(?<word>[a-z]+)-\\d+/.exec(input);',
+          "    return match && match.groups.word + ' ' + __wrapRegExp();",
+          '  })();',
+          '}',
+          "console.log(word('abc-42'));",
+        ].join('\n'),
+        graph: 'retained',
+        output: 'abc source-helper\n',
+      },
+      {
+        name: 'proto capture uses pair mapping with a source JSON parameter',
+        source: [
+          "function read(JSON) { var match = /(?<__pro\\u0074o__>abc)/.exec('abc'); return match.groups.__proto__; }",
+          "console.log(read({ parse: function () { throw new Error('source JSON captured'); } }));",
+        ].join('\n'),
+        graph: 'retained',
+        minifyIdentifiers: false,
+        output: 'abc\n',
+      },
+      {
+        name: 'minified runtime proto capture uses pair mapping with a source JSON parameter',
+        source: [
+          "function read(JSON) { var match = /(?<__pro\\u0074o__>abc)/.exec('abc'); return match.groups.__proto__; }",
+          "console.log(read({ parse: function () { throw new Error('source JSON captured'); } }));",
+        ].join('\n'),
+        graph: 'reanalyzed',
+        minify: true,
+        minifyIdentifiers: false,
+        output: 'abc\n',
+      },
+      {
+        name: 'duplicate proto captures preserve their index list with a source JSON parameter',
+        source: [
+          "function read(JSON) { var match = /(?<__proto__>a)|(?<__proto__>b)/.exec('b'); return match.groups.__proto__; }",
+          "console.log(read({ parse: function () { throw new Error('source JSON captured'); } }));",
+        ].join('\n'),
+        graph: 'retained',
+        minifyIdentifiers: false,
+        output: 'b\n',
+      },
+      {
+        name: 'direct eval reanalysis keeps proto mapping outside a source JSON parameter',
+        source: [
+          "function read(JSON) { eval('var injected = 1'); var match = /(?<__proto__>abc)/.exec('abc'); return match.groups.__proto__; }",
+          "console.log(read({ parse: function () { throw new Error('source JSON captured'); } }));",
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: 'abc\n',
+      },
+      {
+        name: 'direct eval still forces semantic reanalysis with named regex lowering',
+        source: [
+          "function read(input) { eval('var injected = 1'); return /(?<word>[a-z]+)/.exec(input).groups.word; }",
+          "console.log(read('abc'));",
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: 'abc\n',
+      },
+      {
+        name: 'named replacement and duplicate groups use the same helper identity',
+        source: [
+          "var text = 'Jane-Doe';",
+          "var reversed = text.replace(/(?<first>Jane)-(?<last>Doe)/, '$<last>, $<first>');",
+          "var duplicate = /(?<value>a)|(?<value>b)/.exec('b');",
+          'console.log(reversed, duplicate && duplicate.groups.value);',
+        ].join('\n'),
+        graph: 'retained',
+        output: 'Doe, Jane b\n',
+      },
+      {
+        name: 'escaped capture names retain their canonical public key',
+        source: [
+          "var match = /(?<na\\u006De>abc)/.exec('abc');",
+          'console.log(match.groups.name);',
+        ].join('\n'),
+        graph: 'retained',
+        output: 'abc\n',
+      },
+      {
+        name: 'named backreferences keep positional and group results aligned',
+        source: [
+          "var match = /^(?<word>[a-z]+)-\\k<word>$/.exec('abc-abc');",
+          'console.log(match.groups.word);',
+        ].join('\n'),
+        graph: 'retained',
+        output: 'abc\n',
+      },
+      {
+        name: 'no-match remains null through the runtime wrapper',
+        source: [
+          "var match = /(?<word>abc)/.exec('xyz');",
+          'console.log(match === null, match && match.groups.word);',
+        ].join('\n'),
+        graph: 'retained',
+        output: 'true null\n',
+      },
+      {
+        name: 'prototype-named own groups remain readable',
+        source: [
+          "var match = /(?<constructor>abc)/.exec('abc');",
+          'console.log(match.groups.constructor);',
+        ].join('\n'),
+        graph: 'retained',
+        output: 'abc\n',
+      },
+      {
+        name: 'separate regexes share one exact wrapper helper',
+        source: [
+          "var left = /(?<left>a)/.exec('a');",
+          "var right = /(?<right>b)/.exec('b');",
+          'console.log(left.groups.left, right.groups.right);',
+        ].join('\n'),
+        graph: 'retained',
+        output: 'a b\n',
+      },
+      {
+        name: 'replacement callbacks receive the named groups object',
+        source: [
+          "var text = 'abc';",
+          'var mapped = text.replace(/(?<word>[a-z]+)/, function (all, word, index, input, groups) { return groups.word.toUpperCase(); });',
+          'console.log(mapped);',
+        ].join('\n'),
+        graph: 'retained',
+        output: 'ABC\n',
+      },
+    ];
+
+    for (const fixture of cases) {
+      const dir = mkdtempSync(join(tmpdir(), `zntc-bundle-arrow-regex-${fixture.graph}-`));
+      const output = join(dir, 'out.cjs');
+      writeFileSync(join(dir, 'entry.mjs'), fixture.source);
+      try {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'entry.mjs',
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            ...('minify' in fixture && fixture.minify === true ? ['--minify'] : []),
+            ...('minifyIdentifiers' in fixture && fixture.minifyIdentifiers === false
+              ? []
+              : ['--minify-identifiers']),
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+          );
+        expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name}: ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+
+        if (fixture.name.includes('proto capture')) {
+          const emitted = readFileSync(output, 'utf8');
+          expect(emitted, fixture.name).not.toContain('JSON.parse(');
+          expect(emitted, fixture.name).toContain('"__proto__"');
+          if ('minify' in fixture && fixture.minify === true) {
+            expect(emitted, fixture.name).toContain('function normalizeGroups(groups){');
+          }
+        }
+
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+          );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${fixture.graph}`,
+        );
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(fixture.output);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('ES5 proto named-regexp map survives a source JSON shadow without debug witnesses', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-regex-proto-no-debug-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      [
+        "function read(JSON) { var match = /(?<__pro\\u0074o__>abc)/.exec('abc'); return match.groups.__proto__; }",
+        "console.log(read({ parse: function () { throw new Error('source JSON captured'); } }));",
+      ].join('\n'),
+    );
+    const env = { ...process.env };
+    delete env.ZNTC_DEBUG_SYMBOL_COVERAGE;
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', 'entry.mjs', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        { cwd: dir, env, encoding: 'utf8' },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      expect(readFileSync(output, 'utf8')).not.toContain('JSON.parse(');
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('abc\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 proto named-regexp map survives direct-eval reanalysis with a source JSON shadow', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-regex-proto-eval-no-debug-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      [
+        "function read(JSON) { eval('var injected = 1'); var match = /(?<__proto__>abc)/.exec('abc'); return match.groups.__proto__; }",
+        "console.log(read({ parse: function () { throw new Error('source JSON captured'); } }));",
+      ].join('\n'),
+    );
+    const env = { ...process.env };
+    delete env.ZNTC_DEBUG_SYMBOL_COVERAGE;
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', 'entry.mjs', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        { cwd: dir, env, encoding: 'utf8' },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('abc\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

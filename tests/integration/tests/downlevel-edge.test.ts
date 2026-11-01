@@ -1650,9 +1650,9 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.runOutput).toBe('12\n34\n1');
     });
 
-    test('__proto__ 그룹명 — es5(JSON.parse 폴백) + minify 보존 (#4204)', async () => {
-      // es5 는 computed key 가 ES2015 문법이라 JSON.parse('{...}') 폴백 (B.3.1 면제).
-      // minify 변형은 computed key 폴딩 회귀 가드.
+    test('__proto__ 그룹명 — es5 pair mapping + modern computed key + minify (#4204)', async () => {
+      // es5 는 pair mapping 을 런타임 helper 가 null-prototype map 으로 바꾼다.
+      // modern target 은 computed key 를 쓰며 minify 뒤에도 own property 를 보존한다.
       for (const args of [['--target=es5'], ['--target=es2017', '--minify']]) {
         const result = await bundleAndRun(
           {
