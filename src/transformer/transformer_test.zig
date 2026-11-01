@@ -4610,3 +4610,37 @@ test "stableName: string_table 조각은 복사해 표가 옮겨져도 유효하
     try t.ast.string_table.ensureTotalCapacity(t.ast.allocator, t.ast.string_table.capacity * 4 + 64);
     try std.testing.expectEqualStrings("_synthetic", kept);
 }
+
+test "decoded source temp collision names preserve identifier StringValues" {
+    const cases = [_]struct { source: []const u8, candidate: []const u8, collides: bool }{
+        .{ .source = "const _\\u0061=7;try{throw 13}catch{console.log(_\\u0061);eval('0')}", .candidate = "_a", .collides = true },
+        .{ .source = "const _\\u{61}=7;", .candidate = "_a", .collides = true },
+        .{ .source = "const \\u005fa=7;", .candidate = "_a", .collides = true },
+        .{ .source = "const _a\\u0032=7;", .candidate = "_a2", .collides = true },
+        .{ .source = "const _a=7;", .candidate = "_a", .collides = true },
+        .{ .source = "const data={'_a':7};const text='\\\\u0061';", .candidate = "_a", .collides = false },
+    };
+    for (cases) |case| {
+        var scanner = try Scanner.init(std.testing.allocator, case.source);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        _ = try parser.parse();
+        defer parser.deinit();
+        var analyzer = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+        defer analyzer.deinit();
+        try analyzer.analyze();
+        var transformer = try Transformer.init(std.testing.allocator, &parser.ast, .{});
+        defer transformer.deinit();
+        transformer.symbols = analyzer.symbols.items;
+        transformer.unresolved_references = &analyzer.unresolved_references;
+        // Every symbol and its raw name span comes from the real analyzer;
+        // strings/property keys do not become declarations or collision roots.
+        try std.testing.expectEqual(case.collides, try es_helpers.collidesWithUserSymbol(&transformer, case.candidate));
+    }
+    // The explicit semantic-less path keeps its source spelling contract.
+    var ast = Ast.init(std.testing.allocator, "var _a;");
+    defer ast.deinit();
+    var transformer = try Transformer.init(std.testing.allocator, &ast, .{});
+    defer transformer.deinit();
+    try std.testing.expect(try es_helpers.collidesWithUserSymbol(&transformer, "_a"));
+}

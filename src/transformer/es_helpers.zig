@@ -838,7 +838,17 @@ pub fn collidesWithUserSymbol(self: anytype, name: []const u8) !bool {
         var set: std.StringHashMapUnmanaged(void) = .empty;
         errdefer set.deinit(self.allocator);
         for (self.symbols) |sym| {
-            const sym_name = self.ast.getText(sym.name);
+            // Source names are IdentifierName syntax; synthetic names already
+            // carry StringValues and must not be decoded a second time.
+            const raw_name = if (sym.synthetic_name.len > 0) sym.synthetic_name else self.ast.getText(sym.name);
+            const sym_name = if (sym.synthetic_name.len == 0 and
+                (sym.name.start & @import("../parser/ast.zig").Ast.STRING_TABLE_BIT) == 0 and
+                std.mem.indexOfScalar(u8, raw_name, '\\') != null)
+            blk: {
+                if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+                const buffer = try self.name_arena.?.allocator().alloc(u8, raw_name.len);
+                break :blk Scanner.decodeIdentifierEscapesInto(raw_name, buffer) orelse raw_name;
+            } else raw_name;
             if (isTempLikeName(sym_name)) try set.put(self.allocator, sym_name, {});
         }
         self.temp_collision_set = set;
