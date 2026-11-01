@@ -523,6 +523,17 @@ test "JSX automatic: downlevels spread-only child for ES5" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__toConsumableArray(arr)") != null);
 }
 
+test "JSX automatic: fills array holes in downlevel spread children" {
+    var r = try helpers.e2eJSXAutomaticTarget(
+        std.testing.allocator,
+        "const result = <div>{...[, 1]}</div>;",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...[, 1]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children:[].concat([void 0,1])") != null);
+}
+
 test "JSX automatic: downlevel spread child preserves surrounding child order" {
     var r = try helpers.e2eJSXAutomaticTarget(
         std.testing.allocator,
