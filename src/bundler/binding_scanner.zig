@@ -201,6 +201,9 @@ pub const ExportBinding = struct {
     /// SymbolId. Name-based scope lookup remains only for low-level callers
     /// without a semantic ID map.
     local_symbol_node: ?NodeIndex = null,
+    source_declaration_node: ?NodeIndex = null,
+    source_export_node: ?NodeIndex = null,
+    source_specifier_node: ?NodeIndex = null,
     kind: Kind,
     /// re-export 시 소스 모듈의 ImportRecord 인덱스
     import_record_index: ?u32 = null,
@@ -493,6 +496,8 @@ pub fn extractExportBindings(
                             .local_name = name_info.name,
                             .local_span = name_info.span,
                             .local_symbol_node = name_info.node_index,
+                            .source_declaration_node = decl_idx,
+                            .source_export_node = @fromBackingInt(ni),
                             .kind = .local,
                             .declared_via_pattern = name_info.via_pattern,
                             .init_is_fn_or_class = name_info.init_fn_class,
@@ -559,6 +564,8 @@ pub fn extractExportBindings(
                             .local_name = final_local_name,
                             .local_span = local_node.span,
                             .local_symbol_node = if (!has_source) local_idx else null,
+                            .source_specifier_node = spec,
+                            .source_export_node = @fromBackingInt(ni),
                             .kind = kind,
                             .import_record_index = final_rec_idx,
                         });
@@ -616,6 +623,7 @@ pub fn extractExportBindings(
                     .kind = kind,
                     .import_record_index = final_rec_idx,
                     .default_export_node = @fromBackingInt(@intCast(ni)),
+                    .source_export_node = @fromBackingInt(ni),
                     .has_default_export_facade = has_default_export_facade,
                 });
             },
