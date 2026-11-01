@@ -592,11 +592,12 @@ fn tryExtractExportNamed(ast: *const Ast, node: Node) ?ImportRecord {
 
     const specifier = getStringLiteralText(ast, source_idx) orelse return null;
     const source_node = ast.getNode(source_idx);
+    const specs_len = ast.extra_data.items[e + 2];
 
     return .{
         .source_node = source_idx,
         .specifier = specifier,
-        .kind = .re_export,
+        .kind = if (specs_len == 0) .side_effect else .re_export,
         .span = source_node.span,
     };
 }
