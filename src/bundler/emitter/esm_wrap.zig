@@ -177,6 +177,26 @@ inline fn shouldEmitSyntheticDefaultReExport(l: ?*const Linker, m: *const Module
         shaker.isExportUsed(module_index, tree_shaker_mod.ALL_EXPORTS_SENTINEL);
 }
 
+fn sameImportedSourceLocal(module: *const Module, exported: ExportBinding, imported: @import("../binding_scanner.zig").ImportBinding) bool {
+    return @import("../canonical_export.zig").sameImportedSourceLocal(module, exported, imported);
+}
+
+/// Keep the graph's explicit self-cycle diagnostic as the build result. Such
+/// an export has no runtime local name and must not fabricate a getter value.
+fn rejectedSelfReExport(l: *const Linker, module: *const Module, exported: ExportBinding) bool {
+    if (exported.kind != .re_export or std.mem.eql(u8, exported.exported_name, "default")) return false;
+    const actual = l.getModule(module.index.toU32()) orelse return false;
+    const binding = actual.findExportBinding(exported.exported_name) orelse return false;
+    if (!std.meta.eql(binding.*, exported)) return false;
+    const record = exported.import_record_index orelse return false;
+    if (record >= actual.import_records.len or actual.import_records[record].resolved != actual.index) return false;
+    for (l.graph.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == .circular_reexport and diagnostic.severity == .@"error" and
+            std.mem.eql(u8, diagnostic.file_path, actual.path) and std.meta.eql(diagnostic.span, exported.local_span)) return true;
+    }
+    return false;
+}
+
 fn reExportAliasCanonicalName(ref: SymbolRef, mod: *const Module) ?[]const u8 {
     const id = localAliasId(ref, mod) orelse return null;
     const table = mod.alias_table orelse return null;
@@ -777,6 +797,7 @@ pub fn emitEsmWrappedModule(
 
             for (module.export_bindings) |eb| {
                 if (eb.kind == .local or eb.kind == .re_export) {
+                    if (linker) |l| if (rejectedSelfReExport(l, module, eb)) continue;
                     // tree-shake 로 제거된 re-export source 의 getter 는 dangling reference (#2398).
                     // Tree-shaker가 사용되지 않는 re-export source를 그래프에서 제외하면
                     // import record의 resolved가 none이 될 수 있다. 이 상태에서 getter를
@@ -836,17 +857,9 @@ pub fn emitEsmWrappedModule(
                                 const src_mod = l.graph.getModule(src_idx) orelse break :re_export;
 
                                 const local_name = module.exportBindingLocalName(eb);
-                                const exported_local_name = if (module.ast) |*module_ast|
-                                    module_ast.getText(eb.local_span)
-                                else
-                                    local_name;
                                 for (module.import_bindings) |ib| {
                                     if (ib.import_record_index != rec_idx) continue;
-                                    if (std.mem.eql(u8, ib.imported_name, local_name) or
-                                        std.mem.eql(u8, ib.local_name, exported_local_name) or
-                                        (std.mem.eql(u8, local_name, "default") and
-                                            std.mem.eql(u8, ib.local_name, eb.exported_name)))
-                                    {
+                                    if (sameImportedSourceLocal(module, eb, ib)) {
                                         // `import Path from './Path'; export { Path };`
                                         // 형태의 alias barrel 은 RN ESM wrap 에서 현재 모듈에
                                         // 실제 local storage 를 남기지 않는다. Non-CJS source 는
@@ -873,14 +886,8 @@ pub fn emitEsmWrappedModule(
                             // renamed symbol either.
                             if (eb.kind == .local) imported_local: {
                                 const l = linker orelse break :imported_local;
-                                const exported_local_name = if (module.ast) |*module_ast|
-                                    module_ast.getText(eb.local_span)
-                                else
-                                    module.exportBindingLocalName(eb);
                                 for (module.import_bindings) |ib| {
-                                    if (!std.mem.eql(u8, ib.local_name, exported_local_name) and
-                                        !std.mem.eql(u8, ib.local_name, eb.exported_name))
-                                        continue;
+                                    if (!sameImportedSourceLocal(module, eb, ib)) continue;
                                     if (ib.kind == .namespace) break :imported_local;
                                     if (ib.import_record_index >= module.import_records.len) break :imported_local;
                                     const src_idx = module.import_records[ib.import_record_index].resolved;
@@ -904,7 +911,7 @@ pub fn emitEsmWrappedModule(
                             }
                             if (linker) |l| {
                                 const mi: u32 = module.index.toU32();
-                                break :blk l.getCanonicalForExport(eb, mi);
+                                break :blk l.getCanonicalForExport(eb, mi) orelse return error.InvalidCrossChunkExport;
                             }
                             break :blk local_name;
                         },
@@ -1080,11 +1087,14 @@ pub fn emitEsmWrappedModule(
 
                 switch (source_mod.wrap_kind) {
                     .none => {
-                        const src_name = if (source_mod.findExportBinding("default")) |source_eb|
-                            l.getCanonicalForExport(source_eb.*, @intCast(source_mod_i))
-                        else
-                            l.getCanonicalName(@intCast(source_mod_i), "_default") orelse "_default";
-                        try reexport_buf.appendSlice(allocator, src_name);
+                        if (source_mod.findExportBinding("default")) |source_eb| {
+                            const src_name = l.getCanonicalForExport(source_eb.*, @intCast(source_mod_i)) orelse return error.InvalidCrossChunkExport;
+                            try reexport_buf.appendSlice(allocator, src_name);
+                        } else if (l.shim_missing_exports) {
+                            // Explicit missing-export shims are undefined values,
+                            // never a same-spelling private `_default` binding.
+                            try reexport_buf.appendSlice(allocator, "void 0");
+                        } else return error.MissingDefaultExportSource;
                     },
                     .esm => {
                         if (source_mod.uses_top_level_await) {
@@ -1741,7 +1751,7 @@ fn makeStarGetterValue(
                     const target = resolveReExportTarget(l, src_mod, src_eb) orelse return null;
                     return try makeStarGetterValue(allocator, l, target.mod, target.index, target.name, options);
                 }
-                const local = l.getCanonicalForExport(src_eb, src_i);
+                const local = l.getCanonicalForExport(src_eb, src_i) orelse return error.InvalidCrossChunkExport;
                 return try allocator.dupe(u8, local);
             }
             // 직접 export에 없으면 소스의 re_export_all 체인을 따라간다.
@@ -1764,7 +1774,7 @@ fn makeStarGetterValue(
                 // .none: canonical 로컬 변수
                 for (canonical_mod.export_bindings) |ceb| {
                     if (std.mem.eql(u8, ceb.exported_name, resolved.export_name)) {
-                        const local = l.getCanonicalForExport(ceb, canonical_mod_i);
+                        const local = l.getCanonicalForExport(ceb, canonical_mod_i) orelse return error.InvalidCrossChunkExport;
                         return try allocator.dupe(u8, local);
                     }
                 }

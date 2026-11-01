@@ -1362,21 +1362,24 @@ pub const Module = struct {
     /// reference before any canonical/output-name consumer may use it. A null
     /// canonical rename means no rename; it never relaxes identity validation.
     pub fn checkedImportBindingLocalName(self: *const Module, ib: ImportBinding) error{InvalidImportLocalSymbol}![]const u8 {
-        if (self.semantic) |*sem| {
-            const ast = if (self.ast) |*value| value else return error.InvalidImportLocalSymbol;
-            const actual = binding_scanner.resolveImportLocalSymbol(ib, .{
-                .module_index = self.index,
-                .ast = ast,
-                .symbol_ids = sem.symbol_ids,
-                .symbols = sem.symbols.items,
-            });
+        if (self.semantic != null) {
+            const actual = try self.checkedSourceImportLocalSymbol(ib);
             if (!actual.isValid() or !actual.eql(ib.local_symbol)) return error.InvalidImportLocalSymbol;
-            if (!self.importBindingOwnsSource(ib, ast)) return error.InvalidImportLocalSymbol;
             return self.refName(actual) orelse error.InvalidImportLocalSymbol;
         }
         // Explicit graphless helper compatibility has no analyzer identity.
         if (ib.is_helper) return ib.local_name;
         return error.InvalidImportLocalSymbol;
+    }
+
+    /// Scanner-owned source identity is available before Linker publishes the
+    /// derived local_symbol field. This entry never reads a spelling to find SID.
+    pub fn checkedSourceImportLocalSymbol(self: *const Module, ib: ImportBinding) error{InvalidImportLocalSymbol}!symbol_mod.SymbolRef {
+        const sem = self.semantic orelse return error.InvalidImportLocalSymbol;
+        const ast = if (self.ast) |*value| value else return error.InvalidImportLocalSymbol;
+        const actual = binding_scanner.resolveImportLocalSymbol(ib, .{ .module_index = self.index, .ast = ast, .symbol_ids = sem.symbol_ids, .symbols = sem.symbols.items });
+        if (!actual.isValid() or !self.importBindingOwnsSource(ib, ast)) return error.InvalidImportLocalSymbol;
+        return actual;
     }
 
     /// Existing infallible consumers retain a fail-closed contract. Output

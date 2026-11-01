@@ -1908,6 +1908,7 @@ pub const Bundler = struct {
             if (linker) |*l| try @import("guarded_import_callsite.zig").lower(graph, l, &s);
             if (!self.options.code_splitting and self.options.format != .esm) {
                 if (try @import("strict_function_context.zig").lower(graph, &s)) s.ast_mutated_after_link = true;
+                if (linker) |*l| try l.publishCanonicalStrictFunctionReceipts();
             }
 
             // ast mutation 이 있었거나 mangle 을 일부러 미뤘던 경우 (will_tree_shake)
@@ -1955,6 +1956,7 @@ pub const Bundler = struct {
                 try @import("static_import_callsite.zig").lower(graph, l);
                 try @import("guarded_import_callsite.zig").lower(graph, l, null);
                 const strict_changed = if (!self.options.code_splitting and self.options.format != .esm) try @import("strict_function_context.zig").lower(graph, null) else false;
+                try l.publishCanonicalStrictFunctionReceipts();
                 if (strict_changed or (graph.dynamic_import_ast_provider != null and graph.dynamic_import_ast_provider.?.active)) try l.finalize(.{ .compute_renames = true, .compute_mangling = self.options.minify_identifiers, .clear_first = true });
             }
         }

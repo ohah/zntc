@@ -441,6 +441,7 @@ fn rewriteDefaultAlias(module: *Module, editor: anytype, source_export: NodeInde
         exported.local_name = try allocator.dupe(u8, if (row.synthetic_name.len > 0) row.synthetic_name else ast.getText(row.name));
         exported.default_export_node = null;
         exported.has_default_export_facade = false;
+        exported.source_specifier_node = specifier;
     }
 }
 

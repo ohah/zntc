@@ -1314,7 +1314,7 @@ pub fn buildMetadataForAstWithHolderReservations(
             var ns_inline_target_name: ?[]const u8 = null;
             const target_name = blk: {
                 if (resolved) |rb| {
-                    const local = self.resolveToLocalName(rb.canonical);
+                    const local = self.resolveToLocalName(rb.canonical) orelse continue;
                     // namespace re-export 감지: export * as X → local_name == exported_name
                     // 이 경우 소스 모듈의 namespace 객체 preamble을 importer에 생성
                     if (self.graph.getModule(rb.canonical.module_index)) |cmod_ptr| {
@@ -1982,8 +1982,14 @@ pub fn selectedFinalImportLocal(self: *const Linker, module_index: u32, pair: Ns
         !std.mem.eql(u8, canonical.export_name, handle.canonical.export_name) or
         canonical.synthetic_member != null or
         !self.isCrossChunkConsumer(module_index, canonical.module_index.toU32())) return null;
-    const actual = self.ordinaryCanonicalImportTarget(canonical) orelse return null;
-    if (!@import("../symbol.zig").SymbolRef.eql(actual.provider_symbol, handle.provider_symbol)) return null;
+    const provider = handle.provider;
+    if (provider.owner.index != canonical.module_index or !std.mem.eql(u8, provider.public_name, canonical.export_name)) return null;
+    provider.validate(self) catch return null;
+    const actual_ref = switch (provider.role) {
+        .semantic, .entry_guard => |known| known.original.symbol,
+        else => return null,
+    };
+    if (!@import("../symbol.zig").SymbolRef.eql(actual_ref, handle.provider_symbol)) return null;
     const target = self.getConsumerImportTarget(canonical.module_index.toU32(), canonical.export_name) orelse return null;
     if (target.role != .binding or !try @import("identifier_name.zig").isBindingName(self.allocator, target.text, isReservedName)) return null;
     return target.text;
@@ -2067,7 +2073,7 @@ pub fn buildFinalExports(
                     defer self.allocator.free(expr);
                     // syn = 안전 식별자(default→`_default`, named→멤버명). 같은 청크라 cross-chunk
                     // import 와 충돌 없음(그 경로는 위 분기). materialize 를 export 문 앞에 깐다.
-                    const syn = self.resolveToLocalName(canon);
+                    const syn = self.resolveToLocalName(canon) orelse continue;
                     const stmt = try std.fmt.allocPrint(self.allocator, "var {s} = {s};\n", .{ syn, expr });
                     try owned_strings.append(self.allocator, stmt);
                     entries.appendAssumeCapacity(.{ .local = syn, .exported = p.exported, .materialize = stmt });
