@@ -2485,6 +2485,165 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout).toBe('3 9');
   });
 
+  test('ES5 legacy literal instance fields reuse the class transform graph', async () => {
+    const fixture = await createFixture({
+      'input.mjs': `
+        class NumberBox { value = 7; }
+        class StringBox { value = 'text'; }
+        class BooleanBox { value = true; }
+        class NullBox { value = null; }
+        class MultiBox { first = 1; second = 'two'; }
+        class ExplicitBox { value = 3; constructor() {} }
+        class MethodBox { value = 4; read() { return this.value; } }
+        var ExpressionBox = class InnerBox { value = 5; };
+        function nestedValue() { class NestedBox { value = 8; } return new NestedBox().value; }
+        class StaticMethodBox { value = 6; static read() { return 2; } }
+        const multi = new MultiBox();
+        console.log(
+          new NumberBox().value,
+          new StringBox().value,
+          new BooleanBox().value,
+          new NullBox().value,
+          multi.first + ':' + multi.second,
+          new ExplicitBox().value,
+          new MethodBox().read(),
+          new ExpressionBox().value,
+          nestedValue(),
+          new StaticMethodBox().value,
+        );
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.mjs');
+    const output = join(fixture.dir, 'output.cjs');
+    const result = await runZntc(
+      [
+        '--bundle',
+        input,
+        '-o',
+        output,
+        '--format=cjs',
+        '--platform=node',
+        '--target=es5',
+        '--use-define-for-class-fields=false',
+        '--minify-identifiers',
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    const identity = expectPrepassGraph(result.stderr, 'input.mjs', 'retained');
+    expect(identity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const transformed = await runNode(output);
+    expect(transformed.stderr).toBe('');
+    expect(transformed.stdout.trim()).toBe('7 text true null 1:two 3 4 5 8 6');
+  });
+
+  test('ES5 instance-field graph admission rejects ten hostile shapes', async () => {
+    const cases = [
+      {
+        source: "class Box { ['value'] = 1; } console.log(new Box().value);",
+        expected: '1',
+      },
+      {
+        source: String.raw`class Box { \u0076alue = 2; } console.log(new Box().value);`,
+        expected: '2',
+      },
+      {
+        source:
+          "class Box { __proto__ = 1; } const box = new Box(); console.log(Object.hasOwn(box, '__proto__'), Object.getPrototypeOf(box) === Box.prototype);",
+        expected: 'false true',
+      },
+      {
+        source: "class Box { value; } console.log(Object.hasOwn(new Box(), 'value'));",
+        expected: 'false',
+      },
+      {
+        source: 'const seed = 3; class Box { value = seed; } console.log(new Box().value);',
+        expected: '3',
+      },
+      {
+        source:
+          'globalThis.__zntcFieldSeed = 4; class Box { value = __zntcFieldSeed; } console.log(new Box().value);',
+        expected: '4',
+      },
+      {
+        source:
+          'function makeValue() { return 5; } class Box { value = makeValue(); } console.log(new Box().value);',
+        expected: '5',
+      },
+      {
+        source: 'class Box { value = () => 6; } console.log(new Box().value());',
+        expected: '6',
+      },
+      {
+        source:
+          'class Base { constructor() { this.base = 1; } } class Box extends Base { value = 7; } const box = new Box(); console.log(box.base, box.value);',
+        expected: '1 7',
+      },
+      {
+        source:
+          'class Box { #value = 8; read() { return this.#value; } } console.log(new Box().read());',
+        expected: '8',
+      },
+    ];
+    const files = Object.fromEntries(
+      cases.map((item, index) => [`hostile-${index}.mjs`, item.source]),
+    );
+    files['define-semantics.mjs'] = 'class Box { value = 9; } console.log(new Box().value);';
+    const fixture = await createFixture(files);
+    cleanup = fixture.cleanup;
+
+    for (const [index, item] of cases.entries()) {
+      const entry = `hostile-${index}.mjs`;
+      const output = join(fixture.dir, `${entry}.cjs`);
+      const result = await runZntc(
+        [
+          '--bundle',
+          join(fixture.dir, entry),
+          '-o',
+          output,
+          '--format=cjs',
+          '--platform=node',
+          '--target=es5',
+          '--use-define-for-class-fields=false',
+          '--minify-identifiers',
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, `${entry}: ${result.stderr}`).toBe(0);
+      const identity = expectPrepassGraph(result.stderr, entry, 'reanalyzed');
+      expect(identity).toMatch(/clean=1(?:\s|$)/);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      }
+      const transformed = await runNode(output);
+      expect(transformed.stderr, entry).toBe('');
+      expect(transformed.stdout.trim(), entry).toBe(item.expected);
+    }
+
+    const defineOutput = join(fixture.dir, 'define-semantics.cjs');
+    const defineResult = await runZntc(
+      [
+        '--bundle',
+        join(fixture.dir, 'define-semantics.mjs'),
+        '-o',
+        defineOutput,
+        '--format=cjs',
+        '--platform=node',
+        '--target=es5',
+        '--minify-identifiers',
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(defineResult.exitCode, defineResult.stderr).toBe(0);
+    expectPrepassGraph(defineResult.stderr, 'define-semantics.mjs', 'reanalyzed');
+    const defineTransformed = await runNode(defineOutput);
+    expect(defineTransformed.stdout.trim()).toBe('9');
+  });
+
   test('standalone transpile keeps generated Object external before a shadow initializes', () => {
     const source = `
       class Shadowed { static value() { return 'ok'; } }
