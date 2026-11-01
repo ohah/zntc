@@ -40937,6 +40937,83 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true\n',
       },
       {
+        name: 'derived constructor lexical super static member chain retains getter order',
+        source:
+          'var events = []; class Base { constructor() { this.marker = 41; } get current() { events.push(this.marker === 41 ? "super:this" : "super:wrong"); return { get child() { events.push("child"); return { get value() { events.push("value"); return 42; } }; } }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current.child.value; this.value = value; } } console.log(new DerivedLocal().value, events.join(","));',
+        graph: 'retained',
+        output: '42 super:this,child,value\n',
+      },
+      {
+        name: 'derived constructor lexical super optional member chain stays on reanalysis',
+        source:
+          'class Base { get current() { return { value: 1 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current?.value; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '1\n',
+      },
+      {
+        name: 'derived constructor lexical super computed string member stays on reanalysis',
+        source:
+          'class Base { get current() { return { value: 2 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current["value"]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'derived constructor lexical super computed binding member stays on reanalysis',
+        source:
+          'const key = "value"; class Base { get current() { return { value: 3 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current[key]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '3\n',
+      },
+      {
+        name: 'derived constructor lexical super optional member tail stays on reanalysis',
+        source:
+          'class Base { get current() { return { value: { nested: 4 } }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current.value?.nested; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '4\n',
+      },
+      {
+        name: 'derived constructor lexical super member call stays on reanalysis',
+        source:
+          'class Base { get current() { return { value() { return 5; } }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current.value(); this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '5\n',
+      },
+      {
+        name: 'derived constructor lexical super optional member call stays on reanalysis',
+        source:
+          'class Base { get current() { return { value() { return 6; } }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current.value?.(); this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '6\n',
+      },
+      {
+        name: 'derived constructor lexical super member assignment stays on reanalysis',
+        source:
+          'class Base { get current() { return { value: 0 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current.value = 7; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '7\n',
+      },
+      {
+        name: 'derived constructor lexical super member compound assignment stays on reanalysis',
+        source:
+          'class Base { get current() { return { value: 0 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current.value += 8; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '8\n',
+      },
+      {
+        name: 'derived constructor lexical super member update stays on reanalysis',
+        source:
+          'class Base { get current() { return { value: 9 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current.value++; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'derived constructor lexical super effectful computed member key stays on reanalysis',
+        source:
+          'var events = []; function getKey() { events.push("key"); return "value"; } class Base { get current() { return { value: 10 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current[getKey()]; this.value = value; } } console.log(new DerivedLocal().value, events.join(","));',
+        graph: 'reanalyzed',
+        output: '10 key\n',
+      },
+      {
         name: 'derived constructor shadowed Math exponentiation super initializer keeps its graph',
         source:
           'var Math = { pow() { return 900; } }; class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current ** 2; this.value = value; } } console.log(new DerivedLocal().value, Math.pow(2, 3));',
@@ -41050,10 +41127,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '3\n',
       },
       {
-        name: 'derived constructor chained super lexical read stays on reanalysis',
+        name: 'derived constructor static super-property chain retains its graph',
         source:
           'class Base { get current() { return { value: 2 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current.value; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
@@ -44360,6 +44437,72 @@ console.log(new DerivedReader().values);`;
         const mutatedList = valueList.replace(token, replacement);
         const mutant = emitted.slice(0, valuesStart) + mutatedList + emitted.slice(valuesEnd);
         const mutantPath = join(dir, `nullish-super-reference-${index}.cjs`);
+        writeFileSync(mutantPath, mutant);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `reference ${index}: ${syntax.stderr}`).toBe(0);
+        const result = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(result.status, `reference ${index}: ${result.stderr}`).toBe(0);
+        expect(result.stdout, `reference ${index}: ${name} -> ${replacement}`).not.toBe(expected);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('derived constructor super static member-chain lexical initializers retain exact output identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-derived-super-member-chain-retained-'));
+    const input = join(dir, 'entry.mjs');
+    const output = join(dir, 'output.cjs');
+    const names = Array.from({ length: 10 }, (_, index) => `memberChainSuperValue${index}`);
+    const declarations = names
+      .map((name, index) => `${index === 0 ? 'let' : 'const'} ${name} = super.current.value;`)
+      .join('\n');
+    const expected = `${names.map((_, index) => index + 1).join(' ')}\n`;
+    const valueExpression = names.join(" + ' ' + ");
+    const source = `class DerivedBase { constructor() { this.cursor = 0; } get current() { return { value: ++this.cursor }; } }\nclass DerivedReader extends DerivedBase { constructor() {\n  super();\n${declarations}\n  this.values = ${valueExpression};\n} }\nconsole.log(new DerivedReader().values);`;
+    try {
+      writeFileSync(input, source);
+      const native = spawnSync('node', [input], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe(expected);
+
+      const bundled = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', input, '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(bundled.status, bundled.stderr).toBe(0);
+      const lines = (bundled.stderr ?? '').split(/\r?\n/);
+      const mode = lines.find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+      expect(mode, bundled.stderr).toContain('semantic_graph=retained');
+      const report = lines.find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(report, bundled.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${report}`,
+        ).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const emitted = readFileSync(output, 'utf8');
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(native.stdout);
+      const assignmentStart = emitted.lastIndexOf('.values = ');
+      expect(assignmentStart).toBeGreaterThanOrEqual(0);
+      const valuesStart = assignmentStart + '.values = '.length;
+      const valuesEnd = emitted.indexOf(';', valuesStart);
+      expect(valuesEnd).toBeGreaterThan(valuesStart);
+      const valueList = emitted.slice(valuesStart, valuesEnd);
+      for (let index = 0; index < names.length; index += 1) {
+        const name = names[index];
+        const replacement = names[(index + 1) % names.length];
+        const token = new RegExp(`\\b${name}\\b`);
+        expect(valueList.match(token), name).toHaveLength(1);
+        const mutatedList = valueList.replace(token, replacement);
+        const mutant = emitted.slice(0, valuesStart) + mutatedList + emitted.slice(valuesEnd);
+        const mutantPath = join(dir, `member-chain-super-reference-${index}.cjs`);
         writeFileSync(mutantPath, mutant);
         const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
         expect(syntax.status, `reference ${index}: ${syntax.stderr}`).toBe(0);
