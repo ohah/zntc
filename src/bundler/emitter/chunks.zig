@@ -5726,8 +5726,9 @@ test "cross chunk provider refuses a foreign graph with matching scalar IDs" {
     try linker.rename_table.put(std.testing.allocator, known, "actual_owner");
     var selected = try cross_export.Provider.capture(&linker, module.index.toU32(), "value", .ordinary_export);
     try std.testing.expectEqualStrings("actual_owner", (try selected.localName(&linker)).?);
-    selected.owner = other;
-    selected.role = .{ .semantic = .{ .binding = &other.export_bindings[0], .original = other.export_bindings[0] } };
+    var foreign_linker = Linker.init(std.testing.allocator, &foreign, .esm);
+    defer foreign_linker.deinit();
+    selected = try cross_export.Provider.capture(&foreign_linker, other.index.toU32(), "value", .ordinary_export);
     try std.testing.expectError(error.InvalidCrossChunkExport, selected.localName(&linker));
 }
 
