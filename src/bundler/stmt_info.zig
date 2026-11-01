@@ -2036,7 +2036,12 @@ pub fn build(
 
         const is_binding = n.tag == .binding_identifier or
             n.tag == .import_default_specifier or n.tag == .import_namespace_specifier or
-            import_local_nodes.isSet(node_i);
+            import_local_nodes.isSet(node_i) or
+            // Initial analysis attaches the snapshot facade SID directly to
+            // the real export-default wrapper. It has no identifier child.
+            (n.tag == .export_default_declaration and sym.kind == .variable_const and
+                sym.decl_flags.is_exported and sym.decl_flags.is_default_export and
+                @import("../parser/module.zig").defaultExportNeedsFacade(ast, n.data.unary.operand, n.data.unary.flags));
         if (isProgramTopLevelScope(scopes, sym.scope_id) and is_binding) {
             if (std.mem.indexOfScalar(u32, declared_bufs[stmt_i].items, sym_idx_u32) == null) {
                 try declared_bufs[stmt_i].append(allocator, sym_idx_u32);
