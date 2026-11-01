@@ -192,14 +192,12 @@ pub const ChunkKind = union(enum) {
 // ============================================================
 
 /// 심볼 수준 cross-chunk import 한 건. `imports_from` 값 목록의 원소.
-/// `name` 은 dep 청크가 노출하는 **export 키**(destructuring 좌변; `default`
-/// 같은 예약어일 수 있다). `canonical_module` 은 그 export 의 canonical 정의
-/// 모듈 — emitter 가 예약어 키일 때 `resolveToLocalName(SymbolRef)` 로 소비자
-/// 가 실제 참조하는 local 바인딩명(예: `_default`)을 해석하는 데 쓴다. 비예약어
-/// 키는 export 명 == 바인딩명이라 canonical_module 을 보지 않는다(기존 동작).
+/// A public export key and the exact provider which produced this edge.
+/// Public property spellings never select lexical SymbolIds.
 pub const CrossChunkSym = struct {
     name: []const u8,
     canonical_module: u32,
+    provider: ?@import("cross_chunk_export.zig").Provider = null,
 };
 
 /// 번들 출력의 단위. 하나의 JS 파일로 출력된다.
@@ -267,6 +265,8 @@ pub const Chunk = struct {
     /// 이 청크에서 다른 청크로 내보내는 심볼 이름 집합.
     /// 공통 청크에서 export 문을 생성할 때 사용.
     exports_to: std.StringHashMapUnmanaged(void),
+    /// Exact source-owned provider edges, before output spelling negotiation.
+    exports_to_bindings: std.ArrayListUnmanaged(CrossChunkSym) = .empty,
 
     /// (#4541) raw `require("./x.cjs")` 로 **다른 청크**의 CJS 모듈을 참조하면 그 `require_X` 썽크를
     /// cross-chunk export/import 해야 한다(esbuild/rolldown 동형: provider `export{require_X}`,
@@ -316,6 +316,7 @@ pub const Chunk = struct {
         }
         self.imports_from.deinit(allocator);
         self.exports_to.deinit(allocator);
+        self.exports_to_bindings.deinit(allocator);
         self.wrapper_cross_exports.deinit(allocator);
         var wit = self.wrapper_cross_imports.iterator();
         while (wit.next()) |entry| entry.value_ptr.deinit(allocator);
@@ -1517,9 +1518,9 @@ fn addCrossChunkSymbol(
     seen_static: *std.AutoHashMapUnmanaged(u32, void),
     src_chunk_idx: ChunkIndex,
     export_name: []const u8,
-    /// `export_name` 의 canonical 정의 모듈 인덱스. 예약어 export 키(`default`)일
-    /// 때 emitter 가 소비자 바인딩명을 `resolveToLocalName` 으로 해석하는 데 쓴다.
+    /// Exact defining module selected by export resolution.
     canonical_module: u32,
+    hint: @import("cross_chunk_export.zig").Hint,
 ) !void {
     const src_ci = @backingInt(src_chunk_idx);
 
@@ -1545,6 +1546,8 @@ fn addCrossChunkSymbol(
         }
     }
 
+    const captured_provider = try @import("cross_chunk_export.zig").Provider.capture(lnk, canonical_module, export_name, hint);
+    const symbol: CrossChunkSym = .{ .name = export_name, .canonical_module = canonical_module, .provider = captured_provider };
     const ifgop = try chunk.imports_from.getOrPut(allocator, src_ci);
     if (!ifgop.found_existing) ifgop.value_ptr.* = .empty;
     // dedup 은 (export 이름, canonical 모듈) 둘 다로 — 서로 다른 모듈이 *같은* export
@@ -1553,10 +1556,14 @@ fn addCrossChunkSymbol(
     for (ifgop.value_ptr.items) |existing| {
         if (std.mem.eql(u8, existing.name, export_name) and existing.canonical_module == canonical_module) break;
     } else {
-        try ifgop.value_ptr.append(allocator, .{ .name = export_name, .canonical_module = canonical_module });
+        try ifgop.value_ptr.append(allocator, symbol);
     }
 
     try chunk_graph.chunks.items[src_ci].exports_to.put(allocator, export_name, {});
+    const exports = &chunk_graph.chunks.items[src_ci].exports_to_bindings;
+    for (exports.items) |existing| {
+        if (existing.canonical_module == canonical_module and std.mem.eql(u8, existing.name, export_name)) break;
+    } else try exports.append(allocator, symbol);
     if (lnk.getModule(canonical_module)) |provider| {
         if (provider.wrap_kind == .esm) {
             try addEsmWrapperCrossSymbol(allocator, chunk_graph, chunk, seen_static, src_chunk_idx, try provider.esmInitSymbol());
@@ -1583,7 +1590,7 @@ fn linkReExportName(
     const src_chunk_idx = chunk_graph.getModuleChunk(canon.module_index);
     if (src_chunk_idx.isNone()) return;
     if (src_chunk_idx == chunk.index) return; // 같은 청크 → 스킵
-    try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, seen_static, src_chunk_idx, canon.export_name, @backingInt(canon.module_index));
+    try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, seen_static, src_chunk_idx, canon.export_name, @backingInt(canon.module_index), .ordinary_export);
 }
 
 /// `mod_idx` 의 `export_name` 이 namespace re-export 인지 판정하고, 맞으면
@@ -1725,7 +1732,7 @@ fn linkNamespaceCrossChunk(
     // seam — ensureSharedNsVar 가 선제 materialize. 상세는 그 doc 참조.
     const ns_var = try lnk.ensureSharedNsVar(target);
     // ns_var 는 합성 namespace 변수명(예약어 아님) → canonical_module 미사용.
-    try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, seen_static, tgt_chunk, ns_var, @backingInt(target));
+    try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, seen_static, tgt_chunk, ns_var, @backingInt(target), .shared_namespace);
     try fanOutModuleExports(allocator, chunk_graph, chunk, seen_static, lnk, target, module_count);
 }
 
@@ -2056,6 +2063,7 @@ pub fn computeCrossChunkLinks(
             chunk.imports_from.clearAndFree(allocator);
         }
         chunk.exports_to.clearAndFree(allocator);
+        chunk.exports_to_bindings.clearAndFree(allocator);
         // (#4541) 재실행(HMR re-link) 멱등 — 새 wrapper 맵도 초기화(안 하면 stale export/import).
         chunk.esm_wrapper_cross_exports.clearAndFree(allocator);
         {
@@ -2120,7 +2128,7 @@ pub fn computeCrossChunkLinks(
                         const source_chunk = chunk_graph.getModuleChunk(target.symbol.module);
                         if (!source_chunk.isNone() and source_chunk != chunk.index) {
                             const provider = graph.getModule(target.symbol.module) orelse return error.InvalidEntryGuardProvider;
-                            try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, &seen_static, source_chunk, provider.export_bindings[0].exported_name, target.symbol.module.toU32());
+                            try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, &seen_static, source_chunk, provider.export_bindings[0].exported_name, target.symbol.module.toU32(), .ordinary_export);
                         }
                         continue;
                     };
@@ -2170,7 +2178,7 @@ pub fn computeCrossChunkLinks(
                     if (src_chunk_idx == chunk.index) continue; // 같은 청크 → 스킵
 
                     if (crossChunkExportIsShaken(chunk_graph, lnk, src_chunk_idx, canonical_mi, canonical.export_name)) continue;
-                    try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, &seen_static, src_chunk_idx, canonical.export_name, canonical_mi);
+                    try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, &seen_static, src_chunk_idx, canonical.export_name, canonical_mi, .ordinary_export);
 
                     // canonical 이 namespace re-export 면 그 이름만 가져와선
                     // 안 된다 — 정적 멤버는 정의자 export 로 elision, 값/동적은
