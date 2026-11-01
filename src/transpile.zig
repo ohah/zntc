@@ -2985,13 +2985,15 @@ fn detachErasedTypeImportExternalReads(
                     spec_node.data.binary.right
                 else
                     continue,
-                .import_default_specifier => spec_index,
+                .import_default_specifier, .import_namespace_specifier => spec_index,
                 else => continue,
             };
             if (local_index.isNone() or @backingInt(local_index) >= transformer.parser_node_count) continue;
             const local_raw = @backingInt(local_index);
             const local_node = transformer.ast.getNode(local_index);
-            if ((local_node.tag != .identifier_reference and local_node.tag != .import_default_specifier) or
+            if ((local_node.tag != .identifier_reference and
+                local_node.tag != .import_default_specifier and
+                local_node.tag != .import_namespace_specifier) or
                 !isValidSourceTextSpan(transformer.ast, local_node.span) or
                 local_raw >= transformer.symbol_ids.items.len) continue;
             const symbol_id = transformer.symbol_ids.items[local_raw] orelse continue;
@@ -3155,7 +3157,8 @@ fn exactErasedTypeImportExternalReference(
         !sameNodeValue(proof.import_local_node, transformer.ast.getNode(proof.import_local_node_index)) or
         !sameNodeValue(proof.reference_node, transformer.ast.getNode(@fromBackingInt(output_reference_raw))) or
         (proof.import_local_node.tag != .identifier_reference and
-            proof.import_local_node.tag != .import_default_specifier) or
+            proof.import_local_node.tag != .import_default_specifier and
+            proof.import_local_node.tag != .import_namespace_specifier) or
         proof.reference_node.tag != .identifier_reference or
         transformer.symbol_ids.items[local_raw] != @as(?u32, proof.import_symbol_id) or
         proof.reference.node_index != @as(ast_mod.NodeIndex, @fromBackingInt(output_reference_raw)) or
@@ -3178,7 +3181,7 @@ fn exactErasedTypeImportExternalReference(
         const is_local_specifier = switch (spec.tag) {
             .import_specifier => spec.data.binary.flags == 0 and
                 spec.data.binary.right == proof.import_local_node_index,
-            .import_default_specifier => spec_index == proof.import_local_node_index,
+            .import_default_specifier, .import_namespace_specifier => spec_index == proof.import_local_node_index,
             else => false,
         };
         if (!is_local_specifier) continue;
@@ -6165,10 +6168,11 @@ test "#6193 declaration-level type import reuse requires exact output erasure pr
     ));
 }
 
-test "#6193 detached named and default type import proofs reject fourteen graph mutations each" {
+test "#6193 detached named default and namespace type import proofs reject fifteen graph mutations each" {
     const sources = [_][]const u8{
         "import type { Shape } from './types'; globalThis.Shape = 21; console.log(Shape);",
         "import type Shape from './types'; globalThis.Shape = 21; console.log(Shape);",
+        "import type * as Shape from './types'; globalThis.Shape = 21; console.log(Shape);",
     };
     for (sources) |source| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -6312,6 +6316,11 @@ test "#6193 detached named and default type import proofs reject fourteen graph 
         transformer.ast.nodes.items[reference_node_raw] = original_reference_node;
         detected_mutations += 1;
 
+        proof.import_local_node.span.end -= 1;
+        try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+        proof.* = original_proof;
+        detected_mutations += 1;
+
         const local_raw = @backingInt(original_proof.import_local_node_index);
         const original_local_symbol_id = transformer.symbol_ids.items[local_raw];
         transformer.symbol_ids.items[local_raw] = null;
@@ -6341,7 +6350,7 @@ test "#6193 detached named and default type import proofs reject fourteen graph 
         transformer.references = original_references;
         detected_mutations += 1;
 
-        try std.testing.expectEqual(@as(usize, 14), detected_mutations);
+        try std.testing.expectEqual(@as(usize, 15), detected_mutations);
     }
 }
 
