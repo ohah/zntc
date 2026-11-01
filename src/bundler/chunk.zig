@@ -1644,11 +1644,17 @@ fn nsReExportTargetDepth(
             }
             return null;
         }
-        // namespace import 를 그대로 named export: local 이 `import * as` 바인딩.
-        const local = m.exportBindingLocalName(eb);
+        // Namespace value transport is selected by the source import SID.
+        // A diagnostic/local spelling never chooses another import's target.
         for (m.import_bindings) |ib| {
-            if (ib.kind != .namespace) continue;
-            if (!std.mem.eql(u8, ib.local_name, local)) continue;
+            if (ib.kind != .namespace or ib.local_role != .import_binding or ib.source_type_only == true) continue;
+            if (m.semantic != null) {
+                if (eb.kind != .local or !ib.local_symbol.isValid() or !ib.local_symbol.eql(eb.symbol)) continue;
+                _ = m.checkedImportBindingLocalName(ib) catch return null;
+            } else {
+                // Explicit graphless metadata API has no semantic identity.
+                if (!std.mem.eql(u8, ib.local_name, m.exportBindingLocalName(eb))) continue;
+            }
             if (ib.import_record_index < m.import_records.len) {
                 const src = m.import_records[ib.import_record_index].resolved;
                 if (!src.isNone()) return src;

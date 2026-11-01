@@ -5761,3 +5761,103 @@ test "cross chunk provider preserves the original export specifier authority" {
     try std.testing.expectError(error.InvalidCrossChunkExport, selected.localName(&linker));
     try std.testing.expectError(error.InvalidCrossChunkExport, cross_export.Provider.capture(&linker, module.index.toU32(), "one", .ordinary_export));
 }
+
+test "cross chunk namespace projection selects the actual import SID and source record" {
+    const helpers = @import("../test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.mjs", "import*as other from'./other.mjs';import*as selected from'./selected.mjs';export{selected as ns};console.log(other.value);");
+    try helpers.writeFile(tmp.dir, "other.mjs", "export const value=99;");
+    try helpers.writeFile(tmp.dir, "selected.mjs", "export const value=7;");
+    const path = try helpers.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{path});
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    var it = graph.modulesIterator();
+    var entry: ?*const Module = null;
+    while (it.next()) |m| if (std.mem.eql(u8, m.path, path)) {
+        entry = m;
+        break;
+    };
+    const m = @constCast(entry orelse return error.MissingNamespaceProjectionControl);
+    linker.populateImportSymbols();
+    try std.testing.expectEqual(@as(usize, 2), m.import_bindings.len);
+    const first = &m.import_bindings[0];
+    const selected = &m.import_bindings[1];
+    const target = m.import_records[selected.import_record_index].resolved;
+    try std.testing.expect(!target.isNone());
+    try std.testing.expectEqual(target, chunk_mod.nsReExportTarget(&graph, m.index, "ns").?);
+    const provider = try cross_export.Provider.capture(&linker, m.index.toU32(), "ns", .ordinary_export);
+    try provider.validate(&linker);
+    const first_name = first.local_name;
+    defer first.local_name = first_name;
+    first.local_name = selected.local_name;
+    try std.testing.expectEqual(target, chunk_mod.nsReExportTarget(&graph, m.index, "ns").?);
+    const selected_record = selected.import_record_index;
+    defer selected.import_record_index = selected_record;
+    selected.import_record_index = first.import_record_index;
+    try std.testing.expectEqual(@as(?ModuleIndex, null), chunk_mod.nsReExportTarget(&graph, m.index, "ns"));
+    try std.testing.expectError(error.InvalidCrossChunkExport, cross_export.Provider.capture(&linker, m.index.toU32(), "ns", .ordinary_export));
+}
+
+test "cross chunk provider retains source birth authority through later edits" {
+    const helpers = @import("../test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "provider.mjs", "const first=7,second=99;export{first as value,second as other};");
+    const path = try helpers.absPath(&tmp, "provider.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{path});
+    const m = graph.modules.at(0);
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    const binding = @constCast(m.findExportBinding("value").?);
+    const selected = try cross_export.Provider.capture(&linker, m.index.toU32(), "value", .ordinary_export);
+    try std.testing.expectEqualStrings("first", (try selected.localName(&linker)).?);
+    var copied_binding = binding.*;
+    var forged = selected;
+    forged.role.semantic.binding = &copied_binding;
+    try std.testing.expectError(error.InvalidCrossChunkExport, forged.localName(&linker));
+    const sem = &m.semantic.?;
+    const owner_token = sem.owner_token;
+    sem.owner_token = .unassigned;
+    try std.testing.expectError(error.InvalidCrossChunkExport, selected.localName(&linker));
+    sem.owner_token = owner_token;
+    const spelling = binding.local_name;
+    binding.local_name = "unrelated";
+    try std.testing.expectError(error.InvalidCrossChunkExport, selected.localName(&linker));
+    binding.local_name = spelling;
+    const sid = binding.symbol.semanticIndex().?;
+    const symbol = sem.symbols.items[sid];
+    sem.symbols.items[sid].decl_flags.is_exported = !symbol.decl_flags.is_exported;
+    try std.testing.expectError(error.InvalidCrossChunkExport, selected.localName(&linker));
+    sem.symbols.items[sid] = symbol;
+    const anchor = @backingInt(binding.local_symbol_node.?);
+    const attached = sem.symbol_ids[anchor];
+    @constCast(sem.symbol_ids)[anchor] = null;
+    try std.testing.expectError(error.InvalidCrossChunkExport, selected.localName(&linker));
+    @constCast(sem.symbol_ids)[anchor] = attached;
+    // Ref/write counts may legitimately change; the same source binding stays
+    // authoritative and its canonical output name remains identity-selected.
+    sem.symbols.items[sid].reference_count += 1;
+    sem.symbols.items[sid].write_count += 1;
+    try std.testing.expectEqualStrings("first", (try selected.localName(&linker)).?);
+    sem.symbols.items[sid] = symbol;
+    const id = SymbolID.make(m.index, sid);
+    try linker.rename_table.put(std.testing.allocator, id, "valid_output");
+    try std.testing.expectEqualStrings("valid_output", (try selected.localName(&linker)).?);
+    for ([_][]const u8{ "not a binding", "return" }) |invalid| {
+        try linker.rename_table.put(std.testing.allocator, id, invalid);
+        try std.testing.expectError(error.InvalidCrossChunkLocalName, selected.localName(&linker));
+    }
+}

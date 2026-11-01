@@ -41,7 +41,7 @@ pub const Provider = struct {
     role: Role,
 
     fn make(owner: *const Module, name: []const u8, role: Role) Error!Provider {
-        const token = if (owner.semantic) |*sem| @constCast(sem).captureOwnerToken() else .unassigned;
+        const token = if (owner.semantic) |sem| sem.owner_token else .unassigned;
         if (owner.semantic != null and token == .unassigned) return error.InvalidCrossChunkExport;
         return .{ .owner = owner, .public_name = name, .owner_token = token, .role = role };
     }
@@ -183,6 +183,15 @@ pub fn checkedSymbol(a: std.mem.Allocator, owner: *const Module, binding: *const
     const ast = if (owner.ast) |*value| value else return error.InvalidCrossChunkExport;
     const sem = owner.semantic orelse return error.InvalidCrossChunkExport;
     const sid = owner.exportBindingSemanticIndex(binding.*) orelse return error.InvalidCrossChunkExport;
+    if (sem.symbols.items[sid].kind == .import_binding) {
+        var matches: usize = 0;
+        for (owner.import_bindings) |imported| {
+            if (!imported.local_symbol.eql(binding.symbol)) continue;
+            _ = owner.checkedImportBindingLocalName(imported) catch return error.InvalidCrossChunkExport;
+            matches += 1;
+        }
+        if (matches != 1) return error.InvalidCrossChunkExport;
+    }
     const source = binding.source_export_node orelse return error.InvalidCrossChunkExport;
     const statement = nodeAt(ast, source) orelse return error.InvalidCrossChunkExport;
     if (statement.tag == .export_default_declaration) {
