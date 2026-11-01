@@ -279,12 +279,16 @@ test "retained loop key cells retain exact owners before final output walk" {
         var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
         parser.configureFromExtension(".cjs");
         const root = try parser.parse();
-        var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
-        try analyzer.analyze();
-        const source_symbols = analyzer.symbols.items.len;
         var unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80);
         if (profile == 2 or profile == 3 or profile == 6) unsupported.generator = false;
         if (profile >= 5) unsupported.block_scoping = false;
+        var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.unsupported = unsupported;
+        analyzer.enable_exact_declaration_anchors = true;
+        analyzer.enable_source_external_origins = true;
+        analyzer.collect_unresolved_reference_nodes = true;
+        try analyzer.analyze();
+        const source_symbols = analyzer.symbols.items.len;
         var t = try @import("transformer.zig").Transformer.init(a, &parser.ast, .{
             .unsupported = unsupported,
             .use_define_for_class_fields = true,
@@ -297,6 +301,7 @@ test "retained loop key cells retain exact owners before final output walk" {
         t.scope_owner_map = analyzer.scope_owner_map;
         t.class_self_symbol_map = analyzer.class_self_symbol_map;
         t.node_scope_provenance = analyzer.node_scope_provenance;
+        t.scope_history = analyzer.scope_history;
         t.unresolved_references = &analyzer.unresolved_references;
         t.semantic_edit_enabled = true;
         try t.buildBlockRenameMap();
