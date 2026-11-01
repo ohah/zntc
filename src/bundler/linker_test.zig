@@ -9485,6 +9485,8 @@ test "const enum erasure consumes its source declarations after literal folding"
         "const enum Kind { Value=7 } console.log(Kind.Value);",
         "const enum Kind { Value=7 } console.log(7);",
         "const enum Kind { Left=3 } const enum Kind { Right=4 } console.log(Kind.Left+Kind.Right);",
+        "const enum Kind { Left=3, Right=Left+4 } console.log(Kind.Right);",
+        "const enum Color { Red = 40, Green = Red + 1 } console.log(Color.Red, Color.Green);",
     };
     for (cases, 0..) |source, source_index| for ([_]bool{ false, true }) |minify| {
         const a = std.testing.allocator;
@@ -9503,7 +9505,7 @@ test "const enum erasure consumes its source declarations after literal folding"
         const module = graph.getModule(findModuleIdx(&graph, "entry.ts").?).?;
         const sem = &module.semantic.?;
         const tree = &module.ast.?;
-        const expected_environments: u32 = if (source_index == 2) 2 else 1;
+        const expected_environments: u32 = if (source_index >= 2) 2 else 1;
         try std.testing.expectEqual(1 + expected_environments, sem.source_owned_retirements.count());
         var retired = sem.source_owned_retirements.valueIterator();
         var outer: ?@import("../semantic/source_owned_retirement.zig").Witness = null;
@@ -9545,6 +9547,102 @@ test "const enum erasure consumes its source declarations after literal folding"
         defer a.free(observed.stdout);
         defer a.free(observed.stderr);
         try std.testing.expect(observed.term == .exited and observed.term.exited == 0);
-        try std.testing.expectEqualStrings("7\n", observed.stdout);
+        try std.testing.expectEqualStrings(if (source_index == 4) "40 41\n" else "7\n", observed.stdout);
+        if (source_index == 4) {
+            var script = try @import("../transpile.zig").transpile(a, source, "entry.unknown", .{ .minify_identifiers = minify, .unsupported = @import("../transformer/compat.zig").fromESTarget(.es5) });
+            defer script.deinit(a);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", script.code } });
+            defer a.free(actual.stdout);
+            defer a.free(actual.stderr);
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings("40 41\n", actual.stdout);
+        }
+    };
+}
+
+test "const enum surviving writes preserve actual erased and outer binding lookups" {
+    const cases = [_][]const u8{
+        "function read() { const enum Status { Ready = 42 } Status = 43; return 42; } console.log(read());",
+        "let Status = 0; function read() { const enum Status { Ready = 42 } Status = 43; return Status; } console.log(read(), Status);",
+    };
+    for (cases, 0..) |source, source_index| for ([_]bool{ false, true }) |minify| {
+        const a = std.testing.allocator;
+        // The public lenient-script surface keeps the original sloppy write.
+        // CJS bundling below has its own existing strict-output contract.
+        var script = try @import("../transpile.zig").transpile(a, source, "entry.unknown", .{
+            .minify_identifiers = minify,
+            .unsupported = @import("../transformer/compat.zig").fromESTarget(.es5),
+        });
+        defer script.deinit(a);
+        const script_observed = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", script.code } });
+        defer a.free(script_observed.stdout);
+        defer a.free(script_observed.stderr);
+        try std.testing.expect(script_observed.term == .exited and script_observed.term.exited == 0);
+        try std.testing.expectEqualStrings(if (source_index == 0) "42\n" else "43 43\n", script_observed.stdout);
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.ts", source);
+        const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.ts");
+        defer a.free(entry);
+        var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+        defer cache.deinit();
+        var graph = ModuleGraph.init(a, &cache);
+        defer graph.deinit();
+        graph.minify_identifiers = minify;
+        graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es5);
+        try graph.build(std.testing.io, &.{entry});
+        for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+        const module = graph.getModule(findModuleIdx(&graph, "entry.ts").?).?;
+        const sem = &module.semantic.?;
+        const tree = &module.ast.?;
+        const expected_environments: u32 = 1;
+        try std.testing.expectEqual(1 + expected_environments, sem.source_owned_retirements.count());
+        var retired = sem.source_owned_retirements.valueIterator();
+        var outer: ?@import("../semantic/source_owned_retirement.zig").Witness = null;
+        var environment_count: usize = 0;
+        while (retired.next()) |item| {
+            if (item.reason == .erased_const_enum_binding) outer = item.* else if (item.reason == .erased_const_enum_environment) environment_count += 1 else return error.UnexpectedRetirement;
+        }
+        try std.testing.expectEqual(@as(usize, expected_environments), environment_count);
+        const witness = outer orelse return error.MissingEnumBinding;
+        try std.testing.expect(witness.reason == .erased_const_enum_binding);
+        try std.testing.expectEqual(witness.source_name, tree.readExtraNode(tree.getNode(witness.source_owner).data.extra, @import("../parser/ast.zig").EnumExtra.name));
+        try std.testing.expect(@backingInt(witness.source_name) < sem.symbol_ids.len);
+        try std.testing.expectEqual(@as(?u32, null), sem.symbol_ids[@backingInt(witness.source_name)]);
+        for (sem.references) |row| try std.testing.expect(row.symbol_id != witness.symbol_id);
+        for (sem.scope_maps) |map| {
+            var ids = map.valueIterator();
+            while (ids.next()) |id| try std.testing.expect(id.* != @backingInt(witness.symbol_id));
+        }
+        var encoded: std.ArrayList(u8) = .empty;
+        defer encoded.deinit(a);
+        try @import("semantic_codec.zig").serialize(sem, &encoded, a);
+        var roundtrip_arena = std.heap.ArenaAllocator.init(a);
+        defer roundtrip_arena.deinit();
+        const roundtrip = try @import("semantic_codec.zig").deserialize(encoded.items, roundtrip_arena.allocator());
+        try std.testing.expectEqual(sem.source_owned_retirements.count(), roundtrip.source_owned_retirements.count());
+        try std.testing.expect(roundtrip.source_owned_retirements.contains(@backingInt(witness.symbol_id)));
+        var linker = Linker.init(a, &graph, .cjs);
+        defer linker.deinit();
+        try linker.link();
+        var shaker = try @import("tree_shaker.zig").TreeShaker.init(a, &graph, &linker);
+        defer shaker.deinit();
+        try shaker.analyze(&.{entry});
+        linker.tree_shaker_active = true;
+        try linker.finalize(.{ .compute_renames = true, .compute_mangling = minify });
+        linker.populateImportSymbols();
+        const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, &graph, &.{ .format = .cjs }, &linker, &shaker);
+        defer output.deinit(a);
+        const observed = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", output.output } });
+        defer a.free(observed.stdout);
+        defer a.free(observed.stderr);
+        if (source_index == 0) {
+            try std.testing.expect(std.mem.startsWith(u8, output.output, "\"use strict\";"));
+            try std.testing.expect(observed.term == .exited and observed.term.exited != 0);
+            try std.testing.expect(std.mem.indexOf(u8, observed.stderr, "ReferenceError: Status is not defined") != null);
+        } else {
+            try std.testing.expect(observed.term == .exited and observed.term.exited == 0);
+            try std.testing.expectEqualStrings("43 43\n", observed.stdout);
+        }
     };
 }

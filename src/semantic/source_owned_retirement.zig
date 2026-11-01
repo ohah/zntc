@@ -95,7 +95,7 @@ pub fn validate(
         const witness = entry.value_ptr.*;
         if (witness.reason == .erased_const_enum_environment) {
             if (@backingInt(witness.symbol_id) != sid) return false;
-            if (!@import("enum_environment_retirement.zig").validate(witness, state, ast_ptr, reachable, symbol_rows, symbol_ids, scopes, owners, roots.scope_history)) return false;
+            if (!try @import("enum_environment_retirement.zig").validate(allocator, witness, state, ast_ptr, reachable, symbol_rows, symbol_ids, scopes, owners, roots.scope_history)) return false;
             closure_roots.set(witness.source_scope.toIndex());
             continue;
         }
@@ -287,7 +287,7 @@ pub fn validate(
         if (entry.value_ptr.external_import) |origin| {
             const retired = state.get(@backingInt(origin.binding_symbol)) orelse return false;
             const raw = @backingInt(entry.key_ptr.*);
-            if (retired.reason != .erased_import_binding or raw >= ast_ptr.nodes.items.len or raw >= symbol_ids.len or symbol_ids[raw] != null or
+            if ((retired.reason != .erased_import_binding and retired.reason != .erased_const_enum_binding) or raw >= ast_ptr.nodes.items.len or raw >= symbol_ids.len or symbol_ids[raw] != null or
                 !reachable.isSet(raw) or entry.value_ptr.source_node != origin.before.node_index or
                 origin.before.symbol_id != origin.binding_symbol or origin.before.flags.declare or
                 !origin.before.declaration_node_index.isNone() or origin.before.scope_id.isNone() or origin.before.scope_id.toIndex() >= scopes.len) return false;
@@ -323,8 +323,11 @@ pub fn validate(
     }
     for (symbol_rows, 0..) |other, sid| {
         if (!other.scope_id.isNone() and other.scope_id.toIndex() < scopes.len and inactive.isSet(other.scope_id.toIndex()) and !state.contains(@intCast(sid))) return false;
-        if ((other.synthetic_owner_id != null and state.contains(@backingInt(other.synthetic_owner_id.?))) or
-            (!other.annex_b_alias.variable.isNone() and state.contains(@backingInt(other.annex_b_alias.variable))) or
+        if (other.synthetic_owner_id) |owner| if (state.contains(@backingInt(owner))) {
+            const retired = state.get(@intCast(sid)) orelse return false;
+            if (!@import("enum_environment_retirement.zig").validRetiredOwner(retired, state)) return false;
+        };
+        if ((!other.annex_b_alias.variable.isNone() and state.contains(@backingInt(other.annex_b_alias.variable))) or
             (!other.parameter_copy.parameter_source.isNone() and state.contains(@backingInt(other.parameter_copy.parameter_source)))) return false;
     }
     return true;

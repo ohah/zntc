@@ -5887,9 +5887,10 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
             while (uses.next()) |node| if (!live.contains(@backingInt(node.*))) try stale_uses.append(self.allocator, node.*);
             for (stale_uses.items) |node| _ = editor.node_scope_provenance.remove(node);
             try elideUnreachableEmptyGeneratedScopes(self, editor, &live);
+            @import("../erased_const_enum_handoff.zig").detachErasedUses(self, editor, &live) catch |err| return editError(err);
+            @import("../erased_const_enum_handoff.zig").retireDeclarations(self, editor, &live) catch |err| return editError(err);
             @import("../erased_const_enum_handoff.zig").apply(self, editor, &live) catch |err| return editError(err);
             try detachErasedConstEnumExternalReads(self, editor, &live, root);
-            @import("../erased_const_enum_handoff.zig").retireDeclarations(self, editor, &live) catch |err| return editError(err);
             try reanchorDetachedDeclarations(self, editor, &live);
         }
     }

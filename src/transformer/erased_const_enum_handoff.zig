@@ -92,6 +92,11 @@ pub fn apply(self: anytype, editor: anytype, live: *const std.AutoHashMapUnmanag
     for (self.erased_const_enum_binding_handoffs.items) |plan| {
         const w = plan.witness;
         const sid = @backingInt(w.symbol_id);
+        if (editor.source_owned_retirements.get(sid)) |published| {
+            if (published.reason != .erased_const_enum_binding or published.source_owner != w.source_owner or
+                published.source_name != w.source_name or !Retirement.equalSymbol(published.before, w.before)) return error.InvalidSymbol;
+            continue;
+        }
         if (live.contains(@backingInt(w.source_owner)) or live.contains(@backingInt(w.source_name))) continue;
         if (sid >= editor.symbols.items.len or @backingInt(plan.target) >= editor.symbols.items.len) return error.InvalidSymbol;
         var before = w.before;
@@ -310,6 +315,7 @@ test "erased const enum source handoff retains exact declaration witnesses acros
 pub const DeclarationSource = struct {
     witness: Retirement.Witness,
     declarations: []const Symbol.Reference,
+    exposed_bindings: []const Symbol.SymbolId = &.{},
 };
 
 fn captureDeclarationSources(self: anytype) !void {
@@ -361,7 +367,9 @@ fn captureDeclarationSources(self: anytype) !void {
         const owned = try candidate.rows.toOwnedSlice(self.allocator);
         var transferred = false;
         errdefer if (!transferred) self.allocator.free(owned);
-        try self.erased_const_enum_declaration_sources.append(self.allocator, .{ .witness = candidate.witness, .declarations = owned });
+        const exposed = try captureExposedBindings(self, candidate.witness);
+        errdefer if (!transferred) self.allocator.free(exposed);
+        try self.erased_const_enum_declaration_sources.append(self.allocator, .{ .witness = candidate.witness, .declarations = owned, .exposed_bindings = exposed });
         transferred = true;
         for (self.ast.nodes.items[0..self.parser_node_count], 0..) |enum_node, raw| {
             if (enum_node.tag != .ts_enum_declaration or !self.ast.hasExtra(enum_node.data.extra, Ast.EnumExtra.flags) or
@@ -478,14 +486,36 @@ fn captureEnvironment(self: anytype, outer: Retirement.Witness) std.mem.Allocato
         error.OutOfMemory => return error.OutOfMemory,
         else => invalidEnvironmentSource(),
     }) orelse invalidEnvironmentSource();
+    var members: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer members.deinit(self.allocator);
     for (self.references) |row| {
-        if (!row.flags.declare or @backingInt(row.scope_id) != scope_raw) continue;
         const sid = @backingInt(row.symbol_id);
         if (sid >= self.symbols.len) invalidEnvironmentSource();
         const before = self.symbols[sid];
-        if (before.synthetic_kind != .enum_iife_parameter and before.synthetic_kind != .implicit_arguments) continue;
-        if (!row.node_index.isNone() or !row.declaration_node_index.isNone() or
-            !std.meta.eql(row.flags, @as(Symbol.ReferenceFlags, .{ .declare = true }))) invalidEnvironmentSource();
+        var member: ?@import("../semantic/enum_environment_retirement.zig").Member = null;
+        if (before.synthetic_kind == .enum_iife_member and @backingInt(before.scope_id) == scope_raw) {
+            if (row.flags.declare or row.node_index.isNone() or before.synthetic_owner_id != parameter_sid) invalidEnvironmentSource();
+            const entry = try members.getOrPut(self.allocator, sid);
+            if (entry.found_existing) continue;
+            const start = self.ast.readExtra(outer.source_owner_node.data.extra, Ast.EnumExtra.members_start);
+            const len = self.ast.readExtra(outer.source_owner_node.data.extra, Ast.EnumExtra.members_len);
+            if (start > self.ast.extra_data.items.len or len > self.ast.extra_data.items.len - start) invalidEnvironmentSource();
+            for (self.ast.extra_data.items[start..][0..len]) |raw| {
+                const declaration: Ast.NodeIndex = @fromBackingInt(raw);
+                const node = self.ast.getNode(declaration);
+                if (node.tag != .ts_enum_member or node.data.binary.left.isNone()) continue;
+                const key = self.ast.getNode(node.data.binary.left);
+                if (!std.meta.eql(key.span, before.declaration_span)) continue;
+                if (member != null) invalidEnvironmentSource();
+                member = .{ .declaration = declaration, .declaration_node = node, .key = node.data.binary.left, .key_node = key, .read_node = self.ast.getNode(row.node_index) };
+            }
+            if (member == null) invalidEnvironmentSource();
+        } else {
+            if (!row.flags.declare or @backingInt(row.scope_id) != scope_raw) continue;
+            if (before.synthetic_kind != .enum_iife_parameter and before.synthetic_kind != .implicit_arguments) continue;
+            if (!row.node_index.isNone() or !row.declaration_node_index.isNone() or
+                !std.meta.eql(row.flags, @as(Symbol.ReferenceFlags, .{ .declare = true }))) invalidEnvironmentSource();
+        }
         const empty = try self.allocator.alloc(Symbol.Reference, 0);
         errdefer self.allocator.free(empty);
         try self.erased_const_enum_declaration_sources.append(self.allocator, .{ .declarations = empty, .witness = .{
@@ -495,14 +525,14 @@ fn captureEnvironment(self: anytype, outer: Retirement.Witness) std.mem.Allocato
             .declaration_node = null,
             .source_owner = outer.source_owner,
             .source_owner_node = outer.source_owner_node,
-            .source_scope = row.scope_id,
+            .source_scope = before.scope_id,
             .source_parent = scope.parent,
             .source_name = outer.source_name,
             .source_name_symbol = outer.symbol_id,
-            .closure_scope = row.scope_id,
+            .closure_scope = before.scope_id,
             .closure_parent = scope.parent,
             .reason = .erased_const_enum_environment,
-            .enum_environment = .{ .owner = birth_owner, .parameter_symbol = parameter_sid, .binding_declaration = outer.declaration, .binding_node = outer.declaration_node.? },
+            .enum_environment = .{ .owner = birth_owner, .parameter_symbol = parameter_sid, .binding_declaration = outer.declaration, .binding_node = outer.declaration_node.?, .member = member },
         } });
     }
 }
@@ -528,7 +558,8 @@ fn retireEnvironment(self: anytype, editor: anytype, live: *const std.AutoHashMa
         editor.references.items[write] = row;
         write += 1;
     }
-    if (declarations != 1) return error.ReferenceNotFound;
+    const expected_declarations: usize = if (w.before.synthetic_kind == .enum_iife_member) 0 else 1;
+    if (declarations != expected_declarations) return error.ReferenceNotFound;
     for (editor.symbol_ids.items) |id| if (id == sid) return error.InvalidSymbol;
     editor.references.shrinkRetainingCapacity(write);
     editor.reference_index.clearRetainingCapacity();
@@ -608,4 +639,221 @@ test "erased const enum environment capture keeps source graph unchanged across 
     }
     try std.testing.expect(failures > 0 and success);
     std.debug.print("ENUM_SOURCE_CAPTURE_HEAP_OOM failures={d} success={}\n", .{ failures, success });
+}
+
+test "erased const enum member birth rejects foreign keys reads flags and retired owner edges" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const Transformer = @import("transformer.zig").Transformer;
+    const Data = @import("../bundler/module.zig").ModuleSemanticData;
+    const source = "function first(){const enum Kind{Left=3,Right=Left+4}return Kind.Right}function second(){const enum Kind{\"Left\"=3,Right=Left+4}return Kind.Right}console.log(first(),second());";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".unknown");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const parser_count: u32 = @intCast(parser.ast.nodes.items.len);
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_source_external_origins = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var transformer = try Transformer.initFromOwnedAst(a, &parser.ast, .{});
+    try transformer.initSymbolIdsOwned(analyzer.ast, analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.scope_history = analyzer.scope_history;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.semantic_edit_enabled = true;
+    transformer.detach_erased_const_enum_external_reads = true;
+    transformer.record_explicit_global_references = true;
+    const root = try transformer.transform();
+    try std.testing.expectEqual(@as(usize, 0), transformer.erased_const_enum_binding_handoffs.items.len);
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var data: Data = .{ .symbols = edited.symbols, .scopes = edited.scopes, .scope_maps = edited.scope_maps, .scope_owner_map = edited.scope_owner_map, .symbol_ids = edited.symbol_ids, .references = edited.references, .exported_names = analyzer.exported_names, .unresolved_references = analyzer.unresolved_references, .helper_scope_map = edited.helper_scope_map, .node_scope_provenance = edited.node_scope_provenance, .scope_history = edited.scope_history, .source_owned_retirements = edited.source_owned_retirements };
+    const Check = struct {
+        fn run(alloc: std.mem.Allocator, tree: *const Ast.Ast, output: Ast.NodeIndex, count: u32, sem: *const Data, unresolved: *const std.AutoHashMapUnmanaged(u32, void), producer: *const Transformer) !bool {
+            var report = try @import("symbol_coverage.zig").checkOutputNormalFormQuiet(alloc, tree, output, count, sem.symbol_ids, sem.symbols.items, sem.scopes, sem.scope_maps, &sem.scope_owner_map, sem.references, producer.helper_ref_nodes.items, &sem.helper_scope_map, unresolved, &producer.explicit_global_reference_nodes, &producer.reference_origin_map, .{ .pre_transform_scope_count = sem.scope_history.source_scopes.len }, &sem.source_owned_retirements, .{ .node_scope_provenance = &sem.node_scope_provenance, .scope_history = &sem.scope_history, .runtime_helper_symbols = &producer.runtime_helper_symbol_ids, .class_self_symbols = &producer.class_self_symbol_map });
+            defer report.deinit(alloc);
+            return report.hasCompleteOutputIdentityBeforeNames();
+        }
+    };
+    try std.testing.expectEqual(@as(u32, 6), data.source_owned_retirements.count());
+    try std.testing.expect(try Check.run(a, transformer.ast, root, parser_count, &data, &analyzer.unresolved_reference_nodes, &transformer));
+    var members: [2]Retirement.Witness = undefined;
+    var count: usize = 0;
+    var states = data.source_owned_retirements.valueIterator();
+    while (states.next()) |state| if (state.before.synthetic_kind == .enum_iife_member) {
+        members[count] = state.*;
+        count += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 2), count);
+    const actual = members[0];
+    const other = members[1];
+    for (0..12) |which| {
+        var poison = actual;
+        var birth = poison.enum_environment.?;
+        var member = birth.member.?;
+        switch (which) {
+            0 => birth.parameter_symbol = other.enum_environment.?.parameter_symbol,
+            1 => member.declaration = other.enum_environment.?.member.?.declaration,
+            2 => member.key = other.enum_environment.?.member.?.key,
+            3 => member.key_node = other.enum_environment.?.member.?.key_node,
+            4 => member.read_node = other.enum_environment.?.member.?.read_node,
+            5 => poison.declaration = other.declaration,
+            6 => poison.declaration.flags.write = true,
+            7 => poison.before.synthetic_owner_id = other.enum_environment.?.parameter_symbol,
+            8 => poison.before.synthetic_kind = .enum_iife_parameter,
+            9 => {
+                birth.member = null;
+                poison.enum_environment = birth;
+            },
+            10 => {
+                poison.declaration.node_index = member.key;
+                member.read_node = member.key_node;
+            },
+            11 => {
+                poison.declaration = other.declaration;
+                member = other.enum_environment.?.member.?;
+            },
+            else => unreachable,
+        }
+        if (which != 9) {
+            birth.member = member;
+            poison.enum_environment = birth;
+        }
+        data.source_owned_retirements.getPtr(@backingInt(actual.symbol_id)).?.* = poison;
+        try std.testing.expect(!try Check.run(a, transformer.ast, root, parser_count, &data, &analyzer.unresolved_reference_nodes, &transformer));
+        data.source_owned_retirements.getPtr(@backingInt(actual.symbol_id)).?.* = actual;
+    }
+    var active: ?usize = null;
+    for (data.symbols.items, 0..) |symbol, sid| if (symbol.kind == .function_decl and !data.source_owned_retirements.contains(@intCast(sid))) {
+        active = sid;
+        break;
+    };
+    const active_sid = active orelse return error.MissingActiveControl;
+    const original = data.symbols.items[active_sid];
+    data.symbols.items[active_sid].synthetic_owner_id = actual.enum_environment.?.parameter_symbol;
+    try std.testing.expect(!try Check.run(a, transformer.ast, root, parser_count, &data, &analyzer.unresolved_reference_nodes, &transformer));
+    data.symbols.items[active_sid] = original;
+    try std.testing.expect(try Check.run(a, transformer.ast, root, parser_count, &data, &analyzer.unresolved_reference_nodes, &transformer));
+    var encoded: std.ArrayList(u8) = .empty;
+    try @import("../bundler/semantic_codec.zig").serialize(&data, &encoded, a);
+    var decoded = try @import("../bundler/semantic_codec.zig").deserialize(encoded.items, a);
+    try std.testing.expect(try Check.run(a, transformer.ast, root, parser_count, &decoded, &analyzer.unresolved_reference_nodes, &transformer));
+}
+
+fn captureExposedBindings(self: anytype, erased: Retirement.Witness) std.mem.Allocator.Error![]const Symbol.SymbolId {
+    var bindings: std.ArrayList(Symbol.SymbolId) = .empty;
+    errdefer bindings.deinit(self.allocator);
+    const name = self.ast.identifierNameText(erased.declaration_node.?);
+    var scope = self.scopes[erased.source_scope.toIndex()].parent;
+    var fuel = self.scopes.len;
+    while (!scope.isNone() and fuel > 0) : (fuel -= 1) {
+        if (scope.toIndex() >= self.scopes.len or scope.toIndex() >= self.scope_maps.len) invalidEnvironmentSource();
+        if (self.scopes[scope.toIndex()].blocksMangling()) break;
+        var entries = self.scope_maps[scope.toIndex()].iterator();
+        while (entries.next()) |entry| {
+            if (!Scanner.identifierNamesEqual(entry.key_ptr.*, name)) continue;
+            if (entry.value_ptr.* >= self.symbols.len) invalidEnvironmentSource();
+            const sid: Symbol.SymbolId = @fromBackingInt(@as(u32, @intCast(entry.value_ptr.*)));
+            if (sid != erased.symbol_id) try bindings.append(self.allocator, sid);
+            break;
+        }
+        scope = self.scopes[scope.toIndex()].parent;
+    }
+    if (fuel == 0 and !scope.isNone()) invalidEnvironmentSource();
+    return bindings.toOwnedSlice(self.allocator);
+}
+
+/// Consume the actual current known-SID edges after lowering, before the enum
+/// declarations retire. Targets were selected only in the initial source maps.
+pub fn detachErasedUses(self: anytype, editor: anytype, live: *const std.AutoHashMapUnmanaged(u32, void)) !void {
+    var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer parents.deinit(self.allocator);
+    var parents_ready = false;
+    for (self.erased_const_enum_declaration_sources.items) |source| {
+        const w = source.witness;
+        if (w.reason != .erased_const_enum_binding or live.contains(@backingInt(w.source_owner))) continue;
+        var target: ?Symbol.SymbolId = null;
+        for (source.exposed_bindings) |candidate| {
+            const sid = @backingInt(candidate);
+            if (sid >= editor.symbols.items.len) return error.InvalidSymbol;
+            if (editor.source_owned_retirements.contains(sid)) continue;
+            const scope = editor.symbols.items[sid].scope_id;
+            if (scope.isNone() or scope.toIndex() >= editor.scope_maps.items.len) return error.InvalidScope;
+            var present = false;
+            var values = editor.scope_maps.items[scope.toIndex()].valueIterator();
+            while (values.next()) |value| if (value.* == sid) {
+                present = true;
+                break;
+            };
+            if (!present) return error.InvalidSymbol;
+            target = candidate;
+            break;
+        }
+        var index = editor.references.items.len;
+        while (index > 0) {
+            index -= 1;
+            const row = editor.references.items[index];
+            if (row.symbol_id != w.symbol_id or row.node_index.isNone() or !live.contains(@backingInt(row.node_index))) continue;
+            const raw = @backingInt(row.node_index);
+            if (raw >= editor.symbol_ids.items.len or editor.symbol_ids.items[raw] != @backingInt(w.symbol_id) or row.flags.declare or !row.declaration_node_index.isNone()) return error.InvalidSymbol;
+            if (target) |sid| {
+                try editor.rebindReference(row.node_index, sid);
+                self.symbol_ids.items[raw] = @backingInt(sid);
+                continue;
+            }
+            const node = self.ast.getNode(row.node_index);
+            switch (node.tag) {
+                .identifier_reference, .assignment_target_identifier, .jsx_identifier => {},
+                else => return error.InvalidNode,
+            }
+            if (!parents_ready) {
+                var nodes = live.keyIterator();
+                while (nodes.next()) |parent_raw| {
+                    var children = @import("../parser/ast_walk.zig").children(self.ast, self.ast.nodes.items[parent_raw.*]);
+                    while (children.next()) |child| {
+                        if (child.isNone()) continue;
+                        const entry = try parents.getOrPut(self.allocator, @backingInt(child));
+                        if (entry.found_existing and entry.value_ptr.* != parent_raw.*) return error.InvalidNode;
+                        entry.value_ptr.* = parent_raw.*;
+                    }
+                }
+                parents_ready = true;
+            }
+            var in_with = false;
+            var child = raw;
+            var fuel = self.ast.nodes.items.len;
+            while (parents.get(child)) |parent| : (fuel -= 1) {
+                if (fuel == 0) return error.InvalidNode;
+                const ancestor = self.ast.nodes.items[parent];
+                if (ancestor.tag == .with_statement and @backingInt(ancestor.data.binary.right) == child) in_with = true;
+                child = parent;
+            }
+            if (editor.node_scope_provenance.get(row.node_index)) |before| {
+                if (before.scope != row.scope_id or before.source_external != null or before.external_import != null) return error.InvalidSymbol;
+            }
+            try editor.node_scope_provenance.put(self.allocator, row.node_index, .{
+                .scope = row.scope_id,
+                .source_node = row.node_index,
+                .with_environment = in_with,
+                .external_import = .{ .binding_symbol = row.symbol_id, .before = row, .before_tag = node.tag, .before_name = node.data.string_ref, .before_span = node.span },
+            });
+            try editor.removeReference(row.node_index);
+            self.symbol_ids.items[raw] = null;
+        }
+    }
 }
