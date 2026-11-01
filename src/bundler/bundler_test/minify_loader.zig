@@ -5991,3 +5991,39 @@ test "Buffer frozen constructor member writes preserve PM and split writer runti
         };
     }
 }
+
+test "async arrow super parameter default preserves source provenance in ES5 bundles" {
+    const source = "class Base { get current() { return this.value; } }\nclass Service extends Base {\n  async readAsync() {\n    await Promise.resolve();\n    var read = async (value = super.current) => value;\n    return await read();\n  }\n}\nvar service = new Service(); service.value = 42;\nservice.readAsync().then(value => console.log(value));";
+    var failures: usize = 0;
+    for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.ts", source);
+        const entry = try absPath(&tmp, "entry.ts");
+        defer std.testing.allocator.free(entry);
+        var bundler = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .platform = .node,
+            .format = .cjs,
+            .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+            .minify_identifiers = minify,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        if (result.hasErrors()) {
+            std.debug.print("async parameter super minify={any} BUILD_REJECT\n", .{minify});
+            for (result.getDiagnostics()) |diag| std.debug.print("{s}\n", .{diag.message});
+            failures += 1;
+            continue;
+        }
+        const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+        defer std.testing.allocator.free(actual.stdout);
+        defer std.testing.allocator.free(actual.stderr);
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, "42\n", actual.stdout)) {
+            std.debug.print("async parameter super minify={any} stdout={s} stderr={s}\n", .{ minify, actual.stdout, actual.stderr });
+            failures += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}
