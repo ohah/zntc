@@ -10214,6 +10214,9 @@ fn runtimeHelpersSafeForRetainedGraph(
     other_helpers.spread_array = false;
     other_helpers.tagged_template_literal = false;
     other_helpers.keep_names = false;
+    // Named-capture wrappers are ordinary tracked runtime-helper imports; the
+    // regexp lowerer attaches each `__wrapRegExp` reference to its helper SID.
+    other_helpers.wrap_regex = false;
     // `__toPropertyKey(key)` wraps a hoisted computed field key (#5553); like
     // the class-call check it is a plain helper call with a tracked reference.
     other_helpers.to_property_key = false;
@@ -10330,6 +10333,31 @@ test "retained private method declarations and calls admit only their helpers" {
     ));
     try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(
         .{ .class_private_method_get = true, .class_private_field_set = true },
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+    ));
+}
+
+test "retained named-regexp wrapper admits its tracked runtime helper" {
+    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(
+        .{ .wrap_regex = true },
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+    ));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(
+        .{ .wrap_regex = true, .tdz = true },
         false,
         false,
         false,

@@ -835,16 +835,21 @@ pub const GENERATOR_RUNTIME_MIN = "var " ++ NAMES.GENERATOR_MIN ++ "=function(){
 /// native 와 같이 undefined 가 되고, 모던 엔진에서 named-group 패턴을 직접 넣어
 /// 재구성한 경우엔 native exec 가 만든 groups 를 클로버하지 않는다. `$<n>` 문자열
 /// 치환은 super 위임(super 가 match 의 groups 를 그대로 사용), 콜백 groups 인자는
-/// native 가 안 줄 때 생략.
+/// native 가 안 줄 때 생략. ES5 `__proto__` capture 는 pair array 로 받아 여기서
+/// null-prototype map 으로 정규화해 호출자 스코프의 `JSON` 이름에 의존하지 않는다.
 pub const WRAP_REGEXP_RUNTIME =
     \\var __wrapRegExp = function() {
-    \\  __wrapRegExp = function(re, groups) { return new BabelRegExp(re, undefined, groups); };
+    \\  __wrapRegExp = function(re, groups) { return new BabelRegExp(re, undefined, normalizeGroups(groups)); };
     \\  var _super = RegExp.prototype;
     \\  var _groups = new WeakMap();
     \\  function BabelRegExp(re, flags, groups) {
     \\    var _this = new RegExp(re, flags);
     \\    _groups.set(_this, groups || _groups.get(re));
     \\    return Object.setPrototypeOf(_this, BabelRegExp.prototype);
+    \\  }
+    \\  function normalizeGroups(groups) {
+    \\    if (!Array.isArray(groups)) return groups;
+    \\    return groups.reduce(function(map, entry) { map[entry[0]] = entry[1]; return map; }, Object.create(null));
     \\  }
     \\  Object.setPrototypeOf(BabelRegExp.prototype, RegExp.prototype);
     \\  Object.setPrototypeOf(BabelRegExp, RegExp);
@@ -900,7 +905,7 @@ pub const WRAP_REGEXP_RUNTIME =
     \\};
     \\
 ;
-pub const WRAP_REGEXP_RUNTIME_MIN = "var " ++ NAMES.WRAP_REGEXP_MIN ++ "=function(){" ++ NAMES.WRAP_REGEXP_MIN ++ "=function(re,groups){return new BabelRegExp(re,undefined,groups)};var _super=RegExp.prototype;var _groups=new WeakMap();function BabelRegExp(re,flags,groups){var _this=new RegExp(re,flags);_groups.set(_this,groups||_groups.get(re));return Object.setPrototypeOf(_this,BabelRegExp.prototype)}Object.setPrototypeOf(BabelRegExp.prototype,RegExp.prototype);Object.setPrototypeOf(BabelRegExp,RegExp);BabelRegExp.prototype.exec=function(str){var result=_super.exec.call(this,str);if(result){result.groups=buildGroups(result,this);var indices=result.indices;if(indices)indices.groups=buildGroups(indices,this)}return result};BabelRegExp.prototype[Symbol.replace]=function(str,substitution){if(typeof substitution===\"string\"){var groups=_groups.get(this);if(!groups)return _super[Symbol.replace].call(this,str,substitution);return _super[Symbol.replace].call(this,str,substitution.replace(/\\$<([^>]+)(>|$)/g,function(match,name,end){if(end===\"\")return match;var group=groups[name];return Array.isArray(group)?\"$\"+group.join(\"$\"):typeof group===\"number\"?\"$\"+group:\"\"}))}else if(typeof substitution===\"function\"){var _this=this;return _super[Symbol.replace].call(this,str,function(){var args=arguments;if(typeof args[args.length-1]!==\"object\"){var g=buildGroups(args,_this);if(g!==undefined){args=[].slice.call(args);args.push(g)}}return substitution.apply(this,args)})}return _super[Symbol.replace].call(this,str,substitution)};function buildGroups(result,re){var g=_groups.get(re);if(!g)return result.groups;return Object.keys(g).reduce(function(groups,name){var i=g[name];if(typeof i===\"number\")groups[name]=result[i];else{var k=0;while(result[i[k]]===undefined&&k+1<i.length)k++;groups[name]=result[i[k]]}return groups},Object.create(null))}return " ++ NAMES.WRAP_REGEXP_MIN ++ ".apply(this,arguments)};";
+pub const WRAP_REGEXP_RUNTIME_MIN = "var " ++ NAMES.WRAP_REGEXP_MIN ++ "=function(){" ++ NAMES.WRAP_REGEXP_MIN ++ "=function(re,groups){return new BabelRegExp(re,undefined,normalizeGroups(groups))};var _super=RegExp.prototype;var _groups=new WeakMap();function BabelRegExp(re,flags,groups){var _this=new RegExp(re,flags);_groups.set(_this,groups||_groups.get(re));return Object.setPrototypeOf(_this,BabelRegExp.prototype)}function normalizeGroups(groups){if(!Array.isArray(groups))return groups;return groups.reduce(function(map,entry){map[entry[0]]=entry[1];return map},Object.create(null))}Object.setPrototypeOf(BabelRegExp.prototype,RegExp.prototype);Object.setPrototypeOf(BabelRegExp,RegExp);BabelRegExp.prototype.exec=function(str){var result=_super.exec.call(this,str);if(result){result.groups=buildGroups(result,this);var indices=result.indices;if(indices)indices.groups=buildGroups(indices,this)}return result};BabelRegExp.prototype[Symbol.replace]=function(str,substitution){if(typeof substitution===\"string\"){var groups=_groups.get(this);if(!groups)return _super[Symbol.replace].call(this,str,substitution);return _super[Symbol.replace].call(this,str,substitution.replace(/\\$<([^>]+)(>|$)/g,function(match,name,end){if(end===\"\")return match;var group=groups[name];return Array.isArray(group)?\"$\"+group.join(\"$\"):typeof group===\"number\"?\"$\"+group:\"\"}))}else if(typeof substitution===\"function\"){var _this=this;return _super[Symbol.replace].call(this,str,function(){var args=arguments;if(typeof args[args.length-1]!==\"object\"){var g=buildGroups(args,_this);if(g!==undefined){args=[].slice.call(args);args.push(g)}}return substitution.apply(this,args)})}return _super[Symbol.replace].call(this,str,substitution)};function buildGroups(result,re){var g=_groups.get(re);if(!g)return result.groups;return Object.keys(g).reduce(function(groups,name){var i=g[name];if(typeof i===\"number\")groups[name]=result[i];else{var k=0;while(result[i[k]]===undefined&&k+1<i.length)k++;groups[name]=result[i[k]]}return groups},Object.create(null))}return " ++ NAMES.WRAP_REGEXP_MIN ++ ".apply(this,arguments)};";
 
 /// __await: async generator 안 await 표현의 wrapper. (#1911)
 /// `await x` 는 async generator body 안에서 `yield __await(x)` 로 변환되며,
