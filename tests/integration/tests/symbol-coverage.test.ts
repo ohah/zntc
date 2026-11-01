@@ -40804,11 +40804,88 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'derived constructor composite lexical this-property initializer stays on reanalysis',
+        name: 'derived constructor composite lexical this-property initializer retains its graph',
         source:
           'class Base { get current() { return 9; } } class DerivedLocal extends Base { constructor() { super(); const value = this.current + 1; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '10\n',
+      },
+      {
+        name: 'derived constructor computed this-property lexical arithmetic retains its graph and getter receiver',
+        source:
+          'var reads = 0; class Base { constructor() { this.cursor = 0; } get current() { reads++; return ++this.cursor; } } class DerivedLocal extends Base { constructor(key) { super(); const value = this[key] + 1; this.value = value; } } console.log(new DerivedLocal("current").value, reads);',
+        graph: 'retained',
+        output: '2 1\n',
+      },
+      {
+        name: 'derived constructor computed this-property lexical unary arithmetic retains its graph',
+        source:
+          'class Base { get current() { return 4; } } class DerivedLocal extends Base { constructor() { super(); const value = +this["current"] * 2; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'retained',
+        output: '8\n',
+      },
+      {
+        name: 'derived constructor computed this-property lexical short circuit retains its graph',
+        source:
+          'var reads = 0; class Base { constructor() { this.cursor = 0; } get current() { reads++; return ++this.cursor; } } class DerivedLocal extends Base { constructor() { super(); const value = this["current"] && this.current; this.value = value; } } console.log(new DerivedLocal().value, reads);',
+        graph: 'retained',
+        output: '2 2\n',
+      },
+      {
+        name: 'derived constructor computed this-property lexical conditional stays on reanalysis',
+        source:
+          'class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor() { super(); const value = this["current"] ? 2 : 3; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'derived constructor computed this-property lexical compound key stays on reanalysis',
+        source:
+          'class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor(key) { super(); const value = this[key + ""] + 1; this.value = value; } } console.log(new DerivedLocal("current").value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'derived constructor computed this-property lexical call stays on reanalysis',
+        source:
+          'class Base { current() { return 1; } } class DerivedLocal extends Base { constructor() { super(); const value = this.current() + 1; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'derived constructor computed this-property lexical optional chain stays on reanalysis',
+        source:
+          'class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor() { super(); const value = this?.["current"] + 1; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'derived constructor computed this-property lexical member chain stays on reanalysis',
+        source:
+          'class Base { get current() { return { value: 1 }; } } class DerivedLocal extends Base { constructor() { super(); const value = this["current"].value + 1; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'derived constructor computed this-property lexical assignment stays on reanalysis',
+        source:
+          'class Base { constructor() { this.current = 1; } } class DerivedLocal extends Base { constructor() { super(); const value = (this.current = 2); this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'derived constructor composite super-property initializer stays on reanalysis',
+        source:
+          'class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current + 1; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'derived constructor multi-declarator composed this reads retain order and graph',
+        source:
+          'class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class DerivedLocal extends Base { constructor(key) { super(); const first = this[key] + 10, second = this.current + 20; this.value = first + second; } } console.log(new DerivedLocal("current").value);',
+        graph: 'retained',
+        output: '33\n',
       },
       {
         name: 'derived constructor escaped lexical this-property initializer stays on reanalysis',
@@ -43560,9 +43637,9 @@ describe('ES5 same-var-scope lexical declarations retain the bundler graph (#619
     const output = join(dir, 'output.cjs');
     const names = Array.from({ length: 10 }, (_, index) => `thisValue${index}`);
     const declarations = names
-      .map((name, index) => `${index === 0 ? 'let' : 'const'} ${name} = this["current"];`)
+      .map((name, index) => `${index === 0 ? 'let' : 'const'} ${name} = this["current"] + 100;`)
       .join('\n');
-    const expected = `${names.map((_, index) => index + 1).join(' ')}\n`;
+    const expected = `${names.map((_, index) => index + 101).join(' ')}\n`;
     const valueExpression = names.join(" + ' ' + ");
     const source = `class DerivedBase { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } }\nclass DerivedReader extends DerivedBase { constructor() {\n  super();\n${declarations}\n  this.values = ${valueExpression};\n} }\nconsole.log(new DerivedReader().values);`;
     try {
