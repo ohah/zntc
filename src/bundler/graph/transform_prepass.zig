@@ -7039,10 +7039,11 @@ fn methodHasUnsupportedImplicitArgumentsParameterReferences(
         if (@backingInt(default_value) >= ast.nodes.items.len or
             pattern.isNone() or @backingInt(pattern) >= ast.nodes.items.len) return true;
 
-        // Certificates are direct, non-optional member reads on a simple
-        // identifier parameter: `.length` or a computed string/numeric key.
-        // Parentheses and composed expressions have different roots and fail
-        // closed.
+        // Certificates are direct, non-optional reads from the implicit
+        // arguments binding: `.length` or a computed string/numeric key. The
+        // selected value may be an object; the lowerer carries that exact
+        // value into the default, preserving identity. Parentheses, composed
+        // expressions, and dynamic keys fail closed.
         var allowed_reference: ?u32 = null;
         const default = ast.getNode(default_value);
         if (ast.getNode(pattern).tag == .binding_identifier and
@@ -7134,9 +7135,10 @@ fn methodHasUnsupportedImplicitArgumentsParameterReferences(
             const symbol = semantic.symbols.items[raw_symbol];
             if (symbol.synthetic_kind != .implicit_arguments or symbol.scope_id.isNone()) continue;
             const scope = @backingInt(symbol.scope_id);
-            // Keep the parameter scalar read on its source engine only when
-            // no body or lexical-arrow reference needs to compare against the
-            // generated inner function's distinct arguments object.
+            // Keep the certified parameter read on its source engine only
+            // when no body or lexical-arrow reference needs to compare against
+            // the generated inner function's distinct arguments object. The
+            // value passed to the parameter default keeps its source identity.
             if (scope == owner_scope or (parameter_scope != null and scope == parameter_scope.?)) return true;
         }
     }
