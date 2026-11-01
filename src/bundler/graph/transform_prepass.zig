@@ -17849,6 +17849,146 @@ fn moduleHasRegisteredOutputRoles(module: *const Module) bool {
     return false;
 }
 
+test "generic prepass transaction publishes a completed isolated candidate" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const parse_allocator = arena.allocator();
+    const graph_allocator = std.testing.allocator;
+    const source = "const local=1;export{local as \"quoted\"};";
+    const fixture = try runtimeHelperReanalysisTestFixture(parse_allocator, source);
+
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.js");
+    module.source = source;
+    module.module_type = .js;
+    module.state = .ready;
+    module.ast = fixture.ast;
+    module.semantic = fixture.semantic;
+    module.alias_table = AliasTable.init(graph_allocator);
+    _ = try module.alias_table.?.declare("installed-alias");
+    var source_export_index: std.StringHashMapUnmanaged(u32) = .empty;
+    try source_export_index.put(graph_allocator, "installed-export", 0);
+    module.export_index_by_name = source_export_index;
+    defer if (module.alias_table) |*table| table.deinit();
+    defer if (module.export_index_by_name) |*index| index.deinit(graph_allocator);
+
+    module.export_bindings = try binding_scanner_mod.extractExportBindings(parse_allocator, &module.ast.?, &.{}, &.{});
+    const semantic = &module.semantic.?;
+    try binding_scanner_mod.populateSyntheticSymbolsWithOwnerScope(&module.alias_table.?, module.index, module.export_bindings, &semantic.symbols, parse_allocator, semantic.scope_maps[0], semantic.symbol_ids, @fromBackingInt(@as(u32, 0)));
+    var prepared = try PreparedGenericPrepass.init(&module, parse_allocator);
+    defer prepared.discard(graph_allocator);
+    var candidate_alias_table = AliasTable.init(graph_allocator);
+    _ = try candidate_alias_table.declare("published-alias");
+    prepared.candidate.alias_table = candidate_alias_table;
+    var candidate_export_index: std.StringHashMapUnmanaged(u32) = .empty;
+    try candidate_export_index.put(graph_allocator, "published-export", 1);
+    prepared.candidate.export_index_by_name = candidate_export_index;
+    prepared.candidate.state = .parsed;
+
+    try prepared.prepareExportOrigins();
+    try std.testing.expect(try prepared.isCurrent(parse_allocator));
+    try std.testing.expectEqualStrings("installed-alias", module.alias_table.?.aliases.items[0].name);
+    prepared.publish(graph_allocator);
+
+    try std.testing.expectEqual(Module.State.parsed, module.state);
+    try std.testing.expectEqualStrings("published-alias", module.alias_table.?.aliases.items[0].name);
+    try std.testing.expectEqual(@as(?u32, 1), module.export_index_by_name.?.get("published-export"));
+    try std.testing.expect(module.export_index_by_name.?.get("installed-export") == null);
+    try std.testing.expect(module.export_bindings[0].public_key_origin.?.ast == &module.ast.?);
+}
+
+test "generic prepass run publishes transformed output and preserves parser AST" {
+    const TestGraph = struct {
+        allocator: std.mem.Allocator,
+        transform_options_base: TransformOptions = .{ .strip_types = true },
+        helper_plugin_opts: @import("../../runtime_helper_modules.zig").SourceOptions = .{},
+        plugins: []const plugin_mod.Plugin = &.{},
+        defines: []const @import("../../parser/scan_results.zig").DefineEntry = &.{},
+        pure: []const []const u8 = &.{},
+        flow: bool = false,
+        worklet_transform: bool = false,
+        codegen_transform: bool = false,
+        react_refresh: bool = false,
+        styled_components: bool = false,
+        styled_components_ssr: bool = true,
+        styled_components_minify: bool = false,
+        styled_components_file_name: bool = true,
+        styled_components_pure: bool = false,
+        styled_components_namespace: []const u8 = "",
+        styled_components_meaningless_file_names: []const []const u8 = &.{"index"},
+        styled_components_top_level_import_paths: []const []const u8 = &.{},
+        styled_components_css_prop: bool = false,
+        emotion: bool = false,
+        emotion_auto_label: @import("../../transformer/transformer.zig").AutoLabelMode = .always,
+        emotion_source_map: bool = false,
+        emotion_label_format: []const u8 = "",
+        emotion_extra_css_sources: []const []const u8 = &.{},
+        emotion_extra_styled_sources: []const []const u8 = &.{},
+        minify_identifiers: bool = true,
+        ignore_annotations: bool = false,
+        wrap_kinds_finalized: bool = false,
+        wrapper_symbols_registered: bool = false,
+        diag_count: usize = 0,
+
+        fn addDiag(
+            self: *@This(),
+            _: anytype,
+            _: anytype,
+            _: []const u8,
+            _: anytype,
+            _: anytype,
+            _: []const u8,
+            _: ?[]const u8,
+        ) void {
+            self.diag_count += 1;
+        }
+
+        fn registerWrapperSymbols(_: *@This()) error{}!void {}
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const graph_allocator = std.testing.allocator;
+    const source = "const value = 1; value;";
+    const fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+    var source_ast_snapshot = try ast_mod.Ast.cloneForTransformer(&fixture.ast, allocator);
+    source_ast_snapshot.type_only_binding_names = try fixture.ast.type_only_binding_names.clone(allocator);
+
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.js");
+    module.source = source;
+    module.module_type = .js;
+    module.state = .ready;
+    module.ast = fixture.ast;
+    module.semantic = fixture.semantic;
+
+    var context: TestGraph = .{ .allocator = graph_allocator };
+    run(&context, &module, allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), context.diag_count);
+    try std.testing.expect(module.ast.?.transformed_root != null);
+    try std.testing.expect(module.ast.?.nodes.items.ptr != fixture.ast.nodes.items.ptr);
+    try std.testing.expect(try sameGenericPrepassAstContents(&source_ast_snapshot, &fixture.ast, allocator));
+    try std.testing.expect(module.transform_cache != null);
+    if (module.alias_table) |*table| table.deinit();
+    if (module.export_index_by_name) |*index| index.deinit(graph_allocator);
+
+    var module_without_semantic = Module.init(@fromBackingInt(@as(u32, 1)), "input-without-semantic.js");
+    module_without_semantic.source = source;
+    module_without_semantic.module_type = .js;
+    module_without_semantic.state = .ready;
+    module_without_semantic.ast = fixture.ast;
+    run(&context, &module_without_semantic, allocator);
+    // Installed generic output requires the initial parser's semantic graph.
+    // A missing graph is rejected before candidate publication, never repaired.
+    try std.testing.expectEqual(@as(usize, 1), context.diag_count);
+    try std.testing.expect(module_without_semantic.semantic == null);
+    try std.testing.expect(module_without_semantic.ast.?.transformed_root == null);
+    try std.testing.expect(module_without_semantic.transform_cache == null);
+    try std.testing.expect(try sameGenericPrepassAstContents(&source_ast_snapshot, &fixture.ast, allocator));
+    if (module_without_semantic.alias_table) |*table| table.deinit();
+    if (module_without_semantic.export_index_by_name) |*index| index.deinit(graph_allocator);
+}
+
 fn genericPreparedOutputHasNormalForm(
     allocator: std.mem.Allocator,
     module: *const Module,
