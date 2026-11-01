@@ -52,6 +52,27 @@ pub fn ES2015Spread(comptime Transformer: type) type {
         /// f(a, ...arr)    → f.apply(void 0, [a].concat(arr))
         /// obj.f(...arr)   → obj.f.apply(obj, arr)
         pub fn lowerSpreadCall(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            return lowerSpreadCallImpl(self, node, false, 0);
+        }
+
+        /// Lower a generated call whose callee and leading arguments already
+        /// carry their exact semantic edits. JSX uses this for factory calls
+        /// built after ordinary node dispatch; only the child arguments still
+        /// need visiting by the spread lowerer.
+        pub fn lowerSpreadCallWithPrevisitedArgs(
+            self: *Transformer,
+            node: Node,
+            previsited_prefix_len: u32,
+        ) Transformer.Error!NodeIndex {
+            return lowerSpreadCallImpl(self, node, true, previsited_prefix_len);
+        }
+
+        fn lowerSpreadCallImpl(
+            self: *Transformer,
+            node: Node,
+            callee_previsited: bool,
+            previsited_prefix_len: u32,
+        ) Transformer.Error!NodeIndex {
             const e = node.data.extra;
             const span = node.span;
 
@@ -60,7 +81,8 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             const args_start = self.ast.extra_data.items[e + 1];
             const args_len = self.ast.extra_data.items[e + 2];
 
-            const new_callee = try self.visitNode(callee_idx);
+            std.debug.assert(previsited_prefix_len <= args_len);
+            const new_callee = if (callee_previsited) callee_idx else try self.visitNode(callee_idx);
 
             // this context: obj.f(...) → obj.f.apply(obj, ...)
             // 단순 f(...) → f.apply(void 0, ...)
@@ -107,7 +129,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             } else try es_helpers.makeVoidZero(self, span);
 
             // args를 하나의 배열로 조합
-            const combined_args = try buildSpreadArgs(self, args_start, args_len, span);
+            const combined_args = try buildSpreadArgs(self, args_start, args_len, span, previsited_prefix_len);
 
             // callee.apply(this, args)
             const apply_prop = try es_helpers.makePropertyName(self, "apply");
@@ -202,7 +224,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             });
 
             // args 조합
-            const combined_args = try buildSpreadArgs(self, args_start, args_len, span);
+            const combined_args = try buildSpreadArgs(self, args_start, args_len, span, 0);
 
             // [null].concat(combined_args)
             const concat_prop = try es_helpers.makePropertyName(self, "concat");
@@ -362,7 +384,13 @@ pub fn ES2015Spread(comptime Transformer: type) type {
         /// (a, ...arr) → [a].concat(arr)
         /// (...arr) → arr
         /// (...arr, b) → [].concat(arr, [b])
-        fn buildSpreadArgs(self: *Transformer, ba_start: u32, ba_len: u32, span: Span) Transformer.Error!NodeIndex {
+        fn buildSpreadArgs(
+            self: *Transformer,
+            ba_start: u32,
+            ba_len: u32,
+            span: Span,
+            previsited_prefix_len: u32,
+        ) Transformer.Error!NodeIndex {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -395,7 +423,11 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                     non_spread_top = self.scratch.items.len;
                     spread_count += 1;
                 } else {
-                    const visited = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
+                    const arg_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+                    const visited = if (i_loop < previsited_prefix_len)
+                        arg_idx
+                    else
+                        try self.visitNode(arg_idx);
                     if (!visited.isNone()) {
                         try self.scratch.append(self.allocator, visited);
                         has_non_spread = true;

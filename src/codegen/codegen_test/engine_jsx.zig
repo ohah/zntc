@@ -569,6 +569,39 @@ test "JSX automatic dev and fragment downlevel spread children" {
     try std.testing.expect(std.mem.indexOf(u8, fragment.output, "_jsxs(_Fragment") != null);
 }
 
+test "JSX classic: downlevels spread child call arguments for ES5" {
+    var r = try helpers.e2eJSXClassicTarget(
+        std.testing.allocator,
+        "const arr = [1, 2]; const x = <Foo>{...arr}</Foo>;",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...arr") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "React.createElement.apply") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__toConsumableArray(arr)") != null);
+}
+
+test "JSX classic: spread child call preserves surrounding arguments and fragments" {
+    var mixed = try helpers.e2eJSXClassicTarget(
+        std.testing.allocator,
+        "const arr = [2, 3]; function before() { return 1; } const x = <Foo><span />{before()}{...arr}{before()}</Foo>;",
+        .es5,
+    );
+    defer mixed.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, mixed.output, "...arr") == null);
+    try std.testing.expect(std.mem.indexOf(u8, mixed.output, "[].concat([Foo,null,React.createElement(\"span\",null),before()],__toConsumableArray(arr),[before()])") != null);
+
+    var fragment = try helpers.e2eJSXClassicTarget(
+        std.testing.allocator,
+        "const arr = [1, 2]; const x = <>{...arr}</>;",
+        .es5,
+    );
+    defer fragment.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, fragment.output, "...arr") == null);
+    try std.testing.expect(std.mem.indexOf(u8, fragment.output, "React.createElement.apply") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fragment.output, "React.Fragment") != null);
+}
+
 test "JSX automatic: fragment spread-only child wraps in array (#4109)" {
     var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <>{...arr}</>;");
     defer r.deinit();
