@@ -3069,7 +3069,6 @@ fn detachErasedTypeImportExternalReads(
                 transformer.ast.extra_data.items.len - import_node.data.extra < 6) return false;
             const import_decl = module_parser.readImportDeclExtras(transformer.ast, import_node.data.extra);
             if (import_decl.is_type_only or import_decl.phase != .none or
-                import_decl.attrs_len != 0 or
                 import_decl.specs_start > transformer.ast.extra_data.items.len or
                 import_decl.specs_len > transformer.ast.extra_data.items.len - import_decl.specs_start or
                 !isValidSourceTextSpan(transformer.ast, identity.local_node.span) or
@@ -6538,7 +6537,7 @@ test "#6193 mixed inline type import external reads require exact surviving runt
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const source = "import { type Shape, runtimeValue as amount } from './values.mjs'; " ++
+    const source = "import { type Shape, runtimeValue as amount } from './values.mjs' with { \"resolution-mode\": \"import\" }; " ++
         "globalThis.Shape = 21; console.log(Shape + amount);";
 
     var scanner = try Scanner.init(allocator, source);
@@ -6707,7 +6706,55 @@ test "#6193 mixed inline type import external reads require exact surviving runt
     transformer.references = original_references;
     detected_mutations += 1;
 
-    try std.testing.expectEqual(@as(usize, 12), detected_mutations);
+    const runtime_import_identity = runtime_snapshot.declarations[0];
+    try std.testing.expectEqual(@as(usize, 1), runtime_import_identity.attributes.len);
+    const output_reachable = try ast_walk.collectReachableNodeIndicesFrom(
+        allocator,
+        transformer.ast,
+        output_root,
+    );
+    defer allocator.free(output_reachable);
+    var output_import_extra: ?u32 = null;
+    for (output_reachable) |raw| {
+        const node = transformer.ast.getNode(@fromBackingInt(@intCast(raw)));
+        if (node.tag == .import_declaration and
+            std.meta.eql(node.span, runtime_import_identity.span))
+        {
+            output_import_extra = node.data.extra;
+            break;
+        }
+    }
+    const import_extra = output_import_extra orelse return error.MissingAttributedRuntimeImport;
+    const attribute_start_slot = import_extra + 4;
+    const attribute_len_slot = import_extra + 5;
+    const original_attribute_start = transformer.ast.extra_data.items[attribute_start_slot];
+    const original_attribute_len = transformer.ast.extra_data.items[attribute_len_slot];
+
+    transformer.ast.extra_data.items[attribute_len_slot] = 0;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, runtime_snapshot));
+    transformer.ast.extra_data.items[attribute_len_slot] = original_attribute_len;
+    detected_mutations += 1;
+
+    transformer.ast.extra_data.items[attribute_start_slot] = std.math.maxInt(u32);
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, runtime_snapshot));
+    transformer.ast.extra_data.items[attribute_start_slot] = original_attribute_start;
+    detected_mutations += 1;
+
+    const attribute_raw = transformer.ast.extra_data.items[original_attribute_start];
+    const original_attribute_node = transformer.ast.nodes.items[attribute_raw];
+    transformer.ast.nodes.items[attribute_raw].data.binary.flags = 1;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, runtime_snapshot));
+    transformer.ast.nodes.items[attribute_raw] = original_attribute_node;
+    detected_mutations += 1;
+
+    const mutable_attributes = @constCast(runtime_import_identity.attributes);
+    const original_attribute_identity = mutable_attributes[0];
+    mutable_attributes[0].value_index = mutable_attributes[0].key_index;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, runtime_snapshot));
+    mutable_attributes[0] = original_attribute_identity;
+    detected_mutations += 1;
+
+    try std.testing.expectEqual(@as(usize, 16), detected_mutations);
 }
 
 test "#6193 erased type import permits only exact same-name runtime bindings" {
