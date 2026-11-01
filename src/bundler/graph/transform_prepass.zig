@@ -2370,10 +2370,11 @@ fn isRetainableJsxSpreadChild(
 
 /// Keep identifier operands only with their exact source binding. Inline
 /// object literals are limited to static data properties with primitive
-/// literals, exact bound reads, static member chains rooted in a bound
-/// identifier, the unresolved global undefined, or void zero; no new scopes,
-/// computed-key effects, or nested spreads are admitted.
-fn isRetainableJsxStaticMemberValue(
+/// literals, exact bound reads, member chains rooted in a bound identifier,
+/// the unresolved global undefined, or void zero. Member chains allow dot
+/// names and primitive literal bracket keys; no computed-key effects, new
+/// scopes, or nested spreads are admitted.
+fn isRetainableJsxMemberChain(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     value_idx: ast_mod.NodeIndex,
@@ -2384,21 +2385,31 @@ fn isRetainableJsxStaticMemberValue(
     while (remaining_nodes > 0) : (remaining_nodes -= 1) {
         if (current_idx.isNone() or @backingInt(current_idx) >= ast.nodes.items.len) return false;
         const current = ast.nodes.items[@backingInt(current_idx)];
-        if (current.tag != .static_member_expression) return false;
+        if (current.tag != .static_member_expression and current.tag != .computed_member_expression) return false;
 
         const extra = current.data.extra;
         if (extra > extras.len or extras.len - extra < 3 or extras[extra + 2] != 0) return false;
         const object_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
         const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + 1]));
         if (object_idx.isNone() or @backingInt(object_idx) >= ast.nodes.items.len or
-            property_idx.isNone() or @backingInt(property_idx) >= ast.nodes.items.len or
-            ast.nodes.items[@backingInt(property_idx)].tag != .identifier_reference) return false;
+            property_idx.isNone() or @backingInt(property_idx) >= ast.nodes.items.len) return false;
+
+        const property = ast.nodes.items[@backingInt(property_idx)];
+        const valid_property = switch (current.tag) {
+            .static_member_expression => property.tag == .identifier_reference,
+            .computed_member_expression => switch (property.tag) {
+                .string_literal, .numeric_literal, .bigint_literal, .boolean_literal, .null_literal => true,
+                else => false,
+            },
+            else => false,
+        };
+        if (!valid_property) return false;
 
         const object = ast.nodes.items[@backingInt(object_idx)];
         if (object.tag == .identifier_reference) {
             return isBoundSourceIdentifierReference(ast, semantic, object_idx);
         }
-        if (object.tag != .static_member_expression) return false;
+        if (object.tag != .static_member_expression and object.tag != .computed_member_expression) return false;
         current_idx = object_idx;
     }
     return false;
@@ -2437,8 +2448,8 @@ fn isRetainableJsxSpreadPropsOperand(
                 if (!isBoundSourceIdentifierReference(ast, semantic, value_idx) and
                     !isUnresolvedGlobalUndefinedReference(ast, semantic, value_idx)) return false;
             },
-            .static_member_expression => {
-                if (!isRetainableJsxStaticMemberValue(ast, semantic, value_idx)) return false;
+            .static_member_expression, .computed_member_expression => {
+                if (!isRetainableJsxMemberChain(ast, semantic, value_idx)) return false;
             },
             .unary_expression => {
                 if (!isExactJsxVoidZeroValue(ast, value_idx)) return false;
@@ -17432,7 +17443,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
         try std.testing.expect(tag != .spread_element and tag != .elision);
     }
 
-    const classic_source = "const React = { createElement: function() {} }; const props = { id: 'from-props' }; const member = { deep: { value: 'M' } }; const detachedRole = 'dialog'; const detachedCount = 2; const items = [1, 2]; const result = <div {...props} {...{ memberValue: member.deep.value, optional: undefined, unset: void 0 }} value={items}>{...items}</div>; const detached = <aside {...{ role: detachedRole, count: detachedCount }} />;";
+    const classic_source = "const React = { createElement: function() {} }; const props = { id: 'from-props' }; const member = { deep: { value: 'M' } }; const detachedRole = 'dialog'; const detachedCount = 2; const items = [1, 2]; const result = <div {...props} {...{ memberValue: member['deep'].value, optional: undefined, unset: void 0 }} value={items}>{...items}</div>; const detached = <aside {...{ role: detachedRole, count: detachedCount }} />;";
     var classic_fixture = try jsxSpreadChildTestFixture(allocator, classic_source);
     const classic_owner = classic_fixture.semantic.captureOwnerToken();
     var classic_item_symbol: ?u32 = null;
@@ -17544,7 +17555,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), classic_member_read_count);
     try std.testing.expectEqual(@as(usize, 1), classic_undefined_read_count);
 
-    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" } }; const items = [1, 2]; const result = <Comp {...props} {...{ id: label, count: count, memberValue: member.deep.value, optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;";
+    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" } }; const items = [1, 2]; const result = <Comp {...props} {...{ id: label, count: count, memberValue: member[\"deep\"].value, optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;";
     var key_fallback_fixture = try jsxSpreadChildTestFixture(allocator, key_fallback_source);
     const key_fallback_owner = key_fallback_fixture.semantic.captureOwnerToken();
     var key_fallback_item_symbol: ?u32 = null;
@@ -17645,7 +17656,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), key_fallback_member_read_count);
     try std.testing.expectEqual(@as(usize, 1), key_fallback_undefined_read_count);
 
-    const dev_source = "const member = { deep: { value: \"D\" } }; const items = [1, 2]; const result = <Comp {...{ memberValue: member.deep.value, optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}</Comp>;";
+    const dev_source = "const member = { deep: { value: \"D\" } }; const items = [1, 2]; const result = <Comp {...{ memberValue: member[\"deep\"].value, optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}</Comp>;";
     var dev_fixture = try jsxSpreadChildTestFixture(allocator, dev_source);
     const dev_owner = dev_fixture.semantic.captureOwnerToken();
     var source_dev_member_symbol: ?u32 = null;
@@ -24366,6 +24377,12 @@ test "#6193 automatic key fallback props spread admits static data and bound val
         "const id = \"x\"; const items = [1]; const result = <Comp {...{ id: id }} key=\"k\">{...items}</Comp>;",
         "const member = { id: \"x\" }; const items = [1]; const result = <Comp {...{ id: member.id }} key=\"k\">{...items}</Comp>;",
         "const member = { nested: { id: \"x\" } }; const items = [1]; const result = <Comp {...{ id: member.nested.id }} key=\"k\">{...items}</Comp>;",
+        "const member = { nested: { id: \"x\" } }; const items = [1]; const result = <Comp {...{ id: member[\"nested\"].id }} key=\"k\">{...items}</Comp>;",
+        "const member = { nested: { id: \"x\" } }; const items = [1]; const result = <Comp {...{ id: member.nested[\"id\"] }} key=\"k\">{...items}</Comp>;",
+        "const member = { 1: \"x\" }; const items = [1]; const result = <Comp {...{ id: member[1] }} key=\"k\">{...items}</Comp>;",
+        "const member = { true: \"x\" }; const items = [1]; const result = <Comp {...{ id: member[true] }} key=\"k\">{...items}</Comp>;",
+        "const member = { null: \"x\" }; const items = [1]; const result = <Comp {...{ id: member[null] }} key=\"k\">{...items}</Comp>;",
+        "const member = { 1: \"x\" }; const items = [1]; const result = <Comp {...{ id: member[1n] }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ optional: undefined }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ optional: void 0 }} key=\"k\">{...items}</Comp>;",
     };
@@ -24388,7 +24405,18 @@ test "#6193 automatic key fallback props spread admits static data and bound val
         "const props = {}; const items = [1]; const result = <Comp {...{ id: props?.id }} key=\"k\">{...items}</Comp>;",
         "const props = {}; const items = [1]; const result = <Comp {...{ id: props?.nested.id }} key=\"k\">{...items}</Comp>;",
         "const props = {}; const items = [1]; const result = <Comp {...{ id: props.nested?.id }} key=\"k\">{...items}</Comp>;",
+        "const props = {}; const items = [1]; const result = <Comp {...{ id: props?.[\"nested\"].id }} key=\"k\">{...items}</Comp>;",
+        "const props = {}; const items = [1]; const result = <Comp {...{ id: props[\"nested\"]?.id }} key=\"k\">{...items}</Comp>;",
         "const props = {}; const key = \"id\"; const items = [1]; const result = <Comp {...{ id: props[key].id }} key=\"k\">{...items}</Comp>;",
+        "const props = {}; const key = \"nested\"; const items = [1]; const result = <Comp {...{ id: props[key].id }} key=\"k\">{...items}</Comp>;",
+        "const props = {}; const items = [1]; const result = <Comp {...{ id: props[missingKey].id }} key=\"k\">{...items}</Comp>;",
+        "function getProps() { return {}; } const items = [1]; const result = <Comp {...{ id: getProps()[\"id\"].nested }} key=\"k\">{...items}</Comp>;",
+        "const props = {}; const items = [1]; const result = <Comp {...{ id: props[{}].id }} key=\"k\">{...items}</Comp>;",
+        "const props = {}; const items = [1]; const result = <Comp {...{ id: props[[]].id }} key=\"k\">{...items}</Comp>;",
+        "const props = {}; const items = [1]; const result = <Comp {...{ id: props[/x/].id }} key=\"k\">{...items}</Comp>;",
+        "const props = {}; const items = [1]; const result = <Comp {...{ id: props[`nested`].id }} key=\"k\">{...items}</Comp>;",
+        "const props = {}; function getKey() { return \"nested\"; } const items = [1]; const result = <Comp {...{ id: props[getKey()].id }} key=\"k\">{...items}</Comp>;",
+        "const props = {}; const items = [1]; const result = <Comp {...{ id: props[Symbol()].id }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ id: missingProps.id }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ id: missingProps.nested.id }} key=\"k\">{...items}</Comp>;",
         "function getProps() { return {}; } const items = [1]; const result = <Comp {...{ id: getProps().id.nested }} key=\"k\">{...items}</Comp>;",
@@ -24537,6 +24565,8 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         "const label = 'x'; const count = 2; const items = [1]; const result = <div {...{ id: label, count: count }}>{...items}</div>;",
         "const member = { id: 'x' }; const items = [1]; const result = <div {...{ id: member.id }}>{...items}</div>;",
         "const member = { nested: { id: 'x' } }; const items = [1]; const result = <div {...{ id: member.nested.id }}>{...items}</div>;",
+        "const member = { nested: { id: 'x' } }; const items = [1]; const result = <div {...{ id: member['nested'].id }}>{...items}</div>;",
+        "const member = { nested: { id: 'x' } }; const items = [1]; const result = <div {...{ id: member.nested['id'] }}>{...items}</div>;",
         "const items = [1]; const result = <div {...{ optional: undefined }}>{...items}</div>;",
         "const items = [1]; const result = <div {...{ optional: void 0 }}>{...items}</div>;",
         "const props = {}; const items = [1]; const one = <div {...props} />; const two = <div>{...items}</div>;",
@@ -24563,7 +24593,15 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         "const props = {}; const items = [1]; const result = <div {...{ id: props?.id }}>{...items}</div>;",
         "const props = {}; const items = [1]; const result = <div {...{ id: props?.nested.id }}>{...items}</div>;",
         "const props = {}; const items = [1]; const result = <div {...{ id: props.nested?.id }}>{...items}</div>;",
+        "const props = {}; const items = [1]; const result = <div {...{ id: props?.['nested'].id }}>{...items}</div>;",
+        "const props = {}; const items = [1]; const result = <div {...{ id: props['nested']?.id }}>{...items}</div>;",
         "const props = {}; const key = 'id'; const items = [1]; const result = <div {...{ id: props[key].id }}>{...items}</div>;",
+        "const props = {}; const key = 'nested'; const items = [1]; const result = <div {...{ id: props[key].id }}>{...items}</div>;",
+        "const props = {}; const items = [1]; const result = <div {...{ id: props[missingKey].id }}>{...items}</div>;",
+        "function getProps() { return {}; } const items = [1]; const result = <div {...{ id: getProps()['id'].nested }}>{...items}</div>;",
+        "const props = {}; const items = [1]; const result = <div {...{ id: props[{}].id }}>{...items}</div>;",
+        "const props = {}; const items = [1]; const result = <div {...{ id: props[[]].id }}>{...items}</div>;",
+        "const props = {}; const items = [1]; const result = <div {...{ id: props[/x/].id }}>{...items}</div>;",
         "const items = [1]; const result = <div {...{ id: missingProps.id }}>{...items}</div>;",
         "const items = [1]; const result = <div {...{ id: missingProps.nested.id }}>{...items}</div>;",
         "function getProps() { return {}; } const items = [1]; const result = <div {...{ id: getProps().id.nested }}>{...items}</div>;",

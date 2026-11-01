@@ -537,7 +537,7 @@ test "JSX automatic: fills array holes in downlevel spread children" {
 test "JSX automatic: key-after-spread fallback downlevels spread child for ES5" {
     var r = try helpers.e2eJSXAutomaticTarget(
         std.testing.allocator,
-        "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" } }; const items = [1, 2]; const result = <Comp {...props} {...{ id: label, count: count, memberValue: member.deep.value, optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;",
+        "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" } }; const items = [1, 2]; const result = <Comp {...props} {...{ id: label, count: count, memberValue: member[\"deep\"].value, optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;",
         .es5,
     );
     defer r.deinit();
@@ -553,7 +553,7 @@ test "JSX automatic: key-after-spread fallback downlevels spread child for ES5" 
     try std.testing.expect(std.mem.indexOf(u8, r.output, "count:count") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "optional:undefined") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "unset:void 0") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "memberValue:member.deep.value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "memberValue:member[\"deep\"].value") != null);
 }
 
 test "JSX automatic: downlevel spread child preserves surrounding child order" {
@@ -582,7 +582,7 @@ test "JSX automatic dev and fragment downlevel spread children" {
 
     var dev_key_fallback = try e2eFull(
         std.testing.allocator,
-        "const label = \"dev\"; const member = { deep: { value: \"M\" } }; const items = [1, 2]; const result = <Comp {...{ id: label, memberValue: member.deep.value, optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}</Comp>;",
+        "const label = \"dev\"; const member = { deep: { value: \"M\" } }; const items = [1, 2]; const result = <Comp {...{ id: label, memberValue: member[\"deep\"].value, optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}</Comp>;",
         .{
             .jsx_transform = true,
             .jsx_runtime = .automatic_dev,
@@ -601,7 +601,7 @@ test "JSX automatic dev and fragment downlevel spread children" {
     try std.testing.expect(std.mem.indexOf(u8, dev_key_fallback.output, "id:label") != null);
     try std.testing.expect(std.mem.indexOf(u8, dev_key_fallback.output, "optional:undefined") != null);
     try std.testing.expect(std.mem.indexOf(u8, dev_key_fallback.output, "unset:void 0") != null);
-    try std.testing.expect(std.mem.indexOf(u8, dev_key_fallback.output, "memberValue:member.deep.value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dev_key_fallback.output, "memberValue:member[\"deep\"].value") != null);
 
     var fragment = try helpers.e2eJSXAutomaticTarget(
         std.testing.allocator,
@@ -643,7 +643,7 @@ test "JSX classic: downlevels spread props and child in the same element" {
 test "JSX classic: downlevels static literal spread props with spread child" {
     var r = try helpers.e2eJSXClassicTarget(
         std.testing.allocator,
-        "const label = 'literal'; const count = 2; const member = { deep: { value: 'M' } }; const arr = [1, 2]; const x = <Foo {...{ id: label, count: count, memberValue: member.deep.value, optional: undefined, unset: void 0 }}>{...arr}</Foo>;",
+        "const label = 'literal'; const count = 2; const member = { deep: { value: 'M' } }; const arr = [1, 2]; const x = <Foo {...{ id: label, count: count, memberValue: member['deep'].value, optional: undefined, unset: void 0 }}>{...arr}</Foo>;",
         .es5,
     );
     defer r.deinit();
@@ -655,7 +655,7 @@ test "JSX classic: downlevels static literal spread props with spread child" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "count:count") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "optional:undefined") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "unset:void 0") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "memberValue:member.deep.value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "memberValue:member[\"deep\"].value") != null);
 }
 
 test "JSX classic: retains detached spread props with a different spread child" {
