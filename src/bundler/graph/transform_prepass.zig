@@ -4700,8 +4700,7 @@ fn isSafeConstructorDirectLexicalDeclaration(
             isSafeConstructorValue(ast, semantic, initializer) or
                 isSafeConstructorThisPropertyTarget(ast, initializer) or
                 (allow_post_super_property_initializer and
-                    (isSafePostSuperPropertyRead(ast, semantic, initializer) or
-                        isSafePostSuperComputedThisPropertyAccess(ast, semantic, initializer)));
+                    isSafePostSuperLexicalInitializerValue(ast, semantic, initializer));
         if (!type_annotation.isNone() or !safe_initializer or
             !isBoundSourceIdentifierBinding(ast, semantic, binding)) return false;
 
@@ -4721,13 +4720,14 @@ fn isSafeConstructorDirectLexicalDeclaration(
 }
 
 /// A derived constructor lexical declaration may use direct `super` property
-/// initializers after the leading `super()` call. Every declarator must meet
-/// the same narrow rule. Computed access is limited to string, number,
-/// boolean, or null literals, or an exact, unescaped source-bound identifier
-/// key. Direct `this.property` initializers are handled by the shared gate,
-/// which this function reaches only after the same leading-super check. Keep
-/// `super` reads separate from ordinary safe values because class lowering
-/// records the generated home-object reference in the retained graph.
+/// reads or bounded expressions containing initialized-`this` property reads
+/// after the leading `super()` call. Every initialized declarator must contain
+/// a direct property read, so mixed property-read and literal-only declarations
+/// still take semantic reanalysis.
+/// Computed access is limited to string, number, boolean, or null literals,
+/// or an exact, unescaped source-bound identifier key. Keep these reads
+/// separate from ordinary safe values because class lowering records the
+/// generated home-object reference in the retained graph.
 fn isSafePostSuperDirectLexicalDeclaration(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -4749,7 +4749,7 @@ fn isSafePostSuperDirectLexicalDeclaration(
         const declarator_extra = declarator.data.extra;
         if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
         const initializer: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
-        if (!isSafePostSuperLexicalInitializer(ast, semantic, initializer)) return false;
+        if (!isSafePostSuperLexicalInitializerValue(ast, semantic, initializer)) return false;
     }
     return isSafeConstructorDirectLexicalDeclaration(ast, semantic, declaration, true);
 }
@@ -4759,7 +4759,8 @@ fn isSafePostSuperLexicalInitializer(
     semantic: *const ModuleSemanticData,
     initializer: ast_mod.NodeIndex,
 ) bool {
-    if (isSafePostSuperComputedThisPropertyAccess(ast, semantic, initializer)) return true;
+    if (isSafeConstructorThisPropertyTarget(ast, initializer) or
+        isSafePostSuperComputedThisPropertyAccess(ast, semantic, initializer)) return true;
     if (initializer.isNone() or @backingInt(initializer) >= ast.nodes.items.len or
         !isRetainableDirectSuperPropertyAccess(ast, initializer, false)) return false;
     const extras = ast.extra_data.items;
@@ -4773,6 +4774,85 @@ fn isSafePostSuperLexicalInitializer(
         return false;
     }
     return true;
+}
+
+fn isSafePostSuperLexicalInitializerValue(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    value_idx: ast_mod.NodeIndex,
+) bool {
+    if (isSafePostSuperLexicalInitializer(ast, semantic, value_idx)) return true;
+    var contains_direct_property_read = false;
+    return isSafePostSuperLexicalInitializerValueInner(
+        ast,
+        semantic,
+        value_idx,
+        &contains_direct_property_read,
+    ) and contains_direct_property_read;
+}
+
+fn isSafePostSuperLexicalInitializerValueInner(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    value_idx: ast_mod.NodeIndex,
+    contains_direct_property_read: *bool,
+) bool {
+    if (isSafeConstructorThisPropertyTarget(ast, value_idx) or
+        isSafePostSuperComputedThisPropertyAccess(ast, semantic, value_idx))
+    {
+        contains_direct_property_read.* = true;
+        return true;
+    }
+    if (isSafeConstructorValue(ast, semantic, value_idx)) return true;
+    if (value_idx.isNone() or @backingInt(value_idx) >= ast.nodes.items.len) return false;
+    const value = ast.getNode(value_idx);
+    if (value.tag == .binary_expression) {
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(value.data.binary.flags));
+        return isSafeConstructorBinaryOperator(operator) and
+            isSafePostSuperLexicalInitializerValueInner(
+                ast,
+                semantic,
+                value.data.binary.left,
+                contains_direct_property_read,
+            ) and
+            isSafePostSuperLexicalInitializerValueInner(
+                ast,
+                semantic,
+                value.data.binary.right,
+                contains_direct_property_read,
+            );
+    }
+    if (value.tag == .logical_expression) {
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(value.data.binary.flags));
+        return isSafeConstructorLogicalOperator(operator) and
+            isSafePostSuperLexicalInitializerValueInner(
+                ast,
+                semantic,
+                value.data.binary.left,
+                contains_direct_property_read,
+            ) and
+            isSafePostSuperLexicalInitializerValueInner(
+                ast,
+                semantic,
+                value.data.binary.right,
+                contains_direct_property_read,
+            );
+    }
+    if (value.tag == .unary_expression) {
+        const extras = ast.extra_data.items;
+        const extra = value.data.extra;
+        if (extra > extras.len or extras.len - extra < 2) return false;
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(@as(u8, @truncate(extras[extra + 1]))));
+        const operand_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+        return isSafeConstructorUnaryOperator(operator) and
+            isSafePostSuperLexicalInitializerValueInner(
+                ast,
+                semantic,
+                operand_idx,
+                contains_direct_property_read,
+            );
+    }
+    return false;
 }
 
 fn isSafePostSuperComputedThisPropertyAccess(
@@ -23093,6 +23173,10 @@ test "ES5 audited constructor lexical initializers retain the production semanti
         "class Base { constructor() { this.current = 13; } } class Read extends Base { constructor(key) { super(); const local = this[key]; this.value = local; } } console.log(new Read('current').value);",
         "class Base {} Base.prototype['true'] = 14; class Read extends Base { constructor() { super(); const local = this[true]; this.value = local; } } console.log(new Read().value);",
         "class Base {} Base.prototype['null'] = 15; class Read extends Base { constructor() { super(); const local = this[null]; this.value = local; } } console.log(new Read().value);",
+        "class Base { get current() { return 16; } } class Read extends Base { constructor() { super(); const local = this['current'] + 1; this.value = local; } } console.log(new Read().value);",
+        "class Base { get current() { return 17; } } class Read extends Base { constructor(key) { super(); const local = +this[key] * 2; this.value = local; } } console.log(new Read('current').value);",
+        "class Base { get current() { return 18; } } class Read extends Base { constructor() { super(); const local = this['current'] && this.current; this.value = local; } } console.log(new Read().value);",
+        "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor(key) { super(); const first = this[key] + 10, second = this.current + 20; this.value = first + second; } } console.log(new Read('current').value);",
     };
     for (sources) |source| {
         var tmp = std.testing.tmpDir(.{});
