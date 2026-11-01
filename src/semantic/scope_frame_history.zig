@@ -224,6 +224,8 @@ pub const History = struct {
     source_class_keys: []const ClassKeySource = &.{},
     worklet_class_creators: []const @import("lowered_worklet_class.zig").Creator = &.{},
     lowered_worklet_classes: []const @import("lowered_worklet_class.zig").Witness = &.{},
+    source_dropped_statements: []const @import("source_drop_registry.zig").Statement = &.{},
+    source_drop_edges: []const @import("source_drop_registry.zig").Edge = &.{},
     events: []const Event = &.{},
 };
 
@@ -242,6 +244,8 @@ pub const Recorder = struct {
     source_class_keys: []ClassKeySource = &.{},
     worklet_class_creators: std.ArrayList(@import("lowered_worklet_class.zig").Creator) = .empty,
     lowered_worklet_classes: std.ArrayList(@import("lowered_worklet_class.zig").Witness) = .empty,
+    source_dropped_statements: std.ArrayList(@import("source_drop_registry.zig").Statement) = .empty,
+    source_drop_edges: std.ArrayList(@import("source_drop_registry.zig").Edge) = .empty,
     events: std.ArrayList(Event) = .empty,
     enabled: bool = false,
 
@@ -280,7 +284,7 @@ pub const Recorder = struct {
 
     pub fn fromHistory(a: std.mem.Allocator, source: History) Error!Recorder {
         if (source.source_scopes.len == 0) {
-            if (source.source_owners.len != 0 or source.source_initializers.len != 0 or source.source_computed_awaits.len != 0 or source.worklet_class_creators.len != 0 or source.lowered_worklet_classes.len != 0 or source.source_class_keys.len != 0 or source.events.len != 0) return error.InvalidHistory;
+            if (source.source_owners.len != 0 or source.source_initializers.len != 0 or source.source_computed_awaits.len != 0 or source.worklet_class_creators.len != 0 or source.lowered_worklet_classes.len != 0 or source.source_class_keys.len != 0 or source.source_dropped_statements.len != 0 or source.source_drop_edges.len != 0 or source.events.len != 0) return error.InvalidHistory;
             return .{};
         }
         var result: Recorder = .{};
@@ -292,6 +296,8 @@ pub const Recorder = struct {
         result.source_class_keys = try a.dupe(ClassKeySource, source.source_class_keys);
         try result.worklet_class_creators.appendSlice(a, source.worklet_class_creators);
         try result.lowered_worklet_classes.appendSlice(a, source.lowered_worklet_classes);
+        try result.source_dropped_statements.appendSlice(a, source.source_dropped_statements);
+        try result.source_drop_edges.appendSlice(a, source.source_drop_edges);
         try result.events.appendSlice(a, source.events);
         result.enabled = true;
         return result;
@@ -305,6 +311,8 @@ pub const Recorder = struct {
         a.free(self.source_class_keys);
         self.worklet_class_creators.deinit(a);
         self.lowered_worklet_classes.deinit(a);
+        self.source_dropped_statements.deinit(a);
+        self.source_drop_edges.deinit(a);
         self.events.deinit(a);
         self.* = .{};
     }
@@ -320,7 +328,11 @@ pub const Recorder = struct {
         const lowered_worklet_classes = try self.lowered_worklet_classes.toOwnedSlice(a);
         errdefer a.free(lowered_worklet_classes);
         const events = try self.events.toOwnedSlice(a);
-        const result: History = .{ .source_scopes = self.source_scopes, .source_owners = self.source_owners, .source_initializers = self.source_initializers, .source_computed_awaits = self.source_computed_awaits, .worklet_class_creators = worklet_class_creators, .lowered_worklet_classes = lowered_worklet_classes, .source_class_keys = self.source_class_keys, .events = events };
+        errdefer a.free(events);
+        const dropped_statements = try self.source_dropped_statements.toOwnedSlice(a);
+        errdefer a.free(dropped_statements);
+        const drop_edges = try self.source_drop_edges.toOwnedSlice(a);
+        const result: History = .{ .source_scopes = self.source_scopes, .source_owners = self.source_owners, .source_initializers = self.source_initializers, .source_computed_awaits = self.source_computed_awaits, .worklet_class_creators = worklet_class_creators, .lowered_worklet_classes = lowered_worklet_classes, .source_class_keys = self.source_class_keys, .source_dropped_statements = dropped_statements, .source_drop_edges = drop_edges, .events = events };
         self.* = .{};
         return result;
     }
@@ -329,6 +341,39 @@ pub const Recorder = struct {
         if (!self.enabled) return;
         const header = try Owner.capture(tree, owner);
         try self.events.append(a, .{ .kind = .birth, .scope = scope, .before = null, .after = frame, .owner_after = header, .owner_edges = if (header) |h| try captureSourceEdges(tree, h) else .{}, .actor = actor });
+    }
+
+    /// Publish only the actual drop-option decision and its immutable source
+    /// edge snapshots. Capacity preparation completes before either row is added.
+    pub fn recordDroppedStatement(self: *Recorder, a: std.mem.Allocator, tree: *const ast_mod.Ast, source: @import("source_drop_registry.zig").Node, action: @import("source_drop_registry.zig").Action, edges: []const @import("source_drop_registry.zig").Edge, selected: NodeIndex, execution_scope: ScopeId, execution_frame: Scope, entry_epoch: u32) Error!u32 {
+        const Drop = @import("source_drop_registry.zig");
+        if (!self.enabled or execution_scope.isNone() or entry_epoch > self.epoch() or !source.matches(tree)) return error.InvalidHistory;
+        switch (action) {
+            .label => if (source.tag != .labeled_statement) return error.InvalidNode,
+            .console => if (source.tag != .expression_statement or !@import("../transformer/drop_scan.zig").isConsoleCallInAst(tree, tree.getNode(source.index))) return error.InvalidNode,
+            .debugger => if (source.tag != .debugger_statement) return error.InvalidNode,
+        }
+        const output = Drop.Node.capture(tree, selected) orelse return error.InvalidNode;
+        if (source.index != selected or !std.meta.eql(source, output) or !try Drop.validatesEdges(a, tree, edges)) return error.InvalidNode;
+        for (self.source_dropped_statements.items) |previous| if (previous.source.index == source.index) return error.InvalidHistory;
+        if (edges.len > std.math.maxInt(u32) - self.source_drop_edges.items.len) return error.InvalidHistory;
+        try self.source_dropped_statements.ensureUnusedCapacity(a, 1);
+        try self.source_drop_edges.ensureUnusedCapacity(a, edges.len);
+        const index: u32 = @intCast(self.source_dropped_statements.items.len);
+        const start: u32 = @intCast(self.source_drop_edges.items.len);
+        self.source_drop_edges.appendSliceAssumeCapacity(edges);
+        self.source_dropped_statements.appendAssumeCapacity(.{
+            .action = action,
+            .source = source,
+            .selected = output,
+            .entry_epoch = entry_epoch,
+            .selection_epoch = self.epoch(),
+            .execution_scope = execution_scope,
+            .execution_frame = execution_frame,
+            .edge_start = start,
+            .edge_len = @intCast(edges.len),
+        });
+        return index;
     }
 
     /// Call before publishing prepared scope rows; this cannot observe a guessed
@@ -472,7 +517,7 @@ pub fn validateAndIndex(
     @memset(key_membership, false);
     var result: Index = .{ .history = history, .offsets = offsets, .event_indices = indices, .class_key_read_membership = key_membership, .valid = false };
     if (history.source_scopes.len == 0) {
-        result.valid = history.source_owners.len == 0 and history.source_initializers.len == 0 and history.source_computed_awaits.len == 0 and history.worklet_class_creators.len == 0 and history.lowered_worklet_classes.len == 0 and history.source_class_keys.len == 0 and history.events.len == 0;
+        result.valid = history.source_owners.len == 0 and history.source_initializers.len == 0 and history.source_computed_awaits.len == 0 and history.worklet_class_creators.len == 0 and history.lowered_worklet_classes.len == 0 and history.source_class_keys.len == 0 and history.source_dropped_statements.len == 0 and history.source_drop_edges.len == 0 and history.events.len == 0;
         return result;
     }
     if (history.source_scopes.len > current_scopes.len) return result;
@@ -616,5 +661,24 @@ pub fn validateAndIndex(
         writes[raw] += 1;
     }
     result.valid = true;
+    if (!try validateDroppedStatements(a, tree, &result)) result.valid = false;
     return result;
+}
+
+fn validateDroppedStatements(a: std.mem.Allocator, tree: *const ast_mod.Ast, index: *const Index) std.mem.Allocator.Error!bool {
+    const Drop = @import("source_drop_registry.zig");
+    var cursor: usize = 0;
+    var roots: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer roots.deinit(a);
+    for (index.history.source_dropped_statements) |statement| {
+        if (statement.entry_epoch > statement.selection_epoch or statement.selection_epoch > index.history.events.len or
+            statement.edge_start != cursor or statement.edge_len > index.history.source_drop_edges.len - cursor) return false;
+        const scope = index.frameAt(statement.execution_scope, statement.selection_epoch) orelse return false;
+        if (!sameFrame(scope, statement.execution_frame)) return false;
+        const root = try roots.getOrPut(a, @backingInt(statement.source.index));
+        if (root.found_existing) return false;
+        if (!try Drop.validatesStatement(a, tree, statement, index.history.source_drop_edges[cursor..][0..statement.edge_len])) return false;
+        cursor += statement.edge_len;
+    }
+    return cursor == index.history.source_drop_edges.len;
 }

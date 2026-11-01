@@ -54,7 +54,10 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     // --------------------------------------------------------
     // 2단계: --drop 처리
     // --------------------------------------------------------
-    if (self.shouldDropNode(node)) return .none;
+    if (self.shouldDropNode(node)) {
+        if (self.semantic_edit_enabled) try @import("semantic_edit.zig").selectDroppedStatement(self, idx);
+        return .none;
+    }
 
     // --------------------------------------------------------
     // 3단계: define 글로벌 치환

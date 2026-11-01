@@ -60,6 +60,7 @@ pub fn transform(self: anytype) Error!NodeIndex {
     }
     self.ast.assertInvariants();
     try @import("../erased_const_enum_handoff.zig").capture(self);
+    try @import("../drop_statement_retirement.zig").captureInitial(self);
 
     // worklet __pluginVersion 문자열 리터럴 span 사전 계산 (매 worklet당 할당 방지)
     if (self.options.worklet_plugin_version) |v| {

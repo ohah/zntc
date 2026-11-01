@@ -3415,7 +3415,7 @@ pub fn checkOutputNormalFormQuiet(
         .history_identity = @ptrCast(history),
     });
     defer if (lowered_proof) |*proof| proof.deinit(allocator);
-    const valid = runtime_valid and frame_index.valid and lowered_proof != null and try @import("../semantic/source_owned_retirement.zig").validate(allocator, ast, retirements, &reachable, symbols, symbol_ids, scopes, scope_maps, scope_owner_map, references, helper_scope_map, retirement_roots) and
+    const valid = runtime_valid and frame_index.valid and lowered_proof != null and try @import("../semantic/source_owned_retirement.zig").validateWithIndex(allocator, ast, retirements, &reachable, symbols, symbol_ids, scopes, scope_maps, scope_owner_map, references, helper_scope_map, retirement_roots, &frame_index) and
         try validateNodeScopeProvenance(allocator, ast, root, scope_owner_map, retirement_roots.node_scope_provenance) and
         @import("../semantic/source_external_origin.zig").validate(ast, parser_node_count, symbol_ids, scopes, unresolved_nodes, retirement_roots.node_scope_provenance, &frame_index);
     const exact = try checkExactImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_maps, scope_owner_map, references, helper_reference_nodes, helper_scope_map, unresolved_nodes, explicit_global_nodes, origins, options.erased_const_enum_external_origins, options.namespace_member_owners, options.namespace_declaration_owners, options.pre_transform_scope_count, options.require_declaration_anchors, false, if (valid) retirements else null, if (valid) retirement_roots.node_scope_provenance else null, if (valid) if (lowered_proof) |*proof| proof else null else null);

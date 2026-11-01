@@ -212,7 +212,7 @@ pub const SemanticEditor = struct {
     }
 
     pub fn scopeHistoryView(self: *const SemanticEditor) @import("scope_frame_history.zig").History {
-        return .{ .source_scopes = self.scope_history.source_scopes, .source_owners = self.scope_history.source_owners, .source_initializers = self.scope_history.source_initializers, .source_computed_awaits = self.scope_history.source_computed_awaits, .worklet_class_creators = self.scope_history.worklet_class_creators.items, .lowered_worklet_classes = self.scope_history.lowered_worklet_classes.items, .source_class_keys = self.scope_history.source_class_keys, .events = self.scope_history.events.items };
+        return .{ .source_scopes = self.scope_history.source_scopes, .source_owners = self.scope_history.source_owners, .source_initializers = self.scope_history.source_initializers, .source_computed_awaits = self.scope_history.source_computed_awaits, .worklet_class_creators = self.scope_history.worklet_class_creators.items, .lowered_worklet_classes = self.scope_history.lowered_worklet_classes.items, .source_class_keys = self.scope_history.source_class_keys, .source_dropped_statements = self.scope_history.source_dropped_statements.items, .source_drop_edges = self.scope_history.source_drop_edges.items, .events = self.scope_history.events.items };
     }
 
     pub fn importScopeHistory(self: *SemanticEditor, source: @import("scope_frame_history.zig").History) Error!void {

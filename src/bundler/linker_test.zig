@@ -9480,6 +9480,114 @@ test "generic Stage 3 globals retain producer identity without diagnostic state"
     }
 }
 
+test "statement coordinate publication preserves dropped labels and Emotion output identities" {
+    const cases = [_]struct { source: []const u8, expected: []const u8, extension: []const u8 = "ts", emotion: bool = false, drop_console: bool = false }{
+        .{ .source = "const base = 40;\nfunction addTwo(value: number) {\n  const result = value + 2;\n  return result;\n}\nDEV: {\n  const discarded = base + 1;\n  console.log(discarded);\n}\nconsole.log(addTwo(base));", .expected = "42\n" },
+        .{ .source = "const base = 40; DEV: { const hidden = base; console.log(hidden); } console.log(base + 2);", .expected = "42\n" },
+        .{ .source = "import { value } from './values.js'; DEV: { const hidden = value; } console.log(value); process.stdout.write(String(value));", .expected = "42", .extension = "js", .drop_console = true },
+        .{ .source = "import { css as cx } from '@emotion/react';\nfunction h(_tag, props) { return props.css; }\nfunction render(cx, _emotionCss, _emotionCss2, _emotionCss3) {\n  return <div css={{ color: 'red' }} />;\n}\nconsole.log(render(() => 'SHADOWED-CX', () => 'SHADOWED-1', () => 'SHADOWED-2', () => 'SHADOWED-3'));\n", .expected = "EMOTION:red\n", .extension = "tsx", .emotion = true },
+    };
+    var failures: usize = 0;
+    for (cases, 0..) |case, index| for ([_]bool{ false, true }) |minify| {
+        coordinatePublicationCase(case.source, case.expected, case.extension, case.emotion, case.drop_console, minify) catch |err| {
+            std.debug.print("COORD_PUBLICATION case={d} minify={any} error={s}\n", .{ index, minify, @errorName(err) });
+            failures += 1;
+        };
+    };
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}
+
+const CoordinateDropOptions = struct {
+    format: types.Format = .cjs,
+    labels: []const []const u8 = &.{"DEV"},
+    drop_debugger: bool = false,
+};
+
+fn coordinatePublicationCase(source: []const u8, expected: []const u8, extension: []const u8, emotion: bool, drop_console: bool, minify: bool) !void {
+    return coordinatePublicationCaseWithDropOptions(source, expected, extension, emotion, drop_console, minify, .{});
+}
+
+fn coordinatePublicationCaseWithDropOptions(source: []const u8, expected: []const u8, extension: []const u8, emotion: bool, drop_console: bool, minify: bool, drop_options: CoordinateDropOptions) !void {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const filename = try std.fmt.allocPrint(a, "entry.{s}", .{extension});
+    defer a.free(filename);
+    try writeFile(tmp.dir, filename, source);
+    try writeFile(tmp.dir, "values.js", "export const value = 42;");
+    try writeFile(tmp.dir, "node_modules/@emotion/react/package.json", "{\"name\":\"@emotion/react\",\"version\":\"0.0.0-test\",\"main\":\"index.js\"}");
+    try writeFile(tmp.dir, "node_modules/@emotion/react/index.js", "exports.css = function(value) { return 'EMOTION:' + value.color; };\n");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, filename);
+    defer a.free(entry);
+    var bundler = @import("bundler.zig").Bundler.init(a, .{
+        .entry_points = &.{entry},
+        .format = drop_options.format,
+        .platform = .node,
+        .minify_identifiers = minify,
+        .minify_whitespace = true,
+        .emotion = emotion,
+        .verbatim_module_syntax = emotion,
+        .jsx_factory = "h",
+        .drop_console = drop_console,
+        .drop_debugger = drop_options.drop_debugger,
+        .drop_labels = if (emotion) &.{} else drop_options.labels,
+    });
+    defer bundler.deinit();
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(a);
+    for (result.diagnostics orelse &.{}) |diagnostic| if (diagnostic.severity == .@"error") {
+        std.debug.print("COORD_BUILD_ERROR {s} hint={s}\n", .{ diagnostic.message, diagnostic.suggestion orelse "" });
+    };
+    try std.testing.expect(!result.hasErrors());
+    const observed = try std.process.run(a, std.testing.io, .{ .argv = if (drop_options.format == .esm) &.{ "node", "--input-type=module", "-e", result.output } else &.{ "node", "-e", result.output } });
+    defer a.free(observed.stdout);
+    defer a.free(observed.stderr);
+    if (!(observed.term == .exited and observed.term.exited == 0)) std.debug.print("DROP_NODE_ERROR {s}\n", .{observed.stderr});
+    try std.testing.expect(observed.term == .exited and observed.term.exited == 0);
+    try std.testing.expectEqualStrings(expected, observed.stdout);
+}
+
+test "explicit statement drops preserve frozen public label and console boundaries" {
+    const cases = [_]struct { name: []const u8, source: []const u8, expected: []const u8, extension: []const u8 = "ts", options: CoordinateDropOptions = .{}, console: bool = false }{
+        .{ .name = "top-level statement index shifts", .source = "const base = 40; DEV: console.log(base + 1); console.log(base + 2);", .expected = "42\n" },
+        .{ .name = "function-body statement index shifts", .source = "function read(value: number) { DEV: console.log(value); return value + 2; } console.log(read(40));", .expected = "42\n" },
+        .{ .name = "surviving block owner", .source = "const base = 40; { DEV: console.log(base); console.log(base + 2); }", .expected = "42\n" },
+        .{ .name = "nested matching labels", .source = "const base = 40; DEV: TEST: console.log(base); console.log(base + 2);", .expected = "42\n" },
+        .{ .name = "repeated label in separate functions", .source = "const base = 40; DEV: console.log(base); function read() { DEV: console.log(base); return base; } console.log(read() + 2);", .expected = "42\n" },
+        .{ .name = "removed local reference decrements the surviving binding count", .source = "function read(value: number) { const alias = value; DEV: console.log(alias); return value; } console.log(read(40));", .expected = "40\n" },
+        .{ .name = "removed unresolved external remains absent at runtime", .source = "DEV: console.log(missingGlobal); console.log('ok');", .expected = "ok\n" },
+        .{ .name = "detached function scope falls back to reanalysis", .source = "const base = 40; DEV: (function() { console.log(base); })(); console.log(base + 2);", .expected = "42\n" },
+        .{ .name = "detached block scope falls back to reanalysis", .source = "const base = 40; DEV: { const hidden = base; console.log(hidden); } console.log(base + 2);", .expected = "42\n" },
+        .{ .name = "detached empty function scope falls back to reanalysis", .source = "DEV: (() => {})(); console.log('ok');", .expected = "ok\n" },
+        .{ .name = "detached unused declaration falls back to reanalysis", .source = "DEV: var ghost = 1; console.log('ok');", .expected = "ok\n" },
+        .{ .name = "surviving reference to a removed var declaration falls back", .source = "DEV: var ghost = 1; console.log(typeof ghost);", .expected = "undefined\n" },
+        .{ .name = "direct eval retains graph across declaration-free label removal", .source = "function read() { return eval('40'); } DEV: console.log('gone'); console.log(read() + 2);", .expected = "42\n" },
+        .{ .name = "direct eval reads a surviving parameter after a label-only edit", .source = "function read(value) { DEV: console.log('gone'); return eval('value'); } console.log(read(42));", .expected = "42\n" },
+        .{ .name = "direct eval permits nested matched labels with no declarations", .source = "function read() { DEV: TEST: console.log('gone'); return eval('40'); } console.log(read() + 2);", .expected = "42\n", .options = .{ .labels = &.{ "DEV", "TEST" } } },
+        .{ .name = "direct eval remains reanalyzed when a removed var is dynamically visible", .source = "DEV: var hidden = 40; function read() { return eval('typeof hidden'); } console.log(read());", .expected = "undefined\n" },
+        .{ .name = "direct eval remains reanalyzed when the removed label owns a block binding", .source = "function read() { DEV: { const hidden = 40; } return eval('typeof hidden'); } console.log(read());", .expected = "undefined\n" },
+        .{ .name = "direct eval remains reanalyzed when the removed label detaches a function scope", .source = "function read() { DEV: (() => {})(); return eval('40'); } console.log(read() + 2);", .expected = "42\n" },
+        .{ .name = "every matched label is checked before direct eval graph retention", .source = "function read() { DEV: console.log('gone'); DEV: var hidden = 40; return eval('typeof hidden'); } console.log(read());", .expected = "undefined\n" },
+        .{ .name = "direct eval inside a removed label remains reanalyzed", .source = "DEV: console.log(eval('40')); console.log('ok');", .expected = "ok\n" },
+        .{ .name = "escaped matched label with direct eval remains on reanalysis", .source = "function read() { \\u0044EV: console.log('gone'); return eval('40'); } console.log(read() + 2);", .expected = "42\n" },
+        .{ .name = "escaped matched label with a removed binding stays on reanalysis", .source = "\\u0044EV: var hidden = 40; function read() { return eval('typeof hidden'); } console.log(read());", .expected = "undefined\n" },
+        .{ .name = "top-level await metadata is refreshed from the retained graph", .source = "DEV: await Promise.resolve(); console.log('ok');", .expected = "ok\n", .options = .{ .format = .esm } },
+        .{ .name = "surviving top-level await keeps refreshed module metadata", .source = "DEV: await Promise.resolve(); await Promise.resolve(); console.log('ok');", .expected = "ok\n", .options = .{ .format = .esm } },
+        .{ .name = "dropping labeled for-await keeps fallback when its loop scope is removed", .source = "DEV: for await (const value of [Promise.resolve('gone')]) { console.log(value); } console.log('ok');", .expected = "ok\n", .extension = "mjs", .options = .{ .format = .esm } },
+        .{ .name = "surviving top-level for-await keeps refreshed module metadata", .source = "DEV: await Promise.resolve(); for await (const value of [Promise.resolve('ok')]) { console.log(value); }", .expected = "ok\n", .extension = "mjs", .options = .{ .format = .esm } },
+        .{ .name = "console-owned named function and parameter", .source = "console.log((function local(value) { const offset=value+2; return offset; })(40)); process.stdout.write('ok');", .expected = "ok", .console = true },
+        .{ .name = "explicit debugger deletion", .source = "debugger; process.stdout.write('ok');", .expected = "ok", .options = .{ .drop_debugger = true } },
+    };
+    var failures: usize = 0;
+    for (cases, 0..) |case, index| for ([_]bool{ false, true }) |minify| {
+        coordinatePublicationCaseWithDropOptions(case.source, case.expected, case.extension, false, case.console, minify, case.options) catch |err| {
+            std.debug.print("EXPLICIT_DROP_BOUNDARY case={d} name={s} minify={} error={s}\n", .{ index, case.name, minify, @errorName(err) });
+            failures += 1;
+        };
+    };
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}
+
 test "const enum erasure consumes its source declarations after literal folding" {
     const cases = [_][]const u8{
         "const enum Kind { Value=7 } console.log(Kind.Value);",
