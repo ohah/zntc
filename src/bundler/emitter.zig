@@ -2462,14 +2462,16 @@ pub fn emitModuleWithHolderReservations(
         @import("../transformer/minify.zig").downgradeToVar(transformer.ast);
     }
 
-    // S4b: function/class body 안 const → let 변환 (전체 AST). minify_syntax 시
+    // S4b: 출력 root의 function/class body 안 const → let 변환. minify_syntax 시
     // *섞인 const/let 시퀀스* 도 mergeDecls 가 *let 단일 kind* 로 합칠 수 있게 한다.
     // 재할당 의미 변경 (TypeError → silent) 은 minify-only 모드라 정상 — terser/esbuild/
     // rolldown/rspack 동일.
     if (options.minify_syntax) {
-        @import("../transformer/minify.zig").convertConstToLetPreserving(
+        try @import("../transformer/minify.zig").convertConstToLetPreservingFromRoot(
             transformer.ast,
+            root,
             transformer.ast.preserve_lexical_declaration_indices.items,
+            arena_alloc,
         );
     }
 

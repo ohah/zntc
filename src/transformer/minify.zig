@@ -1498,23 +1498,28 @@ pub fn convertConstToLet(ast: *Ast) void {
 
 /// Convert source const declarations for minified output while keeping
 /// compiler-generated bindings whose const behavior carries class identity.
+/// This low-level API visits all stored nodes. Graph-owned output passes use
+/// convertConstToLetPreservingFromRoot to preserve detached source witnesses.
 pub fn convertConstToLetPreserving(ast: *Ast, preserved_declarations: []const u32) void {
-    for (ast.nodes.items, 0..) |stmt, raw| {
-        if (stmt.tag != .variable_declaration) continue;
-        const e = stmt.data.extra;
-        if (e >= ast.extra_data.items.len) continue;
-        if (ast.extra_data.items[e] == @backingInt(VariableDeclarationKind.@"const")) {
-            var preserve = false;
-            for (preserved_declarations) |preserved| {
-                if (preserved == raw) {
-                    preserve = true;
-                    break;
-                }
-            }
-            if (preserve) continue;
-            ast.setVariableDeclarationKind(stmt, .let);
-        }
-    }
+    for (0..ast.nodes.items.len) |raw| convertConstDeclaration(ast, raw, preserved_declarations);
+}
+
+/// Output passes must not mutate detached source nodes retained as witnesses.
+/// Collect the complete live walk before editing, so allocation failure leaves
+/// every declaration unchanged.
+pub fn convertConstToLetPreservingFromRoot(ast: *Ast, root: NodeIndex, preserved_declarations: []const u32, scratch: std.mem.Allocator) std.mem.Allocator.Error!void {
+    const nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(scratch, ast, root);
+    defer scratch.free(nodes);
+    for (nodes) |raw| convertConstDeclaration(ast, raw, preserved_declarations);
+}
+
+fn convertConstDeclaration(ast: *Ast, raw: usize, preserved_declarations: []const u32) void {
+    const stmt = ast.nodes.items[raw];
+    if (stmt.tag != .variable_declaration) return;
+    const e = stmt.data.extra;
+    if (e >= ast.extra_data.items.len or ast.extra_data.items[e] != @backingInt(VariableDeclarationKind.@"const")) return;
+    for (preserved_declarations) |preserved| if (preserved == raw) return;
+    ast.setVariableDeclarationKind(stmt, .let);
 }
 
 /// 인접한 같은-kind `var`/`let`/`const` 선언을 단일 선언으로 병합한다 (#1588).
