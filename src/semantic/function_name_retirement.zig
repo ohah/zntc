@@ -207,8 +207,14 @@ fn originalEngineBirth(editor: anytype, owner: NodeIndex, name_scope: ScopeId, b
     var index = try History.validateAndIndex(editor.allocator, editor.ast, editor.scopes.items, &editor.scope_owner_map, &history, null);
     defer index.deinit(editor.allocator);
     if (!index.valid) return false;
-    const actual_owner = (try History.Owner.capture(editor.ast, owner)) orelse return false;
-    const actual_name = (try History.Owner.capture(editor.ast, name)) orelse return false;
+    const actual_owner = (History.Owner.capture(editor.ast, owner) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    }) orelse return false;
+    const actual_name = (History.Owner.capture(editor.ast, name) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    }) orelse return false;
     var initial_owner: ?History.Owner = null;
     var final_edges: History.SourceEdges = .{};
     var name_births: usize = 0;
