@@ -10,6 +10,8 @@ const Span = @import("../lexer/token.zig").Span;
 const parser_module = @import("../parser/module.zig");
 const Linker = @import("linker.zig").Linker;
 const SymbolID = @import("symbol.zig").SymbolID;
+const Symbol = @import("../semantic/symbol.zig").Symbol;
+const SemanticOwnerToken = @import("module.zig").SemanticOwnerToken;
 
 pub const Error = @import("module.zig").WrapperNameError || error{ InvalidCrossChunkExport, InvalidCrossChunkLocalName };
 
@@ -19,15 +21,67 @@ pub const Hint = enum { ordinary_export, shared_namespace };
 /// Namespace storage remains its existing output-owned cache contract (N5).
 /// It is deliberately not represented by an invented source SymbolId.
 pub const Provider = struct {
-    owner: *const Module,
-    public_name: []const u8,
-    role: union(enum) {
-        semantic: struct { binding: *const ExportBinding, original: ExportBinding },
+    pub const KnownBinding = struct {
+        binding: *const ExportBinding,
+        original: ExportBinding,
+        symbol: Symbol,
+        anchor: ?NodeIndex,
+    };
+    const Role = union(enum) {
+        semantic: KnownBinding,
+        entry_guard: KnownBinding,
         cjs_member: SymbolID,
         shared_namespace: []const u8,
         namespace_projection: struct { binding: *const ExportBinding, original: ExportBinding, target: *const Module, storage: []const u8 },
         graphless,
-    },
+    };
+    owner: *const Module,
+    public_name: []const u8,
+    owner_token: SemanticOwnerToken,
+    role: Role,
+
+    fn make(owner: *const Module, name: []const u8, role: Role) Error!Provider {
+        const token = if (owner.semantic) |*sem| @constCast(sem).captureOwnerToken() else .unassigned;
+        if (owner.semantic != null and token == .unassigned) return error.InvalidCrossChunkExport;
+        return .{ .owner = owner, .public_name = name, .owner_token = token, .role = role };
+    }
+
+    fn knownBinding(owner: *const Module, binding: *const ExportBinding) Error!KnownBinding {
+        const sid = owner.exportBindingSemanticIndex(binding.*) orelse return error.InvalidCrossChunkExport;
+        const sem = owner.semantic orelse return error.InvalidCrossChunkExport;
+        return .{
+            .binding = binding,
+            .original = binding.*,
+            .symbol = sem.symbols.items[sid],
+            .anchor = if (binding.has_default_export_facade) binding.default_export_node else binding.local_symbol_node,
+        };
+    }
+
+    fn validateKnown(self: Provider, known: KnownBinding) Error!void {
+        if (!registered(self.owner, known.binding) or !std.meta.eql(known.binding.*, known.original) or
+            !std.mem.eql(u8, known.original.exported_name, self.public_name)) return error.InvalidCrossChunkExport;
+        const sem = self.owner.semantic orelse return error.InvalidCrossChunkExport;
+        const sid = self.owner.exportBindingSemanticIndex(known.original) orelse return error.InvalidCrossChunkExport;
+        const actual = sem.symbols.items[sid];
+        var expected = known.symbol;
+        // Exact edits may change use counts while preserving the same binding.
+        expected.reference_count = actual.reference_count;
+        expected.write_count = actual.write_count;
+        if (!std.meta.eql(expected, actual)) return error.InvalidCrossChunkExport;
+        if (known.anchor) |anchor| {
+            if (!attached(sem.symbol_ids, anchor, sid)) return error.InvalidCrossChunkExport;
+            // Export erasure may replace the wrapper payload during emission.
+            // Its producer receipt still owns the same SID and declaration.
+            if (!known.original.has_default_export_facade) {
+                const ast = if (self.owner.ast) |*value| value else return error.InvalidCrossChunkExport;
+                const node = nodeAt(ast, anchor) orelse return error.InvalidCrossChunkExport;
+                if (node.tag != .binding_identifier and node.tag != .identifier_reference) return error.InvalidCrossChunkExport;
+                const span = if (node.data.string_ref.start & Ast.STRING_TABLE_BIT != 0) node.data.string_ref else node.span;
+                const source_name = self.owner.symbolName(@fromBackingInt(sid)) orelse return error.InvalidCrossChunkExport;
+                if (!validSpan(ast, span) or !@import("../lexer/scanner.zig").Scanner.identifierNamesEqual(ast.identifierNameText(node), source_name)) return error.InvalidCrossChunkExport;
+            }
+        }
+    }
 
     pub fn capture(l: *const Linker, module_index: u32, name: []const u8, hint: Hint) Error!Provider {
         const owner = l.getModule(module_index) orelse return error.InvalidCrossChunkExport;
@@ -36,10 +90,10 @@ pub const Provider = struct {
             const alias = l.getSharedNamespaceGlobalName(module_index, shared.var_name);
             if (!std.mem.eql(u8, name, shared.var_name) and
                 (alias == null or !std.mem.eql(u8, name, alias.?))) return error.InvalidCrossChunkExport;
-            return .{ .owner = owner, .public_name = name, .role = .{ .shared_namespace = shared.var_name } };
+            return make(owner, name, .{ .shared_namespace = shared.var_name });
         }
         if (owner.semantic == null and owner.ast == null) {
-            return .{ .owner = owner, .public_name = name, .role = .graphless };
+            return make(owner, name, .graphless);
         }
         if (owner.wrap_kind == .cjs) {
             const sid = owner.require_symbol orelse return error.InvalidCrossChunkExport;
@@ -47,33 +101,37 @@ pub const Provider = struct {
             if (@backingInt(sid) >= sem.symbols.items.len or
                 sem.symbols.items[@backingInt(sid)].synthetic_kind != .cjs_require or
                 owner.getRequireName(null) == null) return error.InvalidCrossChunkExport;
-            return .{ .owner = owner, .public_name = name, .role = .{ .cjs_member = SymbolID.make(owner.index, @backingInt(sid)) } };
+            return make(owner, name, .{ .cjs_member = SymbolID.make(owner.index, @backingInt(sid)) });
         }
         const binding = owner.findExportBinding(name) orelse return error.InvalidCrossChunkExport;
+        if (l.graph.entry_guard_ast_provider) |guard| if (guard.module_index == owner.index) {
+            const exact = @import("runtime_entry_guard_ast.zig").exactBinding(l.graph) catch return error.InvalidCrossChunkExport;
+            if (!binding.symbol.eql(SymbolRef.makeSemantic(exact.module, @backingInt(exact.inner)))) return error.InvalidCrossChunkExport;
+            return make(owner, name, .{ .entry_guard = try knownBinding(owner, binding) });
+        };
         if (@import("chunk.zig").nsReExportTarget(l.graph, owner.index, name)) |target| {
             if (binding.kind == .local) _ = try checkedSymbol(l.allocator, owner, binding);
             const target_owner = l.graph.getModule(target) orelse return error.InvalidCrossChunkExport;
             _ = try l.ensureSharedNsVar(target);
             const shared = l.ns_shared_inline_cache.get(target.toU32()) orelse return error.InvalidCrossChunkExport;
-            return .{ .owner = owner, .public_name = name, .role = .{ .namespace_projection = .{
+            return make(owner, name, .{ .namespace_projection = .{
                 .binding = binding,
                 .original = binding.*,
                 .target = target_owner,
                 .storage = shared.var_name,
-            } } };
+            } });
         }
         _ = try checkedSymbol(l.allocator, owner, binding);
-        return .{ .owner = owner, .public_name = name, .role = .{ .semantic = .{ .binding = binding, .original = binding.* } } };
+        return make(owner, name, .{ .semantic = try knownBinding(owner, binding) });
     }
 
     pub fn validate(self: Provider, l: *const Linker) Error!void {
         if (l.getModule(self.owner.index.toU32()) != self.owner) return error.InvalidCrossChunkExport;
+        if (self.owner.semantic) |sem| {
+            if (self.owner_token == .unassigned or sem.owner_token != self.owner_token) return error.InvalidCrossChunkExport;
+        } else if (self.owner_token != .unassigned) return error.InvalidCrossChunkExport;
         switch (self.role) {
-            .semantic => |known| {
-                _ = try checkedSymbol(l.allocator, self.owner, known.binding);
-                if (!std.meta.eql(known.binding.*, known.original) or
-                    !std.mem.eql(u8, known.original.exported_name, self.public_name)) return error.InvalidCrossChunkExport;
-            },
+            .semantic, .entry_guard => |known| try self.validateKnown(known),
             .cjs_member => |known| {
                 const sid = self.owner.require_symbol orelse return error.InvalidCrossChunkExport;
                 const sem = self.owner.semantic orelse return error.InvalidCrossChunkExport;
@@ -101,7 +159,7 @@ pub const Provider = struct {
     pub fn localName(self: Provider, l: *const Linker) Error!?[]const u8 {
         try self.validate(l);
         const name: ?[]const u8 = switch (self.role) {
-            .semantic => |known| blk: {
+            .semantic, .entry_guard => |known| blk: {
                 const sid = known.original.symbol.semanticIndex() orelse return error.InvalidCrossChunkExport;
                 break :blk l.getCanonicalByRef(known.original.symbol) orelse
                     self.owner.symbolName(@fromBackingInt(sid)) orelse return error.InvalidCrossChunkExport;
@@ -111,7 +169,7 @@ pub const Provider = struct {
             .cjs_member => null,
             .graphless => self.public_name,
         };
-        if (name) |text| if (self.role == .semantic) {
+        if (name) |text| if (self.role == .semantic or self.role == .entry_guard) {
             const decoded = try @import("../lexer/scanner.zig").Scanner.decodeIdentifierEscapesAlloc(l.allocator, text);
             defer if (decoded.ptr != text.ptr) l.allocator.free(decoded);
             if (!@import("linker/identifier_name.zig").isIdentifierName(decoded) or Linker.isReservedName(decoded)) return error.InvalidCrossChunkLocalName;
