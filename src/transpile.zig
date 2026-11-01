@@ -2980,12 +2980,19 @@ fn detachErasedTypeImportExternalReads(
             if (spec_raw >= transformer.parser_node_count) continue;
             const spec_index: ast_mod.NodeIndex = @fromBackingInt(@intCast(spec_raw));
             const spec_node = transformer.ast.getNode(spec_index);
-            if (spec_node.tag != .import_specifier or spec_node.data.binary.flags != 0) continue;
-            const local_index = spec_node.data.binary.right;
+            const local_index = switch (spec_node.tag) {
+                .import_specifier => if (spec_node.data.binary.flags == 0)
+                    spec_node.data.binary.right
+                else
+                    continue,
+                .import_default_specifier => spec_index,
+                else => continue,
+            };
             if (local_index.isNone() or @backingInt(local_index) >= transformer.parser_node_count) continue;
             const local_raw = @backingInt(local_index);
             const local_node = transformer.ast.getNode(local_index);
-            if (local_node.tag != .identifier_reference or !isValidSourceTextSpan(transformer.ast, local_node.span) or
+            if ((local_node.tag != .identifier_reference and local_node.tag != .import_default_specifier) or
+                !isValidSourceTextSpan(transformer.ast, local_node.span) or
                 local_raw >= transformer.symbol_ids.items.len) continue;
             const symbol_id = transformer.symbol_ids.items[local_raw] orelse continue;
             if (symbol_id >= transformer.symbols.len or seen_import_symbols.contains(symbol_id)) continue;
@@ -3147,7 +3154,8 @@ fn exactErasedTypeImportExternalReference(
         proof.import_node.data.extra != transformer.ast.getNode(proof.import_node_index).data.extra or
         !sameNodeValue(proof.import_local_node, transformer.ast.getNode(proof.import_local_node_index)) or
         !sameNodeValue(proof.reference_node, transformer.ast.getNode(@fromBackingInt(output_reference_raw))) or
-        proof.import_local_node.tag != .identifier_reference or
+        (proof.import_local_node.tag != .identifier_reference and
+            proof.import_local_node.tag != .import_default_specifier) or
         proof.reference_node.tag != .identifier_reference or
         transformer.symbol_ids.items[local_raw] != @as(?u32, proof.import_symbol_id) or
         proof.reference.node_index != @as(ast_mod.NodeIndex, @fromBackingInt(output_reference_raw)) or
@@ -3165,9 +3173,15 @@ fn exactErasedTypeImportExternalReference(
     while (spec_offset < import_decl.specs_len) : (spec_offset += 1) {
         const spec_raw = transformer.ast.extra_data.items[import_decl.specs_start + spec_offset];
         if (spec_raw >= transformer.parser_node_count) return false;
-        const spec = transformer.ast.getNode(@fromBackingInt(@intCast(spec_raw)));
-        if (spec.tag != .import_specifier or spec.data.binary.flags != 0 or
-            spec.data.binary.right != proof.import_local_node_index) continue;
+        const spec_index: ast_mod.NodeIndex = @fromBackingInt(@intCast(spec_raw));
+        const spec = transformer.ast.getNode(spec_index);
+        const is_local_specifier = switch (spec.tag) {
+            .import_specifier => spec.data.binary.flags == 0 and
+                spec.data.binary.right == proof.import_local_node_index,
+            .import_default_specifier => spec_index == proof.import_local_node_index,
+            else => false,
+        };
+        if (!is_local_specifier) continue;
         local_specifier_matches += 1;
     }
     if (local_specifier_matches != 1) return false;
@@ -6151,50 +6165,38 @@ test "#6193 declaration-level type import reuse requires exact output erasure pr
     ));
 }
 
-test "#6193 detached erased type import proof rejects fourteen graph mutations" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-    const source = "import type { Shape } from './types'; globalThis.Shape = 21; console.log(Shape);";
+test "#6193 detached named and default type import proofs reject fourteen graph mutations each" {
+    const sources = [_][]const u8{
+        "import type { Shape } from './types'; globalThis.Shape = 21; console.log(Shape);",
+        "import type Shape from './types'; globalThis.Shape = 21; console.log(Shape);",
+    };
+    for (sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
 
-    var scanner = try Scanner.init(allocator, source);
-    var parser = Parser.init(allocator, &scanner);
-    parser.configureFromExtension(".ts");
-    const source_root = try parser.parse();
-    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".ts");
+        const source_root = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
 
-    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
-    defer analyzer.deinit();
-    analyzer.is_ts = true;
-    analyzer.is_module = parser.is_module;
-    analyzer.is_strict_mode = parser.is_strict_mode;
-    analyzer.collect_unresolved_reference_nodes = true;
-    try analyzer.analyze();
-    const shadow_snapshot = (try captureTypeImportShadowIdentitySnapshot(
-        allocator,
-        &parser,
-        &analyzer,
-    )) orelse return error.MissingTypeImportShadowSnapshot;
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        defer analyzer.deinit();
+        analyzer.is_ts = true;
+        analyzer.is_module = parser.is_module;
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        analyzer.collect_unresolved_reference_nodes = true;
+        try analyzer.analyze();
+        const shadow_snapshot = (try captureTypeImportShadowIdentitySnapshot(
+            allocator,
+            &parser,
+            &analyzer,
+        )) orelse return error.MissingTypeImportShadowSnapshot;
 
-    var transformer = try Transformer.init(allocator, &parser.ast, .{});
-    defer transformer.deinit();
-    try transformer.initSymbolIds(analyzer.symbol_ids.items);
-    transformer.symbols = analyzer.symbols.items;
-    transformer.references = analyzer.references.items;
-    transformer.scopes = analyzer.scopes.items;
-    transformer.scope_maps = analyzer.scope_maps.items;
-    transformer.scope_owner_map = analyzer.scope_owner_map;
-    transformer.node_scope_provenance = analyzer.node_scope_provenance;
-    transformer.helper_scope_map = analyzer.helper_scope_map;
-    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
-    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
-    transformer.semantic_edit_enabled = true;
-    transformer.unresolved_references = &analyzer.unresolved_references;
-    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
-    transformer.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
-    const output_root = try transformer.visitNode(source_root);
-    if (try transformer.finishSemanticEdit()) |edited| {
-        analyzer.applyEdit(edited);
+        var transformer = try Transformer.init(allocator, &parser.ast, .{});
+        defer transformer.deinit();
+        try transformer.initSymbolIds(analyzer.symbol_ids.items);
         transformer.symbols = analyzer.symbols.items;
         transformer.references = analyzer.references.items;
         transformer.scopes = analyzer.scopes.items;
@@ -6202,128 +6204,145 @@ test "#6193 detached erased type import proof rejects fourteen graph mutations" 
         transformer.scope_owner_map = analyzer.scope_owner_map;
         transformer.node_scope_provenance = analyzer.node_scope_provenance;
         transformer.helper_scope_map = analyzer.helper_scope_map;
-    }
-    try std.testing.expect(try detachErasedTypeImportExternalReads(
-        allocator,
-        &transformer,
-        &analyzer,
-        output_root,
-        shadow_snapshot,
-    ));
-
-    const GraphProof = struct {
-        fn accepts(
-            output_transformer: *const Transformer,
-            root: ast_mod.NodeIndex,
-            snapshot: TypeImportShadowIdentitySnapshot,
-        ) bool {
-            return erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImportsWithShadowSnapshot(
-                output_transformer,
-                root,
-                true,
-                false,
-                false,
-                snapshot,
-            );
+        transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+        transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+        transformer.semantic_edit_enabled = true;
+        transformer.unresolved_references = &analyzer.unresolved_references;
+        transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+        transformer.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
+        const output_root = try transformer.visitNode(source_root);
+        if (try transformer.finishSemanticEdit()) |edited| {
+            analyzer.applyEdit(edited);
+            transformer.symbols = analyzer.symbols.items;
+            transformer.references = analyzer.references.items;
+            transformer.scopes = analyzer.scopes.items;
+            transformer.scope_maps = analyzer.scope_maps.items;
+            transformer.scope_owner_map = analyzer.scope_owner_map;
+            transformer.node_scope_provenance = analyzer.node_scope_provenance;
+            transformer.helper_scope_map = analyzer.helper_scope_map;
         }
-    };
-    try std.testing.expect(GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+        try std.testing.expect(try detachErasedTypeImportExternalReads(
+            allocator,
+            &transformer,
+            &analyzer,
+            output_root,
+            shadow_snapshot,
+        ));
 
-    var proof_iterator = transformer.erased_type_import_external_references.iterator();
-    const proof_entry = proof_iterator.next() orelse return error.MissingDetachedExternalReferenceProof;
-    const reference_raw = proof_entry.key_ptr.*;
-    const original_proof = proof_entry.value_ptr.*;
-    try std.testing.expect(proof_iterator.next() == null);
-    var detected_mutations: usize = 0;
+        const GraphProof = struct {
+            fn accepts(
+                output_transformer: *const Transformer,
+                root: ast_mod.NodeIndex,
+                snapshot: TypeImportShadowIdentitySnapshot,
+            ) bool {
+                return erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImportsWithShadowSnapshot(
+                    output_transformer,
+                    root,
+                    true,
+                    false,
+                    false,
+                    snapshot,
+                );
+            }
+        };
+        try std.testing.expect(GraphProof.accepts(&transformer, output_root, shadow_snapshot));
 
-    _ = transformer.explicit_global_reference_nodes.remove(reference_raw);
-    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
-    try transformer.explicit_global_reference_nodes.put(allocator, reference_raw, {});
-    detected_mutations += 1;
+        var proof_iterator = transformer.erased_type_import_external_references.iterator();
+        const proof_entry = proof_iterator.next() orelse return error.MissingDetachedExternalReferenceProof;
+        const reference_raw = proof_entry.key_ptr.*;
+        const original_proof = proof_entry.value_ptr.*;
+        try std.testing.expect(proof_iterator.next() == null);
+        var detected_mutations: usize = 0;
 
-    _ = transformer.erased_type_import_external_references.remove(reference_raw);
-    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
-    try transformer.erased_type_import_external_references.put(allocator, reference_raw, original_proof);
-    detected_mutations += 1;
+        _ = transformer.explicit_global_reference_nodes.remove(reference_raw);
+        try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+        try transformer.explicit_global_reference_nodes.put(allocator, reference_raw, {});
+        detected_mutations += 1;
 
-    const proof = transformer.erased_type_import_external_references.getPtr(reference_raw).?;
-    proof.import_node_index = .none;
-    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
-    proof.* = original_proof;
-    detected_mutations += 1;
+        _ = transformer.erased_type_import_external_references.remove(reference_raw);
+        try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+        try transformer.erased_type_import_external_references.put(allocator, reference_raw, original_proof);
+        detected_mutations += 1;
 
-    proof.import_node.data.extra += 1;
-    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
-    proof.* = original_proof;
-    detected_mutations += 1;
+        const proof = transformer.erased_type_import_external_references.getPtr(reference_raw).?;
+        proof.import_node_index = .none;
+        try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+        proof.* = original_proof;
+        detected_mutations += 1;
 
-    proof.import_local_node_index = .none;
-    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
-    proof.* = original_proof;
-    detected_mutations += 1;
+        proof.import_node.data.extra += 1;
+        try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+        proof.* = original_proof;
+        detected_mutations += 1;
 
-    proof.import_symbol_id ^= 1;
-    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
-    proof.* = original_proof;
-    detected_mutations += 1;
+        proof.import_local_node_index = .none;
+        try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+        proof.* = original_proof;
+        detected_mutations += 1;
 
-    proof.reference.node_index = .none;
-    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
-    proof.* = original_proof;
-    detected_mutations += 1;
+        proof.import_symbol_id ^= 1;
+        try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+        proof.* = original_proof;
+        detected_mutations += 1;
 
-    proof.reference.symbol_id = @fromBackingInt(@intCast(original_proof.import_symbol_id ^ 1));
-    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
-    proof.* = original_proof;
-    detected_mutations += 1;
+        proof.reference.node_index = .none;
+        try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+        proof.* = original_proof;
+        detected_mutations += 1;
 
-    proof.reference.flags = .{ .write = true };
-    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
-    proof.* = original_proof;
-    detected_mutations += 1;
+        proof.reference.symbol_id = @fromBackingInt(@intCast(original_proof.import_symbol_id ^ 1));
+        try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+        proof.* = original_proof;
+        detected_mutations += 1;
 
-    proof.reference.scope_id = .none;
-    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
-    proof.* = original_proof;
-    detected_mutations += 1;
+        proof.reference.flags = .{ .write = true };
+        try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+        proof.* = original_proof;
+        detected_mutations += 1;
 
-    const reference_node_raw = @backingInt(original_proof.reference.node_index);
-    const original_reference_node = transformer.ast.nodes.items[reference_node_raw];
-    transformer.ast.nodes.items[reference_node_raw].span.end -= 1;
-    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
-    transformer.ast.nodes.items[reference_node_raw] = original_reference_node;
-    detected_mutations += 1;
+        proof.reference.scope_id = .none;
+        try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+        proof.* = original_proof;
+        detected_mutations += 1;
 
-    const local_raw = @backingInt(original_proof.import_local_node_index);
-    const original_local_symbol_id = transformer.symbol_ids.items[local_raw];
-    transformer.symbol_ids.items[local_raw] = null;
-    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
-    transformer.symbol_ids.items[local_raw] = original_local_symbol_id;
-    detected_mutations += 1;
+        const reference_node_raw = @backingInt(original_proof.reference.node_index);
+        const original_reference_node = transformer.ast.nodes.items[reference_node_raw];
+        transformer.ast.nodes.items[reference_node_raw].span.end -= 1;
+        try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+        transformer.ast.nodes.items[reference_node_raw] = original_reference_node;
+        detected_mutations += 1;
 
-    const import_symbol_scope = transformer.symbols[original_proof.import_symbol_id].scope_id.toIndex();
-    const import_scope_name = transformer.ast.getText(original_proof.import_local_node.span);
-    const mutable_scope_maps = @constCast(transformer.scope_maps);
-    const original_scope_symbol = mutable_scope_maps[import_symbol_scope].get("Shape");
-    _ = mutable_scope_maps[import_symbol_scope].remove("Shape");
-    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
-    try mutable_scope_maps[import_symbol_scope].put(
-        allocator,
-        import_scope_name,
-        original_scope_symbol orelse return error.MissingOriginalImportedScopeBinding,
-    );
-    detected_mutations += 1;
+        const local_raw = @backingInt(original_proof.import_local_node_index);
+        const original_local_symbol_id = transformer.symbol_ids.items[local_raw];
+        transformer.symbol_ids.items[local_raw] = null;
+        try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+        transformer.symbol_ids.items[local_raw] = original_local_symbol_id;
+        detected_mutations += 1;
 
-    const original_references = transformer.references;
-    const residual_references = try allocator.alloc(SemanticReference, original_references.len + 1);
-    @memcpy(residual_references[0..original_references.len], original_references);
-    residual_references[original_references.len] = original_proof.reference;
-    transformer.references = residual_references;
-    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
-    transformer.references = original_references;
-    detected_mutations += 1;
+        const import_symbol_scope = transformer.symbols[original_proof.import_symbol_id].scope_id.toIndex();
+        const import_scope_name = transformer.ast.getText(original_proof.import_local_node.span);
+        const mutable_scope_maps = @constCast(transformer.scope_maps);
+        const original_scope_symbol = mutable_scope_maps[import_symbol_scope].get(import_scope_name);
+        _ = mutable_scope_maps[import_symbol_scope].remove(import_scope_name);
+        try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+        try mutable_scope_maps[import_symbol_scope].put(
+            allocator,
+            import_scope_name,
+            original_scope_symbol orelse return error.MissingOriginalImportedScopeBinding,
+        );
+        detected_mutations += 1;
 
-    try std.testing.expectEqual(@as(usize, 14), detected_mutations);
+        const original_references = transformer.references;
+        const residual_references = try allocator.alloc(SemanticReference, original_references.len + 1);
+        @memcpy(residual_references[0..original_references.len], original_references);
+        residual_references[original_references.len] = original_proof.reference;
+        transformer.references = residual_references;
+        try std.testing.expect(!GraphProof.accepts(&transformer, output_root, shadow_snapshot));
+        transformer.references = original_references;
+        detected_mutations += 1;
+
+        try std.testing.expectEqual(@as(usize, 14), detected_mutations);
+    }
 }
 
 test "#6193 erased type import permits only exact same-name runtime bindings" {
