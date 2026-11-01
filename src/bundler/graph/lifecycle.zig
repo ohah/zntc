@@ -42,6 +42,7 @@ pub fn init(allocator: std.mem.Allocator, resolve_cache: *ResolveCache) ModuleGr
 /// 모듈 단위 state 도 reset. reset() 만 호출하면 modules 의 stale ast/semantic 이
 /// 그대로 남음 — Sub-PR-B.3 의 wire-up 에서 invalidateModule 와 함께 사용.
 pub fn reset(self: *ModuleGraph) void {
+    self.output_runtime_registry.clear();
     self.interop_ast_provider = null;
     self.dynamic_import_ast_provider = null;
     self.entry_guard_ast_provider = null;
@@ -156,6 +157,7 @@ pub fn invalidateModule(self: *ModuleGraph, idx: ModuleIndex) void {
 /// reset() 는 path_arena 를 유지해 키가 살아있으니 pkg_info_cache 를 보존(doc 계약)하지만,
 /// 여기서는 path_arena 가 회수되므로 보존이 불가능 — value 메모리 해제 후 clearRetainingCapacity.
 pub fn prepareForPreservedRebuild(self: *ModuleGraph) void {
+    self.output_runtime_registry.clear();
     self.namespace_source_consumed_providers.clearRetainingCapacity();
     self.self_namespace_holders.clearRetainingCapacity();
     // 1) 모든 모듈 슬롯 해제 (parse_arena 가 아직 graph 소유면 함께 해제 —
@@ -196,6 +198,7 @@ pub fn prepareForPreservedRebuild(self: *ModuleGraph) void {
 }
 
 pub fn deinit(self: *ModuleGraph) void {
+    self.output_runtime_registry.deinit(self.allocator);
     self.namespace_source_consumed_providers.deinit(self.allocator);
     self.self_namespace_holders.deinit(self.allocator);
     self.entry_guard_invocations.deinit(self.allocator);

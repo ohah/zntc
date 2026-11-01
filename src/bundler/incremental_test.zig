@@ -14,11 +14,20 @@ fn corruptTrackedFunctionSymbol(ctx: ?*anyopaque, api: *plugin_mod.AstTransformC
     calls.* += 1;
     if (func.node_tag != .function_declaration) return;
 
-    const raw: usize = @intCast(@backingInt(func.node_idx));
+    const ast = api.transformer.ast;
+    const function = ast.getNode(func.node_idx);
+    const binding = ast.readExtraNode(function.data.extra, @import("../parser/ast.zig").FunctionExtra.name);
+    if (binding.isNone() or ast.getNode(binding).tag != .binding_identifier) return error.PluginFailed;
+    const raw: usize = @intCast(@backingInt(binding));
     if (raw >= api.transformer.symbol_ids.items.len) return error.PluginFailed;
-    // Deliberately violate the tracked-function graph contract after the AST
-    // transform has started. The exact post-transform audit must reject this
-    // retained graph and leave the module with a build error.
+    const id = api.transformer.symbol_ids.items[raw] orelse return error.PluginFailed;
+    // A function container need not own a SID. Corrupt its actual declaration
+    // binding in the current producer graph, rather than clearing an already
+    // empty container slot or a secondary transformer projection.
+    if (api.transformer.semantic_editor) |*editor| {
+        if (raw >= editor.symbol_ids.items.len or editor.symbol_ids.items[raw] != id) return error.PluginFailed;
+        editor.symbol_ids.items[raw] = null;
+    }
     api.transformer.symbol_ids.items[raw] = null;
 }
 
@@ -681,9 +690,9 @@ test "IncrementalBundler: retained graph refresh failure forces a fresh same-inp
     ib.enable_persistence = true;
     defer ib.deinit();
 
-    // First cold build reaches failRetainedGraphRefresh after the transformed
-    // AST and transform_cache have been installed. The failed graph must not
-    // become a successful no-change result on the next same-input rebuild.
+    // The faulty hook is rejected before candidate publication. The installed
+    // parser AST and empty transform cache must survive the failure, and the
+    // next same-input rebuild must execute the hook again.
     {
         const first = try ib.rebuild(std.testing.io);
         switch (first) {
@@ -766,8 +775,8 @@ test "persistent Bundler: retained graph refresh error cannot become same-input 
     var graph = ModuleGraph_t.init(std.testing.allocator, &resolve_cache);
     defer graph.deinit();
 
-    // The first real persistent-graph build reaches failRetainedGraphRefresh
-    // after the transformed AST and transform_cache have been installed.
+    // The first real persistent-graph build rejects the faulty tracked hook
+    // before publishing the candidate AST or transform cache.
     {
         var bundler = Bundler.initWithGraph(std.testing.allocator, base_options, &resolve_cache, &graph);
         defer bundler.deinit();

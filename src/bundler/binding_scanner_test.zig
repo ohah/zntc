@@ -1132,3 +1132,82 @@ test "import declaration owners are captured by both initial producers in ten fo
         }
     }
 }
+
+test "default reexport refresh preserves provider alias without source semantic births" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndExtractBindings(alloc, "export { default } from './provider.mjs';");
+    defer r.arena.deinit();
+    defer alloc.free(r.import_bindings);
+    defer alloc.free(r.export_bindings);
+    defer alloc.free(r.import_records);
+    var symbols: std.ArrayList(semantic_symbol.Symbol) = .empty;
+    defer symbols.deinit(alloc);
+    for (0..2) |_| {
+        var table = symbol.AliasTable.init(alloc);
+        defer table.deinit();
+        try binding_scanner.populateSyntheticSymbolsWithOwnerScope(&table, @fromBackingInt(@as(u32, 0)), r.export_bindings, &symbols, alloc, null, null, null);
+        try std.testing.expectEqual(@as(usize, 0), symbols.items.len);
+        try std.testing.expect(r.export_bindings[0].symbol == .alias);
+        try std.testing.expect(r.export_bindings[0].symbol.isValid());
+    }
+}
+fn pairedSourceLeaves(use_exports: bool, reverse_records: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = if (use_exports)
+        "export { a as first } from './dep'; export { b as second } from './dep';"
+    else
+        "import { a as first } from './dep'; import { b as second } from './dep';";
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.is_module = true;
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const statements = parser.ast.getNode(root).data.list;
+    try std.testing.expectEqual(@as(u32, 2), statements.len);
+    var leaves: [2]@import("../parser/ast.zig").NodeIndex = undefined;
+    for (&leaves, 0..) |*leaf, i| {
+        const owner = parser.ast.nodes.items[parser.ast.extra_data.items[statements.start + i]];
+        leaf.* = if (use_exports)
+            @import("../parser/module.zig").readExportNamedExtras(&parser.ast, owner.data.extra).source
+        else
+            @import("../parser/module.zig").readImportDeclExtras(&parser.ast, owner.data.extra).source;
+    }
+    try std.testing.expect(leaves[0] != leaves[1]);
+    // Model an actual producer copying the literal datum/span into a fresh leaf.
+    parser.ast.nodes.items[@backingInt(leaves[1])] = parser.ast.getNode(leaves[0]);
+    const records = try import_scanner.extractImports(a, &parser.ast);
+    try std.testing.expectEqual(@as(usize, 2), records.len);
+    try std.testing.expectEqual(records[0].span, records[1].span);
+    if (reverse_records) std.mem.swap(types.ImportRecord, &records[0], &records[1]);
+    const imports = try extractImportBindings(a, &parser.ast, records, null);
+    if (use_exports) {
+        const exports = try extractExportBindings(a, &parser.ast, records, imports);
+        try std.testing.expectEqual(@as(usize, 2), exports.len);
+        try std.testing.expect(exports[0].import_record_index != exports[1].import_record_index);
+        for (exports) |binding| {
+            const owner = parser.ast.getNode(binding.source_export_node.?);
+            const leaf = @import("../parser/module.zig").readExportNamedExtras(&parser.ast, owner.data.extra).source;
+            try std.testing.expectEqual(leaf, records[binding.import_record_index.?].source_node);
+        }
+    } else {
+        try std.testing.expectEqual(@as(usize, 2), imports.len);
+        try std.testing.expect(imports[0].import_record_index != imports[1].import_record_index);
+        for (imports) |binding| {
+            const owner = parser.ast.getNode(binding.local_declaration_node.?);
+            const leaf = @import("../parser/module.zig").readImportDeclExtras(&parser.ast, owner.data.extra).source;
+            try std.testing.expectEqual(leaf, records[binding.import_record_index].source_node);
+        }
+    }
+}
+
+test "import binding: copied source spans retain distinct actual record leaves" {
+    try pairedSourceLeaves(false, false);
+    try pairedSourceLeaves(false, true);
+}
+
+test "export binding: copied source spans retain distinct actual reexport record leaves" {
+    try pairedSourceLeaves(true, false);
+    try pairedSourceLeaves(true, true);
+}

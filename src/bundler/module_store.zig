@@ -89,6 +89,7 @@ pub const PersistentModuleStore = struct {
         }
         // parse_arena / alias_table 가 아직 store 에 있으면 해제.
         if (cached.module.parse_arena) |arena| Module_mod.destroyParseArena(self.allocator, arena);
+        if (cached.module.codegen_output_domain) |domain| domain.destroy();
         if (cached.module.alias_table) |*t| t.deinit();
         if (cached.module.export_index_by_name) |*m| m.deinit(self.allocator);
         // dependencies/importers/dynamic_imports/dynamic_importers ArrayList 해제
@@ -314,6 +315,7 @@ pub const PersistentModuleStore = struct {
         // (특히 nested_name_sets HashMap backing 의 Header.capacity) 을 덮어쓴다.
         module.self_namespace_source_receipt = null;
         module.parse_arena = null;
+        module.codegen_output_domain = null;
         module.resolve_dir = null;
         module.alias_table = null;
         // export_index_by_name (PR-Y1) 도 alias_table 와 동일 ownership 이전 패턴 —

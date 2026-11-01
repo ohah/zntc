@@ -12,6 +12,7 @@ const ModuleIndex = types.ModuleIndex;
 const chunk_mod = @import("chunk.zig");
 const resolve_cache_mod = @import("resolve_cache.zig");
 const writeFile = @import("test_helpers.zig").writeFile;
+const profile = @import("../profile.zig");
 
 fn buildGraph(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !struct { graph: ModuleGraph, cache: resolve_cache_mod.ResolveCache } {
     const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
@@ -40,6 +41,131 @@ test "emitter: single module" {
 
     // TS 타입 스트리핑: "const x: number = 1;" → "const x = 1;"
     try std.testing.expect(std.mem.indexOf(u8, output, "const x = 1;") != null);
+}
+
+test "#4819 retained ES5 lexical lowering keeps exact local identities through emit" {
+    const compat = @import("../transformer/compat.zig");
+    const helpers = @import("test_helpers.zig");
+    const source = "function make(input) { let result = input + 1; return result; } class Read { constructor(input) { let result = input + 2; this.value = result; } } console.log(make(1), new Read(2).value);";
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", source);
+    const entry = try helpers.absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.unsupported = compat.fromESTarget(.es5);
+
+    profile.resetForTest();
+    defer profile.resetForTest();
+    profile.setIoForTest(std.testing.io);
+    profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+    try graph.build(std.testing.io, &.{entry});
+
+    const module = graph.findModuleByPath(entry) orelse return error.MissingRetainedLexicalModule;
+    const ast = &(module.ast orelse return error.MissingRetainedLexicalAst);
+    const semantic = &(module.semantic orelse return error.MissingRetainedLexicalSemantic);
+    try std.testing.expect(module.transform_cache != null);
+    try std.testing.expect(profile.count(.graph_discover_pm_semantic) > 0);
+    try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+
+    var result_symbols: [2]u32 = undefined;
+    var result_symbol_count: usize = 0;
+    for (semantic.symbols.items, 0..) |symbol, raw_sid| {
+        if (symbol.synthetic_kind != null or !std.mem.eql(u8, ast.getText(symbol.name), "result")) continue;
+        try std.testing.expect(result_symbol_count < result_symbols.len);
+        result_symbols[result_symbol_count] = @intCast(raw_sid);
+        result_symbol_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), result_symbol_count);
+    try std.testing.expect(result_symbols[0] != result_symbols[1]);
+    try std.testing.expect(semantic.symbols.items[result_symbols[0]].scope_id != semantic.symbols.items[result_symbols[1]].scope_id);
+
+    for (result_symbols) |sid| {
+        var declaration_count: usize = 0;
+        var read_count: usize = 0;
+        for (semantic.references) |reference| {
+            if (@backingInt(reference.symbol_id) != sid) continue;
+            if (reference.flags.declare) {
+                declaration_count += 1;
+                const declaration_raw = @backingInt(reference.declaration_node_index);
+                try std.testing.expect(declaration_raw < ast.nodes.items.len);
+                try std.testing.expect(declaration_raw < semantic.symbol_ids.len);
+                const declaration = ast.nodes.items[declaration_raw];
+                try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.binding_identifier, declaration.tag);
+                try std.testing.expectEqualStrings("result", ast.identifierNameText(declaration));
+                try std.testing.expectEqual(@as(?u32, sid), semantic.symbol_ids[declaration_raw]);
+            } else if (reference.flags.read or reference.flags.write) {
+                read_count += 1;
+                const reference_raw = @backingInt(reference.node_index);
+                try std.testing.expect(reference_raw < ast.nodes.items.len);
+                try std.testing.expect(reference_raw < semantic.symbol_ids.len);
+                const reference_node = ast.nodes.items[reference_raw];
+                try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, reference_node.tag);
+                try std.testing.expectEqualStrings("result", ast.identifierNameText(reference_node));
+                try std.testing.expectEqual(@as(?u32, sid), semantic.symbol_ids[reference_raw]);
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), declaration_count);
+        try std.testing.expectEqual(@as(usize, 1), read_count);
+    }
+
+    var named_identifier_count: usize = 0;
+    for (ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier and node.tag != .identifier_reference) continue;
+        if (!std.mem.eql(u8, ast.identifierNameText(node), "result")) continue;
+        named_identifier_count += 1;
+        try std.testing.expect(raw < semantic.symbol_ids.len);
+        const sid = semantic.symbol_ids[raw] orelse return error.MissingRetainedResultSymbolId;
+        try std.testing.expect(sid == result_symbols[0] or sid == result_symbols[1]);
+    }
+    try std.testing.expectEqual(@as(usize, 4), named_identifier_count);
+
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    try linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+    linker.populateImportSymbols();
+
+    const emit_options: EmitOptions = .{
+        .format = .esm,
+        .transform_options_base = graph.transform_options_base,
+        .unsupported = graph.transform_options_base.unsupported,
+    };
+    const emitted = try emitter.emitWithTreeShaking(std.testing.io, std.testing.allocator, &graph, &emit_options, &linker, null);
+    defer emitted.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, emitted.output, "let result") == null);
+
+    const native = std.process.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ "node", "-e", source },
+        .stdout_limit = .limited(16 * 1024),
+        .stderr_limit = .limited(16 * 1024),
+    }) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer std.testing.allocator.free(native.stdout);
+    defer std.testing.allocator.free(native.stderr);
+
+    try writeFile(tmp.dir, "output.mjs", emitted.output);
+    const output_path = try helpers.absPath(&tmp, "output.mjs");
+    defer std.testing.allocator.free(output_path);
+    const actual = try std.process.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ "node", output_path },
+        .stdout_limit = .limited(16 * 1024),
+        .stderr_limit = .limited(16 * 1024),
+    });
+    defer std.testing.allocator.free(actual.stdout);
+    defer std.testing.allocator.free(actual.stderr);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, native.term);
+    if (actual.term != .exited or actual.term.exited != 0) std.debug.print("emitted ES5 stderr:\n{s}\n", .{actual.stderr});
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+    try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    try std.testing.expectEqualStrings("2 4\n", actual.stdout);
 }
 
 test "emitter: two modules exec order" {
@@ -4074,4 +4200,129 @@ test "emitter: Unicode scope aliases yield one candidate per exact symbol" {
         if (entry.found_existing) std.debug.print("duplicate Unicode candidate module={d} sid={d} name={s}\n", .{ candidate.module_index, candidate.symbol_id, candidate.name });
         try std.testing.expect(!entry.found_existing);
     }
+}
+
+test "entry CJS result handoff preserves configured exports and one guarded evaluation" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const OutputExports = @import("bundler.zig").OutputExports;
+    const helpers = @import("test_helpers.zig");
+    const Case = struct { source: []const u8, extension: []const u8 = ".cjs", probe: []const u8, shadow: bool = false };
+    const cases = [_]Case{
+        .{ .source = "const value = { result: 7 }; export = value;", .extension = ".ts", .probe = "value.result" },
+        .{ .source = "module.exports = { result: 7 };", .probe = "value.result" },
+        .{ .source = "module.exports = 7;", .probe = "value" },
+        .{ .source = "module.exports = function () { return 7; };", .probe = "value()" },
+        .{ .source = "var module=17;exports.result=7;globalThis.__shadow=module;", .probe = "value.result", .shadow = true },
+        .{ .source = "var exports=17;module.exports={result:7};globalThis.__shadow=exports;", .probe = "value.result", .shadow = true },
+    };
+    for (cases, 0..) |case, index| {
+        for ([_]OutputExports{ .auto, .default_, .named, .none }) |mode| {
+            for ([_]bool{ false, true }) |guard| {
+                for ([_]bool{ false, true }) |minify| {
+                    var tmp = std.testing.tmpDir(.{});
+                    defer tmp.cleanup();
+                    const a = std.testing.allocator;
+                    const basename = try std.fmt.allocPrint(a, "entry{s}", .{case.extension});
+                    defer a.free(basename);
+                    const source = try std.mem.concat(a, u8, &.{ "globalThis.__entryHits += 1;", case.source });
+                    defer a.free(source);
+                    try helpers.writeFile(tmp.dir, basename, source);
+                    const entry = try helpers.absPath(&tmp, basename);
+                    defer a.free(entry);
+                    var bundler = Bundler.init(a, .{
+                        .entry_points = &.{entry},
+                        .platform = .node,
+                        .format = .cjs,
+                        .output_exports = mode,
+                        .entry_error_guard = guard,
+                        .minify_identifiers = minify,
+                        .minify_syntax = minify,
+                        .unsupported = @import("../transformer/compat.zig").fromESTarget(.es5),
+                    });
+                    defer bundler.deinit();
+                    const result = try bundler.bundle(std.testing.io);
+                    defer result.deinit(a);
+                    try std.testing.expect(!result.hasErrors());
+                    try helpers.writeFile(tmp.dir, "output.cjs", result.output);
+                    const output = try helpers.absPath(&tmp, "output.cjs");
+                    defer a.free(output);
+                    const selection = if (mode == .named) "raw.default" else "raw";
+                    const probe = if (mode == .none) "Object.keys(raw).length" else case.probe;
+                    const shadow_check = if (case.shadow) "if(globalThis.__shadow!==17)throw Error('source shadow changed');" else "";
+                    const script = try std.fmt.allocPrint(a, "globalThis.__entryHits=0;globalThis.ErrorUtils={{reportFatalError(e){{throw e}}}};const raw=require(process.argv[1]);const value={s};{s}console.log({s},globalThis.__entryHits);", .{ selection, shadow_check, probe });
+                    defer a.free(script);
+                    const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", script, output } });
+                    defer a.free(actual.stdout);
+                    defer a.free(actual.stderr);
+                    const expected = if (mode == .none) "0 1\n" else "7 1\n";
+                    if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, expected, actual.stdout))
+                        std.debug.print("CJS_ENTRY_RESULT case={d} mode={s} guard={any} min={any} stdout={s} stderr={s}\n{s}\n", .{ index, @tagName(mode), guard, minify, actual.stdout, actual.stderr, result.output });
+                    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                    try std.testing.expectEqualStrings(expected, actual.stdout);
+                }
+            }
+        }
+    }
+}
+
+test "entry CJS result handoff leaves run-before-main calls value-discarding" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const helpers = @import("test_helpers.zig");
+    const a = std.testing.allocator;
+    for ([_]bool{ false, true }) |guard| {
+        for ([_]bool{ false, true }) |minify| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try helpers.writeFile(tmp.dir, "rbm.cjs", "globalThis.__rbmHits+=1;module.exports=99;");
+            try helpers.writeFile(tmp.dir, "entry.cjs", "globalThis.__entryHits+=1;globalThis.__before=typeof globalThis.__readHost();module.exports=7;");
+            const entry = try helpers.absPath(&tmp, "entry.cjs");
+            defer a.free(entry);
+            const rbm = try helpers.absPath(&tmp, "rbm.cjs");
+            defer a.free(rbm);
+            var bundler = Bundler.init(a, .{
+                .entry_points = &.{entry},
+                .run_before_main = &.{rbm},
+                .platform = .node,
+                .format = .cjs,
+                .entry_error_guard = guard,
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+            });
+            defer bundler.deinit();
+            const result = try bundler.bundle(std.testing.io);
+            defer result.deinit(a);
+            try std.testing.expect(!result.hasErrors());
+            try helpers.writeFile(tmp.dir, "output.cjs", result.output);
+            const output = try helpers.absPath(&tmp, "output.cjs");
+            defer a.free(output);
+            const script = "const output=process.argv[1];globalThis.__rbmHits=0;globalThis.__entryHits=0;globalThis.__readHost=()=>require.cache[output].exports;globalThis.ErrorUtils={reportFatalError(e){throw e}};const value=require(output);console.log(value,globalThis.__before,globalThis.__rbmHits,globalThis.__entryHits);";
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", script, output } });
+            defer a.free(actual.stdout);
+            defer a.free(actual.stderr);
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, "7 object 1 1\n", actual.stdout))
+                std.debug.print("CJS_ENTRY_RBM guard={any} min={any} stdout={s} stderr={s}\n{s}\n", .{ guard, minify, actual.stdout, actual.stderr, result.output });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings("7 object 1 1\n", actual.stdout);
+        }
+    }
+}
+
+test "entry CJS result handoff rejects a different actual registered role" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.cjs", "module.exports=7;");
+    var result = try buildGraph(std.testing.allocator, &tmp, "entry.cjs");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+    const module = result.graph.moduleAtMut(ModuleIndex.fromUsize(0)).?;
+    const original = module.require_symbol orelse return error.MissingCjsRequireRole;
+    const other = module.exports_symbol orelse return error.MissingCjsExportsRole;
+    try std.testing.expect(original != other);
+    module.require_symbol = other;
+    defer module.require_symbol = original;
+    try std.testing.expectError(error.InvalidCjsEntryRequireIdentity, emit(std.testing.io, std.testing.allocator, &result.graph, &.{ .format = .cjs }, null));
+    module.require_symbol = original;
+    const restored = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{ .format = .cjs }, null);
+    defer restored.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, restored.output, "module.exports = ") != null);
 }

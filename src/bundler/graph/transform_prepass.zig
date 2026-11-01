@@ -4496,6 +4496,8 @@ test "native class type-only import graph retention is narrowly gated" {
             .scope_maps = analyzer.scope_maps.items,
             .scope_owner_map = analyzer.scope_owner_map,
             .node_scope_provenance = analyzer.node_scope_provenance,
+            .source_owned_retirements = analyzer.source_owned_retirements,
+            .scope_history = analyzer.scope_history,
             .class_self_symbol_map = analyzer.class_self_symbol_map,
             .namespace_member_owners = analyzer.namespace_member_owners,
             .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -10894,6 +10896,8 @@ test "bundler retains graph for decorator options without decorator syntax" {
             .scope_maps = analyzer.scope_maps.items,
             .scope_owner_map = analyzer.scope_owner_map,
             .node_scope_provenance = analyzer.node_scope_provenance,
+            .source_owned_retirements = analyzer.source_owned_retirements,
+            .scope_history = analyzer.scope_history,
             .class_self_symbol_map = analyzer.class_self_symbol_map,
             .namespace_member_owners = analyzer.namespace_member_owners,
             .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -10953,6 +10957,8 @@ test "bundler retains graph for decorator options without decorator syntax" {
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
         .node_scope_provenance = analyzer.node_scope_provenance,
+        .source_owned_retirements = analyzer.source_owned_retirements,
+        .scope_history = analyzer.scope_history,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -12709,13 +12715,14 @@ fn minifiedGraphMutationIsRejected(mutation: MinifiedGraphMutation) !bool {
     return !retained and failure != .allocation;
 }
 
-fn shouldRecordPrepassExplicitGlobals(
+fn shouldRecordPrepassExplicitGlobalsForTest(
     flow_match_has_generated_globals: bool,
     has_lowered_object_spread: bool,
     has_lowered_exponentiation: bool,
     safe_builtin_worklet: bool,
     lowered_simple_static_class_field_global: bool,
 ) bool {
+    if (!@import("builtin").is_test) @compileError("legacy selective global recording is a test-only oracle");
     return flow_match_has_generated_globals or has_lowered_object_spread or has_lowered_exponentiation or
         safe_builtin_worklet or lowered_simple_static_class_field_global;
 }
@@ -12915,6 +12922,8 @@ test "plugin graph retention vetoes AST capabilities even without matching sourc
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
         .node_scope_provenance = analyzer.node_scope_provenance,
+        .source_owned_retirements = analyzer.source_owned_retirements,
+        .scope_history = analyzer.scope_history,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -13212,6 +13221,8 @@ test "define source reads with exact local owners can enter output graph audit" 
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
         .node_scope_provenance = analyzer.node_scope_provenance,
+        .source_owned_retirements = analyzer.source_owned_retirements,
+        .scope_history = analyzer.scope_history,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -13247,7 +13258,7 @@ test "define source reads with exact local owners can enter output graph audit" 
         null,
     );
     try std.testing.expect(primitive_graph_retained);
-    try std.testing.expect(!shouldRecordPrepassExplicitGlobals(false, false, false, false, false));
+    try std.testing.expect(!shouldRecordPrepassExplicitGlobalsForTest(false, false, false, false, false));
     const compound_graph_candidate = canKeepPrepassSemanticGraph(
         &test_context,
         &module,
@@ -13258,7 +13269,7 @@ test "define source reads with exact local owners can enter output graph audit" 
         null,
     );
     try std.testing.expect(compound_graph_candidate);
-    try std.testing.expect(!shouldRecordPrepassExplicitGlobals(false, false, false, false, false));
+    try std.testing.expect(!shouldRecordPrepassExplicitGlobalsForTest(false, false, false, false, false));
 }
 
 test "prepass records generated globals and never needs define sidecars for exact literals" {
@@ -13284,7 +13295,7 @@ test "prepass records generated globals and never needs define sidecars for exac
     for (cases) |case| {
         try std.testing.expectEqual(
             case.expected,
-            shouldRecordPrepassExplicitGlobals(
+            shouldRecordPrepassExplicitGlobalsForTest(
                 case.flow,
                 case.object_spread,
                 case.exponentiation,
@@ -13495,6 +13506,8 @@ fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMut
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
         .node_scope_provenance = analyzer.node_scope_provenance,
+        .source_owned_retirements = analyzer.source_owned_retirements,
+        .scope_history = analyzer.scope_history,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -13737,6 +13750,8 @@ test "simple drop-console graph is retained by the full prepass gate" {
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
         .node_scope_provenance = analyzer.node_scope_provenance,
+        .source_owned_retirements = analyzer.source_owned_retirements,
+        .scope_history = analyzer.scope_history,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -14141,6 +14156,8 @@ test "TypeScript console-drop import gate keeps source-used imports and rejects 
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
         .node_scope_provenance = analyzer.node_scope_provenance,
+        .source_owned_retirements = analyzer.source_owned_retirements,
+        .scope_history = analyzer.scope_history,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -14366,6 +14383,8 @@ fn refreshRetainedModuleTlaForTest(
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
         .node_scope_provenance = analyzer.node_scope_provenance,
+        .source_owned_retirements = analyzer.source_owned_retirements,
+        .scope_history = analyzer.scope_history,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -14463,6 +14482,8 @@ fn canRetainDroppedLabelTlaForTest(unsupported_top_level_await: bool) !bool {
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
         .node_scope_provenance = analyzer.node_scope_provenance,
+        .source_owned_retirements = analyzer.source_owned_retirements,
+        .scope_history = analyzer.scope_history,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -14527,6 +14548,8 @@ fn canKeepDirectEvalPrepassForTest(source: []const u8, options: TransformOptions
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
         .node_scope_provenance = analyzer.node_scope_provenance,
+        .source_owned_retirements = analyzer.source_owned_retirements,
+        .scope_history = analyzer.scope_history,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -14694,6 +14717,8 @@ fn staticBlockPrepassDecisionForTest(
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = scope_owner_map,
         .node_scope_provenance = analyzer.node_scope_provenance,
+        .source_owned_retirements = analyzer.source_owned_retirements,
+        .scope_history = analyzer.scope_history,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -16234,6 +16259,8 @@ fn canRetainDefineForTest(
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
         .node_scope_provenance = analyzer.node_scope_provenance,
+        .source_owned_retirements = analyzer.source_owned_retirements,
+        .scope_history = analyzer.scope_history,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -16351,7 +16378,7 @@ fn printPrepassExact(
         retained_graph,
     )) orelse return;
     const coverage = @import("../../transformer/symbol_coverage.zig");
-    coverage.printExactPrepass(module.path, exact, retained_graph);
+    coverage.printExactSourceSlots(module.path, exact);
 }
 
 fn auditPrepassExactIfEnabled(
@@ -16650,7 +16677,7 @@ fn sameSnapshotMap(left: anytype, right: @TypeOf(left)) bool {
     while (entries.next()) |entry| {
         const value = right.get(entry.key_ptr.*) orelse return false;
         if (@TypeOf(entry.value_ptr.*) != void and
-            !std.meta.eql(entry.value_ptr.*, value)) return false;
+            !std.mem.eql(u8, std.mem.asBytes(entry.value_ptr), std.mem.asBytes(&value))) return false;
     }
     return true;
 }
@@ -16658,18 +16685,6 @@ fn sameSnapshotMap(left: anytype, right: @TypeOf(left)) bool {
 fn sameSnapshotSliceValues(comptime T: type, left: []const T, right: []const T) bool {
     if (left.len != right.len) return false;
     for (left, right) |before, current| if (!std.meta.eql(before, current)) return false;
-    return true;
-}
-
-fn sameAstNode(left: ast_mod.Node, right: ast_mod.Node) bool {
-    if (left.tag != right.tag or !std.meta.eql(left.span, right.span)) return false;
-    const width = ast_mod.Node.Tag.dataWidth(left.tag);
-    return std.mem.eql(u8, std.mem.asBytes(&left.data)[0..width], std.mem.asBytes(&right.data)[0..width]);
-}
-
-fn sameAstNodeValues(left: []const ast_mod.Node, right: []const ast_mod.Node) bool {
-    if (left.len != right.len) return false;
-    for (left, right) |before, current| if (!sameAstNode(before, current)) return false;
     return true;
 }
 
@@ -16684,21 +16699,7 @@ fn sameGenericPrepassAstBacking(left: *const ast_mod.Ast, right: *const ast_mod.
         sameSnapshotSliceBacking(u32, left.extra_data.items, right.extra_data.items) and
         sameSnapshotSliceBacking(u8, left.string_table.items, right.string_table.items) and
         sameSnapshotSliceBacking(u32, left.preserve_lexical_declaration_indices.items, right.preserve_lexical_declaration_indices.items) and
-        sameSnapshotSliceBacking(u8, left.source, right.source) and
-        std.meta.eql(left.string_interns, right.string_interns) and
-        std.meta.eql(left.type_only_binding_names, right.type_only_binding_names) and
-        left.string_intern_hits == right.string_intern_hits and left.string_intern_misses == right.string_intern_misses and
-        left.string_intern_bytes_saved == right.string_intern_bytes_saved and left.string_intern_bytes_overhead == right.string_intern_bytes_overhead and
-        left.has_jsx == right.has_jsx and left.has_jsx_key_after_spread == right.has_jsx_key_after_spread and
-        left.has_decorator == right.has_decorator and left.has_ts_namespace_or_enum == right.has_ts_namespace_or_enum and
-        left.has_ts_import_equals == right.has_ts_import_equals and left.has_ts_export_equals == right.has_ts_export_equals and
-        left.has_flow_enum_declaration == right.has_flow_enum_declaration and left.has_object_getter == right.has_object_getter and
-        left.is_typescript == right.is_typescript and left.transform_boundary == right.transform_boundary and
-        left.transformed_root == right.transformed_root and left.tla_lowered == right.tla_lowered and
-        std.meta.eql(left.jsx_pragma_factory, right.jsx_pragma_factory) and
-        std.meta.eql(left.jsx_pragma_fragment, right.jsx_pragma_fragment) and
-        std.meta.eql(left.jsx_pragma_runtime, right.jsx_pragma_runtime) and
-        std.meta.eql(left.jsx_pragma_import_source, right.jsx_pragma_import_source);
+        left.string_interns.count() == right.string_interns.count();
 }
 
 fn sameAstStringInterns(left: *const ast_mod.Ast, right: *const ast_mod.Ast, allocator: std.mem.Allocator) !bool {
@@ -16721,7 +16722,7 @@ fn sameAstStringInterns(left: *const ast_mod.Ast, right: *const ast_mod.Ast, all
 }
 
 fn sameGenericPrepassAstContents(left: *const ast_mod.Ast, right: *const ast_mod.Ast, allocator: std.mem.Allocator) !bool {
-    if (!sameAstNodeValues(left.nodes.items, right.nodes.items) or
+    if (!std.mem.eql(u8, std.mem.sliceAsBytes(left.nodes.items), std.mem.sliceAsBytes(right.nodes.items)) or
         !std.mem.eql(u32, left.extra_data.items, right.extra_data.items) or
         !std.mem.eql(u32, left.preserve_lexical_declaration_indices.items, right.preserve_lexical_declaration_indices.items) or
         !std.mem.eql(u8, left.string_table.items, right.string_table.items) or
@@ -16742,6 +16743,22 @@ fn sameGenericPrepassAstContents(left: *const ast_mod.Ast, right: *const ast_mod
     return try sameAstStringInterns(left, right, allocator);
 }
 
+fn sameSemanticMapSnapshots(left: *const ModuleSemanticData, right: *const ModuleSemanticData) bool {
+    if (!sameSnapshotMap(left.scope_owner_map, right.scope_owner_map) or
+        !sameSnapshotMap(left.node_scope_provenance, right.node_scope_provenance) or
+        !sameSnapshotMap(left.class_self_symbol_map, right.class_self_symbol_map) or
+        !sameSnapshotMap(left.source_owned_retirements, right.source_owned_retirements) or
+        !sameSnapshotMap(left.namespace_member_owners, right.namespace_member_owners) or
+        !sameSnapshotMap(left.namespace_declaration_owners, right.namespace_declaration_owners) or
+        !sameSnapshotMap(left.exported_names, right.exported_names) or
+        !sameSnapshotMap(left.unresolved_references, right.unresolved_references) or
+        !sameSnapshotMap(left.numeric_const_texts, right.numeric_const_texts) or
+        !sameSnapshotMap(left.helper_scope_map, right.helper_scope_map)) return false;
+    if (left.scope_maps.len != right.scope_maps.len) return false;
+    for (left.scope_maps, right.scope_maps) |before, current| if (!sameSnapshotMap(before, current)) return false;
+    return true;
+}
+
 fn sameGenericPrepassSemanticBacking(left: *const ModuleSemanticData, right: *const ModuleSemanticData) bool {
     if (left.owner_token != right.owner_token or
         !sameSnapshotSliceBacking(SemanticSymbol, left.symbols.items, right.symbols.items) or
@@ -16749,15 +16766,14 @@ fn sameGenericPrepassSemanticBacking(left: *const ModuleSemanticData, right: *co
         !sameSnapshotSliceBacking(std.StringHashMapUnmanaged(usize), left.scope_maps, right.scope_maps) or
         !sameSnapshotSliceBacking(?u32, left.symbol_ids, right.symbol_ids) or
         !sameSnapshotSliceBacking(SemanticReference, left.references, right.references) or
-        !std.meta.eql(left.scope_owner_map, right.scope_owner_map) or
-        !std.meta.eql(left.node_scope_provenance, right.node_scope_provenance) or
-        !std.meta.eql(left.class_self_symbol_map, right.class_self_symbol_map) or
-        !std.meta.eql(left.namespace_member_owners, right.namespace_member_owners) or
-        !std.meta.eql(left.namespace_declaration_owners, right.namespace_declaration_owners) or
-        !std.meta.eql(left.exported_names, right.exported_names) or
-        !std.meta.eql(left.unresolved_references, right.unresolved_references) or
-        !std.meta.eql(left.numeric_const_texts, right.numeric_const_texts) or
-        !std.meta.eql(left.helper_scope_map, right.helper_scope_map) or
+        !sameSnapshotSliceBacking(@import("../../semantic/scope_frame_history.zig").Event, left.scope_history.events, right.scope_history.events) or
+        !sameSnapshotSliceBacking(SemanticScope, left.scope_history.source_scopes, right.scope_history.source_scopes) or
+        !sameSnapshotSliceBacking(@import("../../semantic/scope_frame_history.zig").OwnerBinding, left.scope_history.source_owners, right.scope_history.source_owners) or
+        !sameSnapshotSliceBacking(@import("../../semantic/scope_frame_history.zig").InitializerSource, left.scope_history.source_initializers, right.scope_history.source_initializers) or
+        !sameSnapshotSliceBacking(@import("../../semantic/scope_frame_history.zig").ComputedAwaitSource, left.scope_history.source_computed_awaits, right.scope_history.source_computed_awaits) or
+        !sameSnapshotSliceBacking(@import("../../semantic/scope_frame_history.zig").ClassKeySource, left.scope_history.source_class_keys, right.scope_history.source_class_keys) or
+        !sameSnapshotSliceBacking(@import("../../semantic/lowered_worklet_class.zig").Creator, left.scope_history.worklet_class_creators, right.scope_history.worklet_class_creators) or
+        !sameSnapshotSliceBacking(@import("../../semantic/lowered_worklet_class.zig").Witness, left.scope_history.lowered_worklet_classes, right.scope_history.lowered_worklet_classes) or
         !sameSnapshotSliceBacking(@import("../../bundler/strict_function_context.zig").Role, left.strict_output_context.functions, right.strict_output_context.functions)) return false;
     if (left.runtime_identities) |before| {
         const current = right.runtime_identities orelse return false;
@@ -16766,25 +16782,51 @@ fn sameGenericPrepassSemanticBacking(left: *const ModuleSemanticData, right: *co
     return true;
 }
 
+fn sameGenericPrepassSemanticContents(left: *const ModuleSemanticData, right: *const ModuleSemanticData) bool {
+    if (left.owner_token != right.owner_token or
+        !sameSnapshotSliceValues(SemanticSymbol, left.symbols.items, right.symbols.items) or
+        !sameSnapshotSliceValues(SemanticScope, left.scopes, right.scopes) or
+        !sameSnapshotSliceValues(?u32, left.symbol_ids, right.symbol_ids) or
+        !sameSnapshotSliceValues(SemanticReference, left.references, right.references) or
+        !sameSnapshotSliceValues(@import("../../semantic/scope_frame_history.zig").Event, left.scope_history.events, right.scope_history.events) or
+        !sameSnapshotSliceValues(SemanticScope, left.scope_history.source_scopes, right.scope_history.source_scopes) or
+        !sameSnapshotSliceValues(@import("../../semantic/scope_frame_history.zig").OwnerBinding, left.scope_history.source_owners, right.scope_history.source_owners) or
+        !sameSnapshotSliceValues(@import("../../semantic/scope_frame_history.zig").InitializerSource, left.scope_history.source_initializers, right.scope_history.source_initializers) or
+        !sameSnapshotSliceValues(@import("../../semantic/scope_frame_history.zig").ComputedAwaitSource, left.scope_history.source_computed_awaits, right.scope_history.source_computed_awaits) or
+        !sameSnapshotSliceValues(@import("../../semantic/scope_frame_history.zig").ClassKeySource, left.scope_history.source_class_keys, right.scope_history.source_class_keys) or
+        !sameSnapshotSliceValues(@import("../../semantic/lowered_worklet_class.zig").Creator, left.scope_history.worklet_class_creators, right.scope_history.worklet_class_creators) or
+        !sameSnapshotSliceValues(@import("../../semantic/lowered_worklet_class.zig").Witness, left.scope_history.lowered_worklet_classes, right.scope_history.lowered_worklet_classes) or
+        !sameSnapshotSliceValues(@import("../../bundler/strict_function_context.zig").Role, left.strict_output_context.functions, right.strict_output_context.functions) or
+        !sameSemanticMapSnapshots(left, right)) return false;
+    if (left.runtime_identities) |before| {
+        const current = right.runtime_identities orelse return false;
+        if (!std.meta.eql(before.*, current.*)) return false;
+    } else if (right.runtime_identities != null) return false;
+    return true;
+}
+
 fn sameGenericPrepassSource(
     before: *const Module,
     current: *const Module,
+    source_ast_snapshot: *const ast_mod.Ast,
+    source_semantic_snapshot: *const ModuleSemanticData,
     source_import_records: []const ImportRecord,
     source_import_bindings: []const ImportBinding,
     source_export_bindings: []const ExportBinding,
     source_exported_names: []const []const u8,
     source_ts_type_export_names: std.StringHashMapUnmanaged(void),
-    source_pending_renames: bundler_symbol.RenameTable,
     source_export_index_by_name: ?std.StringHashMapUnmanaged(u32),
     source_alias_rows: ?[]const bundler_symbol.Alias,
-) bool {
+    allocator: std.mem.Allocator,
+) !bool {
     if (before.index != current.index or before.state != current.state or before.module_type != current.module_type or
+        before.codegen_output_owner != current.codegen_output_owner or before.codegen_output_domain != current.codegen_output_domain or
         before.loader != current.loader or before.exports_kind != current.exports_kind or before.wrap_kind != current.wrap_kind or
         before.def_format != current.def_format or before.is_entry_point != current.is_entry_point or
         before.is_external != current.is_external or before.is_disabled != current.is_disabled or
         before.is_lazy_seed != current.is_lazy_seed or before.self_uses_top_level_await != current.self_uses_top_level_await or
         before.uses_top_level_await != current.uses_top_level_await or before.tla_delegated_to_chunk != current.tla_delegated_to_chunk or
-        before.in_async_cone != current.in_async_cone or before.pending_rename_capture_seen != current.pending_rename_capture_seen or
+        before.in_async_cone != current.in_async_cone or
         before.path.ptr != current.path.ptr or before.source.ptr != current.source.ptr or
         !sameSnapshotSliceBacking(u8, before.source, current.source) or
         !sameSnapshotSliceBacking(u8, before.path, current.path) or
@@ -16797,8 +16839,7 @@ fn sameGenericPrepassSource(
         !sameSnapshotSliceValues(ImportBinding, source_import_bindings, current.import_bindings) or
         !sameSnapshotSliceValues(ExportBinding, source_export_bindings, current.export_bindings) or
         !sameSnapshotSliceValues([]const u8, source_exported_names, current.exported_names) or
-        !sameSnapshotMap(source_ts_type_export_names, current.ts_type_export_names) or
-        !sameSnapshotMap(source_pending_renames.map, current.pending_renames.map)) return false;
+        !sameSnapshotMap(source_ts_type_export_names, current.ts_type_export_names)) return false;
     if (before.export_index_by_name) |left| {
         const right = current.export_index_by_name orelse return false;
         const snapshot = source_export_index_by_name orelse return false;
@@ -16812,11 +16853,11 @@ fn sameGenericPrepassSource(
 
     if (before.ast) |*left| {
         const right = if (current.ast) |*value| value else return false;
-        if (!sameGenericPrepassAstBacking(left, right)) return false;
+        if (!sameGenericPrepassAstBacking(left, right) or !try sameGenericPrepassAstContents(source_ast_snapshot, right, allocator)) return false;
     } else if (current.ast != null) return false;
     if (before.semantic) |*left| {
         const right = if (current.semantic) |*value| value else return false;
-        if (!sameGenericPrepassSemanticBacking(left, right)) return false;
+        if (!sameGenericPrepassSemanticBacking(left, right) or !sameGenericPrepassSemanticContents(source_semantic_snapshot, right)) return false;
     } else if (current.semantic != null) return false;
     return true;
 }
@@ -16827,7 +16868,6 @@ fn cloneGenericPrepassSemantic(
     ast: *const ast_mod.Ast,
 ) !ModuleSemanticData {
     var editor = try source.beginEdit(allocator, @constCast(ast));
-    defer editor.deinit();
     var result = source.*;
     result.applyEdit(try editor.finish());
     result.class_self_symbol_map = try source.class_self_symbol_map.clone(allocator);
@@ -16850,26 +16890,30 @@ fn cloneGenericPrepassSemantic(
 const PreparedGenericPrepass = struct {
     source: *Module,
     source_header: Module,
+    source_ast_snapshot: ast_mod.Ast,
+    source_semantic_snapshot: ModuleSemanticData,
     source_import_records: []const ImportRecord,
     source_import_bindings: []const ImportBinding,
     source_export_bindings: []const ExportBinding,
     source_exported_names: []const []const u8,
     source_ts_type_export_names: std.StringHashMapUnmanaged(void),
-    source_pending_renames: bundler_symbol.RenameTable,
     source_export_index_by_name: ?std.StringHashMapUnmanaged(u32),
     source_alias_rows: ?[]const bundler_symbol.Alias,
     candidate: Module,
 
     fn init(module: *Module, allocator: std.mem.Allocator) !PreparedGenericPrepass {
         const ast = if (module.ast) |*value| value else return error.MissingAst;
+        const semantic = if (module.semantic) |*value| value else return error.MissingSemantic;
+        for (module.export_bindings) |binding| _ = try module.ordinaryQuotedExportLiteral(binding);
         const source_header = module.*;
+        var source_ast_snapshot = try ast_mod.Ast.cloneForTransformer(ast, allocator);
+        source_ast_snapshot.type_only_binding_names = try ast.type_only_binding_names.clone(allocator);
+        const source_semantic_snapshot = try cloneGenericPrepassSemantic(allocator, semantic, ast);
         const source_import_records = try allocator.dupe(ImportRecord, module.import_records);
         const source_import_bindings = try allocator.dupe(ImportBinding, module.import_bindings);
         const source_export_bindings = try allocator.dupe(ExportBinding, module.export_bindings);
         const source_exported_names = try allocator.dupe([]const u8, module.exported_names);
         const source_ts_type_export_names = try module.ts_type_export_names.clone(allocator);
-        var source_pending_renames = module.pending_renames;
-        source_pending_renames.map = try module.pending_renames.map.clone(allocator);
         const source_export_index_by_name: ?std.StringHashMapUnmanaged(u32) = if (module.export_index_by_name) |index|
             try index.clone(allocator)
         else
@@ -16879,17 +16923,10 @@ const PreparedGenericPrepass = struct {
         else
             null;
         var candidate = source_header;
-        // The parser AST is borrowed read-only during preflight. Transformer.init
-        // creates the candidate output AST before any edits are applied, avoiding
-        // a second full AST copy in this transaction.
-        var candidate_ast = ast.*;
-        candidate_ast.type_only_binding_names = try ast.type_only_binding_names.clone(allocator);
-        candidate.ast = candidate_ast;
-        candidate.semantic = if (module.semantic) |*semantic|
-            try cloneGenericPrepassSemantic(allocator, semantic, ast)
-        else
-            null;
-        candidate.pending_renames.map = try module.pending_renames.map.clone(allocator);
+        candidate.export_bindings = try allocator.dupe(ExportBinding, module.export_bindings);
+        candidate.semantic = try cloneGenericPrepassSemantic(allocator, semantic, ast);
+        if (@import("builtin").is_test)
+            candidate.legacy_rename_oracle.renames.map = try module.legacy_rename_oracle.renames.map.clone(allocator);
         candidate.ts_type_export_names = try module.ts_type_export_names.clone(allocator);
         // These two indexes own graph-allocator storage. The candidate must
         // build its own instances before publication, and abort may dispose
@@ -16902,30 +16939,33 @@ const PreparedGenericPrepass = struct {
         return .{
             .source = module,
             .source_header = source_header,
+            .source_ast_snapshot = source_ast_snapshot,
+            .source_semantic_snapshot = source_semantic_snapshot,
             .source_import_records = source_import_records,
             .source_import_bindings = source_import_bindings,
             .source_export_bindings = source_export_bindings,
             .source_exported_names = source_exported_names,
             .source_ts_type_export_names = source_ts_type_export_names,
-            .source_pending_renames = source_pending_renames,
             .source_export_index_by_name = source_export_index_by_name,
             .source_alias_rows = source_alias_rows,
             .candidate = candidate,
         };
     }
 
-    fn isCurrent(self: *const PreparedGenericPrepass) bool {
-        return sameGenericPrepassSource(
+    fn isCurrent(self: *const PreparedGenericPrepass, allocator: std.mem.Allocator) !bool {
+        return try sameGenericPrepassSource(
             &self.source_header,
             self.source,
+            &self.source_ast_snapshot,
+            &self.source_semantic_snapshot,
             self.source_import_records,
             self.source_import_bindings,
             self.source_export_bindings,
             self.source_exported_names,
             self.source_ts_type_export_names,
-            self.source_pending_renames,
             self.source_export_index_by_name,
             self.source_alias_rows,
+            allocator,
         );
     }
 
@@ -16936,23 +16976,27 @@ const PreparedGenericPrepass = struct {
         self.candidate.export_index_by_name = null;
     }
 
-    fn rebaseCandidateAstReferences(self: *PreparedGenericPrepass) void {
-        const candidate_ast = if (self.candidate.ast) |*ast| ast else return;
-        const published_ast: *const ast_mod.Ast = &self.source.ast.?;
+    fn prepareExportOrigins(self: *PreparedGenericPrepass) !void {
+        const source_ast = if (self.source.ast) |*tree| tree else return error.MissingAst;
+        const candidate_ast = if (self.candidate.ast) |*tree| tree else return error.MissingAst;
         for (self.candidate.export_bindings) |*binding| {
-            const origin = if (binding.public_key_origin) |*value| value else continue;
-            if (origin.ast == candidate_ast) origin.ast = published_ast;
+            if (binding.public_key_origin) |*origin| {
+                if (origin.ast != source_ast and origin.ast != candidate_ast)
+                    return error.InvalidQuotedExportOrigin;
+                origin.ast = candidate_ast;
+            }
+            _ = try self.candidate.ordinaryQuotedExportLiteral(binding.*);
+        }
+        // Only carriers validated against this exact staged AST are relocated.
+        // The installed source header address remains stable across publication.
+        for (self.candidate.export_bindings) |*binding| {
+            if (binding.public_key_origin) |*origin| origin.ast = source_ast;
         }
     }
 
     /// All fallible preparation and validation has completed. The old heap
     /// indexes are released, then the complete candidate header is installed.
     fn publish(self: *PreparedGenericPrepass, allocator: std.mem.Allocator) void {
-        // Rescanning exports stores the current Module.ast slot in each quoted
-        // export witness. The candidate lives inside this transaction object;
-        // rebase those witnesses before copying its header into the installed
-        // module, whose AST slot has a different address.
-        self.rebaseCandidateAstReferences();
         if (self.source.alias_table) |*table| table.deinit();
         if (self.source.export_index_by_name) |*index| index.deinit(allocator);
         self.source.* = self.candidate;
@@ -16975,7 +17019,7 @@ test "generic prepass staging detaches mutable graph state and aborts without so
     module.state = .ready;
     module.ast = fixture.ast;
     module.semantic = fixture.semantic;
-    try module.pending_renames.map.put(
+    try module.legacy_rename_oracle.renames.map.put(
         parse_allocator,
         bundler_symbol.SymbolID.make(module.index, 0),
         "source-name",
@@ -16984,24 +17028,17 @@ test "generic prepass staging detaches mutable graph state and aborts without so
 
     module.alias_table = AliasTable.init(graph_allocator);
     _ = try module.alias_table.?.declare("source-alias");
-    _ = try module.ast.?.addString("snapshot-marker");
-    try module.ast.?.type_only_binding_names.put(parse_allocator, "ErasedType", {});
     var source_export_index: std.StringHashMapUnmanaged(u32) = .empty;
     try source_export_index.put(graph_allocator, "source-export", 0);
     module.export_index_by_name = source_export_index;
     defer if (module.alias_table) |*table| table.deinit();
     defer if (module.export_index_by_name) |*index| index.deinit(graph_allocator);
 
+    _ = try module.ast.?.addString("snapshot-marker");
+    try module.ast.?.type_only_binding_names.put(parse_allocator, "ErasedType", {});
     var prepared = try PreparedGenericPrepass.init(&module, parse_allocator);
     defer prepared.discard(graph_allocator);
-    try std.testing.expect(prepared.isCurrent());
-    try std.testing.expect(prepared.candidate.ast.?.nodes.items.ptr == module.ast.?.nodes.items.ptr);
-    try std.testing.expect(prepared.candidate.ast.?.extra_data.items.ptr == module.ast.?.extra_data.items.ptr);
-    try std.testing.expect(prepared.candidate.ast.?.string_table.items.ptr == module.ast.?.string_table.items.ptr);
-    try std.testing.expect(prepared.candidate.ast.?.type_only_binding_names.contains("ErasedType"));
-    try prepared.candidate.ast.?.type_only_binding_names.put(parse_allocator, "CandidateTypeOnly", {});
-    try std.testing.expect(!module.ast.?.type_only_binding_names.contains("CandidateTypeOnly"));
-    _ = prepared.candidate.ast.?.type_only_binding_names.remove("CandidateTypeOnly");
+    try std.testing.expect(try prepared.isCurrent(parse_allocator));
     try std.testing.expect(prepared.candidate.semantic.?.symbols.items.ptr != module.semantic.?.symbols.items.ptr);
     try std.testing.expect(prepared.candidate.semantic.?.scopes.ptr != module.semantic.?.scopes.ptr);
     try std.testing.expect(prepared.candidate.semantic.?.symbol_ids.ptr != module.semantic.?.symbol_ids.ptr);
@@ -17011,7 +17048,7 @@ test "generic prepass staging detaches mutable graph state and aborts without so
     try prepared.candidate.semantic.?.class_self_symbol_map.put(parse_allocator, 99, 0);
     try prepared.candidate.semantic.?.exported_names.put(parse_allocator, "candidate-export", Span.EMPTY);
     try prepared.candidate.semantic.?.unresolved_references.put(parse_allocator, "candidate-global", {});
-    try prepared.candidate.pending_renames.map.put(
+    try prepared.candidate.legacy_rename_oracle.renames.map.put(
         parse_allocator,
         bundler_symbol.SymbolID.make(module.index, 1),
         "candidate-name",
@@ -17080,18 +17117,18 @@ test "generic prepass staging detaches mutable graph state and aborts without so
     try candidate_export_index.put(graph_allocator, "candidate-export", 1);
     prepared.candidate.export_index_by_name = candidate_export_index;
 
-    try std.testing.expect(module.semantic.?.class_self_symbol_map.get(99) == null);
-    try std.testing.expect(!module.semantic.?.exported_names.contains("candidate-export"));
-    try std.testing.expect(!module.semantic.?.unresolved_references.contains("candidate-global"));
     try std.testing.expect(!module.semantic.?.scope_owner_map.contains(99));
     try std.testing.expect(!module.semantic.?.node_scope_provenance.contains(.none));
     try std.testing.expect(!module.semantic.?.namespace_member_owners.contains(99));
     try std.testing.expect(!module.semantic.?.namespace_declaration_owners.contains(99));
     try std.testing.expect(!module.semantic.?.numeric_const_texts.contains(99));
     try std.testing.expect(!module.semantic.?.helper_scope_map.contains("candidate-helper"));
-    try std.testing.expectEqual(@as(u32, 1), module.pending_renames.map.count());
+    try std.testing.expect(module.semantic.?.class_self_symbol_map.get(99) == null);
+    try std.testing.expect(!module.semantic.?.exported_names.contains("candidate-export"));
+    try std.testing.expect(!module.semantic.?.unresolved_references.contains("candidate-global"));
+    try std.testing.expectEqual(@as(u32, 1), module.legacy_rename_oracle.renames.map.count());
     try std.testing.expect(!module.ts_type_export_names.contains("CandidateType"));
-    try std.testing.expect(prepared.isCurrent());
+    try std.testing.expect(try prepared.isCurrent(parse_allocator));
 
     prepared.discard(graph_allocator);
     try std.testing.expect(prepared.candidate.alias_table == null);
@@ -17099,93 +17136,57 @@ test "generic prepass staging detaches mutable graph state and aborts without so
     try std.testing.expectEqualStrings("source-alias", module.alias_table.?.aliases.items[0].name);
     try std.testing.expectEqual(@as(?u32, @as(u32, 0)), module.export_index_by_name.?.get("source-export"));
 
-    const original_unresolved = module.semantic.?.unresolved_references;
     try module.semantic.?.unresolved_references.put(parse_allocator, "source-mutated", {});
-    try std.testing.expect(!(prepared.isCurrent()));
-    module.semantic.?.unresolved_references = original_unresolved;
-    try std.testing.expect(prepared.isCurrent());
+    try std.testing.expect(!(try prepared.isCurrent(parse_allocator)));
+    _ = module.semantic.?.unresolved_references.remove("source-mutated");
+    try std.testing.expect(try prepared.isCurrent(parse_allocator));
 
-    const original_ast = module.ast.?;
-    module.ast.?.has_jsx = !original_ast.has_jsx;
-    try std.testing.expect(!(prepared.isCurrent()));
-    module.ast.?.has_jsx = original_ast.has_jsx;
-    try std.testing.expect(prepared.isCurrent());
+    const original_node = module.ast.?.nodes.items[0];
+    module.ast.?.nodes.items[0].span.start +%= 1;
+    try std.testing.expect(!(try prepared.isCurrent(parse_allocator)));
+    module.ast.?.nodes.items[0] = original_node;
+    try std.testing.expect(try prepared.isCurrent(parse_allocator));
 
-    module.ast.?.nodes = .empty;
-    try std.testing.expect(!(prepared.isCurrent()));
-    module.ast = original_ast;
-    try std.testing.expect(prepared.isCurrent());
-
-    const original_symbols = module.semantic.?.symbols;
-    module.semantic.?.symbols = .empty;
-    try std.testing.expect(!(prepared.isCurrent()));
-    module.semantic.?.symbols = original_symbols;
-    try std.testing.expect(prepared.isCurrent());
-
-    const original_scopes = module.semantic.?.scopes;
-    module.semantic.?.scopes = &.{};
-    try std.testing.expect(!(prepared.isCurrent()));
-    module.semantic.?.scopes = original_scopes;
-    try std.testing.expect(prepared.isCurrent());
-
-    const original_symbol_ids = module.semantic.?.symbol_ids;
-    module.semantic.?.symbol_ids = &.{};
-    try std.testing.expect(!(prepared.isCurrent()));
-    module.semantic.?.symbol_ids = original_symbol_ids;
-    try std.testing.expect(prepared.isCurrent());
-
-    const original_references = module.semantic.?.references;
-    module.semantic.?.references = &.{};
-    try std.testing.expect(!(prepared.isCurrent()));
-    module.semantic.?.references = original_references;
-    try std.testing.expect(prepared.isCurrent());
-
-    const original_scope_maps = module.semantic.?.scope_maps;
-    module.semantic.?.scope_maps = &.{};
-    try std.testing.expect(!(prepared.isCurrent()));
-    module.semantic.?.scope_maps = original_scope_maps;
-    try std.testing.expect(prepared.isCurrent());
-
-    const original_scope_owner_map = module.semantic.?.scope_owner_map;
-    module.semantic.?.scope_owner_map = .empty;
-    try std.testing.expect(!(prepared.isCurrent()));
-    module.semantic.?.scope_owner_map = original_scope_owner_map;
-    try std.testing.expect(prepared.isCurrent());
-
-    if (module.semantic.?.node_scope_provenance.count() > 0) {
-        const original_node_scope_provenance = module.semantic.?.node_scope_provenance;
-        module.semantic.?.node_scope_provenance = .empty;
-        try std.testing.expect(!(prepared.isCurrent()));
-        module.semantic.?.node_scope_provenance = original_node_scope_provenance;
-        try std.testing.expect(prepared.isCurrent());
+    const source_output_owner = module.codegen_output_owner;
+    module.codegen_output_owner = @import("../codegen_output_domain.zig").newOwner();
+    try std.testing.expect(!(try prepared.isCurrent(parse_allocator)));
+    module.codegen_output_owner = source_output_owner;
+    try std.testing.expect(try prepared.isCurrent(parse_allocator));
+    {
+        const domain = try @import("../codegen_output_domain.zig").Domain.createNamespace(graph_allocator, source_output_owner, "actual_namespace");
+        defer domain.destroy();
+        module.codegen_output_domain = domain;
+        defer module.codegen_output_domain = null;
+        try std.testing.expect(moduleHasRegisteredOutputRoles(&module));
+        try std.testing.expect(!(try prepared.isCurrent(parse_allocator)));
     }
 
     try module.pending_renames.map.put(parse_allocator, bundler_symbol.SymbolID.make(module.index, 1), "hostile-name");
-    try std.testing.expect(!(prepared.isCurrent()));
+    try std.testing.expect(!(try prepared.isCurrent(parse_allocator)));
     _ = module.pending_renames.map.remove(bundler_symbol.SymbolID.make(module.index, 1));
-    try std.testing.expect(prepared.isCurrent());
+    try std.testing.expect(try prepared.isCurrent(parse_allocator));
 
     try module.ts_type_export_names.put(parse_allocator, "HostileType", {});
-    try std.testing.expect(!(prepared.isCurrent()));
+    try std.testing.expect(!(try prepared.isCurrent(parse_allocator)));
     _ = module.ts_type_export_names.remove("HostileType");
-    try std.testing.expect(prepared.isCurrent());
+    try std.testing.expect(try prepared.isCurrent(parse_allocator));
 
     const original_alias = module.alias_table.?.aliases.items[0];
     module.alias_table.?.aliases.items[0].ref_count +%= 1;
-    try std.testing.expect(!(prepared.isCurrent()));
+    try std.testing.expect(!(try prepared.isCurrent(parse_allocator)));
     module.alias_table.?.aliases.items[0] = original_alias;
-    try std.testing.expect(prepared.isCurrent());
+    try std.testing.expect(try prepared.isCurrent(parse_allocator));
 
     try module.export_index_by_name.?.put(graph_allocator, "hostile-export", 1);
-    try std.testing.expect(!(prepared.isCurrent()));
+    try std.testing.expect(!(try prepared.isCurrent(parse_allocator)));
     _ = module.export_index_by_name.?.remove("hostile-export");
-    try std.testing.expect(prepared.isCurrent());
+    try std.testing.expect(try prepared.isCurrent(parse_allocator));
 
     const original_state = module.state;
     module.state = .parsing;
-    try std.testing.expect(!(prepared.isCurrent()));
+    try std.testing.expect(!(try prepared.isCurrent(parse_allocator)));
     module.state = original_state;
-    try std.testing.expect(prepared.isCurrent());
+    try std.testing.expect(try prepared.isCurrent(parse_allocator));
 }
 
 test "generic prepass transaction publishes a completed isolated candidate" {
@@ -17234,7 +17235,7 @@ test "generic prepass transaction publishes a completed isolated candidate" {
     }});
     prepared.candidate.state = .parsed;
 
-    try std.testing.expect(prepared.isCurrent());
+    try std.testing.expect(try prepared.isCurrent(parse_allocator));
     try std.testing.expectEqualStrings("installed-alias", module.alias_table.?.aliases.items[0].name);
     prepared.publish(graph_allocator);
 
@@ -17836,7 +17837,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
 }
 
 fn moduleHasRegisteredOutputRoles(module: *const Module) bool {
-    if (module.transform_cache != null or module.init_symbol != null or module.exports_symbol != null or module.require_symbol != null or
+    if (module.codegen_output_domain != null or module.transform_cache != null or module.init_symbol != null or module.exports_symbol != null or module.require_symbol != null or
         module.cjs_wrapper_exports_parameter_symbol != null or module.cjs_wrapper_module_parameter_symbol != null or
         module.cjs_runtime_factory_symbol != null or module.to_binary_runtime_symbol != null or module.esm_runtime_factory_symbol != null or
         module.cjs_runtime_internal_symbols != null or module.esm_runtime_internal_symbols != null or
@@ -17846,6 +17847,100 @@ fn moduleHasRegisteredOutputRoles(module: *const Module) bool {
     if (module.semantic) |semantic|
         return semantic.runtime_identities != null or semantic.strict_output_context.functions.len != 0;
     return false;
+}
+
+fn genericPreparedOutputHasNormalForm(
+    allocator: std.mem.Allocator,
+    module: *const Module,
+    transformer: *const Transformer,
+    root: ast_mod.NodeIndex,
+    parser_node_count: u32,
+    pre_transform_scope_count: ?usize,
+    source_unresolved: *const std.AutoHashMapUnmanaged(u32, void),
+    published_exact: *?@import("../../transformer/symbol_coverage.zig").ExactReport,
+) !bool {
+    const ast = if (module.ast) |*value| value else return false;
+    const semantic = if (module.semantic) |*value| value else return false;
+
+    var roots: std.ArrayListUnmanaged(u32) = .empty;
+    for (module.import_bindings) |binding| {
+        try appendBufferMetadataRoot(allocator, &roots, module.index, binding.local_symbol);
+        try appendBufferMetadataRoot(allocator, &roots, module.index, binding.symbol);
+    }
+    for (module.export_bindings) |binding| try appendBufferMetadataRoot(allocator, &roots, module.index, binding.symbol);
+    try appendBufferMetadataRoot(allocator, &roots, module.index, .{
+        module.init_symbol,                          module.exports_symbol,                      module.require_symbol,
+        module.cjs_wrapper_exports_parameter_symbol, module.cjs_wrapper_module_parameter_symbol, module.cjs_runtime_factory_symbol,
+        module.to_binary_runtime_symbol,             module.esm_runtime_factory_symbol,          module.cjs_runtime_internal_symbols,
+        module.esm_runtime_internal_symbols,         module.esm_interop_runtime_helper_symbols,  module.esm_interop_runtime_internal_symbols,
+        module.hmr_runtime_internal_symbols,         module.require_shim_local_symbol,
+    });
+    if (semantic.runtime_identities) |identities| try appendBufferMetadataRoot(allocator, &roots, module.index, identities.*);
+    for (semantic.strict_output_context.functions) |role| try roots.append(allocator, @backingInt(role.symbol));
+    if (module.tla_promise_reference) |reference| try roots.append(allocator, @backingInt(reference.symbol_id));
+    if (module.transform_cache) |cache| {
+        inline for (.{ cache.worklet_factory_local_bindings, cache.post_graph_output_bindings, cache.runtime_helper_import_output_bindings }) |bindings| {
+            for (bindings) |binding| {
+                if (binding.node_index >= semantic.symbol_ids.len) return false;
+                const symbol = semantic.symbol_ids[binding.node_index] orelse return false;
+                if (symbol >= semantic.symbols.items.len) return false;
+                try roots.append(allocator, symbol);
+            }
+        }
+    }
+
+    var helper_roots: std.StringHashMapUnmanaged(SemanticSymbolId) = .empty;
+    var helpers = semantic.helper_scope_map.iterator();
+    while (helpers.next()) |entry| {
+        if (entry.value_ptr.* >= semantic.symbols.items.len) return false;
+        try helper_roots.put(allocator, entry.key_ptr.*, @fromBackingInt(@as(u32, @intCast(entry.value_ptr.*))));
+    }
+    const helpers_in_ast = if (module.transform_cache) |cache| cache.helper_ref_nodes else &.{};
+    const report_mod = @import("../../transformer/symbol_coverage.zig");
+    var report = try report_mod.checkOutputNormalFormQuiet(
+        allocator,
+        ast,
+        root,
+        parser_node_count,
+        semantic.symbol_ids,
+        semantic.symbols.items,
+        semantic.scopes,
+        semantic.scope_maps,
+        &semantic.scope_owner_map,
+        semantic.references,
+        helpers_in_ast,
+        &semantic.helper_scope_map,
+        source_unresolved,
+        &transformer.explicit_global_reference_nodes,
+        &transformer.reference_origin_map,
+        .{
+            .require_declaration_anchors = true,
+            .known_output_names = if (transformer.block_rename_map) |*names| names else null,
+            .erased_const_enum_external_origins = &transformer.erased_const_enum_external_reference_origins,
+            .pre_transform_scope_count = pre_transform_scope_count,
+            .namespace_member_owners = &semantic.namespace_member_owners,
+            .namespace_declaration_owners = &semantic.namespace_declaration_owners,
+        },
+        &semantic.source_owned_retirements,
+        .{
+            .symbol_ids = roots.items,
+            .node_scope_provenance = &semantic.node_scope_provenance,
+            .scope_history = &semantic.scope_history,
+            .runtime_helper_symbols = &helper_roots,
+            .class_self_symbols = &semantic.class_self_symbol_map,
+            .namespace_member_owners = &semantic.namespace_member_owners,
+            .namespace_declaration_owners = &semantic.namespace_declaration_owners,
+        },
+    );
+    defer report.deinit(allocator);
+    const valid = report.hasCompleteOutputIdentityBeforeNames();
+    if (valid and symbol_coverage_env.enabled()) published_exact.* = report.exact;
+    if (@import("builtin").is_test and !valid) {
+        report_mod.printExactRejectedOutput(module.path, report.exact);
+        report_mod.printStrict(module.path, &report.strict);
+        std.debug.print("GENERIC_NORMAL_FORM_REJECT file={s} retirement_state_mismatch={d}\n", .{ module.path, report.retirement_state_mismatch });
+    }
+    return valid;
 }
 
 pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void {
@@ -17859,31 +17954,267 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         return;
     };
     defer prepared.discard(self.allocator);
+    const initial_state = prepared.candidate.state;
     var candidate_completed = false;
-    runCandidate(self, &prepared.candidate, arena_alloc, &candidate_completed);
-    // runCandidate owns diagnostics for reported transform/refresh failures.
-    // Adding a transaction-level diagnostic here would duplicate the original
-    // error for failures that correctly leave the module state unchanged.
-    if (!candidate_completed) return;
-    const source_is_current = prepared.isCurrent();
+    var published_exact: ?@import("../../transformer/symbol_coverage.zig").ExactReport = null;
+    runCandidate(self, &prepared.candidate, arena_alloc, &candidate_completed, &published_exact);
+    if (!candidate_completed) {
+        if (prepared.candidate.state == initial_state)
+            self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Generic prepass transaction failed", "The staged transform did not complete; the installed module was left unchanged.");
+        return;
+    }
+    prepared.prepareExportOrigins() catch |err| {
+        self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Generic prepass export owner validation failed", @errorName(err));
+        return;
+    };
+    const source_is_current = prepared.isCurrent(arena_alloc) catch |err| {
+        self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Generic prepass source validation failed", @errorName(err));
+        return;
+    };
     if (!source_is_current) {
         self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Generic prepass input changed during preparation", "The installed module or one of its source backings changed before publication.");
         return;
     }
     prepared.publish(self.allocator);
+    if (published_exact) |exact|
+        @import("../../transformer/symbol_coverage.zig").printExactPrepass(module.path, exact, true);
+}
+
+/// A retained graph keeps source SymbolIds, so folding an expression default
+/// does not rerun the analyzer that originally populated its constant fact.
+/// Publish a new scalar fact only through the actual default facade anchor.
+fn refreshFoldedDefaultFacadeFacts(module: *Module, allocator: std.mem.Allocator) !void {
+    const ast = if (module.ast) |*value| value else return;
+    const semantic = if (module.semantic) |*value| value else return;
+    for (module.export_bindings) |binding| {
+        if (binding.kind != .local or !binding.has_default_export_facade) continue;
+        const node = binding.default_export_node orelse return error.InvalidDefaultFacade;
+        const sid = (try @import("../default_facade_identity.zig").symbolAt(ast, node, semantic.symbol_ids, semantic.symbols.items)) orelse return error.InvalidDefaultFacade;
+        if (module.exportBindingSemanticIndex(binding) != sid) return error.InvalidDefaultFacade;
+        const operand = ast.getNode(node).data.unary.operand;
+        if (operand.isNone() or @backingInt(operand) >= ast.nodes.items.len) return error.InvalidDefaultFacade;
+        const literal = ast.getNode(operand);
+        const kind: semantic_symbol.ConstValue.Kind = switch (literal.tag) {
+            .boolean_literal => if (std.mem.eql(u8, ast.getText(literal.span), "true")) .true_ else if (std.mem.eql(u8, ast.getText(literal.span), "false")) .false_ else continue,
+            .null_literal => .null_,
+            .numeric_literal => .number,
+            else => continue,
+        };
+        if (semantic.symbols.items[sid].write_count != 0) continue;
+        if (kind == .number) {
+            const text = ast.getText(literal.span);
+            if (text.len == 0) continue;
+            if (semantic.symbols.items[sid].const_kind != .number or !std.mem.eql(u8, semantic.numericConstText(sid), text))
+                try semantic.numeric_const_texts.put(allocator, sid, try allocator.dupe(u8, text));
+        }
+        semantic.symbols.items[sid].const_kind = kind;
+    }
 }
 
 fn completeGenericPrepassCandidate(
+    self: anytype,
     module: *Module,
+    transformer: *const Transformer,
+    root: ast_mod.NodeIndex,
+    parser_node_count: u32,
+    pre_transform_scope_count: ?usize,
+    arena_alloc: std.mem.Allocator,
     candidate_completed: *bool,
+    source_unresolved: *const std.AutoHashMapUnmanaged(u32, void),
+    published_exact: *?@import("../../transformer/symbol_coverage.zig").ExactReport,
 ) void {
+    const has_normal_form = genericPreparedOutputHasNormalForm(
+        arena_alloc,
+        module,
+        transformer,
+        root,
+        parser_node_count,
+        pre_transform_scope_count,
+        source_unresolved,
+        published_exact,
+    ) catch |err| {
+        self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Generic prepass identity validation failed", @errorName(err));
+        module.state = .ready;
+        return;
+    };
+    if (!has_normal_form) {
+        self.addDiag(
+            .parse_error,
+            .@"error",
+            module.path,
+            Span.EMPTY,
+            .parse,
+            "Generic prepass output failed exact semantic identity validation",
+            "The staged AST and semantic graph did not prove complete output identity; the installed module was left unchanged.",
+        );
+        module.state = .ready;
+        return;
+    }
+    refreshFoldedDefaultFacadeFacts(module, arena_alloc) catch |err| {
+        self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Folded default export facts could not be synchronized", @errorName(err));
+        module.state = .ready;
+        return;
+    };
     // The receipt identifies the installed parser AST, which is no longer the
     // AST being published after a successful transform.
     module.self_namespace_source_receipt = null;
     candidate_completed.* = true;
 }
 
-fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, candidate_completed: *bool) void {
+/// Optional syntax edits publish their actual ordered copy/owner/reference
+/// receipt and source-owned retirement together. A refused optimization keeps
+/// the exact pre-minify graph; it never invokes semantic analysis.
+fn minifyGenericPrepassGraph(
+    self: anytype,
+    module: *Module,
+    transformer: *Transformer,
+    root: ast_mod.NodeIndex,
+    arena_alloc: std.mem.Allocator,
+) !bool {
+    return minify_transaction: {
+        const semantic = &module.semantic.?;
+        const minify_mod = @import("../../transformer/minify.zig");
+        const SemanticEditor = @import("../../semantic/editor.zig").SemanticEditor;
+        const KnownFunction = @import("../../semantic/editor.zig").KnownUnreachableFunction;
+        // Optional syntax optimization publishes AST and semantic rows together.
+        // Snapshot ownership remains in this call's arena, never in its output.
+        const original_ast = transformer.ast.*;
+        const buffers = try original_ast.cloneForTransformer(arena_alloc);
+        // Preserve every header flag (including TLA/type-only metadata), and
+        // replace only mutable storage before the optimizer touches this AST.
+        var working_ast = original_ast;
+        working_ast.nodes = buffers.nodes;
+        working_ast.extra_data = buffers.extra_data;
+        working_ast.string_table = buffers.string_table;
+        working_ast.string_interns = buffers.string_interns;
+        working_ast.preserve_lexical_declaration_indices = buffers.preserve_lexical_declaration_indices;
+        working_ast.type_only_binding_names = try original_ast.type_only_binding_names.clone(arena_alloc);
+        transformer.ast.* = working_ast;
+        var published = false;
+        defer if (!published) {
+            transformer.ast.* = original_ast;
+        };
+        var editor = SemanticEditor.init(arena_alloc, transformer.ast, semantic.symbols.items, semantic.scopes, semantic.scope_maps, semantic.scope_owner_map, semantic.references, transformer.symbol_ids.items, semantic.helper_scope_map) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction false,
+        };
+        editor.importScopeHistory(semantic.scope_history) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction false,
+        };
+        editor.importSourceOwnedRetirements(semantic.source_owned_retirements) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction false,
+        };
+        editor.importNodeScopeProvenance(semantic.node_scope_provenance) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction false,
+        };
+        var source_functions: std.ArrayList(KnownFunction) = .empty;
+        const source_nodes = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(arena_alloc, transformer.ast, root);
+        for (source_nodes) |raw| {
+            const node = transformer.ast.nodes.items[raw];
+            const slot: u32 = switch (node.tag) {
+                .function_declaration, .function_expression => @import("../../parser/ast.zig").FunctionExtra.params,
+                .arrow_function_expression => 0,
+                else => continue,
+            };
+            const scope = editor.scope_owner_map.get(raw) orelse continue;
+            const body = transformer.ast.readExtraNode(node.data.extra, slot + 1);
+            try source_functions.append(arena_alloc, .{
+                .owner = @fromBackingInt(raw),
+                .scope = @fromBackingInt(scope),
+                .params = transformer.ast.readExtraNode(node.data.extra, slot),
+                .body = body,
+                .body_scope = if (editor.scope_owner_map.get(@backingInt(body))) |value| @fromBackingInt(value) else .none,
+            });
+        }
+        const retirement = if (source_functions.items.len != 0) editor.captureFunctionRetirementSources(source_functions.items) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction false,
+        } else null;
+        var candidate_origins = try transformer.reference_origin_map.clone(arena_alloc);
+        var candidate_class_self = try transformer.class_self_symbol_map.clone(arena_alloc);
+        var journal = minify_mod.SemanticJournal.init(arena_alloc, semantic.references, .{ .domain = transformer.ast, .root = root, .symbol_ids = transformer.symbol_ids.items, .owners = &semantic.scope_owner_map, .expressions = &semantic.node_scope_provenance, .class_self = &transformer.class_self_symbol_map, .symbols = semantic.symbols.items, .scopes = semantic.scopes, .scope_maps = semantic.scope_maps }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidReferenceIdentity,
+        };
+        var ctx = minify_mod.MinifyCtx.fromSemantic(semantic, editor.symbol_ids.items, true);
+        // Keep the existing unresolved-global and local-reference optimization
+        // policy, while publishing mutable IDs only through the private editor.
+        ctx.symbol_ids_mut = editor.symbol_ids.items;
+        ctx.semantic_journal = &journal;
+        ctx.preserve_inferred_names = self.transform_options_base.keep_names or !self.minify_identifiers;
+        minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
+        // Reopen the same producer graph; minification reports exact source/
+        // target edges instead of asking an analyzer to rediscover identities.
+        const receipt = journal.applyReferenceAndOwnerEdits(&editor, root, &candidate_origins, &candidate_class_self) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction false,
+        };
+        defer journal.freeApplicationReceipt(receipt);
+        if (retirement) |plan| {
+            const live_nodes = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(arena_alloc, transformer.ast, root);
+            var live = try std.DynamicBitSet.initEmpty(arena_alloc, transformer.ast.nodes.items.len);
+            for (live_nodes) |raw| live.set(raw);
+            var selected: std.ArrayList(@import("../../parser/ast.zig").NodeIndex) = .empty;
+            var selected_nodes = try std.DynamicBitSet.initEmpty(arena_alloc, transformer.ast.nodes.items.len);
+            for (plan.functions) |known| {
+                const raw = @backingInt(known.owner);
+                if (live.isSet(raw) or selected_nodes.isSet(raw)) continue;
+                const closure = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(arena_alloc, plan.source, known.owner);
+                var wholly_dead = true;
+                for (closure) |child| if (live.isSet(child)) {
+                    wholly_dead = false;
+                    break;
+                };
+                if (!wholly_dead) continue;
+                var transferred = false;
+                for (receipt.owner_changes) |change| {
+                    for (closure) |child| if (@backingInt(change.source_owner) == child) {
+                        transferred = true;
+                        break;
+                    };
+                }
+                // A moved/elided function is consumed by phase 1, never again
+                // as a whole-function retirement from its former source edges.
+                if (transferred) continue;
+                try selected.append(arena_alloc, known.owner);
+                for (closure) |child| selected_nodes.set(child);
+            }
+            if (selected.items.len != 0 and !(editor.retireSelectedSourceOwnedFunctions(plan, selected.items, receipt) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => break :minify_transaction false,
+            })) break :minify_transaction false;
+        }
+        journal.retireDeadDeclarationAnchors(&editor, root) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction false,
+        };
+        const edited = editor.finish() catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction false,
+        };
+        semantic.applyEdit(edited);
+        transformer.reference_origin_map = candidate_origins;
+        transformer.class_self_symbol_map = candidate_class_self;
+        published = true;
+        transformer.symbol_ids = .fromOwnedSlice(edited.symbol_ids);
+        transformer.symbols = semantic.symbols.items;
+        transformer.references = semantic.references;
+        transformer.scopes = semantic.scopes;
+        transformer.scope_maps = semantic.scope_maps;
+        transformer.scope_owner_map = semantic.scope_owner_map;
+        transformer.node_scope_provenance = semantic.node_scope_provenance;
+        transformer.source_owned_retirements = semantic.source_owned_retirements;
+        transformer.scope_history = semantic.scope_history;
+        transformer.helper_scope_map = semantic.helper_scope_map;
+        semantic.class_self_symbol_map = transformer.class_self_symbol_map;
+        break :minify_transaction true;
+    };
+}
+
+fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, candidate_completed: *bool, published_exact: *?@import("../../transformer/symbol_coverage.zig").ExactReport) void {
     if (module.ast == null) return;
     const ast_ptr = &(module.ast.?);
 
@@ -18025,13 +18356,6 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     // Class lowering removes source class nodes. Cache the derived-class
     // evidence before transforming so its helper imports can be admitted only
     // for modules that passed the full retained-graph preflight.
-    const allow_derived_class_helpers = can_keep_semantic_graph and opts.unsupported.class and
-        hasReachableDerivedClass(ast_ptr);
-    const allow_stage3_decorator_helpers = can_keep_semantic_graph and
-        canRetainStage3DecoratorGraph(ast_ptr, opts);
-    const allow_legacy_decorator_helpers = can_keep_semantic_graph and
-        canRetainLegacyDecoratorGraph(module, ast_ptr, opts);
-    const allow_async_helper = can_keep_semantic_graph and opts.unsupported.async_await;
     const lowered_simple_static_class_field_global = can_keep_semantic_graph and
         (downlevel_static_public_class_field_scan orelse
             (opts.unsupported.class or opts.unsupported.class_field));
@@ -18091,14 +18415,10 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
                 transformer.computed_object_helper_source = .{ .source_ast = ast_ptr, .output_ast = transformer.ast, .owner = sem.captureOwnerToken() };
         }
     }
-    transformer.record_explicit_global_references = transformer.computed_object_helper_source != null or transformer.selective_class_candidate != null or has_complex_define_replacement or tracked_function_plugin_graph or
-        shouldRecordPrepassExplicitGlobals(
-            flow_match_generated_globals.has_match,
-            has_lowered_object_spread,
-            has_lowered_exponentiation,
-            safe_builtin_worklet,
-            opts.unsupported.class or opts.unsupported.class_field or (downlevel_static_public_class_field_scan orelse false),
-        );
+    // Every actual global-reference producer must publish its provenance.
+    // Generic retention cannot depend on the diagnostic synthetic-ident set
+    // or on the former list of audited syntax subsets.
+    transformer.record_explicit_global_references = true;
 
     if (module.semantic) |*sem| {
         transformer.initSymbolIds(sem.symbol_ids) catch return;
@@ -18109,6 +18429,8 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
         transformer.scope_maps = sem.scope_maps;
         transformer.scope_owner_map = sem.scope_owner_map;
         transformer.node_scope_provenance = sem.node_scope_provenance;
+        transformer.source_owned_retirements = sem.source_owned_retirements;
+        transformer.scope_history = sem.scope_history;
         transformer.class_self_symbol_map = sem.class_self_symbol_map;
         transformer.helper_scope_map = sem.helper_scope_map;
         transformer.namespace_member_owners = &sem.namespace_member_owners;
@@ -18136,21 +18458,11 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     transformer.line_offsets = module.line_offsets;
 
     var unresolved_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
-    defer unresolved_nodes.deinit(arena_alloc);
-    if (debug_symbol_coverage or static_getter_super_requires_exact or flow_mapped_values_require_exact or transformer.entry_graph_source != null or transformer.native_noop_source != null or transformer.optional_nullish_source != null or transformer.virtual_provider_source != null or transformer.selective_class_candidate != null or transformer.legacy_assignment_field_source != null or transformer.native_private_field_source != null or transformer.class_initializer_source != null or transformer.computed_object_helper_source != null) {
-        if (module.semantic) |*sem| {
-            collectParserUnresolvedNodes(
-                arena_alloc,
-                ast_ptr,
-                parser_node_count,
-                sem.symbol_ids,
-                &sem.unresolved_references,
-                &unresolved_nodes,
-            ) catch return;
-            transformer.synthetic_idents = .empty;
-            transformer.unresolved_reference_nodes = &unresolved_nodes;
-        }
+    if (module.semantic) |*sem| {
+        collectParserUnresolvedNodes(arena_alloc, ast_ptr, parser_node_count, sem.symbol_ids, &sem.unresolved_references, &unresolved_nodes) catch return;
+        transformer.unresolved_reference_nodes = &unresolved_nodes;
     }
+    if (debug_symbol_coverage) transformer.synthetic_idents = .empty;
     if (debug_symbol_coverage and ast_ptr.transformed_root == null and parser_node_count > 0) {
         if (module.semantic) |*sem| {
             const coverage = @import("../../transformer/symbol_coverage.zig");
@@ -18224,12 +18536,17 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     }
     if (transformer.finishSemanticEdit() catch return) |edited| {
         module.semantic.?.applyEdit(edited);
+        // Class clone creators can grow and rehash this producer-owned map.
+        // Publish its current backing before reading the semantic view again.
+        module.semantic.?.class_self_symbol_map = transformer.class_self_symbol_map;
         transformer.symbols = module.semantic.?.symbols.items;
         transformer.references = module.semantic.?.references;
         transformer.scopes = module.semantic.?.scopes;
         transformer.scope_maps = module.semantic.?.scope_maps;
         transformer.scope_owner_map = module.semantic.?.scope_owner_map;
         transformer.node_scope_provenance = module.semantic.?.node_scope_provenance;
+        transformer.source_owned_retirements = module.semantic.?.source_owned_retirements;
+        transformer.scope_history = module.semantic.?.scope_history;
         transformer.class_self_symbol_map = module.semantic.?.class_self_symbol_map;
         transformer.helper_scope_map = module.semantic.?.helper_scope_map;
     }
@@ -18302,6 +18619,12 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     if (transformer.used_unsupported_exponentiation) {
         self.addDiag(.exponentiation_dynamic_scope, .warning, module.path, Span.EMPTY, .parse, TransformOptions.exponentiation_dynamic_scope_msg, null);
     }
+    if (transformer.used_unsupported_object_accessor_eval) {
+        self.addDiag(.object_accessor_eval_scope, .warning, module.path, Span.EMPTY, .parse, TransformOptions.object_accessor_eval_msg, null);
+    }
+    if (transformer.used_unsupported_object_accessor_with) {
+        self.addDiag(.object_accessor_with_scope, .warning, module.path, Span.EMPTY, .parse, TransformOptions.object_accessor_with_msg, null);
+    }
     if (transformer.used_unsupported_arrow_dynamic_scope) {
         self.addDiag(.arrow_dynamic_scope, .warning, module.path, Span.EMPTY, .parse, TransformOptions.arrow_dynamic_scope_msg, null);
     }
@@ -18313,85 +18636,17 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     } else {
         purity.markUserPureCalls(transformer.ast, self.pure);
     }
-    // prepass minify 의 cascade ref decrement 결과 hydrate 용 (#3267 N-step4b).
-    // minify 안에서 alloc 하던 ref_deltas 를 parse_arena 에 미리 잡아 외부 소유로
-    // 만들어, transform_cache 에 같은 backing 을 store. emitter minify 가 이 결과를
-    // 복사 후 hydrate → prepass 에서 fold 된 dead branch 안 ref 감산이 emitter 의
-    // dead-store pass 에 전파되어 cascade dead binding 도 elide 가능.
-    var prepass_ref_deltas: []u32 = &.{};
-    const pre_minify_statement_lists: ?[]MinifiedStatementList = if (can_keep_semantic_graph and
-        self.transform_options_base.minify_syntax)
-        snapshotMinifiedStatementLists(arena_alloc, transformer.ast) catch null
-    else
-        null;
+    // This early module has no pre-existing minifier delta: every decrement
+    // below is published as an actual local Reference edit, never a second
+    // aggregate decrement against the same semantic counts.
+    const prepass_ref_deltas: []u32 = &.{};
     if (self.transform_options_base.minify_syntax) {
-        const minify_mod = @import("../../transformer/minify.zig");
-        // This flag controls top-level constant/function inlining, not
-        // module-level dead-store removal. `MinifyCtx.allow_top_level_dead`
-        // remains false here; top-level pruning is owned by the resynced
-        // tree-shaker/emitter path.
-        const allow_top_level_inline = true;
-        var ctx: minify_mod.MinifyCtx = if (module.semantic != null)
-            minify_mod.MinifyCtx.fromSemantic(&module.semantic.?, transformer.symbol_ids.items, allow_top_level_inline)
-        else
-            .empty;
-        ctx.preserve_inferred_names = !self.minify_identifiers or self.transform_options_base.keep_names;
-        if (ctx.hasSemantic()) {
-            if (arena_alloc.alloc(u32, ctx.symbols.len)) |buf| {
-                @memset(buf, 0);
-                prepass_ref_deltas = buf;
-                ctx.ref_deltas = buf;
-            } else |_| {}
-        }
-        minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
-    }
-
-    // A successful transform graph is not automatically valid after syntax
-    // minification: folding can delete identifier edges or move an identifier
-    // to another AST slot. Retain the existing SymbolIds only when the final
-    // reachable AST, declarations, references, scopes, and counts still agree.
-    // Otherwise use the normal graph metadata resync and semantic analyzer.
-    if (can_keep_semantic_graph and self.transform_options_base.minify_syntax) {
-        if (pre_minify_statement_lists) |before| {
-            const after = snapshotMinifiedStatementLists(arena_alloc, transformer.ast) catch null;
-            if (after) |current| {
-                can_keep_semantic_graph = minifiedStatementListsEqual(before, current);
-            } else {
-                can_keep_semantic_graph = false;
-            }
-        } else {
-            can_keep_semantic_graph = false;
-        }
-        if (can_keep_semantic_graph) {
-            if (module.semantic) |*semantic| {
-                const updated_references = reindexMinifiedSemanticReferences(
-                    arena_alloc,
-                    transformer.ast,
-                    root,
-                    semantic.references,
-                ) catch null;
-                if (updated_references) |references| {
-                    semantic.references = references;
-                    can_keep_semantic_graph = canRetainMinifiedSemanticGraph(
-                        arena_alloc,
-                        transformer.ast,
-                        root,
-                        semantic.symbols.items,
-                        semantic.scopes,
-                        semantic.references,
-                        transformer.symbol_ids.items,
-                        &semantic.unresolved_references,
-                        &semantic.scope_owner_map,
-                        null,
-                        null,
-                    );
-                } else {
-                    can_keep_semantic_graph = false;
-                }
-            } else {
-                can_keep_semantic_graph = false;
-            }
-        }
+        const optimized = minifyGenericPrepassGraph(self, module, &transformer, root, arena_alloc) catch |err| switch (err) {
+            error.OutOfMemory => return,
+            else => return,
+        };
+        if (@import("builtin").is_test)
+            std.debug.print("GENERIC_MINIFY_RECEIPT file={s} published={any}\n", .{ module.path, optimized });
     }
 
     // transformer 가 새 ast (clone) 에 transform 결과를 보유. module.ast 를 그 새 ast 로
@@ -18455,6 +18710,7 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
         .symbol_ids = owned_symbol_ids,
         .helper_ref_nodes = owned_helper_ref_nodes,
         .explicit_global_ref_nodes = owned_explicit_global_ref_nodes,
+        .cjs_export_assignment_references = arena_alloc.dupe(@import("../../transformer/cjs_export_assignment.zig").ModuleReference, transformer.cjs_export_assignment_references.items) catch return,
         .opaque_define_scope_owner_nodes = owned_opaque_define_scope_owner_nodes,
         .destructuring_temp_bindings = transformer.destructuring_temp_bindings,
         .preserved_class_name_nodes = owned_preserved_class_names,
@@ -18642,27 +18898,13 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     // virtual helper imports. The helper module has its own semantic graph;
     // only admit this family after the source preflight and before the final
     // exact-graph audit.
-    const allow_async_generator_helpers = can_keep_semantic_graph and
-        opts.unsupported.async_generator and opts.unsupported.async_await and
-        opts.unsupported.generator and transformer.runtime_helpers.async_generator;
-    const allow_wrap_regex_helper = can_keep_semantic_graph and transformer.runtime_helpers.wrap_regex and
-        transformer.runtime_helper_symbol_ids.contains("__wrapRegExp");
-    if (can_keep_semantic_graph and runtimeHelpersSafeForRetainedGraph(
-        retained_helper_demands,
-        allow_derived_class_helpers,
-        allow_stage3_decorator_helpers,
-        allow_legacy_decorator_helpers,
-        allow_async_helper,
-        allow_async_generator_helpers,
-        can_keep_semantic_graph and transformer.runtime_helpers.using_ctx,
-        allow_tracked_super_get,
-        allow_tracked_super_set,
-        allow_wrap_regex_helper,
-    )) {
-        // Generated built-ins are not source references, so the transform
-        // editor cannot add them to unresolved_references. If recording them
-        // runs out of memory, use the normal analyzer refresh below.
-        addFlowMatchGeneratedGlobals(arena_alloc, &module.semantic.?, flow_match_generated_globals) catch {};
+    // Every transformed source finishes the same producer graph. The source
+    // certificates above authorize their own lowerers; no helper/syntax list
+    // chooses a replacement analyzer identity space here.
+    {
+        // Generated built-ins are not source references. Complete the same
+        // candidate's unresolved-name metadata before its final identity proof;
+        // no analyzer fallback may publish another identity space.        addFlowMatchGeneratedGlobals(arena_alloc, &module.semantic.?, flow_match_generated_globals) catch {};
         if (lowered_object_spread_global)
             addGeneratedGlobal(arena_alloc, &module.semantic.?, "Object") catch {};
         if (lowered_exponentiation_global)
@@ -18715,8 +18957,22 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
             );
             return;
         }
-        if (self.transform_options_base.minify_syntax) {
-            if (module.semantic) |semantic| {
+        {
+            if (module.semantic) |*semantic| {
+                // Lowerer-created/copied reads can still carry NO_STMT even
+                // when syntax minification is disabled. Complete their actual
+                // output containment before the tree shaker consumes buckets.
+                const positioned = (statement_owner_projection.project(
+                    arena_alloc,
+                    &module.ast.?,
+                    root,
+                    semantic,
+                ) catch null) orelse {
+                    failRetainedGraphRefresh(self, module, "Transformed reference statement coordinates could not be completed.");
+                    return;
+                };
+                semantic.references = positioned;
+                transformer.references = positioned;
                 // Syntax minification can change statement-use information
                 // even when every surviving identifier edge still has the
                 // same SymbolId. Rebuild the tree-shaker buckets from the
@@ -18727,6 +18983,7 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
                     &module.ast.?,
                     semantic.symbols.items,
                     semantic.scopes,
+                    semantic.symbol_ids,
                     semantic.references,
                     &semantic.unresolved_references,
                     false,
@@ -18753,36 +19010,20 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
             true,
         );
         refreshTlaPromiseReference(module);
-        module.prebuilt_stmt_info = null;
-        completeGenericPrepassCandidate(module, candidate_completed);
+        completeGenericPrepassCandidate(
+            self,
+            module,
+            &transformer,
+            root,
+            parser_node_count,
+            pre_transform_scope_count,
+            arena_alloc,
+            candidate_completed,
+            &unresolved_nodes,
+            published_exact,
+        );
         return;
     }
-
-    resyncAfterAstMutation(self, module, arena_alloc, null) catch {
-        self.addDiag(
-            .parse_error,
-            .@"error",
-            module.path,
-            Span.EMPTY,
-            .parse,
-            "Post-transform analysis refresh failed",
-            "The transformed AST could not be re-analyzed safely.",
-        );
-        module.state = .ready;
-        return;
-    };
-    auditPrepassExactIfEnabled(
-        arena_alloc,
-        module,
-        root,
-        parser_node_count,
-        &transformer,
-        &unresolved_nodes,
-        pre_transform_scope_count,
-        debug_symbol_coverage,
-        false,
-    );
-    completeGenericPrepassCandidate(module, candidate_completed);
 }
 
 /// AST mutation 이후 module 의 graph-facing metadata 를 같은 AST 기준으로 재동기화한다.
@@ -19470,6 +19711,8 @@ fn runtimeHelperReanalysisTestFixtureForSource(
             .scope_maps = analyzer.scope_maps.items,
             .scope_owner_map = analyzer.scope_owner_map,
             .node_scope_provenance = analyzer.node_scope_provenance,
+            .source_owned_retirements = analyzer.source_owned_retirements,
+            .scope_history = analyzer.scope_history,
             .class_self_symbol_map = analyzer.class_self_symbol_map,
             .namespace_member_owners = analyzer.namespace_member_owners,
             .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -19509,6 +19752,8 @@ fn exactClassCertificateSourceFixture(
             .scope_maps = analyzer.scope_maps.items,
             .scope_owner_map = analyzer.scope_owner_map,
             .node_scope_provenance = analyzer.node_scope_provenance,
+            .source_owned_retirements = analyzer.source_owned_retirements,
+            .scope_history = analyzer.scope_history,
             .class_self_symbol_map = analyzer.class_self_symbol_map,
             .namespace_member_owners = analyzer.namespace_member_owners,
             .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -19804,14 +20049,14 @@ test "toBinary runtime helper reanalysis preserves its rename through the produc
         .wrap_kinds_finalized = true,
         .transform_options_base = .{ .minify_syntax = false },
     };
-    try resyncAfterAstMutation(&test_context, &module, allocator, &initial_renames);
+    try resyncAfterAstMutationForTest(&test_context, &module, allocator, &initial_renames);
 
     const new_id = module.to_binary_runtime_symbol.?;
     try std.testing.expectEqual(fresh_fixture.semantic.symbols.items.len, @as(usize, @backingInt(new_id)));
     try std.testing.expectEqualDeep(old_symbol, module.semantic.?.symbols.items[@backingInt(new_id)]);
     const pending_key = bundler_symbol.SymbolID.make(module.index, @backingInt(new_id));
-    try std.testing.expectEqual(@as(u32, 1), module.pending_renames.count());
-    try std.testing.expectEqualStrings("__toBinary$producer", module.pending_renames.get(pending_key).?);
+    try std.testing.expectEqual(@as(u32, 1), module.legacy_rename_oracle.renames.count());
+    try std.testing.expectEqualStrings("__toBinary$producer", module.legacy_rename_oracle.renames.get(pending_key).?);
 }
 
 test "ESM interop helper producer group survives hostile semantic reanalysis" {
@@ -20088,17 +20333,17 @@ test "ESM interop helper IDs survive production resync and rename handoff" {
         .wrap_kinds_finalized = true,
         .transform_options_base = .{ .minify_syntax = false },
     };
-    try resyncAfterAstMutation(&test_context, &module, arena_allocator, &initial_renames);
+    try resyncAfterAstMutationForTest(&test_context, &module, arena_allocator, &initial_renames);
 
     const new_ids = module.esm_interop_runtime_helper_symbols orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(fresh_len + runtime_helper_names.ESM_INTEROP_RUNTIME_HELPERS.len, module.semantic.?.symbols.items.len);
-    try std.testing.expectEqual(@as(u32, 10), module.pending_renames.count());
+    try std.testing.expectEqual(@as(u32, 10), module.legacy_rename_oracle.renames.count());
     inline for (runtime_helper_names.ESM_INTEROP_RUNTIME_HELPERS, 0..) |helper, index| {
         const expected_id: SemanticSymbolId = @fromBackingInt(@intCast(fresh_len + index));
         try std.testing.expectEqual(expected_id, @field(new_ids, @tagName(helper)));
         const pending_key = bundler_symbol.SymbolID.make(module.index, @backingInt(expected_id));
         const expected_name = try std.fmt.allocPrint(arena_allocator, "{s}$producer", .{runtime_helper_names.esmInteropRuntimeHelperBaseName(helper)});
-        const pending_name = module.pending_renames.get(pending_key) orelse return error.TestUnexpectedResult;
+        const pending_name = module.legacy_rename_oracle.renames.get(pending_key) orelse return error.TestUnexpectedResult;
         try std.testing.expectEqualStrings(expected_name, pending_name);
     }
 }
@@ -20222,7 +20467,7 @@ test "ESM runtime helper reanalysis preserves factory and internal renames throu
         .wrap_kinds_finalized = true,
         .transform_options_base = .{ .minify_syntax = false },
     };
-    try resyncAfterAstMutation(&test_context, &module, allocator, &initial_renames);
+    try resyncAfterAstMutationForTest(&test_context, &module, allocator, &initial_renames);
 
     const expected_factory_id: SemanticSymbolId = @fromBackingInt(@intCast(fresh_fixture.semantic.symbols.items.len));
     const expected_internal_ids = esmRuntimeReanalysisTestIdsAt(fresh_fixture.semantic.symbols.items.len + 1);
@@ -20233,12 +20478,12 @@ test "ESM runtime helper reanalysis preserves factory and internal renames throu
         try std.testing.expectEqualDeep(expected_symbol, module.semantic.?.symbols.items[fresh_fixture.semantic.symbols.items.len + index + 1]);
     }
 
-    try std.testing.expectEqual(@as(u32, 6), module.pending_renames.count());
+    try std.testing.expectEqual(@as(u32, 6), module.legacy_rename_oracle.renames.count());
     const factory_key = bundler_symbol.SymbolID.make(module.index, @backingInt(expected_factory_id));
-    try std.testing.expectEqualStrings(rename_names[0], module.pending_renames.get(factory_key).?);
+    try std.testing.expectEqualStrings(rename_names[0], module.legacy_rename_oracle.renames.get(factory_key).?);
     for (esmRuntimeInternalRenameSlots(expected_internal_ids), 0..) |slot, index| {
         const key = bundler_symbol.SymbolID.make(module.index, @backingInt(slot.symbol_id));
-        try std.testing.expectEqualStrings(rename_names[index + 1], module.pending_renames.get(key).?);
+        try std.testing.expectEqualStrings(rename_names[index + 1], module.legacy_rename_oracle.renames.get(key).?);
     }
 }
 
@@ -20320,7 +20565,7 @@ test "rename capture carries toBinary alias through its producer slot" {
     var module = Module.init(module_index, "entry.mjs");
     module.ast = ast;
     module.to_binary_runtime_symbol = old_id;
-    defer module.pending_renames.deinit(allocator);
+    defer module.legacy_rename_oracle.renames.deinit(allocator);
 
     var old_symbols: std.ArrayList(SemanticSymbol) = .empty;
     defer old_symbols.deinit(allocator);
@@ -20369,9 +20614,9 @@ test "rename capture carries toBinary alias through its producer slot" {
     );
 
     const new_key = bundler_symbol.SymbolID.make(module_index, 2);
-    try std.testing.expectEqual(@as(u32, 1), module.pending_renames.count());
-    try std.testing.expectEqualStrings("__toBinary$2", module.pending_renames.get(new_key).?);
-    try std.testing.expect(module.pending_rename_capture_seen);
+    try std.testing.expectEqual(@as(u32, 1), module.legacy_rename_oracle.renames.count());
+    try std.testing.expectEqualStrings("__toBinary$2", module.legacy_rename_oracle.renames.get(new_key).?);
+    try std.testing.expect(module.legacy_rename_oracle.capture_seen);
 }
 
 test "toBinary runtime helper remapping fails closed on hostile slot evidence" {
@@ -20871,7 +21116,7 @@ test "graph-owned synthetic rename does not replace an existing exact mapping" {
 /// **RFC #3940 L.5a — carry-over 를 build-scope `rename_table` 기반으로 재설계**.
 /// post-link tree-shake (const-materialize 등) 의 semantic resync 가 symbols 배열을 재생성하면
 /// old idx 기준 rename 정보가 stale 해진다. resync 전 rename 을 읽고 같은 AST NodeIndex 의
-/// old/new SymbolID 연결로 새 idx 를 찾아 `module.pending_renames` 에 stash 한다.
+/// old/new SymbolID 연결로 새 idx 를 찾아 `module.legacy_rename_oracle.renames` 에 stash 한다.
 /// bundler 의 post-shake finalize 가 `Linker.applyPendingRenames` 로 mutable `rename_table` 에
 /// 반영한다 (tree_shaker.linker 는 *const 라 put 불가 — capture=read, apply=write 분리).
 /// `rename_table == null` (graph pre-pass, link 전) 이면 rename 미설정이라 no-op.
@@ -20934,7 +21179,7 @@ fn captureRenamesToPending(
     // `rename_table` (link 시점 = pass0 idx) 폴백은 첫 resync 에서만 허용한다.
     // pending 이 비어도 이전 capture 가 이미 끝났을 수 있으므로 map count 대신 별도 상태를 쓴다.
     // 2차+ resync 는 old_sem idx 가 pass1+ 라 pass0 키 폴백 시 다른 심볼 rename 을 오인할 수 있다.
-    const allow_table_fallback = !module.pending_rename_capture_seen;
+    const allow_table_fallback = !module.legacy_rename_oracle.capture_seen;
     const ast = &(module.ast orelse return);
     const node_tags = try scratch_allocator.alloc(NodeTag, ast.nodes.items.len);
     defer scratch_allocator.free(node_tags);
@@ -20945,7 +21190,7 @@ fn captureRenamesToPending(
     for (old_sem.symbols.items, 0..) |_, old_idx| {
         const old_id = bundler_symbol.SymbolID.make(module.index, old_idx);
         // 직전 resync 결과(pending) 우선; 첫 capture 만 link 시점 rename_table 폴백.
-        const rename = module.pending_renames.get(old_id) orelse
+        const rename = module.legacy_rename_oracle.renames.get(old_id) orelse
             (if (allow_table_fallback) rename_table.get(old_id) else null) orelse continue;
         old_renames[old_idx] = rename;
     }
@@ -21020,8 +21265,8 @@ fn captureRenamesToPending(
         &rebuilt,
     );
     try remapEsmInteropRuntimeInternalRenames(arena, module.index, old_sem, new_sem.*, old_renames, &rebuilt);
-    module.pending_renames = rebuilt;
-    module.pending_rename_capture_seen = true;
+    module.legacy_rename_oracle.renames = rebuilt;
+    module.legacy_rename_oracle.capture_seen = true;
 }
 
 test "rename capture carries ESM factory alias through the production handoff" {
@@ -21048,7 +21293,7 @@ test "rename capture carries ESM factory alias through the production handoff" {
 
     var module = Module.init(module_index, "entry.mjs");
     module.ast = ast;
-    defer module.pending_renames.deinit(allocator);
+    defer module.legacy_rename_oracle.renames.deinit(allocator);
 
     var old_symbols: std.ArrayList(SemanticSymbol) = .empty;
     defer old_symbols.deinit(allocator);
@@ -21114,13 +21359,13 @@ test "rename capture carries ESM factory alias through the production handoff" {
     );
 
     const new_key = bundler_symbol.SymbolID.make(module_index, 1);
-    try std.testing.expectEqual(@as(u32, 6), module.pending_renames.count());
-    try std.testing.expectEqualStrings("__esm$2", module.pending_renames.get(new_key).?);
+    try std.testing.expectEqual(@as(u32, 6), module.legacy_rename_oracle.renames.count());
+    try std.testing.expectEqualStrings("__esm$2", module.legacy_rename_oracle.renames.get(new_key).?);
     for (internal_rename_names, 0..) |name, index| {
         const new_internal_key = bundler_symbol.SymbolID.make(module_index, index + 2);
-        try std.testing.expectEqualStrings(name, module.pending_renames.get(new_internal_key).?);
+        try std.testing.expectEqualStrings(name, module.legacy_rename_oracle.renames.get(new_internal_key).?);
     }
-    try std.testing.expect(module.pending_rename_capture_seen);
+    try std.testing.expect(module.legacy_rename_oracle.capture_seen);
 }
 
 /// Semantic reanalysis rebuilds source rows and drops graph-owned runtime helper rows.
@@ -21314,6 +21559,7 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
     const previous_semantic = module.semantic;
 
     var analyzer = SemanticAnalyzer.init(arena_alloc, ast);
+    var exact_namespace_non_member_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const namespace_parameter_names = if (previous_semantic) |*semantic|
         try SemanticAnalyzer.collectNamespaceIifeParameterNames(
             arena_alloc,
@@ -21355,7 +21601,31 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
         // #2869 transformer pre-pass 가 표시한 runtime helper marker. analyzer 는
         // 이 marker 를 보고 helper import_specifier 와 helper call site 를 user scope
         // 가 아닌 helper_scope_map 으로 격리한다.
-        if (module.transform_cache) |cache| {
+        if (module.transform_cache) |*cache| {
+            if (previous_semantic) |*previous| {
+                var candidates = cache.destructuring_temp_bindings.keyIterator();
+                while (candidates.next()) |raw_ptr| {
+                    const raw = raw_ptr.*;
+                    if (raw >= ast.nodes.items.len or raw >= cache.symbol_ids.len or raw >= previous.symbol_ids.len or
+                        ast.nodes.items[raw].tag != .binding_identifier) continue;
+                    const symbol_id = cache.symbol_ids[raw] orelse continue;
+                    if (previous.symbol_ids[raw] != symbol_id or symbol_id >= previous.symbols.items.len) continue;
+                    const binding = ast.nodes.items[raw];
+                    const symbol = previous.symbols.items[symbol_id];
+                    if (symbol.name.start != binding.data.string_ref.start or symbol.name.end != binding.data.string_ref.end) continue;
+                    var has_exact_declaration = false;
+                    for (previous.references) |reference| {
+                        if (@backingInt(reference.symbol_id) == symbol_id and reference.flags.declare and
+                            reference.declaration_node_index == @as(ast_mod.NodeIndex, @fromBackingInt(raw)))
+                        {
+                            has_exact_declaration = true;
+                            break;
+                        }
+                    }
+                    if (has_exact_declaration) try exact_namespace_non_member_bindings.put(arena_alloc, raw, {});
+                }
+            }
+            analyzer.namespace_non_member_bindings = &exact_namespace_non_member_bindings;
             analyzer.helper_ref_nodes = cache.helper_ref_nodes;
             analyzer.explicit_global_ref_nodes = cache.explicit_global_ref_nodes;
         }
@@ -21461,6 +21731,8 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
             .scope_maps = analyzer.scope_maps.items,
             .scope_owner_map = analyzer.scope_owner_map,
             .node_scope_provenance = analyzer.node_scope_provenance,
+            .source_owned_retirements = analyzer.source_owned_retirements,
+            .scope_history = analyzer.scope_history,
             .class_self_symbol_map = analyzer.class_self_symbol_map,
             .namespace_member_owners = analyzer.namespace_member_owners,
             .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -21508,6 +21780,7 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
                 ast,
                 analyzer.symbols.items,
                 analyzer.scopes.items,
+                analyzer.symbol_ids.items,
                 analyzer.references.items,
                 if (module.semantic) |*s| &s.unresolved_references else null,
                 false,
@@ -21606,11 +21879,87 @@ fn isMaterializedPrimitiveLiteral(tag: NodeTag) bool {
     };
 }
 
+/// Metadata staging for one exact const edit. The input module remains the
+/// authority; this projection is never used to discover a binding by spelling.
+/// SemanticEditor owns new arrays before metadata may change them. Heap-owned
+/// lookup tables and mutable import/export carriers are detached up front.
+const PreparedConstGraph = struct {
+    candidate: Module,
+    source: *Module,
+    metadata_allocator: std.mem.Allocator,
+
+    fn discard(self: *PreparedConstGraph) void {
+        if (self.candidate.alias_table) |*table| table.deinit();
+        if (self.candidate.export_index_by_name) |*map| map.deinit(self.metadata_allocator);
+        self.candidate.alias_table = null;
+        self.candidate.export_index_by_name = null;
+    }
+
+    fn finishPreparation(self: *PreparedConstGraph) !void {
+        try @import("requested_exports.zig").populateExportIndexByName(&self.candidate, self.metadata_allocator);
+        const source_ast = if (self.source.ast) |*ast| ast else return error.MissingAst;
+        const candidate_ast = if (self.candidate.ast) |*ast| ast else return error.MissingAst;
+        // Scanners can capture a pointer to the staging AST. Validate only the
+        // known source/candidate carriers, then publish the actual stable owner
+        // address. A foreign carrier is never repaired by matching its bytes.
+        for (self.candidate.export_bindings) |*binding| {
+            if (binding.public_key_origin) |*origin| {
+                if (origin.ast != source_ast and origin.ast != candidate_ast)
+                    return error.InvalidQuotedExportOrigin;
+                origin.ast = candidate_ast;
+            }
+            _ = try self.candidate.ordinaryQuotedExportLiteral(binding.*);
+        }
+        for (self.candidate.export_bindings) |*binding| {
+            if (binding.public_key_origin) |*origin| origin.ast = source_ast;
+        }
+    }
+
+    fn publish(self: *PreparedConstGraph) void {
+        if (self.source.alias_table) |*table| table.deinit();
+        if (self.source.export_index_by_name) |*map| map.deinit(self.metadata_allocator);
+        self.source.* = self.candidate;
+        self.candidate.alias_table = null;
+        self.candidate.export_index_by_name = null;
+    }
+};
+
+fn prepareConstGraphProjection(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) !PreparedConstGraph {
+    const original = module.semantic orelse return error.MissingSemantic;
+    var prepared = PreparedConstGraph{
+        .candidate = module.*,
+        .source = module,
+        .metadata_allocator = self.allocator,
+    };
+    prepared.candidate.alias_table = null;
+    prepared.candidate.export_index_by_name = null;
+    errdefer prepared.discard();
+    prepared.candidate.import_bindings = try arena_alloc.dupe(@import("../binding_scanner.zig").ImportBinding, module.import_bindings);
+    prepared.candidate.export_bindings = try arena_alloc.dupe(@import("../binding_scanner.zig").ExportBinding, module.export_bindings);
+    // Minification can retire a const value. Its hash-map backing must not be
+    // shared with the original graph while later metadata can still fail.
+    prepared.candidate.semantic.?.numeric_const_texts = try original.numeric_const_texts.clone(arena_alloc);
+    return prepared;
+}
+
 /// Numeric post-pass with no syntax folding has only replaced identifier leaves
 /// with primitive literals. Keep all surviving semantic identities and remove
 /// references by their exact NodeIndex through SemanticEditor; a full analyzer
 /// pass here would rebuild SymbolIds and require a rename carry-over.
 pub fn resyncAfterConstMaterializationRetainingGraph(
+    self: anytype,
+    module: *Module,
+    arena_alloc: std.mem.Allocator,
+    materialized_nodes: []const ast_mod.NodeIndex,
+) !void {
+    var prepared = try prepareConstGraphProjection(self, module, arena_alloc);
+    defer prepared.discard();
+    try prepareConstMaterializationGraph(self, &prepared.candidate, arena_alloc, materialized_nodes);
+    try prepared.finishPreparation();
+    prepared.publish();
+}
+
+fn prepareConstMaterializationGraph(
     self: anytype,
     module: *Module,
     arena_alloc: std.mem.Allocator,
@@ -21654,6 +22003,7 @@ pub fn resyncAfterConstMaterializationRetainingGraph(
         ast,
         semantic.symbols.items,
         semantic.scopes,
+        semantic.symbol_ids,
         semantic.references,
         &semantic.unresolved_references,
         false,
@@ -21922,6 +22272,22 @@ test "minified const graph rejects stale or invalid sidecar identities" {
 /// rejects those shapes and leaves them on the normal analyzer path. The full
 /// prepass also refreshes import/export metadata from the edited AST.
 pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
+    self: anytype,
+    module: *Module,
+    arena_alloc: std.mem.Allocator,
+    materialized_nodes: []const ast_mod.NodeIndex,
+    scope_owner_snapshot: anytype,
+    refresh_module_metadata: bool,
+) !bool {
+    var prepared = try prepareConstGraphProjection(self, module, arena_alloc);
+    defer prepared.discard();
+    if (!try prepareConstMaterializationMinifiedGraph(self, &prepared.candidate, arena_alloc, materialized_nodes, scope_owner_snapshot, refresh_module_metadata)) return false;
+    try prepared.finishPreparation();
+    prepared.publish();
+    return true;
+}
+
+fn prepareConstMaterializationMinifiedGraph(
     self: anytype,
     module: *Module,
     arena_alloc: std.mem.Allocator,
@@ -22213,6 +22579,7 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
         ast,
         semantic.symbols.items,
         semantic.scopes,
+        semantic.symbol_ids,
         semantic.references,
         &semantic.unresolved_references,
         false,
@@ -22294,11 +22661,253 @@ fn hasEnoughExactWrapperReferenceCount(
     return symbol.reference_count != std.math.maxInt(u32) and symbol.reference_count >= removed_count;
 }
 
-pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+/// Buffer-only prepared publication. The staging module is not source authority:
+/// source selection runs against the actual module before constructing it.
+/// Heap-owned metadata maps are detached; source bytes and scope-map keys keep
+/// their original parse-arena backing alive.
+pub const PreparedBufferGraph = struct {
+    candidate: Module,
+    source_module: *const Module,
+    source_nodes: []const ast_mod.Node,
+    source_extra: []const u32,
+    source_ids: []const ?u32,
+    metadata_allocator: std.mem.Allocator,
+    runtime_registration: ?@import("../../semantic/output_runtime_registration.zig").Prepared = null,
+
+    pub fn discard(self: *PreparedBufferGraph) void {
+        if (self.candidate.alias_table) |*table| table.deinit();
+        if (self.candidate.export_index_by_name) |*map| map.deinit(self.metadata_allocator);
+        self.candidate.alias_table = null;
+        self.candidate.export_index_by_name = null;
+    }
+
+    pub fn publish(self: *PreparedBufferGraph, module: *Module) bool {
+        if (module != self.source_module or module.ast == null or module.semantic == null or
+            module.ast.?.nodes.items.ptr != self.source_nodes.ptr or module.ast.?.nodes.items.len != self.source_nodes.len or
+            module.ast.?.extra_data.items.ptr != self.source_extra.ptr or module.ast.?.extra_data.items.len != self.source_extra.len or
+            module.semantic.?.symbol_ids.ptr != self.source_ids.ptr or module.semantic.?.symbol_ids.len != self.source_ids.len) return false;
+        if (self.runtime_registration) |*registration| if (!registration.isCurrent()) return false;
+        if (module.alias_table) |*table| table.deinit();
+        if (module.export_index_by_name) |*map| map.deinit(self.metadata_allocator);
+        module.* = self.candidate;
+        if (self.runtime_registration) |registration| registration.publishAssumePrepared();
+        self.candidate.alias_table = null;
+        self.candidate.export_index_by_name = null;
+        return true;
+    }
+};
+
+fn prepareBufferGraphForAst(
+    self: anytype,
+    module: *const Module,
+    arena_alloc: std.mem.Allocator,
+    candidate_ast: ast_mod.Ast,
+    removed_nodes: []const ast_mod.NodeIndex,
+    known_functions: []const @import("../../semantic/editor.zig").KnownUnreachableFunction,
+    external_reads: ?*const std.AutoHashMapUnmanaged(u32, void),
+    replaced_conditions: []const ast_mod.NodeIndex,
+    replaced_setups: []const ast_mod.NodeIndex,
+) !?PreparedBufferGraph {
+    // This copy is only a metadata projection. It is never passed to the
+    // actual-module Buffer source selector as evidence for a foreign AST.
+    const actual_ast = if (module.ast) |*value| value else return null;
+    const actual_semantic = if (module.semantic) |*value| value else return null;
+    var prepared = PreparedBufferGraph{
+        .candidate = module.*,
+        .source_module = module,
+        .source_nodes = actual_ast.nodes.items,
+        .source_extra = actual_ast.extra_data.items,
+        .source_ids = actual_semantic.symbol_ids,
+        .metadata_allocator = self.allocator,
+    };
+    prepared.candidate.ast = candidate_ast;
+    // This receipt describes the installed pre-edit backing pair, not a
+    // general self-namespace shape. Keep it on abort; invalidate only the
+    // successfully published edited pair. Runtime builtin owners are excluded
+    // by the source plan before staging.
+    prepared.candidate.self_namespace_source_receipt = null;
+    prepared.candidate.alias_table = null;
+    prepared.candidate.export_index_by_name = null;
+    errdefer prepared.discard();
+    if (!try prepareBufferGraphInStaging(self, &prepared.candidate, arena_alloc, removed_nodes, known_functions, external_reads, replaced_conditions, replaced_setups)) {
+        prepared.discard();
+        return null;
+    }
+    // The general rescan has a best-effort export lookup cache. Preparation
+    // requires this final allocation to succeed before any publication.
+    try @import("requested_exports.zig").populateExportIndexByName(&prepared.candidate, self.allocator);
+    // Rescan recorded these origins from this exact local staging AST. Relocate
+    // only those known producer pointers to the fixed installed AST address,
+    // before returning/moving the prepared value. Foreign origins are not healed.
+    for (prepared.candidate.export_bindings) |*binding| {
+        if (binding.public_key_origin) |*origin| {
+            if (origin.ast != &prepared.candidate.ast.?) return error.InvalidBufferPublicKeyOrigin;
+            for ([_]ast_mod.NodeIndex{ origin.specifier, origin.literal }) |node| {
+                const raw = @backingInt(node);
+                if (raw >= actual_ast.nodes.items.len or raw >= prepared.candidate.ast.?.nodes.items.len or
+                    !std.mem.eql(u8, std.mem.asBytes(&actual_ast.nodes.items[raw]), std.mem.asBytes(&prepared.candidate.ast.?.nodes.items[raw]))) return error.InvalidBufferPublicKeyOrigin;
+            }
+            origin.ast = actual_ast;
+        }
+    }
+    return prepared;
+}
+
+// Only explicitly typed metadata identities are roots. Foreign module SIDs
+// never become local roots merely because their numeric values happen to match.
+fn appendBufferMetadataRoot(a: std.mem.Allocator, roots: *std.ArrayListUnmanaged(u32), module_index: ModuleIndex, value: anytype) !void {
+    const T = @TypeOf(value);
+    if (T == SemanticSymbolId) {
+        if (!value.isNone()) try roots.append(a, @backingInt(value));
+    } else if (T == bundler_symbol.SymbolRef) {
+        switch (value) {
+            .semantic => |known| if (known.module == module_index) {
+                try appendBufferMetadataRoot(a, roots, module_index, known.symbol);
+            },
+            .alias => {},
+        }
+    } else switch (@typeInfo(T)) {
+        .optional => if (value) |known| try appendBufferMetadataRoot(a, roots, module_index, known),
+        .@"struct" => |info| inline for (info.field_names) |field| {
+            try appendBufferMetadataRoot(a, roots, module_index, @field(value, field));
+        },
+        else => @compileError("Buffer root projection requires a typed symbol identity"),
+    }
+}
+
+fn bufferPreparedOutputHasNormalForm(a: std.mem.Allocator, module: *const Module, runtime_target: @import("../../semantic/output_runtime_witness.zig").Target) !bool {
+    const runtime_proof = @import("../../semantic/output_runtime_coverage.zig").forTarget(runtime_target) orelse return false;
+    const ast = if (module.ast) |*value| value else return false;
+    const sem = if (module.semantic) |*value| value else return false;
+    const parser_count = ast.transform_boundary orelse @as(u32, @intCast(ast.nodes.items.len));
+    const root = ast.transformed_root orelse @as(ast_mod.NodeIndex, @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
+    var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    var globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    try collectParserUnresolvedNodes(a, ast, parser_count, sem.symbol_ids, &sem.unresolved_references, &unresolved);
+    const helpers = if (module.transform_cache) |cache| cache.helper_ref_nodes else &.{};
+    if (module.transform_cache) |cache| for (cache.explicit_global_ref_nodes) |raw| {
+        try globals.put(a, raw, {});
+    };
+    var roots: std.ArrayListUnmanaged(u32) = .empty;
+    for (module.import_bindings) |binding| {
+        try appendBufferMetadataRoot(a, &roots, module.index, binding.local_symbol);
+        try appendBufferMetadataRoot(a, &roots, module.index, binding.symbol);
+    }
+    for (module.export_bindings) |binding| try appendBufferMetadataRoot(a, &roots, module.index, binding.symbol);
+    try appendBufferMetadataRoot(a, &roots, module.index, .{
+        module.init_symbol,                          module.exports_symbol,                      module.require_symbol,
+        module.cjs_wrapper_exports_parameter_symbol, module.cjs_wrapper_module_parameter_symbol, module.cjs_runtime_factory_symbol,
+        module.to_binary_runtime_symbol,             module.esm_runtime_factory_symbol,          module.cjs_runtime_internal_symbols,
+        module.esm_runtime_internal_symbols,         module.esm_interop_runtime_helper_symbols,  module.esm_interop_runtime_internal_symbols,
+        module.hmr_runtime_internal_symbols,         module.require_shim_local_symbol,
+    });
+    if (sem.runtime_identities) |runtime| try appendBufferMetadataRoot(a, &roots, module.index, runtime.*);
+    const report = try @import("../../transformer/symbol_coverage.zig").checkOutputNormalFormQuiet(
+        a,
+        ast,
+        root,
+        parser_count,
+        sem.symbol_ids,
+        sem.symbols.items,
+        sem.scopes,
+        sem.scope_maps,
+        &sem.scope_owner_map,
+        sem.references,
+        helpers,
+        &sem.helper_scope_map,
+        &unresolved,
+        &globals,
+        &origins,
+        .{
+            .namespace_member_owners = &sem.namespace_member_owners,
+            .namespace_declaration_owners = &sem.namespace_declaration_owners,
+        },
+        &sem.source_owned_retirements,
+        .{
+            .symbol_ids = roots.items,
+            .node_scope_provenance = &sem.node_scope_provenance,
+            .scope_history = &sem.scope_history,
+            .runtime_output_proof = runtime_proof,
+            .class_self_symbols = &sem.class_self_symbol_map,
+            .namespace_member_owners = &sem.namespace_member_owners,
+            .namespace_declaration_owners = &sem.namespace_declaration_owners,
+        },
+    );
+    return report.hasCompleteOutputIdentityBeforeNames();
+}
+
+/// The only clone admission for Buffer folding consumes an immutable plan
+/// captured from the actual installed source pair, never a stand-in Module.
+pub fn prepareNodeBufferCapabilityFold(
+    self: *@import("../graph.zig").ModuleGraph,
+    module: *const Module,
+    arena_alloc: std.mem.Allocator,
+    plan: *const cjs_patterns.BufferCapabilityPlan,
+) !?PreparedBufferGraph {
+    const runtime_source = (try @import("../../semantic/output_runtime_witness.zig").capture(arena_alloc, self, module)) orelse return null;
+    const source_ast = if (module.ast) |*value| value else return null;
+    const source_semantic = if (module.semantic) |*value| value else return null;
+    var external_reads: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (plan.removed_nodes) |node| {
+        const entry = source_semantic.node_scope_provenance.get(node) orelse continue;
+        const origin = entry.source_external orelse continue;
+        const raw = @backingInt(node);
+        if (raw >= source_ast.nodes.items.len or raw >= source_semantic.symbol_ids.len or
+            source_semantic.symbol_ids[raw] != null or source_ast.getNode(node).tag != .identifier_reference or
+            entry.external_import != null or entry.with_environment or !origin.flags.read or
+            origin.flags.write or origin.flags.declare or origin.flags.type_context or origin.flags.value_as_type) continue;
+        try external_reads.put(arena_alloc, raw, {});
+    }
+    // Only the installed source can authorize erasing an ordinary unresolved
+    // lookup. Validate its complete source/history/runtime context before the
+    // immutable plan changes any AST edge; the staged copy is not authority.
+    if (external_reads.count() != 0 and (!plan.isCurrent(module) or
+        !try bufferPreparedOutputHasNormalForm(arena_alloc, module, .{ .source = &runtime_source, .module = module }))) return null;
+    var replaced_conditions: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
+    for (plan.branches) |branch| try replaced_conditions.append(arena_alloc, source_ast.getNode(branch.if_index).data.ternary.a);
+    const candidate_ast = (try plan.cloneForPublication(module, arena_alloc)) orelse return null;
+    var prepared = (try prepareBufferGraphForAst(self, module, arena_alloc, candidate_ast, plan.removed_nodes, plan.retirements, &external_reads, replaced_conditions.items, plan.setup_statements)) orelse return null;
+    errdefer prepared.discard();
+    if (!try bufferPreparedOutputHasNormalForm(arena_alloc, &prepared.candidate, .{ .source = &runtime_source, .module = &prepared.candidate })) {
+        prepared.discard();
+        return null;
+    }
+    prepared.runtime_registration = (try @import("../../semantic/output_runtime_registration.zig").preparePublication(arena_alloc, self, module, &prepared.candidate)) orelse {
+        prepared.discard();
+        return null;
+    };
+    return prepared;
+}
+
+pub fn prepareLegacyBufferFoldForTest(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, plan: *const cjs_patterns.BufferCapabilityPlan) !?PreparedBufferGraph {
+    if (!@import("builtin").is_test) @compileError("legacy Buffer preparation is test-only");
+    const folded = (try plan.cloneLegacyFoldForTest(module, arena_alloc)) orelse return null;
+    return prepareBufferGraphForAst(self, module, arena_alloc, folded.ast, folded.removed_nodes, plan.retirements, null, &.{}, plan.setup_statements);
+}
+
+pub fn resyncLegacyBufferGraphForTest(
     self: anytype,
     module: *Module,
     arena_alloc: std.mem.Allocator,
     removed_nodes: []const ast_mod.NodeIndex,
+) !bool {
+    if (!@import("builtin").is_test) @compileError("legacy Buffer resync is test-only");
+    const ast = module.ast orelse return error.MissingAst;
+    var prepared = (try prepareBufferGraphForAst(self, module, arena_alloc, ast, removed_nodes, &.{}, null, &.{}, &.{})) orelse return false;
+    defer prepared.discard();
+    return prepared.publish(module);
+}
+
+fn prepareBufferGraphInStaging(
+    self: anytype,
+    module: *Module,
+    arena_alloc: std.mem.Allocator,
+    removed_nodes: []const ast_mod.NodeIndex,
+    known_functions: []const @import("../../semantic/editor.zig").KnownUnreachableFunction,
+    external_reads: ?*const std.AutoHashMapUnmanaged(u32, void),
+    replaced_conditions: []const ast_mod.NodeIndex,
+    replaced_setups: []const ast_mod.NodeIndex,
 ) !bool {
     const ast = &(module.ast orelse return error.MissingAst);
     const semantic = if (module.semantic) |*sem| sem else return error.MissingSemantic;
@@ -22309,10 +22918,34 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
     defer removed.deinit();
     defer reference_nodes.deinit();
 
+    const remaining_nodes = try ast_walk.collectReachableNodeIndices(arena_alloc, ast);
+    var remaining = try std.DynamicBitSet.initEmpty(arena_alloc, ast.nodes.items.len);
+    for (remaining_nodes) |raw| remaining.set(raw);
+
     for (removed_nodes) |node_index| {
         if (node_index.isNone()) return false;
         const raw = @backingInt(node_index);
         if (raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len) return false;
+        if (remaining.isSet(raw)) {
+            // The immutable plan keeps the condition's physical slot while
+            // replacing its entire lookup expression with literal true.
+            var condition_replacement = false;
+            for (replaced_conditions) |condition| if (condition == node_index) {
+                const current = ast.getNode(condition);
+                condition_replacement = current.tag == .boolean_literal and std.mem.eql(u8, ast.getText(current.span), "true");
+                break;
+            };
+            if (!condition_replacement) {
+                // Setup roots remain in the program list as inert slots.
+                // Only the actual plan's selected setup edge may be consumed.
+                var setup_replacement = false;
+                for (replaced_setups) |setup| if (setup == node_index) {
+                    setup_replacement = ast.getNode(setup).tag == .empty_statement;
+                    break;
+                };
+                if (!setup_replacement) return false;
+            }
+        }
         if (removed.isSet(raw)) return false;
         removed.set(raw);
         if (semantic.class_self_symbol_map.contains(raw) or
@@ -22352,8 +22985,32 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
             removed.isSet(promise_ref.binding_node_index)) return false;
     }
 
+    // The source AST keeps detached function nodes in its backing. Capture
+    // complete removed function subtrees so the editor can independently
+    // retire their declaration/parameter scopes instead of rebuilding them.
+    var function_nodes = try std.DynamicBitSet.initEmpty(arena_alloc, ast.nodes.items.len);
+    defer function_nodes.deinit();
+    var nested_functions = try std.DynamicBitSet.initEmpty(arena_alloc, ast.nodes.items.len);
+    defer nested_functions.deinit();
+    var function_roots: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
+    defer function_roots.deinit(arena_alloc);
+    for (removed_nodes) |index| {
+        const tag = ast.getNode(index).tag;
+        if (tag != .function_expression and tag != .function_declaration and tag != .arrow_function_expression) continue;
+        const subtree = try ast_walk.collectReachableNodeIndicesFrom(arena_alloc, ast, index);
+        defer arena_alloc.free(subtree);
+        for (subtree) |raw| {
+            if (!removed.isSet(raw)) return false;
+            function_nodes.set(raw);
+            const child_tag = ast.nodes.items[raw].tag;
+            if (raw != @backingInt(index) and (child_tag == .function_expression or child_tag == .function_declaration or child_tag == .arrow_function_expression)) nested_functions.set(raw);
+        }
+        try function_roots.append(arena_alloc, index);
+    }
+
     var references_to_remove: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
     defer references_to_remove.deinit(arena_alloc);
+    var plain_reference_origins: std.AutoHashMapUnmanaged(u32, void) = .empty;
     var wrapper_references_to_remove: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
     defer wrapper_references_to_remove.deinit(arena_alloc);
     var removed_scope_owners: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
@@ -22363,7 +23020,7 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
     for (semantic.references) |reference| {
         if (!reference.declaration_node_index.isNone()) {
             const declaration_raw = @backingInt(reference.declaration_node_index);
-            if (declaration_raw < ast.nodes.items.len and removed.isSet(declaration_raw)) return false;
+            if (declaration_raw < ast.nodes.items.len and removed.isSet(declaration_raw) and !function_nodes.isSet(declaration_raw)) return false;
         }
         if (reference.node_index.isNone()) continue;
         const raw = @backingInt(reference.node_index);
@@ -22372,6 +23029,17 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
         const node_symbol = semantic.symbol_ids[raw] orelse return false;
         if (node_symbol != @backingInt(reference.symbol_id)) return false;
         if (reference_nodes.isSet(raw)) return false;
+        if (!function_nodes.isSet(raw)) if (semantic.node_scope_provenance.get(reference.node_index)) |entry| {
+            // The immutable Buffer plan removes this exact ordinary row.
+            // Its plain scope context goes with it; lookup/import authority
+            // and dynamic environments require their own retirement proof.
+            if (reference.flags.declare or entry.scope != reference.scope_id or entry.source_node.isNone() or
+                @backingInt(entry.source_node) >= ast.nodes.items.len or
+                entry.source_external != null or entry.external_import != null or entry.with_environment) return false;
+            const tag = ast.nodes.items[raw].tag;
+            if (tag != .identifier_reference and tag != .assignment_target_identifier) return false;
+            try plain_reference_origins.put(arena_alloc, raw, {});
+        };
         reference_nodes.set(raw);
         try references_to_remove.append(arena_alloc, reference.node_index);
     }
@@ -22379,6 +23047,7 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
         const raw = @backingInt(node_index);
         if (semantic.symbol_ids[raw]) |symbol_raw| {
             if (!reference_nodes.isSet(raw)) {
+                if (function_nodes.isSet(raw) and ast.nodes.items[raw].tag == .binding_identifier) continue;
                 const wrapper_reference = nodeBufferCapabilityWrapperReference(
                     module,
                     semantic,
@@ -22406,7 +23075,9 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
                 reference_nodes.set(raw);
             }
         }
-        if (semantic.node_scope_provenance.contains(node_index)) return false;
+        if (function_nodes.isSet(raw)) continue;
+        if (semantic.node_scope_provenance.contains(node_index) and !plain_reference_origins.contains(raw) and
+            !(if (external_reads) |known| known.contains(raw) else false)) return false;
         if (semantic.scope_owner_map.contains(raw)) {
             const tag = ast.nodes.items[raw].tag;
             if (tag != .block_statement) return false;
@@ -22429,6 +23100,16 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
     var editor = try semantic.beginEdit(arena_alloc, ast);
     defer editor.deinit();
     try editor.removeReferences(references_to_remove.items);
+    var retired_origins = plain_reference_origins.keyIterator();
+    while (retired_origins.next()) |raw|
+        if (!editor.node_scope_provenance.remove(@fromBackingInt(raw.*))) return false;
+    if (external_reads) |known| {
+        var retired_reads = known.keyIterator();
+        while (retired_reads.next()) |raw| {
+            if (function_nodes.isSet(raw.*)) continue;
+            if (!editor.node_scope_provenance.remove(@fromBackingInt(raw.*))) return false;
+        }
+    }
     for (wrapper_references_to_remove.items) |node_index| {
         const raw = @backingInt(node_index);
         const symbol_raw = editor.symbol_ids.items[raw] orelse return false;
@@ -22440,6 +23121,16 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
         if (symbol.reference_count == 0) return false;
         symbol.reference_count -= 1;
         editor.symbol_ids.items[raw] = null;
+    }
+    for (function_roots.items) |owner| {
+        if (nested_functions.isSet(@backingInt(owner))) continue;
+        var known: ?@import("../../semantic/editor.zig").KnownUnreachableFunction = null;
+        for (known_functions) |input| {
+            if (input.owner != owner) continue;
+            if (known != null) return false;
+            known = input;
+        }
+        if (!try editor.retireUnreachableFunctionSubtree(known orelse return false)) return false;
     }
     for (removed_scope_owners.items) |owner| {
         if (!try editor.elideEmptyGeneratedScopeOwner(owner)) return false;
@@ -22453,6 +23144,7 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
         ast,
         semantic.symbols.items,
         semantic.scopes,
+        semantic.symbol_ids,
         semantic.references,
         &semantic.unresolved_references,
         false,
@@ -22461,44 +23153,6 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
     return true;
 }
 
-pub fn resyncAfterConstMaterialization(
-    self: anytype,
-    module: *Module,
-    arena_alloc: std.mem.Allocator,
-    rename_table: ?*const bundler_symbol.RenameTable,
-) !void {
-    var resync_scope = profile.begin(.graph_resync);
-    defer resync_scope.end();
-    var const_scope = profile.begin(.graph_resync_const);
-    defer const_scope.end();
-
-    _ = &(module.ast orelse return);
-    const previous_cjs_runtime_internal_symbols = module.cjs_runtime_internal_symbols;
-    const previous_esm_runtime_internal_symbols = module.esm_runtime_internal_symbols;
-    const previous_to_binary_runtime_symbol = module.to_binary_runtime_symbol;
-    const previous_esm_runtime_factory_symbol = module.esm_runtime_factory_symbol;
-    const previous_esm_interop_runtime_helper_symbols = module.esm_interop_runtime_helper_symbols;
-    const previous_semantic = try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
-    try refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_binding_refs);
-    if (self.wrapper_symbols_registered) try self.registerWrapperSymbols();
-    try captureRenamesAfterResync(
-        self,
-        module,
-        arena_alloc,
-        rename_table,
-        previous_semantic,
-        previous_cjs_runtime_internal_symbols,
-        previous_esm_runtime_internal_symbols,
-        previous_to_binary_runtime_symbol,
-        previous_esm_runtime_factory_symbol,
-        previous_esm_interop_runtime_helper_symbols,
-    );
-}
-
-/// Rebuild graph-facing module metadata from the transformed AST without
-/// re-running semantic analysis. This is used when the transformer has already
-/// edited the retained SymbolId/ScopeId graph and only syntax-level import or
-/// export records changed.
 pub fn resyncModuleGraphMetadataAfterAstMutation(
     self: anytype,
     module: *Module,
@@ -22703,12 +23357,13 @@ pub fn resyncModuleGraphMetadataAfterAstMutation(
     try refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_alias);
 }
 
-pub fn resyncAfterAstMutation(
+pub fn resyncAfterAstMutationForTest(
     self: anytype,
     module: *Module,
     arena_alloc: std.mem.Allocator,
     rename_table: ?*const bundler_symbol.RenameTable,
 ) !void {
+    if (!@import("builtin").is_test) @compileError("fresh output analysis is a test-only independent oracle");
     var resync_scope = profile.begin(.graph_resync);
     defer resync_scope.end();
 
@@ -22784,6 +23439,7 @@ pub fn materializeFromCachedAst(self: anytype, module: *Module, arena_alloc: std
         ast,
         semantic.symbols.items,
         semantic.scopes,
+        semantic.symbol_ids,
         semantic.references,
         &semantic.unresolved_references,
         false,
@@ -22952,6 +23608,8 @@ test "const materialization keeps surviving SymbolIds and removes exact referenc
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
         .node_scope_provenance = analyzer.node_scope_provenance,
+        .source_owned_retirements = analyzer.source_owned_retirements,
+        .scope_history = analyzer.scope_history,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -23156,6 +23814,8 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
         .node_scope_provenance = analyzer.node_scope_provenance,
+        .source_owned_retirements = analyzer.source_owned_retirements,
+        .scope_history = analyzer.scope_history,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -23176,15 +23836,18 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
 
     var removed_nodes: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
     defer removed_nodes.deinit(allocator);
-    var needs_semantic_reanalysis = false;
-    try std.testing.expect(try cjs_patterns.foldNodeBufferCapabilityIfsRetainingGraph(
-        allocator,
-        &module.ast.?,
-        &removed_nodes,
-        &module.semantic.?,
-        &needs_semantic_reanalysis,
-    ));
-    try std.testing.expect(!needs_semantic_reanalysis);
+    module.wrap_kind = .cjs;
+    module.exports_kind = .commonjs;
+    const source_imports = try import_scanner.extractImportsWithCjsDetectionAndDefines(allocator, &module.ast.?, &.{});
+    module.import_records = source_imports.records;
+    for (module.import_records) |*record| if (record.kind == .require and
+        (std.mem.eql(u8, record.specifier, "buffer") or std.mem.eql(u8, record.specifier, "node:buffer")))
+    {
+        record.is_external = true;
+    };
+    const source_plan = (try cjs_patterns.prepareLegacyNodeBufferCapabilityPlanForTest(allocator, &module)) orelse return error.MissingBufferPlan;
+    const source_fold = (try source_plan.cloneLegacyFoldForTest(&module, allocator)).?;
+    try removed_nodes.appendSlice(allocator, source_fold.removed_nodes);
     try std.testing.expect(removed_nodes.items.len > 0);
 
     const test_context = .{
@@ -23212,12 +23875,7 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
     try std.testing.expect(removed_exports_wrapper_references > 0);
     const alternate_scope_id = before_semantic.scope_owner_map.get(alternate_raw).?;
     try before_semantic.scope_owner_map.put(allocator, if_raw, alternate_scope_id);
-    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
-        &test_context,
-        &module,
-        allocator,
-        removed_nodes.items,
-    ));
+    try std.testing.expect((try prepareLegacyBufferFoldForTest(&test_context, &module, allocator, &source_plan)) == null);
     try std.testing.expectEqual(kept_scope_id.?, before_semantic.scope_owner_map.get(kept_raw).?);
     _ = before_semantic.scope_owner_map.remove(if_raw);
     try std.testing.expect(before_semantic.scope_owner_map.contains(alternate_raw));
@@ -23225,102 +23883,52 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
     const mutable_scopes = @constCast(before_semantic.scopes);
     const original_scope_kind = mutable_scopes[alternate_scope_id].kind;
     mutable_scopes[alternate_scope_id].kind = .function;
-    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
-        &test_context,
-        &module,
-        allocator,
-        removed_nodes.items,
-    ));
+    try std.testing.expect((try prepareLegacyBufferFoldForTest(&test_context, &module, allocator, &source_plan)) == null);
     mutable_scopes[alternate_scope_id].kind = original_scope_kind;
     const original_symbol_count = mutable_scopes[alternate_scope_id].symbol_count;
     mutable_scopes[alternate_scope_id].symbol_count = 1;
-    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
-        &test_context,
-        &module,
-        allocator,
-        removed_nodes.items,
-    ));
+    try std.testing.expect((try prepareLegacyBufferFoldForTest(&test_context, &module, allocator, &source_plan)) == null);
     mutable_scopes[alternate_scope_id].symbol_count = original_symbol_count;
 
     const original_wrapper_kind = before_semantic.symbols.items[exports_wrapper_raw].synthetic_kind;
     before_semantic.symbols.items[exports_wrapper_raw].synthetic_kind = .cjs_wrapper_module_parameter;
-    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
-        &test_context,
-        &module,
-        allocator,
-        removed_nodes.items,
-    ));
+    try std.testing.expect((try prepareLegacyBufferFoldForTest(&test_context, &module, allocator, &source_plan)) == null);
     before_semantic.symbols.items[exports_wrapper_raw].synthetic_kind = original_wrapper_kind;
 
     const original_wrapper_name = before_semantic.symbols.items[exports_wrapper_raw].synthetic_name;
     before_semantic.symbols.items[exports_wrapper_raw].synthetic_name = "module";
-    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
-        &test_context,
-        &module,
-        allocator,
-        removed_nodes.items,
-    ));
+    try std.testing.expect((try prepareLegacyBufferFoldForTest(&test_context, &module, allocator, &source_plan)) == null);
     before_semantic.symbols.items[exports_wrapper_raw].synthetic_name = original_wrapper_name;
 
     const original_wrapper_symbol_kind = before_semantic.symbols.items[exports_wrapper_raw].kind;
     before_semantic.symbols.items[exports_wrapper_raw].kind = .variable_var;
-    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
-        &test_context,
-        &module,
-        allocator,
-        removed_nodes.items,
-    ));
+    try std.testing.expect((try prepareLegacyBufferFoldForTest(&test_context, &module, allocator, &source_plan)) == null);
     before_semantic.symbols.items[exports_wrapper_raw].kind = original_wrapper_symbol_kind;
 
     const original_wrapper_scope = before_semantic.symbols.items[exports_wrapper_raw].scope_id;
     before_semantic.symbols.items[exports_wrapper_raw].scope_id = .none;
-    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
-        &test_context,
-        &module,
-        allocator,
-        removed_nodes.items,
-    ));
+    try std.testing.expect((try prepareLegacyBufferFoldForTest(&test_context, &module, allocator, &source_plan)) == null);
     before_semantic.symbols.items[exports_wrapper_raw].scope_id = original_wrapper_scope;
 
     const original_wrapper_count = before_semantic.symbols.items[exports_wrapper_raw].reference_count;
     before_semantic.symbols.items[exports_wrapper_raw].reference_count = 0;
-    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
-        &test_context,
-        &module,
-        allocator,
-        removed_nodes.items,
-    ));
+    try std.testing.expect((try prepareLegacyBufferFoldForTest(&test_context, &module, allocator, &source_plan)) == null);
     before_semantic.symbols.items[exports_wrapper_raw].reference_count = original_wrapper_count;
 
     before_semantic.symbols.items[exports_wrapper_raw].reference_count = std.math.maxInt(u32);
-    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
-        &test_context,
-        &module,
-        allocator,
-        removed_nodes.items,
-    ));
+    try std.testing.expect((try prepareLegacyBufferFoldForTest(&test_context, &module, allocator, &source_plan)) == null);
     before_semantic.symbols.items[exports_wrapper_raw].reference_count = original_wrapper_count;
 
     const original_exports_wrapper_id = module.cjs_wrapper_exports_parameter_symbol;
     module.cjs_wrapper_exports_parameter_symbol = module_wrapper_symbol;
-    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
-        &test_context,
-        &module,
-        allocator,
-        removed_nodes.items,
-    ));
+    try std.testing.expect((try prepareLegacyBufferFoldForTest(&test_context, &module, allocator, &source_plan)) == null);
     module.cjs_wrapper_exports_parameter_symbol = original_exports_wrapper_id;
 
     module.cjs_wrapper_exports_parameter_symbol = @as(
         ?SemanticSymbolId,
         @fromBackingInt(@intCast(before_semantic.symbols.items.len + 1)),
     );
-    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
-        &test_context,
-        &module,
-        allocator,
-        removed_nodes.items,
-    ));
+    try std.testing.expect((try prepareLegacyBufferFoldForTest(&test_context, &module, allocator, &source_plan)) == null);
     module.cjs_wrapper_exports_parameter_symbol = original_exports_wrapper_id;
 
     var wrapper_reference_raw: ?usize = null;
@@ -23334,31 +23942,18 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
     const exports_reference_raw = wrapper_reference_raw orelse return error.MissingExportsWrapperReference;
     const original_cached_wrapper_id = cache_symbol_ids[exports_reference_raw];
     cache_symbol_ids[exports_reference_raw] = null;
-    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
-        &test_context,
-        &module,
-        allocator,
-        removed_nodes.items,
-    ));
+    try std.testing.expect((try prepareLegacyBufferFoldForTest(&test_context, &module, allocator, &source_plan)) == null);
     cache_symbol_ids[exports_reference_raw] = original_cached_wrapper_id;
 
     cache_symbol_ids[exports_reference_raw] = module_wrapper_raw;
-    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
-        &test_context,
-        &module,
-        allocator,
-        removed_nodes.items,
-    ));
+    try std.testing.expect((try prepareLegacyBufferFoldForTest(&test_context, &module, allocator, &source_plan)) == null);
     cache_symbol_ids[exports_reference_raw] = original_cached_wrapper_id;
 
     try std.testing.expectEqual(exports_wrapper_raw, before_semantic.symbol_ids[exports_reference_raw].?);
 
-    try std.testing.expect(try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
-        &test_context,
-        &module,
-        allocator,
-        removed_nodes.items,
-    ));
+    var prepared = (try prepareLegacyBufferFoldForTest(&test_context, &module, allocator, &source_plan)) orelse return error.MissingBufferPreparation;
+    defer prepared.discard();
+    try std.testing.expect(prepared.publish(&module));
 
     const semantic = &module.semantic.?;
     const binding_raw = @backingInt(buffer_binding.?);
@@ -23477,15 +24072,15 @@ test "interop full reanalysis carries twenty four typed roles across ten decoy g
                 try renames.put(allocator, bundler_symbol.SymbolID.make(module.index, @backingInt(@field(internals, field))), label);
             }
             try captureRenamesToPending(&module, &renames, old_sem, &module.semantic.?, null, null, null, null, null, null, null, null, null, null, allocator, allocator);
-            if (module.pending_renames.count() != 24) matches = false;
+            if (module.legacy_rename_oracle.renames.count() != 24) matches = false;
             inline for (runtime_helper_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
                 const old = renames.get(bundler_symbol.SymbolID.make(module.index, @backingInt(@field(helpers, @tagName(helper))))).?;
-                const actual = module.pending_renames.get(bundler_symbol.SymbolID.make(module.index, @backingInt(@field(new_roles.interop_helpers.?, @tagName(helper)))));
+                const actual = module.legacy_rename_oracle.renames.get(bundler_symbol.SymbolID.make(module.index, @backingInt(@field(new_roles.interop_helpers.?, @tagName(helper)))));
                 if (actual == null or !std.mem.eql(u8, actual.?, old)) matches = false;
             }
             inline for (@typeInfo(@import("../module.zig").EsmInteropRuntimeInternalSymbolIds).@"struct".field_names) |field| {
                 const old = renames.get(bundler_symbol.SymbolID.make(module.index, @backingInt(@field(internals, field)))).?;
-                const actual = module.pending_renames.get(bundler_symbol.SymbolID.make(module.index, @backingInt(@field(new_roles.interop_internal.?, field))));
+                const actual = module.legacy_rename_oracle.renames.get(bundler_symbol.SymbolID.make(module.index, @backingInt(@field(new_roles.interop_internal.?, field))));
                 if (actual == null or !std.mem.eql(u8, actual.?, old)) matches = false;
             }
         } else matches = false;
@@ -23623,6 +24218,8 @@ fn checkAppliedClassCertificateForTest(source: []const u8, options: TransformOpt
     t.scope_maps = fixture.semantic.scope_maps;
     t.scope_owner_map = fixture.semantic.scope_owner_map;
     t.node_scope_provenance = fixture.semantic.node_scope_provenance;
+    t.source_owned_retirements = fixture.semantic.source_owned_retirements;
+    t.scope_history = fixture.semantic.scope_history;
     t.class_self_symbol_map = fixture.semantic.class_self_symbol_map;
     t.helper_scope_map = fixture.semantic.helper_scope_map;
     t.unresolved_references = &fixture.semantic.unresolved_references;
@@ -23705,6 +24302,8 @@ test "selective class certificate source birth ten controls before output walker
         t.scope_maps = fixture.semantic.scope_maps;
         t.scope_owner_map = fixture.semantic.scope_owner_map;
         t.node_scope_provenance = fixture.semantic.node_scope_provenance;
+        t.source_owned_retirements = fixture.semantic.source_owned_retirements;
+        t.scope_history = fixture.semantic.scope_history;
         t.class_self_symbol_map = fixture.semantic.class_self_symbol_map;
         t.helper_scope_map = fixture.semantic.helper_scope_map;
         t.unresolved_references = &fixture.semantic.unresolved_references;
@@ -25165,6 +25764,8 @@ fn expectRegexTransformPreservesExactSemanticIds(
     transformer.scope_maps = f.semantic.scope_maps;
     transformer.scope_owner_map = f.semantic.scope_owner_map;
     transformer.node_scope_provenance = f.semantic.node_scope_provenance;
+    transformer.source_owned_retirements = f.semantic.source_owned_retirements;
+    transformer.scope_history = f.semantic.scope_history;
     transformer.class_self_symbol_map = f.semantic.class_self_symbol_map;
     transformer.helper_scope_map = f.semantic.helper_scope_map;
     transformer.unresolved_references = &f.semantic.unresolved_references;
@@ -25641,7 +26242,7 @@ test "static getter super retains actual entry graph without semantic resync" {
     try std.testing.expectEqual([_]u32{ 0, 0 }, counts);
 }
 
-test "namespace member synthetic temp reaches natural ES5 merged namespace reanalysis" {
+test "namespace member synthetic temp retains natural ES5 merged namespace identities" {
     const helpers = @import("../test_helpers.zig");
     const source = "namespace N{export const {a}={a:1}}namespace N{export const b=a}console.log(N.b);";
     var prep = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -25734,10 +26335,19 @@ test "namespace member synthetic temp reaches natural ES5 merged namespace reana
     std.debug.print("namespace-natural-output modules={d} initial={d} resync={d} namespaces={d} ownerSID={any} producerTemps={d} exportEdges={d} tempNode={any} scope={any} ownerToken={any}\n", .{ graph.moduleCount(), profile.count(.graph_discover_pm_semantic), profile.count(.graph_resync_semantic), namespace_count, owner_sid, transformed.destructuring_temp_bindings.count(), export_edges, selected, selected_scope, semantic.owner_token });
     try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
     try std.testing.expectEqual(@as(u32, 1), profile.count(.graph_discover_pm_semantic));
-    try std.testing.expect(profile.count(.graph_resync_semantic) > 0);
+    try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
     try std.testing.expectEqual(@as(usize, 2), namespace_count);
     try std.testing.expectEqual(@as(usize, 1), export_edges);
     try std.testing.expect(selected != null);
+    var retained_source_member_a = false;
+    var namespace_members = semantic.namespace_member_owners.iterator();
+    while (namespace_members.next()) |member_entry| {
+        const member = semantic.symbols.items[member_entry.key_ptr.*];
+        const name = ast.getText(member.name);
+        try std.testing.expect(!std.mem.eql(u8, name, "_a"));
+        if (member_entry.value_ptr.* == owner_sid.? and std.mem.eql(u8, name, "a")) retained_source_member_a = true;
+    }
+    try std.testing.expect(retained_source_member_a);
 }
 
 test "static getter super source admission preserves narrow syntax and owner boundaries" {
@@ -26108,4 +26718,764 @@ test "ES5 audited constructor lexical initializers retain the production semanti
         }
         try std.testing.expectEqual(@as(u32, 0), resync_count);
     }
+}
+
+test "generic producer graph keeps supported source identities without output analysis" {
+    const helpers = @import("../test_helpers.zig");
+    const Case = struct { source: []const u8, extension: []const u8 = ".ts", flow: bool = false };
+    const cases = [_]Case{
+        .{ .source = "export const result = (() => { const local = 7; return local; })();" },
+        .{ .source = "const value = { result: 7 }; export = value;" },
+        .{ .source = "namespace Values { export const result = 7; } console.log(Values.result);" },
+        .{ .source = "const enum Kind { Value = 7 } console.log(Kind.Value);" },
+        .{ .source = "// @flow\nexport const result: number = 7;", .extension = ".js", .flow = true },
+    };
+    for (cases, 0..) |case, index| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const basename = try std.fmt.allocPrint(std.testing.allocator, "entry{s}", .{case.extension});
+        defer std.testing.allocator.free(basename);
+        try helpers.writeFile(tmp.dir, basename, case.source);
+        const entry = try helpers.absPath(&tmp, basename);
+        defer std.testing.allocator.free(entry);
+        var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+        defer cache.deinit();
+        var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.flow = case.flow;
+        graph.minify_identifiers = true;
+        graph.transform_options_base.minify_syntax = true;
+        graph.transform_options_base.unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5);
+        profile.resetForTest();
+        defer profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+        try graph.build(std.testing.io, &.{entry});
+        const module = graph.findModuleByPath(entry) orelse return error.MissingGenericGraphModule;
+        std.debug.print("GENERIC_GRAPH_SOURCE index={d} initial={d} resync={d} cache={any}\n", .{ index, profile.count(.graph_discover_pm_semantic), profile.count(.graph_resync_semantic), module.transform_cache != null });
+        try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+        try std.testing.expect(profile.count(.graph_discover_pm_semantic) > 0);
+        try std.testing.expect(module.transform_cache != null);
+        try std.testing.expect(module.semantic != null);
+        try std.testing.expect(module.ast.?.transformed_root != null);
+        if (index == 0) {
+            // Shape oracle: run the previous unjournaled optimizer on an
+            // independent real source graph. Its rows authorize only that
+            // cloned AST, never this candidate's semantic identity.
+            var baseline = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+            defer baseline.deinit();
+            baseline.minify_identifiers = true;
+            baseline.transform_options_base.unsupported = graph.transform_options_base.unsupported;
+            try baseline.build(std.testing.io, &.{entry});
+            const original = baseline.findModuleByPath(entry).?;
+            const allocator = original.parse_arena.?.allocator();
+            var oracle_ast = try original.ast.?.cloneForTransformer(allocator);
+            const minify_mod = @import("../../transformer/minify.zig");
+            var old_ctx = minify_mod.MinifyCtx.fromSemantic(&original.semantic.?, original.transform_cache.?.symbol_ids, true);
+            old_ctx.preserve_inferred_names = false;
+            minify_mod.minify(&oracle_ast, old_ctx, allocator, oracle_ast.transformed_root.?);
+            var expected_local: usize = 0;
+            for (try ast_walk.collectReachableNodeIndicesFrom(allocator, &oracle_ast, oracle_ast.transformed_root.?)) |raw| {
+                const node = oracle_ast.nodes.items[raw];
+                if (node.tag == .binding_identifier and std.mem.eql(u8, oracle_ast.identifierNameText(node), "local")) expected_local += 1;
+            }
+            const ast = &module.ast.?;
+            var actual_local: usize = 0;
+            for (try ast_walk.collectReachableNodeIndicesFrom(module.parse_arena.?.allocator(), ast, ast.transformed_root.?)) |raw| {
+                const node = ast.nodes.items[raw];
+                if (node.tag == .binding_identifier and std.mem.eql(u8, ast.identifierNameText(node), "local")) actual_local += 1;
+            }
+            std.debug.print("GENERIC_MINIFY_SHAPE original_local={d} candidate_local={d}\n", .{ expected_local, actual_local });
+            try std.testing.expectEqual(expected_local, actual_local);
+        }
+    }
+}
+
+test "generic producer output shape and Node values survive syntax minification" {
+    const helpers = @import("../test_helpers.zig");
+    const Bundler = @import("../bundler.zig").Bundler;
+    const Case = struct { source: []const u8, native: []const u8, extension: []const u8 = ".ts", flow: bool = false, exported: bool = true };
+    const cases = [_]Case{
+        .{ .source = "export const result = (() => { const local = 7; return local; })();", .native = "const result=(()=>{const local=7;return local})();console.log(result);" },
+        .{ .source = "const value = { result: 7 }; export = value;", .native = "const value={result:7};console.log(value.result);" },
+        .{ .source = "namespace Values { export const result = 7; } console.log(Values.result);", .native = "const Values={result:7};console.log(Values.result);", .exported = false },
+        .{ .source = "const enum Kind { Value = 7 } console.log(Kind.Value);", .native = "console.log(7);", .exported = false },
+        .{ .source = "// @flow\nexport const result: number = 7;", .native = "const result=7;console.log(result);", .extension = ".js", .flow = true },
+    };
+    var attempted: usize = 0;
+    var built: usize = 0;
+    var executed: usize = 0;
+    var mismatches: usize = 0;
+    for (cases, 0..) |case, index| {
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", case.native } });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings("7\n", native.stdout);
+        for ([_]bool{ false, true }) |minify| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            const basename = try std.fmt.allocPrint(std.testing.allocator, "entry{s}", .{case.extension});
+            defer std.testing.allocator.free(basename);
+            try helpers.writeFile(tmp.dir, basename, case.source);
+            const entry = try helpers.absPath(&tmp, basename);
+            defer std.testing.allocator.free(entry);
+            attempted += 1;
+            var bundler = Bundler.init(std.testing.allocator, .{
+                .entry_points = &.{entry},
+                .platform = .node,
+                .format = .cjs,
+                .flow = case.flow,
+                .minify_identifiers = true,
+                .minify_syntax = minify,
+                .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+            });
+            defer bundler.deinit();
+            const result = try bundler.bundle(std.testing.io);
+            defer result.deinit(std.testing.allocator);
+            if (result.hasErrors()) {
+                mismatches += 1;
+                std.debug.print("GENERIC_NODE_SOURCE index={d} min={any} built=false\n", .{ index, minify });
+                continue;
+            }
+            built += 1;
+            const shape_ok = std.mem.indexOf(u8, result.output, "=>") == null;
+            try helpers.writeFile(tmp.dir, "output.cjs", result.output);
+            const output = try helpers.absPath(&tmp, "output.cjs");
+            defer std.testing.allocator.free(output);
+            const script = if (case.exported) "console.log(require(process.argv[1]).result);" else "require(process.argv[1]);";
+            const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", script, output } });
+            defer std.testing.allocator.free(actual.stdout);
+            defer std.testing.allocator.free(actual.stderr);
+            executed += 1;
+            const matches = shape_ok and actual.term == .exited and actual.term.exited == 0 and std.mem.eql(u8, native.stdout, actual.stdout);
+            std.debug.print("GENERIC_NODE_CELL index={d} min={any} matched={any} stdout={s}\n", .{ index, minify, matches, actual.stdout });
+            if (!matches) {
+                mismatches += 1;
+                std.debug.print("GENERIC_NODE_SOURCE index={d} min={any} stderr={s}\n{s}\n", .{ index, minify, actual.stderr, result.output });
+            }
+        }
+    }
+    std.debug.print("GENERIC_NODE_SUMMARY attempted={d} built={d} executed={d} mismatches={d}\n", .{ attempted, built, executed, mismatches });
+    try std.testing.expectEqual(@as(usize, 10), attempted);
+    try std.testing.expectEqual(attempted, built);
+    try std.testing.expectEqual(built, executed);
+    try std.testing.expectEqual(@as(usize, 0), mismatches);
+}
+
+test "generic prepass source current binds actual initializer history backing and values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "class C{static value=Object.keys({a:7})}C.value;";
+    const fixture = try runtimeHelperReanalysisTestFixture(a, source);
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.js");
+    module.source = source;
+    module.module_type = .js;
+    module.state = .ready;
+    module.ast = fixture.ast;
+    module.semantic = fixture.semantic;
+    // This staging-only control seals the actual unedited parser AST/SEM;
+    // it does not claim an output NormalForm or unresolved-lookup proof.
+    var initial_history = try @import("../../semantic/scope_frame_history.zig").Recorder.init(a, &module.ast.?, module.semantic.?.scopes, &module.semantic.?.scope_owner_map);
+    module.semantic.?.scope_history = try initial_history.finish(a);
+    const Carrier = @import("../../semantic/scope_frame_history.zig").InitializerSource;
+    const actual = try a.dupe(Carrier, module.semantic.?.scope_history.source_initializers);
+    try std.testing.expect(actual.len > 0);
+    module.semantic.?.scope_history.source_initializers = actual;
+    var prepared = try PreparedGenericPrepass.init(&module, a);
+    defer prepared.discard(std.testing.allocator);
+    try std.testing.expect(try prepared.isCurrent(a));
+    module.semantic.?.scope_history.source_initializers = try a.dupe(Carrier, actual);
+    try std.testing.expect(!try prepared.isCurrent(a));
+    module.semantic.?.scope_history.source_initializers = actual;
+    try std.testing.expect(try prepared.isCurrent(a));
+    const before = actual[0];
+    actual[0].initializer.span.start +%= 1;
+    try std.testing.expect(!try prepared.isCurrent(a));
+    actual[0] = before;
+    try std.testing.expect(try prepared.isCurrent(a));
+    actual[0].leaf.node = actual[0].field.node;
+    try std.testing.expect(!try prepared.isCurrent(a));
+    actual[0] = before;
+    try std.testing.expect(try prepared.isCurrent(a));
+}
+
+test "generic prepass quoted export publication preserves actual AST header authority" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "const value=7;export{value as \"public-key\"};";
+    const fixture = try runtimeHelperReanalysisTestFixture(a, source);
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "quoted.mjs");
+    module.source = source;
+    module.ast = fixture.ast;
+    module.semantic = fixture.semantic;
+    module.export_bindings = try binding_scanner_mod.extractExportBindings(a, &module.ast.?, &.{}, &.{});
+    module.ensureAliasTable(std.testing.allocator);
+    defer if (module.alias_table) |*table| table.deinit();
+    const sem = &module.semantic.?;
+    try binding_scanner_mod.populateSyntheticSymbolsWithOwnerScope(&module.alias_table.?, module.index, module.export_bindings, &sem.symbols, a, sem.scope_maps[0], sem.symbol_ids, @fromBackingInt(@as(u32, 0)));
+    try std.testing.expect((try module.ordinaryQuotedExportLiteral(module.export_bindings[0])) != null);
+    var prepared = try PreparedGenericPrepass.init(&module, a);
+    defer prepared.discard(std.testing.allocator);
+    try std.testing.expect(prepared.candidate.export_bindings.ptr != module.export_bindings.ptr);
+    const original_origin = module.export_bindings[0].public_key_origin.?;
+    var foreign = module.ast.?;
+    prepared.candidate.export_bindings[0].public_key_origin.?.ast = &foreign;
+    try std.testing.expectError(error.InvalidQuotedExportOrigin, prepared.prepareExportOrigins());
+    try std.testing.expect(module.export_bindings[0].public_key_origin.?.ast == original_origin.ast);
+    prepared.candidate.export_bindings[0].public_key_origin.?.ast = &prepared.candidate.ast.?;
+    try prepared.prepareExportOrigins();
+    try std.testing.expect(try prepared.isCurrent(a));
+    prepared.publish(std.testing.allocator);
+    try std.testing.expect(module.export_bindings[0].public_key_origin.?.ast == &module.ast.?);
+    try std.testing.expect((try module.ordinaryQuotedExportLiteral(module.export_bindings[0])) != null);
+}
+
+test "generic prepass quoted export preparation OOM preserves source owner and backing" {
+    var failures: usize = 0;
+    for (0..256) |fail_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const source = "const value=7;export{value as \"public-key\"};";
+        const fixture = try runtimeHelperReanalysisTestFixture(a, source);
+        var module = Module.init(@fromBackingInt(@as(u32, 0)), "quoted.mjs");
+        module.source = source;
+        module.ast = fixture.ast;
+        module.semantic = fixture.semantic;
+        module.export_bindings = try binding_scanner_mod.extractExportBindings(a, &module.ast.?, &.{}, &.{});
+        module.ensureAliasTable(std.testing.allocator);
+        defer if (module.alias_table) |*table| table.deinit();
+        const sem = &module.semantic.?;
+        try binding_scanner_mod.populateSyntheticSymbolsWithOwnerScope(&module.alias_table.?, module.index, module.export_bindings, &sem.symbols, a, sem.scope_maps[0], sem.symbol_ids, @fromBackingInt(@as(u32, 0)));
+        const before_ast = module.ast.?.nodes.items;
+        const before_bindings = module.export_bindings;
+        const before_origin = before_bindings[0].public_key_origin.?;
+        var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = fail_index });
+        var prepared = PreparedGenericPrepass.init(&module, failing.allocator()) catch |err| {
+            if (err != error.OutOfMemory) return err;
+            failures += 1;
+            try std.testing.expect(module.ast.?.nodes.items.ptr == before_ast.ptr and module.ast.?.nodes.items.len == before_ast.len);
+            try std.testing.expect(module.export_bindings.ptr == before_bindings.ptr);
+            try std.testing.expect(module.export_bindings[0].public_key_origin.?.ast == before_origin.ast);
+            try std.testing.expect((try module.ordinaryQuotedExportLiteral(module.export_bindings[0])) != null);
+            continue;
+        };
+        defer prepared.discard(std.testing.allocator);
+        try prepared.prepareExportOrigins();
+        try std.testing.expect(module.export_bindings.ptr == before_bindings.ptr);
+        try std.testing.expect(module.export_bindings[0].public_key_origin.?.ast == before_origin.ast);
+        try std.testing.expect(failures > 0);
+        return;
+    }
+    return error.OomSweepDidNotReachSuccess;
+}
+
+test "generic prepass source current binds actual Worklet creator and lowered class registries" {
+    const a = std.testing.allocator;
+    const helpers = @import("../test_helpers.zig");
+    const Bundler = @import("../bundler.zig").Bundler;
+    const GraphType = @import("../graph.zig").ModuleGraph;
+    const Role = @import("../../semantic/lowered_worklet_class.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.mjs", "export class A{__workletClass=true;value(){return 3}}export class B{__workletClass=true;value(){return 7}}");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    var cache = Bundler.initResolveCacheFromOptions(a, .{ .entry_points = &.{entry}, .platform = .node, .format = .cjs });
+    defer cache.deinit();
+    const modules = try a.create(GraphType);
+    defer a.destroy(modules);
+    modules.* = GraphType.init(a, &cache);
+    defer modules.deinit();
+    modules.worklet_transform = true;
+    modules.transform_options_base = .{ .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5) };
+    try modules.build(std.testing.io, &.{entry});
+    const module = modules.moduleAtMut(modules.path_to_module.get(entry).?).?;
+    const history = &module.semantic.?.scope_history;
+    try std.testing.expectEqual(@as(usize, 2), history.worklet_class_creators.len);
+    try std.testing.expectEqual(@as(usize, 2), history.lowered_worklet_classes.len);
+    var snapshots = std.heap.ArenaAllocator.init(a);
+    defer snapshots.deinit();
+    const alloc = snapshots.allocator();
+    const original_creators = history.worklet_class_creators;
+    const original_lowered = history.lowered_worklet_classes;
+    defer {
+        history.worklet_class_creators = original_creators;
+        history.lowered_worklet_classes = original_lowered;
+    }
+    const creators = try alloc.dupe(Role.Creator, original_creators);
+    const lowered = try alloc.dupe(Role.Witness, original_lowered);
+    history.worklet_class_creators = creators;
+    history.lowered_worklet_classes = lowered;
+    var prepared = try PreparedGenericPrepass.init(module, alloc);
+    defer prepared.discard(a);
+    try std.testing.expect(try prepared.isCurrent(alloc));
+    history.worklet_class_creators = try alloc.dupe(Role.Creator, creators);
+    try std.testing.expect(!try prepared.isCurrent(alloc));
+    history.worklet_class_creators = creators;
+    try std.testing.expect(try prepared.isCurrent(alloc));
+    history.lowered_worklet_classes = try alloc.dupe(Role.Witness, lowered);
+    try std.testing.expect(!try prepared.isCurrent(alloc));
+    history.lowered_worklet_classes = lowered;
+    try std.testing.expect(try prepared.isCurrent(alloc));
+    const creator_before = creators[0];
+    creators[0].factory_symbol = creators[1].factory_symbol;
+    try std.testing.expect(!try prepared.isCurrent(alloc));
+    creators[0] = creator_before;
+    try std.testing.expect(try prepared.isCurrent(alloc));
+    const lowered_before = lowered[0];
+    lowered[0].constructor.body = lowered[1].constructor.body;
+    try std.testing.expect(!try prepared.isCurrent(alloc));
+    lowered[0] = lowered_before;
+    try std.testing.expect(try prepared.isCurrent(alloc));
+}
+
+test "#6193 automatic JSX spread child prepass keeps exact source graph without reanalysis" {
+    const TestGraph = struct {
+        allocator: std.mem.Allocator,
+        transform_options_base: TransformOptions = .{
+            .strip_types = true,
+            .jsx_runtime = .automatic,
+            .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+        },
+        helper_plugin_opts: @import("../../runtime_helper_modules.zig").SourceOptions = .{},
+        plugins: []const plugin_mod.Plugin = &.{},
+        defines: []const @import("../../parser/scan_results.zig").DefineEntry = &.{},
+        pure: []const []const u8 = &.{},
+        flow: bool = false,
+        worklet_transform: bool = false,
+        codegen_transform: bool = false,
+        react_refresh: bool = false,
+        styled_components: bool = false,
+        styled_components_ssr: bool = true,
+        styled_components_minify: bool = false,
+        styled_components_file_name: bool = true,
+        styled_components_pure: bool = false,
+        styled_components_namespace: []const u8 = "",
+        styled_components_meaningless_file_names: []const []const u8 = &.{"index"},
+        styled_components_top_level_import_paths: []const []const u8 = &.{},
+        styled_components_css_prop: bool = false,
+        emotion: bool = false,
+        emotion_auto_label: @import("../../transformer/transformer.zig").AutoLabelMode = .always,
+        emotion_source_map: bool = false,
+        emotion_label_format: []const u8 = "",
+        emotion_extra_css_sources: []const []const u8 = &.{},
+        emotion_extra_styled_sources: []const []const u8 = &.{},
+        minify_identifiers: bool = false,
+        ignore_annotations: bool = false,
+        wrap_kinds_finalized: bool = false,
+        wrapper_symbols_registered: bool = false,
+        diag_count: usize = 0,
+
+        fn addDiag(
+            self: *@This(),
+            _: anytype,
+            _: anytype,
+            _: []const u8,
+            _: anytype,
+            _: anytype,
+            _: []const u8,
+            _: ?[]const u8,
+        ) void {
+            self.diag_count += 1;
+        }
+
+        fn registerWrapperSymbols(_: *@This()) error{}!void {}
+    };
+
+    const source = "const items = [1, 2]; const result = <div>{...items}</div>;";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var fixture = try jsxSpreadChildTestFixture(allocator, source);
+    const source_owner = fixture.semantic.captureOwnerToken();
+    var source_item_symbol: ?u32 = null;
+    for (fixture.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or
+            !std.mem.eql(u8, fixture.ast.getText(node.data.string_ref), "items")) continue;
+        source_item_symbol = fixture.semantic.symbol_ids[raw];
+        break;
+    }
+    const item_symbol = source_item_symbol orelse return error.MissingJsxSpreadBinding;
+
+    profile.resetForTest();
+    defer profile.resetForTest();
+    profile.setIoForTest(std.testing.io);
+    profile.addFromCsv("graph.resync_semantic");
+    const semantic_resyncs_before = profile.count(.graph_resync_semantic);
+
+    var module = Module.init(@fromBackingInt(0), "jsx-spread.tsx");
+    module.source = source;
+    module.module_type = .ts;
+    module.state = .ready;
+    module.ast = fixture.ast;
+    module.semantic = fixture.semantic;
+    var context: TestGraph = .{ .allocator = std.testing.allocator };
+    run(&context, &module, allocator);
+    defer if (module.alias_table) |*table| table.deinit();
+    defer if (module.export_index_by_name) |*index| index.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), context.diag_count);
+    try std.testing.expectEqual(semantic_resyncs_before, profile.count(.graph_resync_semantic));
+    try std.testing.expectEqual(source_owner, module.semantic.?.owner_token);
+    try std.testing.expect(module.ast.?.transformed_root != null);
+    try std.testing.expect(module.transform_cache != null);
+
+    var output_binding_found = false;
+    for (module.ast.?.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or
+            !std.mem.eql(u8, module.ast.?.getText(node.data.string_ref), "items")) continue;
+        try std.testing.expectEqual(item_symbol, module.semantic.?.symbol_ids[raw] orelse return error.MissingOutputItemSymbol);
+        output_binding_found = true;
+    }
+    try std.testing.expect(output_binding_found);
+
+    const root = module.ast.?.transformed_root.?;
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, &module.ast.?, root);
+    defer allocator.free(reachable);
+    var output_read_found = false;
+    for (reachable) |raw| {
+        const node = module.ast.?.nodes.items[raw];
+        if (node.tag == .spread_element) return error.DownlevelJsxSpreadRemained;
+        if (node.tag != .identifier_reference or
+            !std.mem.eql(u8, module.ast.?.getText(node.data.string_ref), "items")) continue;
+        try std.testing.expectEqual(item_symbol, module.semantic.?.symbol_ids[raw] orelse return error.MissingOutputItemReferenceSymbol);
+        output_read_found = true;
+    }
+    try std.testing.expect(output_read_found);
+
+    const hole_source = "const result = <div>{...[, 1]}</div>;";
+    var hole_fixture = try jsxSpreadChildTestFixture(allocator, hole_source);
+    const hole_owner = hole_fixture.semantic.captureOwnerToken();
+    var hole_module = Module.init(@fromBackingInt(0), "jsx-spread-hole.tsx");
+    hole_module.source = hole_source;
+    hole_module.module_type = .ts;
+    hole_module.state = .ready;
+    hole_module.ast = hole_fixture.ast;
+    hole_module.semantic = hole_fixture.semantic;
+    var hole_context: TestGraph = .{ .allocator = std.testing.allocator };
+    const hole_resyncs_before = profile.count(.graph_resync_semantic);
+    run(&hole_context, &hole_module, allocator);
+    defer if (hole_module.alias_table) |*table| table.deinit();
+    defer if (hole_module.export_index_by_name) |*index| index.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), hole_context.diag_count);
+    try std.testing.expectEqual(hole_resyncs_before, profile.count(.graph_resync_semantic));
+    try std.testing.expectEqual(hole_owner, hole_module.semantic.?.owner_token);
+    const hole_root = hole_module.ast.?.transformed_root.?;
+    const hole_reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, &hole_module.ast.?, hole_root);
+    defer allocator.free(hole_reachable);
+    for (hole_reachable) |raw| {
+        const tag = hole_module.ast.?.nodes.items[raw].tag;
+        try std.testing.expect(tag != .spread_element and tag != .elision);
+    }
+
+    const classic_source = "const React = { createElement: function() {} }; const props = { id: 'from-props' }; const member = { deep: { value: 'M' } }; const detachedRole = 'dialog'; const detachedCount = 2; const items = [1, 2]; const result = <div {...props} {...{ memberValue: member['deep'].value, optional: undefined, unset: void 0 }} value={items}>{...items}</div>; const detached = <aside {...{ role: detachedRole, count: detachedCount }} />;";
+    var classic_fixture = try jsxSpreadChildTestFixture(allocator, classic_source);
+    const classic_owner = classic_fixture.semantic.captureOwnerToken();
+    var classic_item_symbol: ?u32 = null;
+    var classic_props_symbol: ?u32 = null;
+    var classic_react_symbol: ?u32 = null;
+    var classic_detached_role_symbol: ?u32 = null;
+    var classic_detached_count_symbol: ?u32 = null;
+    var classic_member_symbol: ?u32 = null;
+    for (classic_fixture.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier) continue;
+        const name = classic_fixture.ast.getText(node.data.string_ref);
+        if (std.mem.eql(u8, name, "items")) {
+            classic_item_symbol = classic_fixture.semantic.symbol_ids[raw];
+        } else if (std.mem.eql(u8, name, "props")) {
+            classic_props_symbol = classic_fixture.semantic.symbol_ids[raw];
+        } else if (std.mem.eql(u8, name, "React")) {
+            classic_react_symbol = classic_fixture.semantic.symbol_ids[raw];
+        } else if (std.mem.eql(u8, name, "detachedRole")) {
+            classic_detached_role_symbol = classic_fixture.semantic.symbol_ids[raw];
+        } else if (std.mem.eql(u8, name, "detachedCount")) {
+            classic_detached_count_symbol = classic_fixture.semantic.symbol_ids[raw];
+        } else if (std.mem.eql(u8, name, "member")) {
+            classic_member_symbol = classic_fixture.semantic.symbol_ids[raw];
+        }
+    }
+    const classic_symbol = classic_item_symbol orelse return error.MissingClassicJsxSpreadBinding;
+    const classic_props = classic_props_symbol orelse return error.MissingClassicJsxPropsSpreadBinding;
+    const react_symbol = classic_react_symbol orelse return error.MissingClassicJsxFactoryBinding;
+    const classic_detached_role = classic_detached_role_symbol orelse return error.MissingClassicJsxDetachedRoleBinding;
+    const classic_detached_count = classic_detached_count_symbol orelse return error.MissingClassicJsxDetachedCountBinding;
+    const classic_member = classic_member_symbol orelse return error.MissingClassicJsxMemberValueBinding;
+    var classic_module = Module.init(@fromBackingInt(0), "jsx-spread-classic.tsx");
+    classic_module.source = classic_source;
+    classic_module.module_type = .ts;
+    classic_module.state = .ready;
+    classic_module.ast = classic_fixture.ast;
+    classic_module.semantic = classic_fixture.semantic;
+    var classic_context: TestGraph = .{
+        .allocator = std.testing.allocator,
+        .transform_options_base = .{
+            .strip_types = true,
+            .jsx_runtime = .classic,
+            .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+        },
+    };
+    const classic_resyncs_before = profile.count(.graph_resync_semantic);
+    run(&classic_context, &classic_module, allocator);
+    defer if (classic_module.alias_table) |*table| table.deinit();
+    defer if (classic_module.export_index_by_name) |*index| index.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), classic_context.diag_count);
+    try std.testing.expectEqual(classic_resyncs_before, profile.count(.graph_resync_semantic));
+    try std.testing.expectEqual(classic_owner, classic_module.semantic.?.owner_token);
+    const classic_root = classic_module.ast.?.transformed_root.?;
+    const classic_reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, &classic_module.ast.?, classic_root);
+    defer allocator.free(classic_reachable);
+    var classic_output_read_count: usize = 0;
+    var classic_props_read_count: usize = 0;
+    var classic_factory_read_count: usize = 0;
+    var classic_detached_role_read_count: usize = 0;
+    var classic_detached_count_read_count: usize = 0;
+    var classic_member_read_count: usize = 0;
+    var classic_undefined_read_count: usize = 0;
+    for (classic_reachable) |raw| {
+        const node = classic_module.ast.?.nodes.items[raw];
+        if (node.tag == .spread_element) return error.ClassicJsxSpreadRemained;
+        if (node.tag != .identifier_reference) continue;
+        const name = classic_module.ast.?.getText(node.data.string_ref);
+        if (std.mem.eql(u8, name, "React")) {
+            try std.testing.expectEqual(react_symbol, classic_module.semantic.?.symbol_ids[raw] orelse return error.MissingClassicJsxFactoryReferenceSymbol);
+            classic_factory_read_count += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, name, "props")) {
+            try std.testing.expectEqual(classic_props, classic_module.semantic.?.symbol_ids[raw] orelse return error.MissingClassicJsxPropsSpreadReferenceSymbol);
+            classic_props_read_count += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, name, "detachedRole")) {
+            try std.testing.expectEqual(classic_detached_role, classic_module.semantic.?.symbol_ids[raw] orelse return error.MissingClassicJsxDetachedRoleReferenceSymbol);
+            classic_detached_role_read_count += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, name, "detachedCount")) {
+            try std.testing.expectEqual(classic_detached_count, classic_module.semantic.?.symbol_ids[raw] orelse return error.MissingClassicJsxDetachedCountReferenceSymbol);
+            classic_detached_count_read_count += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, name, "member")) {
+            try std.testing.expectEqual(classic_member, classic_module.semantic.?.symbol_ids[raw] orelse return error.MissingClassicJsxMemberValueReferenceSymbol);
+            classic_member_read_count += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, name, "undefined")) {
+            try std.testing.expect(classic_module.semantic.?.symbol_ids[raw] == null);
+            try std.testing.expect(classic_module.semantic.?.unresolved_references.contains("undefined"));
+            classic_undefined_read_count += 1;
+            continue;
+        }
+        if (!std.mem.eql(u8, name, "items")) continue;
+        try std.testing.expectEqual(classic_symbol, classic_module.semantic.?.symbol_ids[raw] orelse return error.MissingClassicJsxSpreadReferenceSymbol);
+        classic_output_read_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), classic_output_read_count);
+    try std.testing.expectEqual(@as(usize, 1), classic_props_read_count);
+    try std.testing.expectEqual(@as(usize, 3), classic_factory_read_count);
+    try std.testing.expectEqual(@as(usize, 1), classic_detached_role_read_count);
+    try std.testing.expectEqual(@as(usize, 1), classic_detached_count_read_count);
+    try std.testing.expectEqual(@as(usize, 1), classic_member_read_count);
+    try std.testing.expectEqual(@as(usize, 1), classic_undefined_read_count);
+
+    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" } }; const items = [1, 2]; const result = <Comp {...props} {...{ id: label, count: count, memberValue: member[\"deep\"].value, optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;";
+    var key_fallback_fixture = try jsxSpreadChildTestFixture(allocator, key_fallback_source);
+    const key_fallback_owner = key_fallback_fixture.semantic.captureOwnerToken();
+    var key_fallback_item_symbol: ?u32 = null;
+    var key_fallback_props_symbol: ?u32 = null;
+    var key_fallback_label_symbol: ?u32 = null;
+    var key_fallback_count_symbol: ?u32 = null;
+    var key_fallback_member_symbol: ?u32 = null;
+    for (key_fallback_fixture.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier) continue;
+        const name = key_fallback_fixture.ast.getText(node.data.string_ref);
+        if (std.mem.eql(u8, name, "items")) {
+            key_fallback_item_symbol = key_fallback_fixture.semantic.symbol_ids[raw];
+        } else if (std.mem.eql(u8, name, "props")) {
+            key_fallback_props_symbol = key_fallback_fixture.semantic.symbol_ids[raw];
+        } else if (std.mem.eql(u8, name, "label")) {
+            key_fallback_label_symbol = key_fallback_fixture.semantic.symbol_ids[raw];
+        } else if (std.mem.eql(u8, name, "count")) {
+            key_fallback_count_symbol = key_fallback_fixture.semantic.symbol_ids[raw];
+        } else if (std.mem.eql(u8, name, "member")) {
+            key_fallback_member_symbol = key_fallback_fixture.semantic.symbol_ids[raw];
+        }
+    }
+    const key_fallback_item = key_fallback_item_symbol orelse return error.MissingAutomaticJsxSpreadBinding;
+    const key_fallback_props = key_fallback_props_symbol orelse return error.MissingAutomaticJsxPropsBinding;
+    const key_fallback_label = key_fallback_label_symbol orelse return error.MissingAutomaticJsxLiteralLabelBinding;
+    const key_fallback_count = key_fallback_count_symbol orelse return error.MissingAutomaticJsxLiteralCountBinding;
+    const key_fallback_member = key_fallback_member_symbol orelse return error.MissingAutomaticJsxMemberValueBinding;
+    var key_fallback_module = Module.init(@fromBackingInt(0), "jsx-key-fallback-spread.tsx");
+    key_fallback_module.source = key_fallback_source;
+    key_fallback_module.module_type = .ts;
+    key_fallback_module.state = .ready;
+    key_fallback_module.ast = key_fallback_fixture.ast;
+    key_fallback_module.semantic = key_fallback_fixture.semantic;
+    var key_fallback_context: TestGraph = .{ .allocator = std.testing.allocator };
+    const key_fallback_resyncs_before = profile.count(.graph_resync_semantic);
+    run(&key_fallback_context, &key_fallback_module, allocator);
+    defer if (key_fallback_module.alias_table) |*table| table.deinit();
+    defer if (key_fallback_module.export_index_by_name) |*index| index.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), key_fallback_context.diag_count);
+    try std.testing.expectEqual(key_fallback_resyncs_before, profile.count(.graph_resync_semantic));
+    try std.testing.expectEqual(key_fallback_owner, key_fallback_module.semantic.?.owner_token);
+    try std.testing.expect(key_fallback_module.transform_cache != null);
+    const key_fallback_root = key_fallback_module.ast.?.transformed_root.?;
+    const key_fallback_reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, &key_fallback_module.ast.?, key_fallback_root);
+    defer allocator.free(key_fallback_reachable);
+    var key_fallback_item_read_count: usize = 0;
+    var key_fallback_props_read_count: usize = 0;
+    var key_fallback_label_read_count: usize = 0;
+    var key_fallback_count_read_count: usize = 0;
+    var key_fallback_member_read_count: usize = 0;
+    var key_fallback_undefined_read_count: usize = 0;
+    for (key_fallback_reachable) |raw| {
+        const node = key_fallback_module.ast.?.nodes.items[raw];
+        if (node.tag == .spread_element or node.tag == .jsx_spread_child) return error.AutomaticJsxSpreadRemained;
+        if (node.tag == .jsx_element) return error.AutomaticJsxRemained;
+        if (node.tag != .identifier_reference) continue;
+        const name = key_fallback_module.ast.?.getText(node.data.string_ref);
+        if (std.mem.eql(u8, name, "props")) {
+            try std.testing.expectEqual(
+                key_fallback_props,
+                key_fallback_module.semantic.?.symbol_ids[raw] orelse return error.MissingAutomaticJsxPropsReferenceSymbol,
+            );
+            key_fallback_props_read_count += 1;
+        } else if (std.mem.eql(u8, name, "label")) {
+            try std.testing.expectEqual(
+                key_fallback_label,
+                key_fallback_module.semantic.?.symbol_ids[raw] orelse return error.MissingAutomaticJsxLiteralLabelReferenceSymbol,
+            );
+            key_fallback_label_read_count += 1;
+        } else if (std.mem.eql(u8, name, "count")) {
+            if (key_fallback_module.semantic.?.symbol_ids[raw]) |symbol| {
+                try std.testing.expectEqual(key_fallback_count, symbol);
+                key_fallback_count_read_count += 1;
+            }
+        } else if (std.mem.eql(u8, name, "member")) {
+            try std.testing.expectEqual(
+                key_fallback_member,
+                key_fallback_module.semantic.?.symbol_ids[raw] orelse return error.MissingAutomaticJsxMemberValueReferenceSymbol,
+            );
+            key_fallback_member_read_count += 1;
+        } else if (std.mem.eql(u8, name, "undefined")) {
+            try std.testing.expect(key_fallback_module.semantic.?.symbol_ids[raw] == null);
+            try std.testing.expect(key_fallback_module.semantic.?.unresolved_references.contains("undefined"));
+            key_fallback_undefined_read_count += 1;
+        } else if (std.mem.eql(u8, name, "items")) {
+            try std.testing.expectEqual(
+                key_fallback_item,
+                key_fallback_module.semantic.?.symbol_ids[raw] orelse return error.MissingAutomaticJsxSpreadReferenceSymbol,
+            );
+            key_fallback_item_read_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), key_fallback_item_read_count);
+    try std.testing.expectEqual(@as(usize, 1), key_fallback_props_read_count);
+    try std.testing.expectEqual(@as(usize, 1), key_fallback_label_read_count);
+    try std.testing.expectEqual(@as(usize, 1), key_fallback_count_read_count);
+    try std.testing.expectEqual(@as(usize, 1), key_fallback_member_read_count);
+    try std.testing.expectEqual(@as(usize, 1), key_fallback_undefined_read_count);
+
+    const dev_source = "const member = { deep: { value: \"D\" } }; const items = [1, 2]; const result = <Comp {...{ memberValue: member[\"deep\"].value, optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}</Comp>;";
+    var dev_fixture = try jsxSpreadChildTestFixture(allocator, dev_source);
+    const dev_owner = dev_fixture.semantic.captureOwnerToken();
+    var source_dev_member_symbol: ?u32 = null;
+    var source_dev_undefined_span: ?Span = null;
+    var source_dev_void_zero_span: ?Span = null;
+    for (dev_fixture.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .binding_identifier and
+            std.mem.eql(u8, dev_fixture.ast.getText(node.data.string_ref), "member"))
+        {
+            source_dev_member_symbol = dev_fixture.semantic.symbol_ids[raw];
+        }
+        if (node.tag == .identifier_reference and
+            std.mem.eql(u8, dev_fixture.ast.getText(node.span), "undefined"))
+        {
+            source_dev_undefined_span = node.span;
+        }
+        if (node.tag == .unary_expression and isExactJsxVoidZeroValue(
+            &dev_fixture.ast,
+            @fromBackingInt(@intCast(raw)),
+        )) source_dev_void_zero_span = node.span;
+    }
+    const dev_member = source_dev_member_symbol orelse return error.MissingAutomaticDevMemberValueBinding;
+    const dev_undefined_span = source_dev_undefined_span orelse return error.MissingAutomaticDevUndefinedSourceReference;
+    const dev_void_zero_span = source_dev_void_zero_span orelse return error.MissingAutomaticDevVoidZeroSourceValue;
+    var dev_module = Module.init(@fromBackingInt(0), "jsx-key-fallback-dev-spread.tsx");
+    dev_module.source = dev_source;
+    dev_module.module_type = .ts;
+    dev_module.state = .ready;
+    dev_module.ast = dev_fixture.ast;
+    dev_module.semantic = dev_fixture.semantic;
+    var dev_context: TestGraph = .{
+        .allocator = std.testing.allocator,
+        .transform_options_base = .{
+            .strip_types = true,
+            .jsx_runtime = .automatic_dev,
+            .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+        },
+    };
+    const dev_resyncs_before = profile.count(.graph_resync_semantic);
+    run(&dev_context, &dev_module, allocator);
+    defer if (dev_module.alias_table) |*table| table.deinit();
+    defer if (dev_module.export_index_by_name) |*index| index.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), dev_context.diag_count);
+    try std.testing.expectEqual(dev_resyncs_before, profile.count(.graph_resync_semantic));
+    try std.testing.expectEqual(dev_owner, dev_module.semantic.?.owner_token);
+    try std.testing.expect(dev_module.transform_cache != null);
+
+    const dev_root = dev_module.ast.?.transformed_root.?;
+    const dev_reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, &dev_module.ast.?, dev_root);
+    defer allocator.free(dev_reachable);
+    var dev_undefined_reference_count: usize = 0;
+    var dev_source_undefined_read_count: usize = 0;
+    var dev_generated_undefined_read_count: usize = 0;
+    var dev_member_read_count: usize = 0;
+    var dev_source_void_zero_count: usize = 0;
+    for (dev_reachable) |raw| {
+        const node = dev_module.ast.?.nodes.items[raw];
+        if (node.tag == .spread_element or node.tag == .jsx_spread_child or node.tag == .jsx_element)
+            return error.AutomaticDevJsxSpreadRemained;
+        if (node.tag == .identifier_reference and
+            std.mem.eql(u8, dev_module.ast.?.getText(node.data.string_ref), "undefined"))
+        {
+            try std.testing.expect(dev_module.semantic.?.symbol_ids[raw] == null);
+            try std.testing.expect(dev_module.semantic.?.unresolved_references.contains("undefined"));
+            dev_undefined_reference_count += 1;
+            if (node.span.start == dev_undefined_span.start and node.span.end == dev_undefined_span.end) {
+                dev_source_undefined_read_count += 1;
+            } else {
+                dev_generated_undefined_read_count += 1;
+            }
+        }
+        if (node.tag == .identifier_reference and
+            std.mem.eql(u8, dev_module.ast.?.getText(node.data.string_ref), "member"))
+        {
+            try std.testing.expectEqual(
+                dev_member,
+                dev_module.semantic.?.symbol_ids[raw] orelse return error.MissingAutomaticDevMemberValueReferenceSymbol,
+            );
+            dev_member_read_count += 1;
+        }
+        if (node.tag == .unary_expression and isExactJsxVoidZeroValue(
+            &dev_module.ast.?,
+            @fromBackingInt(@intCast(raw)),
+        ) and node.span.start == dev_void_zero_span.start and node.span.end == dev_void_zero_span.end)
+            dev_source_void_zero_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), dev_undefined_reference_count);
+    try std.testing.expectEqual(@as(usize, 1), dev_source_undefined_read_count);
+    try std.testing.expectEqual(@as(usize, 1), dev_generated_undefined_read_count);
+    try std.testing.expectEqual(@as(usize, 1), dev_member_read_count);
+    try std.testing.expectEqual(@as(usize, 1), dev_source_void_zero_count);
 }

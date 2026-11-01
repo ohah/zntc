@@ -88,6 +88,119 @@ pub fn visitExportDefaultDeclaration(self: *Transformer, node: Node) Error!NodeI
     });
 }
 
+/// Capture actual source binding rows before the import producer erases or
+/// splits its declaration. The output decision below compares attached IDs,
+/// never imported/local spelling.
+pub fn captureImportErasureBindings(self: *Transformer, declaration: NodeIndex) Error![]@import("../../semantic/source_owned_retirement.zig").Witness {
+    const Retirement = @import("../../semantic/source_owned_retirement.zig");
+    if (!self.semantic_edit_enabled) return &.{};
+    const node = self.ast.getNode(declaration);
+    const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
+    const rows = if (self.semantic_editor) |*editor| editor.references.items else self.references;
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    var captured: std.ArrayList(Retirement.Witness) = .empty;
+    errdefer captured.deinit(self.allocator);
+    for (self.ast.extra_data.items[x.specs_start..][0..x.specs_len]) |raw| {
+        const specifier: NodeIndex = @fromBackingInt(raw);
+        const spec = self.ast.getNode(specifier);
+        const local = switch (spec.tag) {
+            .import_specifier => spec.data.binary.right,
+            .import_default_specifier, .import_namespace_specifier => specifier,
+            else => std.debug.panic("import erasure has no source specifier role", .{}),
+        };
+        if (local.isNone() or @backingInt(local) >= self.symbol_ids.items.len)
+            std.debug.panic("import erasure has no physical source binding slot", .{});
+        const sid = self.symbol_ids.items[@backingInt(local)] orelse
+            std.debug.panic("import erasure has no attached source binding", .{});
+        if (sid >= symbols.len) std.debug.panic("import erasure binding is out of range", .{});
+        const before = symbols[sid];
+        if (before.kind != .import_binding or before.isSynthetic() or before.scope_id.isNone() or before.scope_id.toIndex() >= scopes.len)
+            std.debug.panic("import erasure binding has no source import authority", .{});
+        var declaration_row: ?@import("../../semantic/symbol.zig").Reference = null;
+        for (rows) |row| {
+            if (!row.flags.declare or row.declaration_node_index != local) continue;
+            if (declaration_row != null or @backingInt(row.symbol_id) != sid or row.scope_id != before.scope_id)
+                std.debug.panic("import erasure has ambiguous declaration authority", .{});
+            declaration_row = row;
+        }
+        const row = declaration_row orelse std.debug.panic("import erasure has no birth declaration row", .{});
+        const inline_type = spec.tag == .import_specifier and (spec.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0;
+        try captured.append(self.allocator, .{
+            .symbol_id = @fromBackingInt(sid),
+            .before = before,
+            .declaration = row,
+            .declaration_node = self.ast.getNode(local),
+            .source_owner = specifier,
+            .source_owner_node = spec,
+            .source_scope = before.scope_id,
+            .source_parent = scopes[before.scope_id.toIndex()].parent,
+            .source_name = local,
+            .source_name_symbol = @fromBackingInt(sid),
+            .closure_scope = .none,
+            .closure_parent = .none,
+            .reason = .erased_import_binding,
+            .erased_import = .{
+                .declaration = declaration,
+                .declaration_node = node,
+                .specifier = specifier,
+                .specifier_node = spec,
+                .local = local,
+                .local_node = self.ast.getNode(local),
+                .declaration_type_only = x.is_type_only,
+                .specifier_type_only = inline_type,
+                .policy = if (x.is_type_only) .declaration_type_only else if (inline_type) .specifier_type_only else .unused,
+            },
+        });
+    }
+    return captured.toOwnedSlice(self.allocator);
+}
+
+fn collectImportBindingOutputSymbols(
+    self: *Transformer,
+    output_roots: []const NodeIndex,
+    surviving_symbols: *std.AutoHashMapUnmanaged(u32, void),
+) Error!void {
+    for (output_roots) |root| {
+        if (root.isNone()) continue;
+        const reachable = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(self.allocator, self.ast, root);
+        defer self.allocator.free(reachable);
+        for (reachable) |raw| {
+            const node = self.ast.nodes.items[raw];
+            const local: NodeIndex = switch (node.tag) {
+                .import_specifier => node.data.binary.right,
+                .import_default_specifier, .import_namespace_specifier => @fromBackingInt(raw),
+                else => continue,
+            };
+            if (local.isNone() or @backingInt(local) >= self.symbol_ids.items.len) continue;
+            const symbol_id = self.symbol_ids.items[@backingInt(local)] orelse continue;
+            try surviving_symbols.put(self.allocator, symbol_id, {});
+        }
+    }
+}
+
+pub fn recordImportErasureBindings(
+    self: *Transformer,
+    captured: []const @import("../../semantic/source_owned_retirement.zig").Witness,
+    output: NodeIndex,
+    trailing_outputs: []const NodeIndex,
+) Error!void {
+    if (captured.len == 0) return;
+    const output_roots = try self.allocator.alloc(NodeIndex, trailing_outputs.len + 1);
+    defer self.allocator.free(output_roots);
+    output_roots[0] = output;
+    @memcpy(output_roots[1..], trailing_outputs);
+    var surviving_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer surviving_symbols.deinit(self.allocator);
+    try collectImportBindingOutputSymbols(self, output_roots, &surviving_symbols);
+    for (captured) |witness| {
+        if (surviving_symbols.contains(@backingInt(witness.symbol_id))) continue;
+        if (self.pending_erased_import_bindings.contains(@backingInt(witness.symbol_id)))
+            std.debug.panic("import erasure source binding was recorded twice", .{});
+        try self.pending_erased_import_bindings.put(self.allocator, @backingInt(witness.symbol_id), witness);
+    }
+}
+
 pub fn visitImportDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
     try styled_components_mod.detectStyledImport(self, node);
     try emotion_mod.detectEmotionImport(self, node);
@@ -495,6 +608,12 @@ fn isImportSpecifierUnused(self: *Transformer, spec_idx: NodeIndex, spec_node: N
     // the later generated callsite.
     if (self.plugins.emotion.css_prop_import_required and
         self.plugins.emotion.css_binding_node == local_idx)
+        return false;
+
+    // The source css prop creates a later module-level read of this exact
+    // styled default import; source reference counts cannot see that read yet.
+    if (self.plugins.styled_components.css_prop_import_required and
+        self.plugins.styled_components.default_binding_node == spec_idx)
         return false;
 
     if (self.binding_lite) |binding_lite| {

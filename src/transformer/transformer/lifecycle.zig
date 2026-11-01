@@ -139,8 +139,13 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.static_class_reference_origins.deinit(self.allocator);
     self.lowered_anonymous_class_export_bindings.deinit(self.allocator);
     self.explicit_global_reference_nodes.deinit(self.allocator);
+    self.cjs_export_assignment_references.deinit(self.allocator);
     self.erased_const_enum_external_reference_origins.deinit(self.allocator);
     self.erased_type_import_external_references.deinit(self.allocator);
+    for (self.erased_const_enum_binding_handoffs.items) |plan| self.allocator.free(plan.reads);
+    self.erased_const_enum_binding_handoffs.deinit(self.allocator);
+    for (self.erased_const_enum_declaration_sources.items) |source| self.allocator.free(source.declarations);
+    self.erased_const_enum_declaration_sources.deinit(self.allocator);
     self.runtime_helper_ref_index.deinit(self.allocator);
     self.scope_owner_remaps.deinit(self.allocator);
     self.scope_owner_removed.deinit(self.allocator);
@@ -158,6 +163,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.static_class_contexts.deinit(self.allocator);
     self.static_class_captures.deinit(self.allocator);
     self.completed_static_class_captures.deinit(self.allocator);
+    self.pending_static_initializer_transfers.deinit(self.allocator);
     self.pending_temp_ref_chains.deinit(self.allocator);
     self.lexical_capture_uses.deinit(self.allocator);
     self.capture_refs.deinit(self.allocator);
@@ -242,6 +248,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.generator_state_refs.deinit(self.allocator);
     self.generator_state_semantic_refs.deinit(self.allocator);
     self.deferred_generator_loop_owners.deinit(self.allocator);
+    self.extracted_loop_generator_sources.deinit(self.allocator);
     var loop_migrations = self.deferred_generator_loop_migrations.valueIterator();
     while (loop_migrations.next()) |migration| {
         self.allocator.free(migration.header_symbol_ids);

@@ -495,3 +495,49 @@ test "#6004 object-super home refs bind their producer nodes across ten hostile 
         try checkObjectSuperHomeReferenceHandle(source, .function_with_this);
     }
 }
+
+test "object home wrappers move exact external computed key provenance" {
+    const sources = [_][]const u8{
+        "var result;try{var service={async [`${missingGlobal}`](){return super.value;}};result='created';}catch(error){result=error instanceof ReferenceError?'ReferenceError':'unexpected';}console.log(result);",
+        "var prototype={value:7};var service={__proto__:prototype,async [`${typeof missingGlobal}`](){return JSON.parse('7')+super.value;}};service.undefined().then(console.log);",
+        "var prototype={value:7};var service={__proto__:prototype,async [`${undefined}`](){return super.value;}};service.undefined().then(console.log);",
+    };
+    for (sources, 0..) |source, case_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]bool{ false, true }) |minify| {
+            std.debug.print("OBJECT_HOME_EXTERNAL_KEY case={d} minify={}\n", .{ case_index, minify });
+            const result = try @import("../transpile.zig").transpile(a, source, "input.ts", .{ .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5), .minify_identifiers = minify });
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) std.debug.print("object home external key mismatch case={d} minify={} expected={s} actual={s} stderr={s} code={s}\n", .{ case_index, minify, native.stdout, actual.stdout, actual.stderr, result.code });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+}
+
+test "class key hoisting preserves exact external lookup provenance" {
+    const sources = [_][]const u8{
+        "var reads=0;Object.defineProperty(globalThis,'_a',{configurable:true,get(){reads++;return 'value';}});class Box{static[_a]=9;}console.log(Box.value,reads);",
+        "function make(){return class{static[typeof missingKey]=7;}}console.log(make().undefined);",
+        "var result;try{class Box{static[missingKey]=9;}result='created';}catch(error){result=error instanceof ReferenceError?'ReferenceError':'unexpected';}console.log(result);",
+    };
+    for (sources, 0..) |source, case_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]bool{ false, true }) |minify| {
+            std.debug.print("CLASS_EXTERNAL_KEY case={d} minify={}\n", .{ case_index, minify });
+            const result = try @import("../transpile.zig").transpile(a, source, "input.ts", .{ .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5), .minify_identifiers = minify });
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) std.debug.print("class external key mismatch case={d} minify={} expected={s} actual={s} stderr={s} code={s}\n", .{ case_index, minify, native.stdout, actual.stdout, actual.stderr, result.code });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+}

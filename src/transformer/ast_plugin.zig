@@ -356,7 +356,34 @@ pub const AstTransformCtx = struct {
         // when a plugin injects multiple statements at once.
         for (result[0..count]) |statement| try self.registerInjectedDeclarations(statement, &generated_symbols, &generated_symbol_names);
         for (result[0..count]) |statement| try self.bindInjectedReferences(statement, &generated_symbols);
+        try self.recordInjectedDynamicLookups(result[0..count]);
         return result[0..count];
+    }
+
+    fn recordInjectedDynamicLookups(self: *AstTransformCtx, statements: []const NodeIndex) Error!void {
+        const transformer = self.transformer;
+        if (!transformer.semantic_edit_enabled) return;
+        var direct_eval = false;
+        for (statements) |statement| {
+            const reachable = try ast_walk.collectReachableNodeIndicesFrom(transformer.allocator, transformer.ast, statement);
+            defer transformer.allocator.free(reachable);
+            for (reachable) |raw| {
+                const node = transformer.ast.nodes.items[raw];
+                if (node.tag != .call_expression) continue;
+                var callee = transformer.ast.readExtraNode(node.data.extra, 0);
+                while (!callee.isNone()) {
+                    const target = transformer.ast.getNode(callee);
+                    if (target.tag == .parenthesized_expression or Tag.isTransparentTypeWrapper(target.tag)) {
+                        callee = target.data.unary.operand;
+                        continue;
+                    }
+                    if (target.tag == .identifier_reference and Scanner.identifierNamesEqual(transformer.ast.getText(target.data.string_ref), "eval"))
+                        direct_eval = true;
+                    break;
+                }
+            }
+        }
+        if (direct_eval) try transformer.markInjectedDirectEvalScopeChain(self.insertion_scope);
     }
 
     fn registerInjectedDeclarations(
@@ -778,6 +805,75 @@ pub const AstTransformCtx = struct {
 };
 
 const trailing_scope_fixture_count = 10;
+
+test "plugin injected direct eval publishes exact dynamic scope history" {
+    const Case = struct { code: []const u8, direct: bool, top_level: bool = false };
+    const cases = [_]Case{
+        .{ .code = "throw eval('shared');", .direct = true },
+        .{ .code = "throw \\u0065val('shared');", .direct = true },
+        .{ .code = "throw globalThis.eval('shared');", .direct = false },
+        .{ .code = "console.log('eval(shared)');", .direct = false },
+        .{ .code = "throw eval('shared');", .direct = true, .top_level = true },
+        .{ .code = "throw globalThis.eval('shared');", .direct = false, .top_level = true },
+    };
+    const State = struct {
+        code: []const u8,
+        insertion: ScopeId = .none,
+        fn inject(context: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) @import("../bundler/plugin.zig").PluginError!void {
+            if (!std.mem.eql(u8, info.name orelse return, "marker")) return;
+            const state: *@This() = @ptrCast(@alignCast(context.?));
+            state.insertion = api.insertion_scope;
+            const statements = try api.parseAndInjectStatements(state.code);
+            defer api.getAllocator().free(statements);
+            for (statements) |statement| try api.addTrailingStatement(statement);
+        }
+    };
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, if (case.top_level)
+            "var shared = 40; function marker() {} marker();"
+        else
+            "function outer(shared) { function marker() {} marker(); } outer(40);");
+        var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+        _ = try parser.parse();
+        var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.enable_exact_declaration_anchors = true;
+        analyzer.enable_source_external_origins = true;
+        analyzer.collect_unresolved_reference_nodes = true;
+        try analyzer.analyze();
+        var state = State{ .code = case.code };
+        const plugins = [_]transformer_mod.Plugin{.{ .name = "injected-eval", .context = &state, .onFunction = State.inject }};
+        var transformer = try Transformer.init(a, &parser.ast, .{ .plugins = &plugins });
+        try transformer.initSymbolIds(analyzer.symbol_ids.items);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
+        transformer.scope_history = analyzer.scope_history;
+        transformer.source_owned_retirements = analyzer.source_owned_retirements;
+        transformer.unresolved_references = &analyzer.unresolved_references;
+        transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+        transformer.semantic_edit_enabled = true;
+        _ = try transformer.transform();
+        const edited = (try transformer.finishSemanticEdit()) orelse return error.TestUnexpectedResult;
+        try std.testing.expect(!state.insertion.isNone());
+        var scope = state.insertion;
+        while (!scope.isNone()) {
+            try std.testing.expectEqual(case.direct, edited.scopes[scope.toIndex()].subtree_has_direct_eval);
+            try std.testing.expect(!edited.scopes[scope.toIndex()].subtree_has_with);
+            try std.testing.expect(!edited.scope_history.source_scopes[scope.toIndex()].subtree_has_direct_eval);
+            try std.testing.expectEqual(analyzer.scopes.items[scope.toIndex()].parent, edited.scopes[scope.toIndex()].parent);
+            scope = edited.scopes[scope.toIndex()].parent;
+        }
+        const history = try @import("../semantic/scope_frame_history.zig").validateAndIndex(a, transformer.ast, edited.scopes, &edited.scope_owner_map, &edited.scope_history, null);
+        try std.testing.expect(history.valid);
+    }
+}
+
 const trailing_scope_fixture_names = [_][]const u8{
     "shared", "shared", "value2", "value3", "value4", "value5", "value6", "value7", "value8", "value9",
 };

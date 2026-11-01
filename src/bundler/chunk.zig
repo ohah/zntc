@@ -198,6 +198,7 @@ pub const CrossChunkSym = struct {
     name: []const u8,
     canonical_module: u32,
     provider: ?@import("cross_chunk_export.zig").Provider = null,
+    namespace_output: ?@import("codegen_output_domain.zig").Ref = null,
 };
 
 /// 번들 출력의 단위. 하나의 JS 파일로 출력된다.
@@ -1547,7 +1548,7 @@ fn addCrossChunkSymbol(
     }
 
     const captured_provider = try @import("cross_chunk_export.zig").Provider.capture(lnk, canonical_module, export_name, hint);
-    const symbol: CrossChunkSym = .{ .name = export_name, .canonical_module = canonical_module, .provider = captured_provider };
+    const symbol: CrossChunkSym = .{ .name = export_name, .canonical_module = canonical_module, .provider = captured_provider, .namespace_output = if (hint == .shared_namespace) hint.shared_namespace else null };
     const ifgop = try chunk.imports_from.getOrPut(allocator, src_ci);
     if (!ifgop.found_existing) ifgop.value_ptr.* = .empty;
     // dedup 은 (export 이름, canonical 모듈) 둘 다로 — 서로 다른 모듈이 *같은* export
@@ -1738,7 +1739,8 @@ fn linkNamespaceCrossChunk(
     // seam — ensureSharedNsVar 가 선제 materialize. 상세는 그 doc 참조.
     const ns_var = try lnk.ensureSharedNsVar(target);
     // ns_var 는 합성 namespace 변수명(예약어 아님) → canonical_module 미사용.
-    try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, seen_static, tgt_chunk, ns_var, @backingInt(target), .shared_namespace);
+    const output_ref = lnk.sharedNamespaceOutputRef(target) orelse return error.SharedNamespaceOwnerMissing;
+    try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, seen_static, tgt_chunk, ns_var, @backingInt(target), .{ .shared_namespace = output_ref });
     try fanOutModuleExports(allocator, chunk_graph, chunk, seen_static, lnk, target, module_count);
 }
 
@@ -1760,7 +1762,7 @@ pub fn computeCrossChunkGlobalNames(
     lnk.clearCrossChunkGlobalNames();
 
     // 1. cross-chunk 심볼 enumerate + (mod, name) dedup.
-    const Sym = struct { mod: u32, name: []const u8 };
+    const Sym = struct { mod: u32, name: []const u8, namespace_output: ?@import("codegen_output_domain.zig").Ref };
     var syms: std.ArrayListUnmanaged(Sym) = .empty;
     defer syms.deinit(allocator);
     var seen: std.StringHashMapUnmanaged(void) = .empty;
@@ -1779,7 +1781,11 @@ pub fn computeCrossChunkGlobalNames(
                     allocator.free(key);
                     continue;
                 }
-                try syms.append(allocator, .{ .mod = sym.canonical_module, .name = sym.name });
+                const namespace_output = if (sym.provider) |provider| try provider.namespaceOutputRef(lnk) else null;
+                if (sym.namespace_output) |expected| {
+                    if (namespace_output == null or !std.meta.eql(expected, namespace_output.?)) return error.SharedNamespaceOwnerMissing;
+                }
+                try syms.append(allocator, .{ .mod = sym.canonical_module, .name = sym.name, .namespace_output = namespace_output });
             }
         }
     }
@@ -1842,7 +1848,7 @@ pub fn computeCrossChunkGlobalNames(
                 continue;
             }
         }
-        const is_shared_namespace_var = lnk.isSharedNamespaceVar(s.mod, s.name);
+        const is_shared_namespace_var = s.namespace_output != null;
         if (is_shared_namespace_var) _ = used.remove(s.name);
         // (#4532 증상1) preserve-modules 는 전역명을 **ESM-wrap owner 로 한정**한다.
         // preserve-modules 는 모든 모듈이 자기 청크라 모든 import 가 cross-chunk 로 잡히는데:
@@ -1911,7 +1917,7 @@ pub fn computeCrossChunkGlobalNames(
         try lnk.putCrossChunkGlobalName(s.mod, s.name, candidate);
         const global_name = lnk.getCrossChunkGlobalName(s.mod, s.name).?;
         if (lnk.graph.lazy_compilation and is_shared_namespace_var) {
-            if (!try lnk.assignSharedNamespaceGlobalName(s.mod, s.name, global_name))
+            if (!try lnk.assignSharedNamespaceGlobalName(s.namespace_output.?, global_name))
                 return error.SharedNamespaceOwnerMissing;
         }
         try used.put(allocator, global_name, {});

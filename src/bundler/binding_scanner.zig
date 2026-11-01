@@ -327,11 +327,11 @@ pub fn extractImportBindings(
     var bindings: std.ArrayList(ImportBinding) = .empty;
     errdefer bindings.deinit(allocator);
 
-    // import source span → import_record 인덱스 매핑
-    var source_to_record: std.AutoHashMapUnmanaged(u64, u32) = .empty;
+    // Actual import source leaf → import_record index; copied literals may share spans.
+    var source_to_record: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer source_to_record.deinit(allocator);
     for (import_records, 0..) |rec, i| {
-        const key = types.spanKey(rec.span);
+        const key = @backingInt(rec.source_node);
         try source_to_record.put(allocator, key, @intCast(i));
     }
 
@@ -351,9 +351,7 @@ pub fn extractImportBindings(
         const source_idx: NodeIndex = @fromBackingInt(@intCast(extras[2]));
         if (source_idx.isNone()) continue;
 
-        // source span으로 ImportRecord 인덱스 찾기
-        const source_node = ast.getNode(source_idx);
-        const rec_idx = source_to_record.get(types.spanKey(source_node.span)) orelse continue;
+        const rec_idx = source_to_record.get(@backingInt(source_idx)) orelse continue;
 
         if (specs_len == 0) continue; // side-effect import
 
@@ -447,11 +445,11 @@ pub fn extractExportBindings(
     var bindings: std.ArrayList(ExportBinding) = .empty;
     errdefer bindings.deinit(allocator);
 
-    // import source span → import_record 인덱스 매핑 (re-export용)
-    var source_to_record: std.AutoHashMapUnmanaged(u64, u32) = .empty;
+    // Actual re-export source leaf → import_record index; copied literals may share spans.
+    var source_to_record: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer source_to_record.deinit(allocator);
     for (import_records, 0..) |rec, i| {
-        const key = types.spanKey(rec.span);
+        const key = @backingInt(rec.source_node);
         try source_to_record.put(allocator, key, @intCast(i));
     }
 
@@ -509,8 +507,7 @@ pub fn extractExportBindings(
                 // export { a, b } 또는 export { a } from './dep'
                 const has_source = !source_idx.isNone();
                 const rec_idx: ?u32 = if (has_source) blk: {
-                    const src_node = ast.getNode(source_idx);
-                    break :blk source_to_record.get(types.spanKey(src_node.span));
+                    break :blk source_to_record.get(@backingInt(source_idx));
                 } else null;
 
                 if (specs_len > 0) {
@@ -632,8 +629,7 @@ pub fn extractExportBindings(
                 const exported_name_idx = x.exported_name;
                 const source_idx = x.source;
                 if (source_idx.isNone()) continue;
-                const src_node = ast.getNode(source_idx);
-                const rec_idx = source_to_record.get(types.spanKey(src_node.span));
+                const rec_idx = source_to_record.get(@backingInt(source_idx));
 
                 if (!exported_name_idx.isNone()) {
                     // export * as ns from './mod' — namespace re-export
@@ -954,9 +950,9 @@ pub fn populateSyntheticSymbolsWithOwnerScope(
         // alone: `_default` may be a real local binding.
         const is_default_export = std.mem.eql(u8, eb.exported_name, "default");
         const has_analyzer_facade = eb.kind == .local and eb.has_default_export_facade;
-        const has_reexport_bridge = eb.kind == .re_export and is_default_export and
-            (std.mem.eql(u8, eb.local_name, "_default") or std.mem.eql(u8, eb.local_name, "default"));
-        if (is_default_export and (has_analyzer_facade or has_reexport_bridge)) {
+        // A re-export is a redirect to its actual provider, not a declaration
+        // in this source semantic graph. Its existing alias is resolved below.
+        if (is_default_export and has_analyzer_facade) {
             if (has_analyzer_facade) {
                 if (symbol_ids) |ids| {
                     const node_idx = eb.default_export_node orelse return error.MissingDefaultExportFacadeNode;
@@ -981,10 +977,9 @@ pub fn populateSyntheticSymbolsWithOwnerScope(
                 }
             }
 
-            // Re-export bridges have no analyzer-owned source node; unanalyzed
-            // low-level callers also have no exact map. Reuse only an already
-            // marked facade, otherwise create a distinct semantic identity.
-            // Production anonymous expression defaults take the exact branch above.
+            // Unanalyzed low-level source defaults have no exact map. Reuse
+            // only an already marked source facade. Production expression
+            // defaults take the exact AST-owned branch above.
             if (module_scope) |scope| {
                 if (scope.get("_default")) |existing_idx| {
                     if (existing_idx < sem_symbols.items.len and

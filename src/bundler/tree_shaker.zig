@@ -231,25 +231,6 @@ pub const TreeShaker = struct {
         return self.graph.moduleAtMut(ModuleIndex.fromUsize(idx));
     }
 
-    /// AST mutation 후 모듈 metadata 재동기화 + linker rename/mangling 재계산 신호 set.
-    /// `resyncModuleMetadataAfterAstMutation` 만 호출하고 `ast_mutated_after_link` 를
-    /// 빠뜨리면 `bundler.zig` 의 post-shake finalize gate 가 발화 안 해 stale rename
-    /// 으로 emit 되는 회귀가 난다 — 두 동작은 항상 짝.
-    pub fn markAstMutatedAndResync(self: *TreeShaker, m: *Module) void {
-        // parse_arena 는 parse 단계에서 모든 모듈에 부착된다 (#1323). null 이면
-        // 분석 산출물이 self.allocator 로 새서 leak 되므로 invariant 로 강제.
-        std.debug.assert(m.parse_arena != null);
-        // L.5a: carry-over capture 는 apply (bundler post-shake, !code_splitting) 와 발화 조건을 맞춘다.
-        // code_splitting 은 per-chunk computeRenamesForModules 가 rename 을 재계산하므로 carry-over 가
-        // 무의미 + apply 미실행 → capture 한 pending 이 clear 안 돼 store dangling. code_splitting 이면
-        // rename_table=null 로 capture skip (apply 와 대칭).
-        const rt: ?*const bundler_symbol.RenameTable = if (self.graph.code_splitting) null else &self.linker.rename_table;
-        self.graph.resyncModuleMetadataAfterAstMutation(m, m.parse_arena.?.allocator(), rt) catch {
-            m.prebuilt_stmt_info = null;
-        };
-        self.markAstMutated(m);
-    }
-
     fn markAstMutated(self: *TreeShaker, m: *Module) void {
         self.ast_mutated_after_link = true;
         self.invalidateImportRecordStmtIndices(@backingInt(m.index));
@@ -280,6 +261,12 @@ pub const TreeShaker = struct {
     /// included는 단조가 아님 — 축소(미사용 제거)와 확장(canonical/side-effect 전파)이 교차.
     /// 변경이 없을 때 수렴하며, 실제로는 2-3회 이내.
     pub fn analyze(self: *TreeShaker, entry_points: []const []const u8) !void {
+        // Linker/entry-provider construction may append legitimate runtime
+        // roles after initial graph registration. Freeze the actual handoff
+        // once, before source snapshots; queries then use O(1) domain receipts.
+        @import("../semantic/output_runtime_registration.zig").refresh(self.graph) catch {
+            self.graph.output_runtime_registry.clear();
+        };
         // Production creates a fresh shaker per build. Keep this public entry
         // conservative for a reused graph/shaker too: no prior AST's fact may
         // authorize a statement in a new analysis run.
@@ -364,14 +351,9 @@ pub const TreeShaker = struct {
         // 그래야 `if (DEV) heavy()` 같은 dead branch 안 import가 BFS seed로 번지지 않는다.
         // preserve-modules는 원본 모듈 경계가 출력 계약이므로, import edge를 제거할 수
         // 있는 materialize는 reachability 확정 뒤 numeric post-pass에서만 수행한다.
-        // code-splitting은 이 prepass 동안 rename carry-over를 사용하지 않는다. 각 AST
-        // resync에서 그래프 전체 wrapper symbol을 다시 등록하는 대신, 모든 mutation 뒤
-        // 한 번 등록해 수천 모듈 입력의 반복 전체 그래프 순회를 막는다.
-        const defer_wrapper_symbol_registration = self.graph.code_splitting and self.graph.wrapper_symbols_registered;
-        if (defer_wrapper_symbol_registration) self.graph.wrapper_symbols_registered = false;
-        defer {
-            if (defer_wrapper_symbol_registration) self.graph.wrapper_symbols_registered = true;
-        }
+        // Transactional value optimizations preserve the registered graph.
+        // Keep this producer-completion flag truthful while source witnesses
+        // are captured; no full analyzer rebuild drops wrapper identities.
         {
             var const_scope = profile.begin(.shake_const_prepass);
             defer const_scope.end();
@@ -400,10 +382,6 @@ pub const TreeShaker = struct {
                 defer link_refresh_scope.end();
                 self.refreshLinkMetadataAfterPreShakeMutation();
             }
-        }
-        if (defer_wrapper_symbol_registration) {
-            if (self.ast_mutated_after_link) try self.graph.registerWrapperSymbols();
-            self.graph.wrapper_symbols_registered = true;
         }
 
         // 자동 순수 판별: 진입점이 아닌 모듈의 top-level이 모두 순수하면 side_effects=false
@@ -543,6 +521,7 @@ pub const TreeShaker = struct {
                                     ast,
                                     sem.symbols.items,
                                     sem.scopes,
+                                    sem.symbol_ids,
                                     sem.references,
                                     &sem.unresolved_references,
                                     false,
@@ -2547,60 +2526,30 @@ pub const TreeShaker = struct {
         for (0..mod_count) |i| {
             const m = self.moduleAtMut(@intCast(i)) orelse continue;
             if (m.wrap_kind != .cjs) continue;
-            const ast = if (m.ast) |*actual_ast| actual_ast else continue;
             // This is a value optimization, not a graph-repair requirement.
             // Keep both runtime branches and the original graph when eval or
             // with can change the source-local capability aliases.
             if (!cjs_patterns.nodeBufferCapabilityValuesAreStable(m)) continue;
-            var removed_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty;
-            defer removed_nodes.deinit(self.allocator);
-            var needs_semantic_reanalysis = false;
-            var folded_exports: std.ArrayListUnmanaged(cjs_patterns.FoldedNodeBufferExport) = .empty;
-            defer folded_exports.deinit(self.allocator);
-            const retained_folded = cjs_patterns.foldNodeBufferCapabilityIfsForModuleWithExports(
-                self.allocator,
+            const arena = m.parse_arena orelse continue;
+            const plan = (cjs_patterns.prepareNodeBufferCapabilityPlan(arena.allocator(), m) catch null) orelse continue;
+            var prepared = (@import("graph/transform_prepass.zig").prepareNodeBufferCapabilityFold(
+                self.graph,
                 m,
-                ast,
-                &removed_nodes,
-                &needs_semantic_reanalysis,
-                &folded_exports,
-            ) catch false;
-            if (retained_folded) {
-                if (needs_semantic_reanalysis) {
-                    // Missing semantic scope proof cannot authorize the
-                    // retained updater. Keep the legacy shape normalization
-                    // and full-analysis recovery for this boundary.
-                    _ = cjs_patterns.foldNodeBufferCapabilityIfs(self.allocator, ast);
-                    self.markAstMutatedAndResync(m);
-                    continue;
-                }
-                const retained = if (m.parse_arena) |arena|
-                    self.graph.resyncModuleMetadataAfterNodeBufferCapabilityFoldRetainingGraph(
-                        m,
-                        arena.allocator(),
-                        removed_nodes.items,
-                    ) catch false
-                else
-                    false;
-                if (retained) {
-                    for (folded_exports.items) |fact| {
-                        const key = (@as(u64, @intCast(i)) << 32) | @as(u64, @backingInt(fact.statement));
-                        try self.node_buffer_folded_exports.put(self.allocator, key, fact);
-                    }
-                    self.markAstMutated(m);
-                } else {
-                    // The retained candidate has already removed the alternate.
-                    // Finish the legacy shape normalization before rebuilding
-                    // semantics so rejected block-owner cases keep prior output.
-                    _ = cjs_patterns.foldNodeBufferCapabilityIfs(self.allocator, ast);
-                    self.markAstMutatedAndResync(m);
-                }
-                continue;
+                arena.allocator(),
+                &plan,
+            ) catch null) orelse continue;
+            defer prepared.discard();
+            if (!plan.isCurrent(m)) continue;
+            // Every fallible AST/graph/metadata operation has completed. Reserve
+            // the reachability facts before committing the module and publish
+            // them without another allocation. Rejection keeps both branches.
+            self.node_buffer_folded_exports.ensureUnusedCapacity(self.allocator, @intCast(plan.exports.len)) catch continue;
+            if (!prepared.publish(m)) continue;
+            for (plan.exports) |fact| {
+                const key = (@as(u64, @intCast(i)) << 32) | @as(u64, @backingInt(fact.statement));
+                self.node_buffer_folded_exports.putAssumeCapacity(key, fact);
             }
-
-            removed_nodes.clearRetainingCapacity();
-            if (!cjs_patterns.foldNodeBufferCapabilityIfs(self.allocator, ast)) continue;
-            self.markAstMutatedAndResync(m);
+            self.markAstMutated(m);
         }
     }
 

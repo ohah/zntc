@@ -170,7 +170,7 @@ pub fn appendHelperImports(
             try emitOne(self, def.bases, span, out);
         }
     }
-    if (helpers.class_call_check and self.class_define_property_used) {
+    if (self.class_define_property_used) {
         try emitOne(self, &.{"__classDefineProperty"}, span, out);
     }
 }

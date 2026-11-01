@@ -533,9 +533,8 @@ test "virtual provider ten public ES5 entries retain exact providers and runtime
     };
     try std.testing.expectEqual(@as(u32, 0), resync_totals[0]);
     try std.testing.expectEqual(@as(u32, 0), resync_totals[1]);
-    // Identifier minification runs the existing entry prepass once. The frozen
-    // per-module trace proves provider completion/exact and no provider resync.
-    try std.testing.expectEqual(@as(u32, public_cases.len), resync_totals[2]);
+    // Identifier minification retains the entry graph as well as its providers.
+    try std.testing.expectEqual(@as(u32, 0), resync_totals[2]);
 }
 
 fn equalSourceTransform(_: ?*anyopaque, code: []const u8, id: []const u8, _: std.mem.Allocator, _: *@import("../bundler/plugin.zig").HookContext) @import("../bundler/plugin.zig").PluginError!?[]const u8 {
@@ -550,7 +549,7 @@ fn untouchedAst(_: ?*anyopaque, _: *@import("../bundler/plugin.zig").AstTransfor
     return null;
 }
 
-test "virtual provider actual source transform and AST hook preserve fallback" {
+test "virtual provider actual source transform and AST hook retain the graph" {
     const test_helpers = @import("../bundler/test_helpers.zig");
     const profile = @import("../profile.zig");
     const Plugin = @import("../bundler/plugin.zig").Plugin;
@@ -581,11 +580,11 @@ test "virtual provider actual source transform and AST hook preserve fallback" {
         try std.testing.expectEqual(@as(u8, 0), actual.term.exited);
         try std.testing.expectEqualStrings(public_cases[0].expected, actual.stdout);
         std.debug.print("provider-fallback producer={d} resync={d}\n", .{ index, profile.count(.graph_resync_semantic) });
-        try std.testing.expect(profile.count(.graph_resync_semantic) > 0);
+        try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
     }
 }
 
-test "regexp helpers retain the graph while syntax helper work keeps fallback" {
+test "regexp helpers and syntax helper work retain their producer graph" {
     const test_helpers = @import("../bundler/test_helpers.zig");
     const profile = @import("../profile.zig");
     const inputs = [_]PublicCase{
@@ -616,11 +615,7 @@ test "regexp helpers retain the graph while syntax helper work keeps fallback" {
         try std.testing.expectEqual(@as(u8, 0), actual.term.exited);
         try std.testing.expectEqualStrings(case.expected, actual.stdout);
         std.debug.print("provider-work-bound index={d} resync={d}\n", .{ index, profile.count(.graph_resync_semantic) });
-        if (index == 0 or index == 2 or index == 3) {
-            try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
-        } else {
-            try std.testing.expect(profile.count(.graph_resync_semantic) > 0);
-        }
+        try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
     }
 }
 
@@ -726,13 +721,13 @@ test "ES5 regex graph retention keeps static imports and rejects hostile combina
         .{ .name = "exported regex only", .entry = "import {live} from './lib.mjs';console.log(live());", .library = "export function live(){var r=/./s;return r.test('\\n')}", .minify_identifiers = false, .expected_resyncs = 0 },
         .{ .name = "import plus exported regex", .entry = "import {live} from './lib.mjs';var check=/./s;console.log(live(),check.test('\\n'));", .library = "export function live(){var r=/./s;return r.test('\\n')}", .minify_identifiers = false, .expected_resyncs = 0 },
         .{ .name = "minified import plus exported regex", .entry = "import {live as aLongImportedFunctionName} from './lib.mjs';var check=/./s;console.log(aLongImportedFunctionName(),check.test('\\n'));", .library = "export function live(){var r=/./s;return r.test('\\n')}", .minify_identifiers = true, .expected_resyncs = 0 },
-        .{ .name = "minified plain import baseline", .entry = "import {live as aLongImportedFunctionName} from './lib.mjs';console.log(aLongImportedFunctionName());", .library = "export function live(){return true}", .minify_identifiers = true, .expected_resyncs = 2 },
+        .{ .name = "minified plain import baseline", .entry = "import {live as aLongImportedFunctionName} from './lib.mjs';console.log(aLongImportedFunctionName());", .library = "export function live(){return true}", .minify_identifiers = true, .expected_resyncs = 0 },
         .{ .name = "named capture retained helper", .entry = "import {live} from './lib.mjs';var check=/(?<name>a)/;var exec=check.exec('a');var string='a'.replace(check,'$<name>');var callback='a'.replace(check,function(match,name,offset,input,groups){return groups.name});console.log(live(),exec.groups.name,string,callback);", .library = "export function live(){return true}export function dead(){console.log('DEAD')}", .minify_identifiers = false, .expected_resyncs = 0, .expected_stdout = "true a a a\n" },
         .{ .name = "named capture retained helper with minification", .entry = "import {live as aLongImportedFunctionName} from './lib.mjs';var check=/(?<name>a)/;var exec=check.exec('a');var string='a'.replace(check,'$<name>');var callback='a'.replace(check,function(match,name,offset,input,groups){return groups.name});console.log(aLongImportedFunctionName(),exec.groups.name,string,callback);", .library = "export function live(){var r=/./s;return r.test('\\n')}", .minify_identifiers = true, .minify_whitespace = true, .expected_resyncs = 0, .expected_stdout = "true a a a\n" },
-        .{ .name = "class lowering keeps static import fallback", .entry = "import {live} from './lib.mjs';var check=/./s;class Marker{}console.log(live(),check.test('\\n'),Marker.name);", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 1 },
-        .{ .name = "import attributes keep static import fallback", .entry = "import {live} from './lib.mjs' with { mode: 'hostile' };var check=/./s;console.log(live(),check.test('\\n'));", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 1 },
-        .{ .name = "side-effect import attributes keep static import fallback", .entry = "import './lib.mjs' with { mode: 'hostile' };var check=/./s;console.log(check.test('\\n'));", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 1 },
-        .{ .name = "direct eval keeps static import fallback", .entry = "import {live} from './lib.mjs';eval('void 0');var check=/./s;console.log(live(),check.test('\\n'));", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 1 },
+        .{ .name = "class lowering keeps static import fallback", .entry = "import {live} from './lib.mjs';var check=/./s;class Marker{}console.log(live(),check.test('\\n'),Marker.name);", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 0 },
+        .{ .name = "import attributes keep static import fallback", .entry = "import {live} from './lib.mjs' with { mode: 'hostile' };var check=/./s;console.log(live(),check.test('\\n'));", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 0 },
+        .{ .name = "side-effect import attributes keep static import fallback", .entry = "import './lib.mjs' with { mode: 'hostile' };var check=/./s;console.log(check.test('\\n'));", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 0 },
+        .{ .name = "direct eval keeps static import fallback", .entry = "import {live} from './lib.mjs';eval('void 0');var check=/./s;console.log(live(),check.test('\\n'));", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 0 },
     };
     for (cases) |case| {
         var tmp = std.testing.tmpDir(.{});

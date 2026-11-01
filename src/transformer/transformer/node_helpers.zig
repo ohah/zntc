@@ -291,7 +291,11 @@ fn recordReferenceOrigin(self: anytype, source: NodeIndex, clone: NodeIndex) Err
 /// 통합 AST에서는 old_idx와 new_idx가 같은 배열의 인덱스.
 fn copyExpressionScopeProvenance(self: anytype, src_idx: NodeIndex, dst_idx: NodeIndex) Error!void {
     if (src_idx == dst_idx) return;
-    if (self.transformed_node_scope_provenance.get(src_idx) orelse self.node_scope_provenance.get(src_idx)) |scope| {
+    const source = if (self.semantic_editor) |*editor|
+        editor.node_scope_provenance.get(src_idx)
+    else
+        self.transformed_node_scope_provenance.get(src_idx) orelse self.node_scope_provenance.get(src_idx);
+    if (source) |scope| {
         try self.transformed_node_scope_provenance.put(self.allocator, dst_idx, scope);
         self.node_scope_provenance_changed = true;
         if (self.semantic_editor) |*editor| editor.copyNodeScopeProvenance(src_idx, dst_idx) catch |err| {

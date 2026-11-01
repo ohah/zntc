@@ -209,6 +209,9 @@ pub const Linker = struct {
     /// 필드를 대체. populate* 계열이 `moduleAtMut` 로 mutate 하므로 non-const.
     /// SegmentedList 교체 (#1779 PR #3) 시 Linker 는 건드리지 않아도 된다.
     graph: *ModuleGraph,
+    /// Build-scope import fanout, separate from the semantic graph's local
+    /// Reference rows. Only mangler priority consumes local + imported weight.
+    semantic_import_fanout: std.AutoHashMapUnmanaged(bundler_symbol.SymbolID, u32) = .empty,
     /// 출력 포맷.
     format: types.Format,
 
@@ -430,12 +433,13 @@ pub const Linker = struct {
     /// target module 별 공유 namespace object var. namespace 를 값으로 쓰는 여러 importer 가
     /// 같은 객체 선언을 중복 emit 하지 않도록 bundle/chunk preamble 에서 한 번만 쓴다.
     ns_shared_inline_cache: std.AutoHashMapUnmanaged(u32, SharedNsInline) = .empty,
+    codegen_output_registry: @import("codegen_output_domain.zig").Registry = .{},
     ns_shared_inline_order: std.ArrayListUnmanaged(u32) = .empty,
     ns_shared_var_names: std.StringHashMapUnmanaged(void) = .empty,
     /// Lazy cross-chunk public names for generated namespace objects. Values borrow the
     /// corresponding `cross_chunk_global_names` entry; the module key is the exact namespace
     /// object owner because `export * as ns` has no source semantic local SymbolId.
-    ns_shared_global_names: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
+    ns_shared_global_names: std.AutoHashMapUnmanaged(@import("codegen_output_domain.zig").Ref, []const u8) = .empty,
     /// (#3966) shared namespace var 이름의 결정적 충돌 해소. 같은 sanitized
     /// base (예: 서로 다른 디렉터리의 `core.js`) 를 갖는 모듈들 중 module_index
     /// (renumber 후 path-sorted, 결정적) 순서의 rank. rank>0 인 모듈만 저장
@@ -474,6 +478,7 @@ pub const Linker = struct {
     };
 
     pub const SharedNsInline = struct {
+        output_ref: ?@import("codegen_output_domain.zig").Ref = null,
         var_name: []const u8,
         object_literal: []const u8,
     };
@@ -576,6 +581,7 @@ pub const Linker = struct {
 
         // 키 name 은 borrow(export_bindings 소유) → 개별 free 불필요.
         self.export_map.deinit(self.allocator);
+        self.semantic_import_fanout.deinit(self.allocator);
         self.resolved_bindings.deinit(self.allocator);
         for (self.canonical_strings.items) |s| self.allocator.free(s);
         self.canonical_strings.deinit(self.allocator);
@@ -623,12 +629,15 @@ pub const Linker = struct {
         self.ns_inline_cache.deinit(self.allocator);
         var ns_shared_it = self.ns_shared_inline_cache.valueIterator();
         while (ns_shared_it.next()) |v| {
-            self.allocator.free(v.var_name);
+            // var_name borrows the registered codegen emission-name receipt.
             self.allocator.free(v.object_literal);
         }
         self.ns_shared_inline_cache.deinit(self.allocator);
+        self.codegen_output_registry.deinit(self.allocator);
         self.ns_shared_inline_order.deinit(self.allocator);
         self.ns_shared_var_names.deinit(self.allocator);
+        var ns_global_values = self.ns_shared_global_names.valueIterator();
+        while (ns_global_values.next()) |name| self.allocator.free(name.*);
         self.ns_shared_global_names.deinit(self.allocator);
         self.ns_base_rank.deinit(self.allocator);
         self.ns_target_set.deinit(self.allocator);
@@ -693,6 +702,7 @@ pub const Linker = struct {
 
     /// 링킹 실행: export 맵 구축 → import 바인딩 해결.
     pub fn link(self: *Linker) !void {
+        self.semantic_import_fanout.clearRetainingCapacity();
         try self.buildExportMap();
 
         // re-export chain이 있으면 resolveExportChain 캐시 활성화.
@@ -937,10 +947,7 @@ pub const Linker = struct {
         // exact producer ID를 owner로 보존해 source의 동명 _default와 연결이 뒤바뀌지 않게 한다.
         for (m.export_bindings) |eb| {
             const is_default_export = std.mem.eql(u8, eb.exported_name, "default");
-            const expects_facade = is_default_export and
-                ((eb.kind == .local and eb.has_default_export_facade) or
-                    (eb.kind == .re_export and
-                        (std.mem.eql(u8, eb.local_name, "_default") or std.mem.eql(u8, eb.local_name, "default"))));
+            const expects_facade = is_default_export and eb.kind == .local and eb.has_default_export_facade;
             const has_facade = eb.hasSyntheticDefault(m.semanticSymbols());
             if (expects_facade and !has_facade) return error.MissingDefaultExportFacadeSymbol;
             if (has_facade) {
@@ -4102,7 +4109,7 @@ pub const Linker = struct {
                                 .module_index = @intCast(mi),
                                 .symbol_id = @intCast(si),
                                 .name = key,
-                                .ref_count = if (sym.reference_count == 0) 1 else sym.reference_count,
+                                .ref_count = @max(1, self.manglingReferenceCount(m.index, si, sym.reference_count)),
                                 .module_path = m.path,
                                 .requires_uppercase_first_char = self.graph.jsx_runtime == .preserve and sym.requires_uppercase_first_char,
                             });
@@ -4186,7 +4193,7 @@ pub const Linker = struct {
                             .module_index = @intCast(mi),
                             .symbol_id = sym_idx,
                             .name = key,
-                            .ref_count = sym.reference_count,
+                            .ref_count = self.manglingReferenceCount(m.index, sym_idx, sym.reference_count),
                             .module_path = m.path,
                             .requires_uppercase_first_char = self.graph.jsx_runtime == .preserve and
                                 (sym.requires_uppercase_first_char or is_jsx_component),
@@ -4248,7 +4255,7 @@ pub const Linker = struct {
                         // default_export 는 wrapper 와 달리 cross-module emit 보장이 없다 —
                         // ref=0 이면 어디서도 import 하지 않아 codegen 이 binding 을 emit
                         // 하지 않는다. 그런 candidate 는 mangle 풀에서 제외.
-                        if (sk == .default_export and sym.reference_count == 0) continue;
+                        if (sk == .default_export and self.manglingReferenceCount(m.index, si, sym.reference_count) == 0) continue;
                         // (#4532 증상1 minify) preserve-modules 는 래퍼 심볼(exports_X/init_X/
                         // require_X)을 **canonical(미-mangle) 이름**으로 emit 한다 —
                         // `preserveModulesWrapperChunk`(chunks.zig #4528)가 wrapper export/declaration
@@ -4273,13 +4280,17 @@ pub const Linker = struct {
                         // 번들러가 직접 emit하므로 semantic reference_count가 보통 0이다.
                         // 그래도 선언과 cross-module 호출에 실제로 등장하고 RN 번들에서는
                         // 매우 길어지므로, 작은 0이 아닌 가중치로 최상위 망글 후보에 남긴다.
-                        const ref_count: u32 = if ((sk == .cjs_exports or sk == .cjs_require or sk == .esm_init) and sym.reference_count == 0)
+                        const weighted_count = self.manglingReferenceCount(m.index, si, sym.reference_count);
+                        const ref_count: u32 = if ((sk == .cjs_exports or sk == .cjs_require or sk == .esm_init) and weighted_count == 0)
                             1
                         else
-                            sym.reference_count;
+                            weighted_count;
 
                         if (candidate_symbols.isSet(si)) continue;
                         candidate_symbols.set(si);
+                        // Phase A owns this actual synthetic SID even when its
+                        // lexical scope is nested. Phase B must not rename it again.
+                        bitsets[mi].set(si);
                         try candidates.append(self.allocator, .{
                             .module_index = @intCast(mi),
                             .symbol_id = @intCast(si),
@@ -4680,9 +4691,10 @@ pub const Linker = struct {
         // reservation before freeing those values so no namespace-name key dangles.
         var ns_it = self.ns_shared_global_names.iterator();
         while (ns_it.next()) |entry| {
-            const shared = self.ns_shared_inline_cache.get(entry.key_ptr.*) orelse continue;
-            if (!std.mem.eql(u8, shared.var_name, entry.value_ptr.*))
-                _ = self.ns_shared_var_names.remove(entry.value_ptr.*);
+            if (self.ns_shared_inline_cache.get(entry.key_ptr.module.toU32())) |shared| {
+                if (!std.mem.eql(u8, shared.var_name, entry.value_ptr.*)) _ = self.ns_shared_var_names.remove(entry.value_ptr.*);
+            } else _ = self.ns_shared_var_names.remove(entry.value_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
         }
         self.ns_shared_global_names.clearRetainingCapacity();
         var it = self.cross_chunk_global_names.valueIterator();
@@ -5728,8 +5740,8 @@ pub const Linker = struct {
     }
 
     /// #1328 Phase 4d: 모든 모듈의 import_bindings를 훑어 source 모듈 export 심볼의
-    /// `ref_count`를 증가시킨다. Tree-shaking의 companion metric — "몇 개 모듈이 이
-    /// export를 참조하나"를 symbol level에서 집계.
+    /// import fanout을 집계한다. semantic local Reference count는 바꾸지 않고
+    /// Linker 소유 SymbolID map에 기록한다. AliasTable의 별도 count 정책은 유지한다.
     ///
     /// 현재 tree_shaker가 statement-level reachability로 수행하는 분석과 별개로,
     /// symbol 기반 usage 데이터를 축적한다. Phase 4e 이후 tree-shaker가 이 값을
@@ -5737,8 +5749,19 @@ pub const Linker = struct {
     ///
     /// link() + populateReExportAliases() 이후에 호출되어야 한다.
     /// #1338 Phase 4c-2: ib.symbol로 직접 전환 — export_map 해시 lookup 제거.
-    pub fn populateSymbolRefCounts(self: *const Linker) void {
+    pub fn populateSymbolRefCounts(self: *Linker) !void {
         const count = self.graph.moduleCount();
+        // Reserve before clearing or incrementing either metric. Allocation
+        // failure leaves the previous fanout and alias counters unchanged.
+        var semantic_import_count: u32 = 0;
+        for (0..count) |i| {
+            const importer = self.getModule(@intCast(i)) orelse continue;
+            for (importer.import_bindings) |ib| {
+                if (ib.symbol.semanticIndex() != null) semantic_import_count += 1;
+            }
+        }
+        try self.semantic_import_fanout.ensureTotalCapacity(self.allocator, semantic_import_count);
+        self.semantic_import_fanout.clearRetainingCapacity();
         for (0..count) |i| {
             const importer = self.getModule(@intCast(i)) orelse continue;
             for (importer.import_bindings) |ib| {
@@ -5755,14 +5778,21 @@ pub const Linker = struct {
                         table_ptr.incRefCount(a.symbol);
                     },
                     .semantic => |s| {
-                        const sem_ptr = if (source.semantic) |*sem| sem else continue;
+                        const sem_ptr = source.semantic orelse continue;
                         const idx: u32 = @backingInt(s.symbol);
                         if (idx >= sem_ptr.symbols.items.len) continue;
-                        sem_ptr.symbols.items[idx].reference_count += 1;
+                        const key = bundler_symbol.SymbolID.fromRef(ib.symbol).?;
+                        const fanout = self.semantic_import_fanout.getOrPutAssumeCapacity(key);
+                        if (!fanout.found_existing) fanout.value_ptr.* = 0;
+                        fanout.value_ptr.* += 1;
                     },
                 }
             }
         }
+    }
+
+    fn manglingReferenceCount(self: *const Linker, module: ModuleIndex, symbol_index: anytype, physical_local_count: u32) u32 {
+        return physical_local_count + (self.semantic_import_fanout.get(bundler_symbol.SymbolID.make(module, symbol_index)) orelse 0);
     }
 
     /// 모든 모듈의 ImportBinding 심볼 필드를 채운다:
@@ -6039,7 +6069,12 @@ pub const Linker = struct {
 
     pub const registerNamespaceRewrites = shared_namespace.registerNamespaceRewrites;
     pub const ensureSharedNsVar = shared_namespace.ensureSharedNsVar;
+    pub const sharedNamespaceOutputRef = shared_namespace.sharedNamespaceOutputRef;
+    pub const sharedNamespaceOutputSymbol = shared_namespace.sharedNamespaceOutputSymbol;
+    pub const sharedNamespaceInitialName = shared_namespace.sharedNamespaceInitialName;
+    pub const sharedNamespaceEmittedName = shared_namespace.sharedNamespaceEmittedName;
     pub const isSharedNamespaceVar = shared_namespace.isSharedNamespaceVar;
+    pub const isSharedNamespaceAssignment = shared_namespace.isSharedNamespaceAssignment;
     pub const reserveSharedNamespaceVarNames = shared_namespace.reserveSharedNamespaceVarNames;
     pub const assignSharedNamespaceGlobalName = shared_namespace.assignSharedNamespaceGlobalName;
     pub const getSharedNamespaceGlobalName = shared_namespace.getSharedNamespaceGlobalName;
@@ -6555,29 +6590,30 @@ pub const Linker = struct {
         }
     }
 
-    /// RFC #3940 Sub-PR-L.5a — graph carry-over 가 `module.pending_renames` 에 stash 한 rename
+    /// RFC #3940 Sub-PR-L.5a — graph carry-over 가 `module.legacy_rename_oracle.renames` 에 stash 한 rename
     /// (SymbolID→name) 을 build-scope `rename_table` 에 반영한다.
     ///
     /// tree-shake 단계 (link 후, `minify_identifiers=false` + const-materialization AST mutation)
     /// 의 semantic resync 가 symbol idx 를 재배정하면, `transform_prepass.captureRenamesToPending`
-    /// 가 (tree_shaker 의 *const linker.rename_table 에서 읽어) new idx 로 module.pending_renames 에
+    /// 가 (tree_shaker 의 *const linker.rename_table 에서 읽어) new idx 로 module.legacy_rename_oracle.renames 에
     /// 모았다. 여기서 mutable linker 가 적용 — mutated module 의 resync-전 stale entry 를 prune 후
     /// pending 으로 완전 재선언 (구 `syncRenameTableFromCanonical` 의 clear-rebuild 시맨틱 보존).
     /// 소비 후 pending 을 비운다 (value 는 canonical_strings borrow — build-scope, store round-trip 전 clear).
-    pub fn applyPendingRenames(self: *Linker) !void {
+    pub fn applyPendingRenamesForTest(self: *Linker) !void {
+        if (!@import("builtin").is_test) @compileError("rename correspondence is a test-only fresh-analysis oracle");
         var mit = self.graph.modules.iterator(0);
         while (mit.next()) |m| {
-            if (m.pending_renames.count() == 0) {
-                m.pending_rename_capture_seen = false;
+            if (m.legacy_rename_oracle.renames.count() == 0) {
+                m.legacy_rename_oracle.capture_seen = false;
                 continue;
             }
             try self.rename_table.removeModule(self.allocator, m.index);
-            var it = m.pending_renames.map.iterator();
+            var it = m.legacy_rename_oracle.renames.map.iterator();
             while (it.next()) |e| {
                 try self.rename_table.put(self.allocator, e.key_ptr.*, e.value_ptr.*);
             }
-            m.pending_renames.clear();
-            m.pending_rename_capture_seen = false;
+            m.legacy_rename_oracle.renames.clear();
+            m.legacy_rename_oracle.capture_seen = false;
         }
     }
 
@@ -6633,7 +6669,7 @@ pub const Linker = struct {
         // capture_eligible 이 minify_identifiers/code_splitting 을 제외하므로 ref_count 가 어디서도
         // 소비되지 않는다. 전체 모듈 import_bindings O(N) 순회 절약(lnk). 첫빌드/fallback/splitting
         // (skip_ref_counts=false)은 종전대로 populate.
-        if (!opts.skip_ref_counts) self.populateSymbolRefCounts();
+        if (!opts.skip_ref_counts) try self.populateSymbolRefCounts();
     }
 
     fn assignCjsWrapperParameterAliases(self: *Linker, module_indices: ?[]const ModuleIndex) !void {
@@ -6812,9 +6848,8 @@ pub const Linker = struct {
     ///   - rename/mangling: emit 단계 입력. 직후 numeric post-pass 가 또 mutation 할
     ///     수 있어 bundler 가 모든 mutation 이 settle 된 뒤 한 번만 계산해야 한다
     ///     (#2502: 두 번 호출되면 inner 결과가 outer `clear_first` 로 폐기 → 낭비).
-    ///   - populateSymbolRefCounts: 증분 (`+= 1`) 이라 멱등하지 않음 — 두 번 부르면
-    ///     2× 누적. mangler 가 rank-comparison 으로만 쓰니 결과는 같지만, 새 inner
-    ///     에서 빼고 outer 의 한 번만 신뢰하는 편이 명확.
+    ///   - populateSymbolRefCounts: semantic fanout은 재집계하지만 기존 alias
+    ///     증분 정책은 멱등하지 않음. inner에서 빼고 outer에서 한 번만 집계한다.
     /// `*const Linker` 시그니처 — populate* 모두 const-self interior mutation 만 함.
     pub fn refreshAfterAstMutation(self: *const Linker) void {
         self.populateReExportAliases();
@@ -6974,7 +7009,7 @@ pub const Linker = struct {
                     // its exact target module and local name. It has no source ExportBinding or
                     // semantic SymbolId; its global alias was handed to the shared namespace
                     // owner when cross-chunk names were assigned.
-                    if (self.isSharedNamespaceVar(mod_idx.toU32(), e.key_ptr.*)) continue;
+                    if (self.isSharedNamespaceAssignment(mod_idx.toU32(), e.key_ptr.*, e.value_ptr.*)) continue;
                     const local = self.getExportLocalName(mod_idx.toU32(), e.key_ptr.*) orelse e.key_ptr.*;
                     const dup = try self.allocator.dupe(u8, e.value_ptr.*);
                     if (!try self.putCanonicalNameForLocalExport(mod_idx.toU32(), e.key_ptr.*, dup)) {

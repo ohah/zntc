@@ -386,6 +386,9 @@ fn ensureCssPropAlias(self: *Transformer) Error!NodeIndex {
     const anchor: Span = .{ .start = program_span.start, .end = program_span.start };
     const imported_source = self.plugins.emotion.css_import_source_node orelse
         @panic("Emotion css alias has no exact source-module node");
+    // The original import can remain live under verbatimModuleSyntax. Its
+    // source literal has a different statement owner from this new import.
+    const alias_source = try self.ast.addNode(self.ast.getNode(imported_source));
     if (self.semantic_edit_enabled) {
         const symbol = try self.declareSyntheticInScope(binding, anchor, .import_binding, self.programScope()) orelse
             @panic("Emotion css alias has no exact SymbolId");
@@ -403,7 +406,7 @@ fn ensureCssPropAlias(self: *Transformer) Error!NodeIndex {
     const import_extra = try self.ast.addExtras(&.{
         specs.start,
         specs.len,
-        @backingInt(imported_source),
+        @backingInt(alias_source),
         self.plugins.emotion.css_import_phase_flags,
         self.plugins.emotion.css_import_attrs_start,
         self.plugins.emotion.css_import_attrs_len,

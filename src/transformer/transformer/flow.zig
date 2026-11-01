@@ -528,10 +528,11 @@ pub fn visitFlowComponentWrapper(self: *Transformer, node: Node) Error!NodeIndex
         };
         helper_output_name = output_name;
         const resolved_name = output_name.name;
+        // The parser-created argument predates this exact generated binding.
+        // Consume its old reference/external provenance even when spelling
+        // stays unchanged, before publishing the known helper SymbolId below.
+        try self.removeSemanticReference(forward_ref_argument);
         if (!std.mem.eql(u8, old_name, resolved_name)) {
-            // The analyzer saw the parser-created argument before this generated
-            // binding existed, so it may have resolved the name to a user binding.
-            try self.removeSemanticReference(forward_ref_argument);
             const new_name_span = try self.ast.addString(resolved_name);
             updateFlowComponentName(self, name_idx, new_name_span);
             updateFlowComponentName(self, forward_ref_argument, new_name_span);

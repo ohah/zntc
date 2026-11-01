@@ -29,6 +29,9 @@ fn checkModeWithImports(source: []const u8, native_lexical: bool, full_driver: b
     var analyzer = Analyzer.init(a, &parser.ast);
     analyzer.is_module = true;
     analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
+    analyzer.collect_unresolved_reference_nodes = true;
     try analyzer.analyze();
     var unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5);
     if (native_lexical) {
@@ -63,6 +66,8 @@ fn checkModeWithImports(source: []const u8, native_lexical: bool, full_driver: b
     t.scope_owner_map = analyzer.scope_owner_map;
     t.class_self_symbol_map = analyzer.class_self_symbol_map;
     t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.scope_history = analyzer.scope_history;
+    t.source_owned_retirements = analyzer.source_owned_retirements;
     t.unresolved_references = &analyzer.unresolved_references;
     t.semantic_edit_enabled = true;
     if (!full_driver) try t.buildBlockRenameMap();
@@ -612,5 +617,30 @@ test "generator root coordinate shift does not certify unrelated async method pu
         const variant = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}", .{ prefix, source });
         defer std.testing.allocator.free(variant);
         try checkModeWithImports(variant, false, true, true);
+    }
+}
+
+test "native async body moves computed keys outside method environments" {
+    const sources = [_][]const u8{
+        "async function f(){const R={[Symbol.dispose](){}};{using r=R;}return 7;}f().then(console.log);",
+        "const events=[];async function f(){const R={[Symbol.dispose](){events.push('dispose')}};{using r=R;events.push('body');}return events.join(',');}f().then(console.log);",
+        "async function f(){const o={[Symbol.iterator](){return 7;}};return o[Symbol.iterator]();}f().then(console.log);",
+        "async function f(){const o={[globalThis.JSON.stringify('m').slice(1,-1)](){return JSON.parse('7');}};return o.m();}f().then(console.log);",
+        "let calls=0;function key(){calls++;return 'm';}async function f(){const o={[key()](){const key='shadow';return key.length;}};return [calls,o.m()];}f().then(value=>console.log(JSON.stringify(value)));",
+    };
+    for (sources, 0..) |source, case_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]@import("transformer.zig").TransformOptions.compat.ESTarget{ .es5, .es2015, .es2017 }) |target| for ([_]bool{ false, true }) |minify| {
+            std.debug.print("NATIVE_ASYNC_KEY case={d} target={s} minify={}\n", .{ case_index, @tagName(target), minify });
+            const result = try @import("../transpile.zig").transpile(a, source, "input.mjs", .{ .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(target), .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify });
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) std.debug.print("native async key mismatch case={d} target={s} minify={} expected={s} actual={s} stderr={s} code={s}\n", .{ case_index, @tagName(target), minify, native.stdout, actual.stdout, actual.stderr, result.code });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        };
     }
 }

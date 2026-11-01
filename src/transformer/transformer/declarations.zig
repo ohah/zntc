@@ -372,6 +372,10 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
 
     try @import("../worklet_class_clone.zig").transferFactoryFunctionOwner(self, source_idx, result);
 
+    // A plugin can retain this function inside a new expression wrapper.
+    // Publish its exact copied owner before the hook chooses that wrapper.
+    if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, result);
+
     // Plugin dispatch: onFunction (AST 훅)
     const is_auto_worklet = self.plugins.worklet.auto_next;
     const plugin_insertion_scope = self.functionListInsertionScope(source_idx);

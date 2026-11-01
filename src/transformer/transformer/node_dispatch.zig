@@ -216,6 +216,13 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 
             // Plugin visitor 훅 — 기본 방문 전 선취권 (null 반환 시 default 진행)
             if (try self.dispatchVisitor(.on_object_expression, idx)) |replacement| return replacement;
+            if (@import("../object_descriptor_helper.zig").retainsNativeAccessor(self, idx) catch |err| return @import("../object_builtin_reference.zig").productionFailure(err)) |reason| {
+                switch (reason) {
+                    .with_scope => self.used_unsupported_object_accessor_with = true,
+                    .opaque_eval => self.used_unsupported_object_accessor_eval = true,
+                }
+                return idx;
+            }
 
             // 객체 리터럴 메서드의 `super` 가 낮춰져야 하면 객체를 home 임시 변수에 담는다 (#4729).
             const home_mark = self.object_super_homes.items.len;
@@ -503,7 +510,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 if (try self.tryLowerForInOfPrivateTarget(node)) |result| return result;
             }
             if (try self.maybeLowerForInOfDestructuring(idx, node)) |result| return result;
-            return self.visitForInOfTernary(node);
+            return self.visitForInOfTernary(idx, node);
         },
         .try_statement,
         => self.visitTernaryNode(node),
@@ -514,7 +521,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (self.options.unsupported.needsForAwaitOfDownlevel()) {
                 return es2018_for_await.ES2018ForAwait(Transformer).lowerForAwaitOf(self, idx, node);
             }
-            return self.visitForInOfTernary(node);
+            return self.visitForInOfTernary(idx, node);
         },
         .for_of_statement => {
             // `for (using x of …)` 헤더를 본문 블록의 using 으로 옮긴다 (#4730).
@@ -534,7 +541,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (!self.options.unsupported.for_of) {
                 if (try self.maybeLowerForInOfDestructuring(idx, node)) |result| return result;
             }
-            return self.visitForInOfTernary(node);
+            return self.visitForInOfTernary(idx, node);
         },
         .labeled_statement => {
             // for-of/for-await-of를 block으로 lowering할 때, label이 block에 남으면
@@ -826,7 +833,16 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .object_property => self.visitObjectProperty(node),
         .formal_parameter => self.visitFormalParameter(node),
         .import_declaration => blk: {
+            const trailing_top = self.trailing_nodes.items.len;
+            const erasure = try @import("import_export.zig").captureImportErasureBindings(self, idx);
+            defer self.allocator.free(erasure);
             const output = try self.visitImportDeclaration(node);
+            try @import("import_export.zig").recordImportErasureBindings(
+                self,
+                erasure,
+                output,
+                self.trailing_nodes.items[trailing_top..],
+            );
             try @import("../sideeffect_entry_graph.zig").recordImport(self, idx, output);
             break :blk output;
         },
@@ -1317,7 +1333,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .ts_import_equals_declaration => self.visitImportEqualsDeclaration(node),
 
         // export = expr → module.exports = expr;
-        .ts_export_assignment => self.visitExportAssignment(node),
+        .ts_export_assignment => self.visitExportAssignment(idx, node),
 
         // === 나머지: invalid + TS 타입 전용 노드 ===
         // TS 타입 노드는 isTypeOnlyNode 검사(위)에서 이미 .none으로 반환됨.

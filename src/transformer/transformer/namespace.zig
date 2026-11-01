@@ -47,14 +47,27 @@ pub fn visitImportEqualsDeclaration(self: *Transformer, node: Node) Error!NodeIn
 /// `export = expr;` -> `module.exports = expr;`
 /// ESM output context can still fail at runtime with `module is not defined`
 /// (tsc TS1203 equivalent); policy is handled outside this syntax rewrite.
-pub fn visitExportAssignment(self: *Transformer, node: Node) Error!NodeIndex {
+pub fn visitExportAssignment(self: *Transformer, source: NodeIndex, node: Node) Error!NodeIndex {
     const new_expr = try self.visitNode(node.data.unary.operand);
     if (new_expr.isNone()) return .none;
 
     const module_id = try es_helpers.makeGlobalRef(self, "module");
     const exports_prop = try es_helpers.makePropertyName(self, "exports");
     const member = try es_helpers.makeStaticMember(self, module_id, exports_prop, node.span);
-    return es_helpers.makeAssignStmt(self, member, new_expr, node.span, 0);
+    const statement = try es_helpers.makeAssignStmt(self, member, new_expr, node.span, 0);
+    try self.cjs_export_assignment_references.append(self.allocator, .{
+        .source_buffer = self.ast.source,
+        .source = source,
+        .source_expression = node.data.unary.operand,
+        .expression = new_expr,
+        .statement = statement,
+        .assignment = self.ast.getNode(statement).data.unary.operand,
+        .member = member,
+        .property = exports_prop,
+        .reference = module_id,
+        .scope = self.current_scope,
+    });
+    return statement;
 }
 
 /// ts_module_declaration: binary = { left=name, right=body_or_inner, flags }
@@ -163,7 +176,10 @@ pub fn visitNamespaceDeclaration(self: *Transformer, primary: NodeIndex, node: N
         new_body = try self.ast.addNode(.{ .tag = .block_statement, .span = node.span, .data = .{ .list = try self.ast.addNodeList(&.{exported}) } });
         if (self.semantic_edit_enabled) {
             try self.transformed_scope_owner_map.put(self.allocator, @backingInt(new_body), @backingInt(self.current_scope));
-            if (self.semantic_editor) |*editor| try editor.scope_owner_map.put(self.allocator, @backingInt(new_body), @backingInt(self.current_scope));
+            if (self.semantic_editor) |*editor| editor.putScopeOwner(new_body, self.current_scope) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                @panic("invalid generated scope owner publication");
+            };
             // This wrapper is born as this outer IIFE's actual body. Later
             // strict/capture copies must carry that exact creation owner.
             const origin = try self.scope_owner_origins.getOrPut(self.allocator, @backingInt(new_body));

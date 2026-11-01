@@ -8,6 +8,8 @@ pub const Entry = struct {
     source_node: NodeIndex,
     /// A real source with ObjectEnvironment surrounds this expression.
     with_environment: bool = false,
+    external_import: ?@import("import_erasure.zig").ExternalOrigin = null,
+    source_external: ?@import("source_external_origin.zig").Origin = null,
 };
 pub const Map = std.AutoHashMapUnmanaged(NodeIndex, Entry);
 

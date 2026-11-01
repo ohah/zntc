@@ -92,6 +92,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// generator function을 상태 머신으로 변환.
         /// function*: extra = [name(0), params(1), body(2), flags(3), return_type(4)]
         pub fn lowerGeneratorFunction(self: *Transformer, source_owner: NodeIndex, node: Node) Transformer.Error!NodeIndex {
+            const source_boundary = try captureGeneratorSource(self, source_owner);
+            defer if (source_boundary) |captured| self.allocator.free(captured.heritages);
             const e = node.data.extra;
             const span = node.span;
 
@@ -184,7 +186,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             } else .none;
             const gen = try buildGeneratorHelperCallWithProto(self, sm_body, genFn_ref, span);
             try self.bindGeneratedState(source_scope, source_scope, gen.callback, gen.state_param, frame.state_ref_start, sm_result.hoisted_temps.items, frame.callback_temps.items, span);
-            if (self.semantic_edit_enabled) try moveCaseReferences(self, gen.callback, self.outputOwnedScope(gen.callback) orelse @panic("generator callback has no actual ScopeId"));
+            if (self.semantic_edit_enabled) try moveCaseReferences(self, gen.callback, self.outputOwnedScope(gen.callback) orelse @panic("generator callback has no actual ScopeId"), generatorTransfer(self, source_boundary, gen));
             const gen_call = gen.call;
 
             // return __generator(...) 문
@@ -1382,6 +1384,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             const result = try BlockScoping.buildLoopClosureWithFlow(
                 self,
+                stmt_idx,
                 body_idx,
                 lexical_names.items,
                 &flow,
@@ -3160,7 +3163,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
         }
 
-        fn moveCaseReferences(self: *Transformer, root: NodeIndex, target: ScopeId) Transformer.Error!void {
+        fn moveCaseReferences(self: *Transformer, root: NodeIndex, target: ScopeId, transfer: ?BoundGeneratorTransfer) Transformer.Error!void {
             const editor = &self.semantic_editor.?;
             const Work = struct { node: NodeIndex, scope: ScopeId };
             var stack: std.ArrayList(Work) = .empty;
@@ -3175,6 +3178,28 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 if (slot.found_existing) continue;
                 const node = self.ast.getNode(work.node);
                 const scope = self.outputOwnedScope(work.node) orelse work.scope;
+                if (editor.node_scope_provenance.get(work.node)) |origin| {
+                    if (transfer != null and origin.source_external != null and origin.scope != scope) {
+                        var moved = origin;
+                        moved.scope = scope;
+                        var proof = transfer.?.proof;
+                        for (transfer.?.heritages) |heritage| if (heritage.read == origin.source_node) {
+                            proof.heritage = heritage;
+                            break;
+                        };
+                        var computed: ?u32 = null;
+                        for (editor.scope_history.source_computed_awaits, 0..) |key, index| {
+                            if (key.leaf.node != origin.source_node or key.scope != origin.source_external.?.execution_scope) continue;
+                            if (computed != null) @panic("generator key read has duplicate actual source carriers");
+                            computed = @intCast(index);
+                        }
+                        proof.computed_await_source = computed;
+                        moved.source_external = try @import("../semantic/source_external_origin.zig").transferredGenerator(self.allocator, origin.source_external.?, work.node, origin.source_node, origin.scope, scope, editor.scopes.items, editor.scope_history.epoch(), proof);
+                        try editor.node_scope_provenance.put(self.allocator, work.node, moved);
+                        try self.transformed_node_scope_provenance.put(self.allocator, work.node, moved);
+                        self.node_scope_provenance_changed = true;
+                    } else try self.relocateNodeScopeProvenance(work.node, origin.scope, scope);
+                }
                 if (self.generator_collected_function_roots.fetchRemove(raw)) |entry| {
                     if (self.outputScopeParent(entry.value) != work.scope)
                         try self.reparentGeneratedScope(entry.value, work.scope);
@@ -3772,6 +3797,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const Entry = struct { node: NodeIndex, binding: NodeIndex, name: Span, symbol: ?u32, count: u32 = 1 };
             var entries: std.ArrayList(Entry) = .empty;
             defer entries.deinit(self.allocator);
+            const DiscardedDeclaration = struct { binding: NodeIndex, symbol: u32 };
+            var discarded_declarations: std.ArrayList(DiscardedDeclaration) = .empty;
+            defer discarded_declarations.deinit(self.allocator);
             var selected: std.AutoHashMapUnmanaged(u32, usize) = .empty;
             defer selected.deinit(self.allocator);
             for (0..list.len) |index| {
@@ -3786,7 +3814,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try self.generator_collected_function_declarations.put(self.allocator, @backingInt(statement), sid orelse std.math.maxInt(u32));
                 if (sid) |id| {
                     if (selected.get(id)) |old| {
+                        try discarded_declarations.append(self.allocator, .{ .binding = entries.items[old].binding, .symbol = id });
                         entries.items[old].node = node;
+                        entries.items[old].binding = origin;
                         entries.items[old].count += 1;
                         continue;
                     }
@@ -3813,6 +3843,30 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         try ensureAnnexBVariableStorage(self, @backingInt(role.variable));
                     }
                     if (sid >= editor.symbols.items.len) @panic("invalid generator function SID");
+                };
+                if (entry.symbol) |sid| if (self.semantic_edit_enabled) {
+                    // Repeated source declarations share a SID, but only the
+                    // selected final declaration initializes this output slot.
+                    // Consume each discarded source anchor before relocation;
+                    // relocating all rows would alias them to one output anchor.
+                    const editor = &self.semantic_editor.?;
+                    if (entry.count > 1) {
+                        var selected_rows: usize = 0;
+                        for (editor.references.items) |reference| {
+                            if (reference.flags.declare and reference.declaration_node_index == entry.binding) {
+                                if (@backingInt(reference.symbol_id) != sid) @panic("generator selected declaration changed identity");
+                                selected_rows += 1;
+                            }
+                        }
+                        if (selected_rows != 1) @panic("generator selected function lost its exact declaration row");
+                    }
+                    for (discarded_declarations.items) |discarded| {
+                        if (discarded.symbol != sid) continue;
+                        if (discarded.binding == entry.binding or self.getSymbolIdAt(discarded.binding) != sid)
+                            @panic("generator discarded function declaration changed identity");
+                        _ = editor.removeDeclarationAtNode(discarded.binding, @fromBackingInt(sid)) catch
+                            @panic("generator discarded function lost its exact declaration row");
+                    }
                 };
                 try registerStateMachineBindingsWithHoisting(self, &.{entry.binding}, true);
                 const producer_index = self.generator_temp_producer_identities.items.len - 1;
@@ -4021,6 +4075,25 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return es_helpers.makeExactSyntheticBindingFromSpan(self, try generatorStateNameSpan(self));
         }
 
+        const BoundGeneratorTransfer = struct { proof: @import("../semantic/generator_environment_transfer.zig").Transfer, heritages: []const @import("../semantic/generator_environment_transfer.zig").HeritageRead };
+        pub fn captureGeneratorSource(self: *Transformer, owner: NodeIndex) Transformer.Error!?@import("../semantic/generator_environment_transfer.zig").Capture {
+            if (!self.semantic_edit_enabled) return null;
+            const source = if (self.extracted_loop_generator_sources.fetchRemove(@backingInt(owner))) |known|
+                known.value
+            else
+                @import("../semantic/generator_environment_transfer.zig").capture(self.ast, owner, self.scope_history) orelse return null;
+            return try @import("../semantic/generator_environment_transfer.zig").captureHeritages(self.allocator, self.ast, self.scope_history, source, self.symbol_ids.items, self.unresolved_reference_nodes);
+        }
+
+        fn generatorTransfer(self: *Transformer, source: ?@import("../semantic/generator_environment_transfer.zig").Capture, gen: GeneratorCall) ?BoundGeneratorTransfer {
+            const before = source orelse return null;
+            const editor = &self.semantic_editor.?;
+            const callback_scope = self.outputOwnedScope(gen.callback) orelse return null;
+            const history: @import("../semantic/scope_frame_history.zig").History = .{ .source_scopes = editor.scope_history.source_scopes, .source_owners = editor.scope_history.source_owners, .source_initializers = editor.scope_history.source_initializers, .source_computed_awaits = editor.scope_history.source_computed_awaits, .worklet_class_creators = editor.scope_history.worklet_class_creators.items, .lowered_worklet_classes = editor.scope_history.lowered_worklet_classes.items, .source_class_keys = editor.scope_history.source_class_keys, .events = editor.scope_history.events.items };
+            const completed = @import("../semantic/generator_environment_transfer.zig").completed(self.ast, before.source, gen.callback, callback_scope, gen.state_param, history) orelse return null;
+            return .{ .proof = completed, .heritages = before.heritages };
+        }
+
         pub const GeneratorCall = struct {
             call: NodeIndex,
             callback: NodeIndex,
@@ -4030,17 +4103,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// The async helper receives a real function wrapper. Its body contains
         /// the `__generator` call, and its child callback owns `_state`.
-        pub fn bindWrappedStateMachine(self: *Transformer, source_owner: NodeIndex, wrapper: NodeIndex, gen: GeneratorCall, frame: *const StateMachineFrame, wrapper_temps: []const HoistedStateTemp, span: Span) Transformer.Error!void {
+        pub fn bindWrappedStateMachine(self: *Transformer, source_owner: NodeIndex, wrapper: NodeIndex, gen: GeneratorCall, frame: *const StateMachineFrame, wrapper_temps: []const HoistedStateTemp, span: Span, source_boundary: ?@import("../semantic/generator_environment_transfer.zig").Capture) Transformer.Error!void {
             const parent = self.stateMachineOwnerScope(source_owner);
             if (parent.isNone()) {
                 try self.bindGeneratedState(.none, .none, gen.callback, gen.state_param, frame.state_ref_start, wrapper_temps, frame.callback_temps.items, span);
-                if (self.semantic_edit_enabled) try moveCaseReferences(self, gen.callback, self.outputOwnedScope(gen.callback) orelse @panic("generator callback has no actual ScopeId"));
+                if (self.semantic_edit_enabled) try moveCaseReferences(self, gen.callback, self.outputOwnedScope(gen.callback) orelse @panic("generator callback has no actual ScopeId"), generatorTransfer(self, source_boundary, gen));
                 return;
             }
             const wrapper_scope = try self.addGeneratedFunctionScope(parent, wrapper);
             try self.relocateRuntimeHelperRef(gen.helper_ref, wrapper_scope);
             try self.bindGeneratedState(wrapper_scope, parent, gen.callback, gen.state_param, frame.state_ref_start, wrapper_temps, frame.callback_temps.items, span);
-            if (self.semantic_edit_enabled) try moveCaseReferences(self, gen.callback, self.outputOwnedScope(gen.callback) orelse @panic("generator callback has no actual ScopeId"));
+            if (self.semantic_edit_enabled) try moveCaseReferences(self, gen.callback, self.outputOwnedScope(gen.callback) orelse @panic("generator callback has no actual ScopeId"), generatorTransfer(self, source_boundary, gen));
         }
 
         /// __generator(function(_state) { ... }) 호출 생성.

@@ -1043,8 +1043,10 @@ pub fn Members(comptime Transformer: type) type {
         pub fn buildStaticFieldDefinePropertyWithCtx(self: *Transformer, obj: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, class_name_span: Span, span: Span, output_scope: @import("../../semantic/scope.zig").ScopeId) Transformer.Error!NodeIndex {
             const source_scope = self.current_scope;
             if (self.semantic_edit_enabled and !init_idx.isNone()) {
+                // Capture the exact field handoff before the generic child
+                // scope mover consumes its original unresolved use scope.
+                try @import("../class_strict_context.zig").moveStaticFieldReferences(self, init_idx, source_scope, output_scope);
                 try self.reparentGeneratedBodyScopes(source_scope, output_scope, init_idx);
-                try @import("../class_strict_context.zig").moveSourceReferences(self, init_idx, source_scope, source_scope, output_scope);
             }
             self.current_scope = output_scope;
             defer self.current_scope = source_scope;

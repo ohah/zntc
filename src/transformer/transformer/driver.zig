@@ -59,6 +59,7 @@ pub fn transform(self: anytype) Error!NodeIndex {
         arrow_statements.plans.deinit(self.allocator);
     }
     self.ast.assertInvariants();
+    try @import("../erased_const_enum_handoff.zig").capture(self);
 
     // worklet __pluginVersion 문자열 리터럴 span 사전 계산 (매 worklet당 할당 방지)
     if (self.options.worklet_plugin_version) |v| {
@@ -74,6 +75,7 @@ pub fn transform(self: anytype) Error!NodeIndex {
 
     // 파서의 마지막 노드가 루트 (program). parser_node_count - 1.
     const root_idx: NodeIndex = @fromBackingInt(@intCast(self.parser_node_count - 1));
+    try @import("styled_components.zig").prepareCssPropImport(self, root_idx);
     const saved_temp_counter = self.temp_var_counter;
     // worklet anonymous naming counter — Transformer 인스턴스 재사용 시 매 transform당 0부터 시작.
     self.plugins.worklet.anonymous_counter = 0;
@@ -408,7 +410,12 @@ fn moveUnusedParameterEngine(self: anytype, function_owner: NodeIndex, old_param
 /// the source parameter environment. This includes native non-simple formals
 /// and a simple lowered list whose original implicit arguments engine remains
 /// observable from that environment.
-fn retainNativeParameterCarrier(self: anytype, function_owner: NodeIndex, old_params: NodeIndex, new_params: NodeIndex, body_scope: @import("../../semantic/scope.zig").ScopeId) Error!bool {
+const ParameterCarrierCensus = struct {
+    live_before: *const std.DynamicBitSet,
+    pending_initializers: []const NodeIndex,
+};
+
+fn retainNativeParameterCarrier(self: anytype, function_owner: NodeIndex, old_params: NodeIndex, new_params: NodeIndex, body_scope: @import("../../semantic/scope.zig").ScopeId, census: ?ParameterCarrierCensus) Error!bool {
     if (!self.semantic_edit_enabled or body_scope.isNone() or old_params == new_params) return false;
     for ([_]NodeIndex{ function_owner, old_params, new_params }) |node|
         if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len) return false;
@@ -452,8 +459,26 @@ fn retainNativeParameterCarrier(self: anytype, function_owner: NodeIndex, old_pa
         for (editor.symbols.items, 0..) |symbol, other| {
             if (other != id and symbol.synthetic_kind == .implicit_arguments and symbol.scope_id == body_scope) return false;
         }
+        // Pass 2 still contains rows for discarded Pass-1 expressions. Only
+        // this actual function and its producer-owned pending initializers can
+        // authorize its live engine uses; another live function is not exempt.
+        var local: ?std.DynamicBitSet = null;
+        defer if (local) |*set| set.deinit();
+        if (census) |known| {
+            local = try std.DynamicBitSet.initEmpty(self.allocator, self.ast.nodes.items.len);
+            const roots = try self.allocator.alloc(NodeIndex, known.pending_initializers.len + 1);
+            defer self.allocator.free(roots);
+            roots[0] = function_owner;
+            @memcpy(roots[1..], known.pending_initializers);
+            for (roots) |root| {
+                const nodes = try ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, root);
+                defer self.allocator.free(nodes);
+                for (nodes) |raw| local.?.set(raw);
+            }
+        }
         var declarations: usize = 0;
         var reads: usize = 0;
+        var discarded_reads: usize = 0;
         for (editor.references.items) |row| {
             if (@backingInt(row.symbol_id) != id) continue;
             if (row.flags.declare) {
@@ -462,11 +487,35 @@ fn retainNativeParameterCarrier(self: anytype, function_owner: NodeIndex, old_pa
                 declarations += 1;
                 continue;
             }
-            if (!row.flags.read or row.flags.write or (row.scope_id != source_scope and row.scope_id != body_scope))
-                return false;
+            if (!row.flags.read or row.flags.write or row.node_index.isNone()) return false;
+            const raw = @backingInt(row.node_index);
+            if (local) |*set| {
+                if (raw >= set.capacity() or self.getSymbolIdAt(row.node_index) != @as(?u32, @intCast(id))) return false;
+                if (!set.isSet(raw)) {
+                    const known = census.?;
+                    // A row outside this function is discardable only when it
+                    // was already absent from the real output before Pass 2.
+                    // Fresh or independently live foreign nodes are rejected.
+                    if (raw >= known.live_before.capacity() or known.live_before.isSet(raw)) return false;
+                    // The immutable input row must belong to this exact
+                    // source engine. A dead node from another function cannot
+                    // be relabelled and hidden in the discarded-row total.
+                    const original_raw = self.reference_origin_map.get(raw) orelse raw;
+                    var source_reads: usize = 0;
+                    for (self.references) |original| {
+                        if (original.node_index.isNone() or @backingInt(original.node_index) != original_raw) continue;
+                        if (@backingInt(original.symbol_id) != id or !std.meta.eql(original.flags, row.flags)) return false;
+                        source_reads += 1;
+                    }
+                    if (source_reads != 1) return false;
+                    discarded_reads += 1;
+                    continue;
+                }
+            }
+            if (row.scope_id != source_scope and row.scope_id != body_scope) return false;
             reads += 1;
         }
-        if (declarations != 1 or reads != engine.reference_count) return false;
+        if (declarations != 1 or reads == 0 or reads + discarded_reads != engine.reference_count) return false;
     }
     try self.remapCopiedScopeOwner(old_params, new_params);
     return true;
@@ -830,8 +879,14 @@ fn wrapFunctionBodyForParameterInitializers(
         if (function_scope.isNone() or wrapper_scope.isNone() or wrapper_scope.toIndex() >= editor.scopes.items.len)
             std.debug.panic("dynamic parameter wrapper lost its generated scope", .{});
         const source_scope = editor.scopes.items[function_scope.toIndex()];
-        editor.scopes.items[wrapper_scope.toIndex()].subtree_has_direct_eval = source_scope.subtree_has_direct_eval;
-        editor.scopes.items[wrapper_scope.toIndex()].subtree_has_with = source_scope.subtree_has_with;
+        var completed_frame = editor.scopes.items[wrapper_scope.toIndex()];
+        completed_frame.subtree_has_direct_eval = source_scope.subtree_has_direct_eval;
+        completed_frame.subtree_has_with = source_scope.subtree_has_with;
+        editor.scope_history.recordOwnedFrame(self.allocator, self.ast, editor.scopes.items, &editor.scope_owner_map, wrapper_scope, completed_frame, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => @panic("dynamic parameter wrapper lost its actual frame owner"),
+        };
+        editor.scopes.items[wrapper_scope.toIndex()] = completed_frame;
         try self.reparentGeneratedBodyScopes(function_scope, wrapper_scope, inner_body);
         try self.moveGeneratedFunctionBodyBindings(function_scope, wrapper_scope, inner_body);
         try @import("../class_strict_context.zig").moveSourceReferences(self, inner_body, function_scope, function_scope, wrapper_scope);
@@ -906,6 +961,9 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
     const node_count = self.ast.nodes.items.len;
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, root);
     defer self.allocator.free(reachable);
+    var carrier_live = try std.DynamicBitSet.initEmpty(self.allocator, if (self.semantic_edit_enabled) node_count else 0);
+    defer carrier_live.deinit();
+    if (self.semantic_edit_enabled) for (reachable) |raw| carrier_live.set(raw);
     for (reachable) |raw| {
         if (raw >= node_count) continue;
         const i: usize = raw;
@@ -1014,7 +1072,7 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 //  prependToFunctionBody 등은 params_idx를 복사하여 새 function 노드를 만든다.)
                 const new_params_node = try self.ast.addFormalParameters(lr.new_params, params_node.span);
                 self.ast.extra_data.items[e + 1] = @backingInt(new_params_node);
-                const retained_carrier = try retainNativeParameterCarrier(self, @fromBackingInt(@as(u32, @intCast(i))), params_idx, new_params_node, self.current_scope);
+                const retained_carrier = try retainNativeParameterCarrier(self, @fromBackingInt(@as(u32, @intCast(i))), params_idx, new_params_node, self.current_scope, .{ .live_before = &carrier_live, .pending_initializers = lr.body_stmts.items });
                 if (!retained_carrier) @import("../worklet_class_clone.zig").handoffSimpleParameterDeclarations(self, @fromBackingInt(@as(u32, @intCast(i))), params_idx, new_params_node, self.current_scope) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     else => std.debug.panic("lowered worklet formals lost their declaration handoff: {s}", .{@errorName(err)}),
@@ -1498,31 +1556,31 @@ test "dynamic body wrapper publishes the actual simple parameter engine owner" {
                 try std.testing.expectEqual(@as(usize, 1), source_parameter_owners);
                 const rows_before = try a.dupe(@import("../../semantic/symbol.zig").Reference, editor.references.items);
                 const symbols_before = try a.dupe(@import("../../semantic/symbol.zig").Symbol, editor.symbols.items);
-                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, source_scope));
-                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, params, params, body_scope));
-                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, old_params, body_scope));
+                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, source_scope, null));
+                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, params, params, body_scope, null));
+                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, old_params, body_scope, null));
                 const foreign_formals = try t.ast.addFormalParameters(actual_formals, t.ast.getNode(params).span);
-                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, foreign_formals, body_scope));
+                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, foreign_formals, body_scope, null));
                 try std.testing.expect(t.outputOwnedScope(foreign_formals) == null);
                 const saved_kind = editor.scopes.items[source_scope.toIndex()].kind;
                 editor.scopes.items[source_scope.toIndex()].kind = .block;
-                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, body_scope));
+                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, body_scope, null));
                 editor.scopes.items[source_scope.toIndex()].kind = saved_kind;
                 const saved_parent = editor.scopes.items[body_scope.toIndex()].parent;
                 editor.scopes.items[body_scope.toIndex()].parent = t.programScope();
-                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, body_scope));
+                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, body_scope, null));
                 editor.scopes.items[body_scope.toIndex()].parent = saved_parent;
                 const new_scope = t.transformed_scope_owner_map.get(@backingInt(params)).?;
                 try t.transformed_scope_owner_map.put(a, @backingInt(params), @backingInt(body_scope));
-                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, body_scope));
+                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, body_scope, null));
                 try t.transformed_scope_owner_map.put(a, @backingInt(params), new_scope);
                 const saved_formals = t.ast.getNode(params).data.list;
                 var first_binding = try ast_walk.bindingIdentifiers(a, t.ast, params, .{ .cover_grammar_assignment = true });
                 const binding = (try first_binding.next()).?;
                 t.ast.nodes.items[@backingInt(params)].data.list = try t.ast.addNodeList(&.{binding});
-                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, body_scope));
+                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, body_scope, null));
                 t.ast.nodes.items[@backingInt(params)].data.list = saved_formals;
-                try std.testing.expect(try retainNativeParameterCarrier(&t, owner, old_params, params, body_scope));
+                try std.testing.expect(try retainNativeParameterCarrier(&t, owner, old_params, params, body_scope, null));
                 try std.testing.expectEqual(@as(?ScopeId, source_scope), t.outputOwnedScope(params));
                 try std.testing.expectEqualDeep(rows_before, editor.references.items);
                 try std.testing.expectEqualDeep(symbols_before, editor.symbols.items);
@@ -3536,4 +3594,102 @@ test "native arrow formal birth P5 production driver preserves nested rows with 
     }
     try std.testing.expectEqual(@as(usize, 10), controls);
     std.debug.print("native-arrow-P5 production=10 helper-on/off nested=true declaration+read-final=true native-runtime=10\n", .{});
+}
+
+test "observed parameter carrier counts actual function roots and rejects live or dead foreign engines" {
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const Scanner = @import("../../lexer/scanner.zig").Scanner;
+    const Analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+    const Transformer = @import("../transformer.zig").Transformer;
+    const source = "async function*first(value=arguments.length){yield value+':'+arguments.length}async function*second(value=arguments.length){yield value+':'+arguments.length}";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
+    try analyzer.analyze();
+    var engines: std.ArrayList(u32) = .empty;
+    for (analyzer.symbols.items, 0..) |symbol, sid| if (symbol.synthetic_kind == .implicit_arguments and symbol.reference_count > 0) try engines.append(a, @intCast(sid));
+    try std.testing.expectEqual(@as(usize, 2), engines.items.len);
+    const selected = engines.items[0];
+    const foreign = engines.items[1];
+    const source_scope = analyzer.symbols.items[selected].scope_id;
+    var original_params: NodeIndex = .none;
+    var source_owners = analyzer.scope_owner_map.iterator();
+    while (source_owners.next()) |entry| if (entry.value_ptr.* == @backingInt(source_scope) and parser.ast.getNode(@fromBackingInt(entry.key_ptr.*)).tag == .formal_parameters) {
+        try std.testing.expect(original_params.isNone());
+        original_params = @fromBackingInt(entry.key_ptr.*);
+    };
+    try std.testing.expect(!original_params.isNone());
+    var t = try Transformer.initFromOwnedAst(a, &parser.ast, .{ .unsupported = @import("../compat.zig").fromESTarget(.es5) });
+    try t.initSymbolIdsOwned(analyzer.ast, analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.scope_history = analyzer.scope_history;
+    t.helper_scope_map = analyzer.helper_scope_map;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    t.semantic_edit_enabled = true;
+    t.record_explicit_global_references = true;
+    const output = try t.transform();
+    const live = try ast_walk.collectReachableNodeIndicesFrom(a, t.ast, output);
+    var global = try std.DynamicBitSet.initEmpty(a, t.ast.nodes.items.len);
+    for (live) |raw| global.set(raw);
+    const editor = &t.semantic_editor.?;
+    var owner: NodeIndex = .none;
+    var body_scope: @import("../../semantic/scope.zig").ScopeId = .none;
+    for (live) |raw| {
+        const node = t.ast.getNode(@fromBackingInt(raw));
+        if (node.tag != .function_declaration and node.tag != .function_expression) continue;
+        const scope = t.outputOwnedScope(@fromBackingInt(raw)) orelse continue;
+        if (editor.scopes.items[scope.toIndex()].parent == source_scope) {
+            try std.testing.expect(owner.isNone());
+            owner = @fromBackingInt(raw);
+            body_scope = scope;
+        }
+    }
+    try std.testing.expect(!owner.isNone());
+    const params = t.ast.readExtraNode(t.ast.getNode(owner).data.extra, ast_mod.FunctionExtra.params);
+    const census: ParameterCarrierCensus = .{ .live_before = &global, .pending_initializers = &.{} };
+    try std.testing.expect(try retainNativeParameterCarrier(&t, owner, original_params, params, body_scope, census));
+    var live_other: ?usize = null;
+    var dead_other: ?usize = null;
+    for (editor.references.items, 0..) |row, i| {
+        if (@backingInt(row.symbol_id) != foreign or row.flags.declare or row.node_index.isNone()) continue;
+        if (global.isSet(@backingInt(row.node_index))) live_other = i else dead_other = i;
+    }
+    try std.testing.expect(live_other != null and dead_other != null);
+    for ([_]usize{ live_other.?, dead_other.? }) |i| {
+        const original = editor.references.items[i];
+        const raw = @backingInt(original.node_index);
+        const self_id = t.symbol_ids.items[raw];
+        const editor_id = editor.symbol_ids.items[raw];
+        const own_count = editor.symbols.items[selected].reference_count;
+        const other_count = editor.symbols.items[foreign].reference_count;
+        editor.references.items[i].symbol_id = @fromBackingInt(selected);
+        editor.references.items[i].scope_id = body_scope;
+        t.symbol_ids.items[raw] = selected;
+        editor.symbol_ids.items[raw] = selected;
+        editor.symbols.items[selected].reference_count = own_count + 1;
+        editor.symbols.items[foreign].reference_count = other_count - 1;
+        try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, original_params, params, body_scope, census));
+        editor.references.items[i] = original;
+        t.symbol_ids.items[raw] = self_id;
+        editor.symbol_ids.items[raw] = editor_id;
+        editor.symbols.items[selected].reference_count = own_count;
+        editor.symbols.items[foreign].reference_count = other_count;
+    }
+    try std.testing.expectEqual(source_scope, editor.symbols.items[selected].scope_id);
+    try std.testing.expectEqual(@as(?@import("../../semantic/scope.zig").ScopeId, source_scope), t.outputOwnedScope(params));
 }

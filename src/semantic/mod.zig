@@ -40,6 +40,8 @@ test {
     _ = checker;
     _ = editor;
     _ = reference_walk;
+    _ = @import("statement_coordinates.zig");
+    _ = @import("source_external_origin.zig");
     _ = scope;
     _ = symbol;
 

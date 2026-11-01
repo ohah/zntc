@@ -103,7 +103,7 @@ pub fn install(graph: anytype, io: std.Io, target_index: ModuleIndex) !Invocatio
     ast.transformed_root = root;
     try builder.validate();
     sem.applyEdit(try editor.finish());
-    active.prebuilt_stmt_info = try @import("stmt_info.zig").buildFromSemantic(a, ast, sem.symbols.items, sem.scopes, sem.references, &sem.unresolved_references, false, false);
+    active.prebuilt_stmt_info = try @import("stmt_info.zig").buildFromSemantic(a, ast, sem.symbols.items, sem.scopes, sem.symbol_ids, sem.references, &sem.unresolved_references, false, false);
     return .{ .module_index = index, .owner = owner, .target = target_index, .root = root, .call = call, .callee = callee, .argument = argument, .guard_local = guard_local, .init_local = init_local, .guard_target = guard, .init_target = init };
 }
 

@@ -15,7 +15,8 @@ const SemanticOwnerToken = @import("module.zig").SemanticOwnerToken;
 
 pub const Error = @import("module.zig").WrapperNameError || error{ InvalidCrossChunkExport, InvalidCrossChunkLocalName };
 
-pub const Hint = enum { ordinary_export, shared_namespace };
+const output = @import("codegen_output_domain.zig");
+pub const Hint = union(enum) { ordinary_export, shared_namespace: output.Ref };
 
 /// Captured by the cross-chunk edge producer, before any output-name lookup.
 /// Namespace storage remains its existing output-owned cache contract (N5).
@@ -27,12 +28,13 @@ pub const Provider = struct {
         symbol: Symbol,
         anchor: ?NodeIndex,
     };
+    const KnownNamespace = struct { reference: output.Ref, symbol: output.Symbol };
     const Role = union(enum) {
         semantic: KnownBinding,
         entry_guard: KnownBinding,
         cjs_member: SymbolID,
-        shared_namespace: []const u8,
-        namespace_projection: struct { binding: *const ExportBinding, original: ExportBinding, target: *const Module, storage: []const u8 },
+        shared_namespace: KnownNamespace,
+        namespace_projection: struct { binding: *const ExportBinding, original: ExportBinding, target: *const Module, storage: KnownNamespace },
         graphless,
     };
     owner: *const Module,
@@ -86,11 +88,13 @@ pub const Provider = struct {
     pub fn capture(l: *const Linker, module_index: u32, name: []const u8, hint: Hint) Error!Provider {
         const owner = l.getModule(module_index) orelse return error.InvalidCrossChunkExport;
         if (hint == .shared_namespace) {
-            const shared = l.ns_shared_inline_cache.get(module_index) orelse return error.InvalidCrossChunkExport;
-            const alias = l.getSharedNamespaceGlobalName(module_index, shared.var_name);
-            if (!std.mem.eql(u8, name, shared.var_name) and
-                (alias == null or !std.mem.eql(u8, name, alias.?))) return error.InvalidCrossChunkExport;
-            return make(owner, name, .{ .shared_namespace = shared.var_name });
+            const reference = hint.shared_namespace;
+            if (reference.module != owner.index) return error.InvalidCrossChunkExport;
+            const known = try captureNamespace(l, reference);
+            const initial_name = l.sharedNamespaceInitialName(reference) orelse return error.InvalidCrossChunkExport;
+            const alias = l.getSharedNamespaceGlobalName(reference);
+            if (!std.mem.eql(u8, name, initial_name) and (alias == null or !std.mem.eql(u8, name, alias.?))) return error.InvalidCrossChunkExport;
+            return make(owner, name, .{ .shared_namespace = known });
         }
         if (owner.semantic == null and owner.ast == null) {
             return make(owner, name, .graphless);
@@ -113,12 +117,12 @@ pub const Provider = struct {
             if (binding.kind == .local) _ = try checkedSymbol(l.allocator, owner, binding);
             const target_owner = l.graph.getModule(target) orelse return error.InvalidCrossChunkExport;
             _ = try l.ensureSharedNsVar(target);
-            const shared = l.ns_shared_inline_cache.get(target.toU32()) orelse return error.InvalidCrossChunkExport;
+            const output_ref = l.sharedNamespaceOutputRef(target) orelse return error.InvalidCrossChunkExport;
             return make(owner, name, .{ .namespace_projection = .{
                 .binding = binding,
                 .original = binding.*,
                 .target = target_owner,
-                .storage = shared.var_name,
+                .storage = try captureNamespace(l, output_ref),
             } });
         }
         _ = try checkedSymbol(l.allocator, owner, binding);
@@ -140,20 +144,40 @@ pub const Provider = struct {
                     sem.symbols.items[@backingInt(sid)].synthetic_kind != .cjs_require or
                     self.owner.getRequireName(null) == null) return error.InvalidCrossChunkExport;
             },
-            .shared_namespace => |original_name| {
-                const shared = l.ns_shared_inline_cache.get(self.owner.index.toU32()) orelse return error.InvalidCrossChunkExport;
-                if (!std.mem.eql(u8, shared.var_name, original_name)) return error.InvalidCrossChunkExport;
+            .shared_namespace => |known| {
+                if (known.reference.module != self.owner.index) return error.InvalidCrossChunkExport;
+                try validateNamespace(l, known);
             },
             .namespace_projection => |known| {
                 if (!registered(self.owner, known.binding) or !std.meta.eql(known.binding.*, known.original) or !std.mem.eql(u8, self.public_name, known.original.exported_name) or
                     l.getModule(known.target.index.toU32()) != known.target or
                     @import("chunk.zig").nsReExportTarget(l.graph, self.owner.index, self.public_name) != known.target.index) return error.InvalidCrossChunkExport;
                 if (known.original.kind == .local) _ = try checkedSymbol(l.allocator, self.owner, known.binding);
-                const shared = l.ns_shared_inline_cache.get(known.target.index.toU32()) orelse return error.InvalidCrossChunkExport;
-                if (!std.mem.eql(u8, shared.var_name, known.storage)) return error.InvalidCrossChunkExport;
+                if (known.storage.reference.module != known.target.index) return error.InvalidCrossChunkExport;
+                try validateNamespace(l, known.storage);
             },
             .graphless => if (self.owner.semantic != null or self.owner.ast != null) return error.InvalidCrossChunkExport,
         }
+    }
+
+    fn captureNamespace(l: *const Linker, reference: output.Ref) Error!KnownNamespace {
+        const actual = l.sharedNamespaceOutputRef(reference.module) orelse return error.InvalidCrossChunkExport;
+        if (!std.meta.eql(actual, reference)) return error.InvalidCrossChunkExport;
+        return .{ .reference = reference, .symbol = l.sharedNamespaceOutputSymbol(reference) orelse return error.InvalidCrossChunkExport };
+    }
+
+    fn validateNamespace(l: *const Linker, known: KnownNamespace) Error!void {
+        const actual = try captureNamespace(l, known.reference);
+        if (actual.symbol.role != known.symbol.role or actual.symbol.abi != known.symbol.abi or
+            !std.mem.eql(u8, actual.symbol.logical_name, known.symbol.logical_name)) return error.InvalidCrossChunkExport;
+    }
+
+    /// Only the holder declaration itself participates in holder-name allocation;
+    /// namespace projections retain their separate public export-key contracts.
+    pub fn namespaceOutputRef(self: Provider, l: *const Linker) Error!?output.Ref {
+        if (self.role != .shared_namespace) return null;
+        try self.validate(l);
+        return self.role.shared_namespace.reference;
     }
 
     pub fn localName(self: Provider, l: *const Linker) Error!?[]const u8 {
@@ -164,8 +188,8 @@ pub const Provider = struct {
                 break :blk l.getCanonicalByRef(known.original.symbol) orelse
                     self.owner.symbolName(@fromBackingInt(sid)) orelse return error.InvalidCrossChunkExport;
             },
-            .shared_namespace => |original_name| l.getSharedNamespaceGlobalName(self.owner.index.toU32(), original_name) orelse original_name,
-            .namespace_projection => |known| l.getSharedNamespaceGlobalName(known.target.index.toU32(), known.storage) orelse known.storage,
+            .shared_namespace => |known| l.sharedNamespaceEmittedName(known.reference) orelse return error.InvalidCrossChunkExport,
+            .namespace_projection => |known| l.sharedNamespaceEmittedName(known.storage.reference) orelse return error.InvalidCrossChunkExport,
             .cjs_member => null,
             .graphless => self.public_name,
         };

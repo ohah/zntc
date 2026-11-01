@@ -175,7 +175,7 @@ pub fn cloneWithOptions(allocator: std.mem.Allocator, ast: *Ast, editor: *Editor
     owner_iter = owners.iterator();
     while (owner_iter.next()) |entry| {
         if (result.nodes.get(entry.key_ptr.*)) |node| if (result.scopes.get(entry.value_ptr.*)) |scope_id| {
-            try editor.scope_owner_map.put(allocator, @backingInt(node), @backingInt(scope_id));
+            try editor.putScopeOwner(node, scope_id);
         };
     }
     var selected: std.AutoHashMapUnmanaged(u32, void) = .empty;

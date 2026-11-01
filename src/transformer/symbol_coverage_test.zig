@@ -5388,6 +5388,9 @@ test "#4819 Emotion css prop reads the exact imported SymbolId in its use scope"
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
     try analyzer.analyze();
     try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
 
@@ -5431,6 +5434,11 @@ test "#4819 Emotion css prop reads the exact imported SymbolId in its use scope"
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.scope_history = analyzer.scope_history;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
@@ -5582,6 +5590,9 @@ fn transformEmotionCssAliasForTest(allocator: std.mem.Allocator, source: []const
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
     try analyzer.analyze();
     try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
 
@@ -5599,6 +5610,11 @@ fn transformEmotionCssAliasForTest(allocator: std.mem.Allocator, source: []const
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.scope_history = analyzer.scope_history;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
@@ -5628,6 +5644,9 @@ test "#4819 Emotion css prop import keeps its staging name when descendant eval 
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
     try analyzer.analyze();
     try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
 
@@ -5645,6 +5664,11 @@ test "#4819 Emotion css prop import keeps its staging name when descendant eval 
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.scope_history = analyzer.scope_history;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
@@ -5673,6 +5697,9 @@ test "#4819 Flow component classic JSX reads are recorded in the transform graph
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
     try analyzer.analyze();
     try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
     const react_symbol: u32 = @intCast(analyzer.scope_maps.items[0].get("React") orelse return error.MissingReactImport);
@@ -5689,6 +5716,13 @@ test "#4819 Flow component classic JSX reads are recorded in the transform graph
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.scope_history = analyzer.scope_history;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -5751,6 +5785,9 @@ fn transformFlowForwardRefHelperForTest(allocator: std.mem.Allocator, source: []
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
     try analyzer.analyze();
     try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
 
@@ -5768,6 +5805,11 @@ fn transformFlowForwardRefHelperForTest(allocator: std.mem.Allocator, source: []
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.scope_history = analyzer.scope_history;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -9702,4 +9744,75 @@ test "exact audit rejects an outer enum member ID across an initializer-local sh
     );
     try std.testing.expect(corrupted.scope_resolution_mismatch > 0);
     try std.testing.expect(!corrupted.isClean());
+}
+
+test "source default pattern binding keeps semantic parent identity" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{
+        "function read({head=1}){return head}",
+        "function read({head}){return head}",
+        "function read({key:head=1}){return head}",
+        "function read(key,{[key]:head=1}){return head}",
+    }) |source| {
+        var scanner = try Scanner.init(allocator, source);
+        defer scanner.deinit();
+        var parser = Parser.init(allocator, &scanner);
+        defer parser.deinit();
+        const root = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        defer analyzer.deinit();
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        const empty: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+        var report = try coverage.checkOutputSymbolIdentity(allocator, &parser.ast, root, @intCast(parser.ast.nodes.items.len), analyzer.symbol_ids.items, analyzer.symbols.items, analyzer.scopes.items, &analyzer.scope_owner_map, analyzer.references.items, .{
+            .unresolved_reference_nodes = &analyzer.unresolved_reference_nodes,
+            .explicit_global_reference_nodes = &empty,
+            .reference_origin_map = &origins,
+        }, null);
+        defer report.deinit(allocator);
+        if (!report.hasCompleteSymbolIdentity()) coverage.printStrict(source, &report);
+        try std.testing.expect(report.hasCompleteSymbolIdentity());
+    }
+}
+
+test "source default pattern binding rejects two evaluated parents" {
+    const allocator = std.testing.allocator;
+    for ([_]bool{ false, true }) |computed| {
+        const source = if (computed) "function read(key,{[key]:head=1}){return head}" else "function read({left=1,right=2}){return left+right}";
+        var scanner = try Scanner.init(allocator, source);
+        defer scanner.deinit();
+        var parser = Parser.init(allocator, &scanner);
+        defer parser.deinit();
+        const root = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        defer analyzer.deinit();
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        var first: ?AstNodeIndex = null;
+        var second: ?AstNodeIndex = null;
+        var key: ?AstNodeIndex = null;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag == .assignment_pattern) {
+                if (first == null) first = @fromBackingInt(@as(u32, @intCast(raw))) else second = @fromBackingInt(@as(u32, @intCast(raw)));
+            }
+            if (node.tag == .computed_property_key) key = @fromBackingInt(@as(u32, @intCast(raw)));
+        }
+        const binding = parser.ast.getNode(first orelse return error.MissingPattern).data.binary.left;
+        if (computed) {
+            parser.ast.nodes.items[@backingInt(key orelse return error.MissingComputedKey)].data.unary.operand = binding;
+        } else {
+            parser.ast.nodes.items[@backingInt(second orelse return error.MissingSecondPattern)].data.binary.left = binding;
+        }
+        const empty: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+        var report = try coverage.checkOutputSymbolIdentity(allocator, &parser.ast, root, @intCast(parser.ast.nodes.items.len), analyzer.symbol_ids.items, analyzer.symbols.items, analyzer.scopes.items, &analyzer.scope_owner_map, analyzer.references.items, .{
+            .unresolved_reference_nodes = &analyzer.unresolved_reference_nodes,
+            .explicit_global_reference_nodes = &empty,
+            .reference_origin_map = &origins,
+        }, null);
+        defer report.deinit(allocator);
+        try std.testing.expect(report.counts[@backingInt(coverage.StrictStatus.scope_ambiguous)] > 0);
+        try std.testing.expect(!report.hasCompleteSymbolIdentity());
+    }
 }

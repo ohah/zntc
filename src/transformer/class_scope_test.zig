@@ -3197,7 +3197,7 @@ test "#4819 anonymous ES5 class expression names are finalized from exact Symbol
     var late_class_self_count: usize = 0;
     for (edited.symbols.items) |symbol| {
         if (symbol.synthetic_kind != .anonymous_class_expression_binding) continue;
-        try std.testing.expectEqualStrings("_Class", symbol.synthetic_name);
+        try std.testing.expectEqualStrings("_Class", transformer.late_output_name_bases.get(symbol.synthetic_name) orelse return error.MissingClassOutputBase);
         try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.function_decl, symbol.kind);
         if (late_class_self_count >= late_class_self_scopes.len) return error.TestUnexpectedResult;
         late_class_self_scopes[late_class_self_count] = symbol.scope_id;
@@ -3413,13 +3413,13 @@ test "#4819 Stage 3 decorated anonymous default class preserves exact generated 
     var wrapper_symbol: ?usize = null;
     var constructor_symbol: ?usize = null;
     for (edited.symbols.items, 0..) |symbol, id| {
-        if (!std.mem.eql(u8, symbol.synthetic_name, "_Class")) continue;
         if (symbol.kind == .variable_var and symbol.synthetic_kind == .anonymous_class_export_binding) wrapper_symbol = id;
         if (symbol.kind == .function_decl and symbol.synthetic_kind == .anonymous_class_expression_binding) constructor_symbol = id;
     }
     const wrapper_id = wrapper_symbol orelse return error.TestUnexpectedResult;
     const constructor_id = constructor_symbol orelse return error.TestUnexpectedResult;
     try std.testing.expect(wrapper_id != constructor_id);
+    try std.testing.expectEqualStrings("_Class", transformer.late_output_name_bases.get(edited.symbols.items[constructor_id].synthetic_name) orelse return error.MissingConstructorOutputBase);
     try std.testing.expect(edited.symbols.items[wrapper_id].scope_id != edited.symbols.items[constructor_id].scope_id);
     try std.testing.expectEqualStrings(
         "_Class",
@@ -3440,9 +3440,10 @@ test "#4819 Stage 3 decorated anonymous default class preserves exact generated 
             .binding_identifier, .identifier_reference, .assignment_target_identifier => node.data.string_ref,
             else => continue,
         };
-        if (!std.mem.eql(u8, transformer.ast.getText(name_span), "_Class")) continue;
         const symbol_id = if (raw < edited.symbol_ids.len) edited.symbol_ids[raw] else null;
         const exact_id = symbol_id orelse continue;
+        if (exact_id != wrapper_id and exact_id != constructor_id) continue;
+        try std.testing.expectEqualStrings(edited.symbols.items[exact_id].synthetic_name, transformer.ast.getText(name_span));
         if (exact_id == wrapper_id and node.tag == .binding_identifier) wrapper_binding_count += 1;
         if (exact_id == constructor_id and node.tag == .binding_identifier) constructor_binding_count += 1;
         if (exact_id == wrapper_id and (node.tag == .identifier_reference or node.tag == .assignment_target_identifier)) {

@@ -836,8 +836,14 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             const list = try self.ast.addNodeList(if (discriminant_declaration.isNone()) &.{statement} else &.{ discriminant_declaration, statement });
             self.ast.nodes.items[@backingInt(wrapper)].data.list = list;
             const editor = &self.semantic_editor.?;
-            editor.scopes.items[scope.toIndex()].subtree_has_direct_eval = editor.scopes.items[lexical_scope.toIndex()].subtree_has_direct_eval;
-            editor.scopes.items[scope.toIndex()].subtree_has_with = editor.scopes.items[lexical_scope.toIndex()].subtree_has_with;
+            var completed_frame = editor.scopes.items[scope.toIndex()];
+            completed_frame.subtree_has_direct_eval = editor.scopes.items[lexical_scope.toIndex()].subtree_has_direct_eval;
+            completed_frame.subtree_has_with = editor.scopes.items[lexical_scope.toIndex()].subtree_has_with;
+            editor.scope_history.recordOwnedFrame(self.allocator, self.ast, editor.scopes.items, &editor.scope_owner_map, scope, completed_frame, .{}) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => @panic("Annex B catch lost its actual frame owner"),
+            };
+            editor.scopes.items[scope.toIndex()] = completed_frame;
             editor.reparentScope(lexical_scope, handler_body_scope) catch @panic("Annex B source block lost its exact catch parent");
             editor.relocateSymbolAsPreservingAnchors(lexical, scope, binding) catch @panic("Annex B catch binding changed identity");
             editor.symbols.items[@backingInt(lexical)].kind = .catch_binding;
@@ -1038,7 +1044,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         break :blk try es_helpers.makeCallExpr(self, callee, &.{read}, source.span);
                     } else blk: {
                         const outer = editor.symbols.items[@backingInt(group.variable)];
-                        const outer_name = if (outer.synthetic_name.len > 0) outer.synthetic_name else self.ast.getText(outer.name);
+                        const outer_name = if (outer.synthetic_name.len > 0) outer.synthetic_name else try self.decodedName(self.ast.getText(outer.name));
                         const target = try self.makeSyntheticRefForSymbol(group.variable, group.lexical_scope, .{ .write = true });
                         self.ast.nodes.items[@backingInt(target)].data.string_ref = try self.ast.addString(outer_name);
                         try self.trackExactOutputReference(target, @backingInt(group.variable));
@@ -1096,6 +1102,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
         pub fn buildLoopClosureWithFlow(
             self: *Transformer,
+            source_loop: NodeIndex,
             visited_body: NodeIndex,
             lexical_names: []const []const u8,
             flow: *const FlowResult,
@@ -1329,6 +1336,13 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     std.debug.panic("extracted loop binding lost its staging spelling", .{});
                 generated.synthetic_kind = .block_scoping_loop_binding;
                 generated.output_name_hint = "_loop";
+            }
+            if (await_driver and self.options.unsupported.generator and self.semantic_edit_enabled) {
+                const editor = &self.semantic_editor.?;
+                const function_scope = generator_function_scope orelse @panic("await loop has no actual generator function scope");
+                const source = @import("../semantic/generator_environment_transfer.zig").captureExtractedLoop(self.ast, source_loop, func_expr, function_scope, call_scope, self.scope_history, editor.scopeHistoryView()) orelse
+                    @panic("await loop lost its actual source loop-to-function handoff");
+                try self.extracted_loop_generator_sources.put(self.allocator, @backingInt(func_expr), source);
             }
             const output_function = if (await_driver or (is_generator and !self.options.unsupported.generator)) try self.visitNode(func_expr) else func_expr;
             const loop_decl = try es_helpers.makeDeclarator(self, loop_binding, output_function, span);

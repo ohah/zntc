@@ -268,6 +268,9 @@ pub const Code = enum(u16) {
     static_initializer_dynamic_scope = 1505,
     /// A dynamic capture retains private syntax that the target requires to lower (error).
     arrow_private_dynamic_scope = 1506,
+    /// An actual with environment intercepts generated accessor builtin bindings.
+    object_accessor_with_scope = 1507,
+    object_accessor_eval_scope = 1508,
 
     /// 에러 코드를 "ZNTC0001" 형식의 문자열로 반환한다.
     pub fn format(self: Code) []const u8 {
@@ -503,6 +506,8 @@ pub const Code = enum(u16) {
             .jsx_pragma_ignored => "@jsx / @jsxFrag pragma ignored under the automatic JSX runtime",
             .regex_modifier_unsupported => "Regular expression inline modifier group is an ES2025 feature not supported by the target",
             .exponentiation_dynamic_scope => "Exponentiation is preserved because a dynamic scope makes Math downleveling unsafe",
+            .object_accessor_eval_scope => "Computed accessor object is retained because opaque eval can intercept generated bindings; the configured target may not support retained syntax",
+            .object_accessor_with_scope => "Computed accessor object is retained in its with environment; the configured target may not support retained syntax",
             .arrow_dynamic_scope => "Arrow or containing class/object literal is preserved because a dynamic scope makes lexical capture downleveling unsafe; the target may not support syntax retained inside it",
             .static_initializer_dynamic_scope => "Class initializer or extracted private method cannot preserve its dynamic class lexical environment",
             .arrow_private_dynamic_scope => "Retained dynamic capture contains private class syntax that requires lowering for the configured target",

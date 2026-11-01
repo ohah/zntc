@@ -449,6 +449,7 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
         }
         break :blk null;
     };
+    if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_owner, result);
     if (try self.dispatchFunctionPlugins(result, .{
         .node_idx = result,
         .node_tag = .method_definition,

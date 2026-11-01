@@ -12,7 +12,7 @@ pub fn lower(self: anytype, source: ast.NodeIndex, parent: ScopeId, class_name: 
     const params = try self.ast.addListNode(.formal_parameters, node.span, try self.ast.addNodeList(&.{}));
     const function = try self.addExtraNode(.function_expression, node.span, &.{ @backingInt(ast.NodeIndex.none), @backingInt(params), @backingInt(body), 0, 0 });
     const function_scope = try self.addGeneratedFunctionScope(parent, function);
-    try @import("transformer/semantic_edit.zig").transferStaticBlockStorage(self, source, function_scope, body);
+    try @import("transformer/semantic_edit.zig").transferStaticBlockStorage(self, source, function_scope, body, function);
     // Temps created while lowering this body belong to its generated function.
     // Hoist them here so the outer program hoister cannot emit a declaration
     // whose SymbolId still belongs to this function scope.
@@ -45,6 +45,7 @@ pub fn lower(self: anytype, source: ast.NodeIndex, parent: ScopeId, class_name: 
     const output_body = try self.ast.addListNode(.block_statement, node.span, self.ast.getNode(visited_with_temps).data.list);
     try @import("class_strict_context.zig").prependDirective(self, output_body);
     self.ast.extra_data.items[self.ast.getNode(function).data.extra + ast.FunctionExtra.body] = @backingInt(output_body);
+    try @import("transformer/semantic_edit.zig").completeStaticBlockExternalHandoff(self, source, function, function_scope, output_body);
     const call_key = try es.makePropertyName(self, "call");
     const callee = try es.makeStaticMember(self, function, call_key, node.span);
     const receiver = blk: {

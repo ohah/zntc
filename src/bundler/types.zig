@@ -980,6 +980,9 @@ pub const BundlerDiagnostic = struct {
         /// export 선언 안 top-level await 를 async 함수 없는 타겟에서 번들 — 기다릴
         /// 수단이 없어 낮출 수 없다 (#5564). error severity (transpile 의 ZNTC0001 과 동일).
         top_level_await_target,
+        /// Computed accessor object retained in its actual with environment.
+        object_accessor_with_scope,
+        object_accessor_eval_scope,
     };
 
     pub const Severity = enum {

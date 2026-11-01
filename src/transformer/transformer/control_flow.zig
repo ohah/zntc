@@ -275,6 +275,7 @@ pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 
     const result = try BlockScoping.buildLoopClosureWithFlow(
         self,
+        idx,
         new_body,
         &.{},
         &flow,
@@ -306,7 +307,7 @@ pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 /// for-in/for-of/for-await-of 헤더 전용 ternary visit.
 /// `a`(left) 방문 시 in_for_in_of_header 플래그를 켜서, block_scoping 다운레벨로
 /// let/const → var 변환 시 불필요한 `= void 0` init 주입을 막는다 (#1386).
-pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
+pub fn visitForInOfTernary(self: *Transformer, idx: NodeIndex, node: Node) Error!NodeIndex {
     if (!self.options.unsupported.block_scoping)
         _ = try @import("../retained_class_keys.zig").prepareLoopBody(self, node.data.ternary.c);
     if (self.options.unsupported.block_scoping) {
@@ -361,6 +362,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
 
                 const result = try BlockScoping.buildLoopClosureWithFlow(
                     self,
+                    idx,
                     new_c,
                     active_lexical_names.items,
                     &flow,
@@ -603,6 +605,7 @@ pub fn visitForStatement(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 
                 const result = try BlockScoping.buildLoopClosureWithFlow(
                     self,
+                    idx,
                     new_body,
                     active_lexical_names.items,
                     &flow,

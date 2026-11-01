@@ -1661,6 +1661,19 @@ pub fn buildMetadataForAstWithHolderReservations(
             }
         }
     }
+    // The callback emitter and body references consume the same registered
+    // parameter SID. Its virtual scope is outside the program scope above.
+    if (m.wrap_kind == .cjs) {
+        const Parameter = struct { id: ?semantic_symbol.SymbolId, name: []const u8, kind: semantic_symbol.SyntheticKind };
+        for ([_]Parameter{
+            .{ .id = m.cjs_wrapper_exports_parameter_symbol, .name = "exports", .kind = .cjs_wrapper_exports_parameter },
+            .{ .id = m.cjs_wrapper_module_parameter_symbol, .name = "module", .kind = .cjs_wrapper_module_parameter },
+        }) |parameter| {
+            const id = parameter.id orelse continue;
+            const selected = try @import("../emitter.zig").cjsWrapperParamOutputName(&m, id, parameter.name, parameter.kind, parameter.name, self);
+            try putOwnedRename(self, &renames, &owned_nested_renames, @backingInt(id), selected);
+        }
+    }
     // A generated runtime-helper import and its transformed call references
     // share one exact SymbolId. The import/preamble emitter reads rename_table
     // directly, while identifier codegen reads LinkingMetadata.renames; carry
@@ -2153,6 +2166,7 @@ pub fn buildCrossModuleConstValuesProfiled(
     collector: ?*ConstProviderCollector,
 ) !std.AutoHashMapUnmanaged(u32, semantic_symbol.ConstValue) {
     var const_values: std.AutoHashMapUnmanaged(u32, semantic_symbol.ConstValue) = .empty;
+    errdefer const_values.deinit(self.allocator);
     if (m.import_bindings.len == 0) return const_values;
     for (m.import_bindings) |ib| {
         // Namespace-holder P edges keep their graph-local provider witness

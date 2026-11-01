@@ -101,7 +101,7 @@ pub fn refresh(module: *@import("module.zig").Module, shaker: ?*@import("tree_sh
     const a = module.parse_arena.?.allocator();
     const ast = &module.ast.?;
     const sem = &module.semantic.?;
-    const rebuilt = try @import("stmt_info.zig").buildFromSemantic(a, ast, sem.symbols.items, sem.scopes, sem.references, &sem.unresolved_references, false, false) orelse return;
+    const rebuilt = try @import("stmt_info.zig").buildFromSemantic(a, ast, sem.symbols.items, sem.scopes, sem.symbol_ids, sem.references, &sem.unresolved_references, false, false) orelse return;
     module.prebuilt_stmt_info = rebuilt;
     const s = shaker orelse return;
     const index = module.index.toU32();

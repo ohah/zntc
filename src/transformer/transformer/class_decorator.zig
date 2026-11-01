@@ -330,7 +330,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     // static 키보다 늦게 평가된다 (#5669).
     var pre_hoisted_keys = false;
     if (classBodyHasFieldAndComputedKey(self, body_idx)) {
-        body_idx = try hoistAllComputedKeys(self, node.tag, body_idx, key_assigns);
+        body_idx = try hoistAllComputedKeys(self, source_idx, node.tag, body_idx, key_assigns);
         pre_hoisted_keys = true;
     }
     if (lower_pm or lower_pf) {
@@ -1174,7 +1174,7 @@ pub fn hoistLegacyDecoratorComputedMethodKeys(
 /// 모든 멤버의 computed 키를 소스 순서대로 temp 에 평가하고, 키를 `[_t]` 로 바꾼 새
 /// class_body 를 돌려준다. 대입은 클래스 **식**이면 `key_assigns`(쉼표 식)로, **선언**이면
 /// 앞 문장(pending_nodes)으로 낸다.
-fn hoistAllComputedKeys(self: *Transformer, tag: Node.Tag, body_idx: NodeIndex, key_assigns: *std.ArrayListUnmanaged(NodeIndex)) Error!NodeIndex {
+fn hoistAllComputedKeys(self: *Transformer, source_idx: NodeIndex, tag: Node.Tag, body_idx: NodeIndex, key_assigns: *std.ArrayListUnmanaged(NodeIndex)) Error!NodeIndex {
     const body = self.ast.getNode(body_idx);
     var members: std.ArrayListUnmanaged(NodeIndex) = .empty;
     defer members.deinit(self.allocator);
@@ -1205,6 +1205,10 @@ fn hoistAllComputedKeys(self: *Transformer, tag: Node.Tag, body_idx: NodeIndex, 
             visited_key;
         const captured = try captureHoistedClassComputedKey(self, value, key_node.span);
         const assign = captured.paren_assign;
+        if (self.semantic_edit_enabled) {
+            const class_scope = self.outputOwnedScope(source_idx) orelse @panic("prehoisted class key has no source environment");
+            try @import("../../semantic/class_key_evaluation.zig").apply(self, source_idx, assign, self.outputScopeParent(class_scope));
+        }
         if (tag == .class_expression) {
             try key_assigns.append(self.allocator, assign);
         } else {
@@ -1245,7 +1249,7 @@ pub fn lowerClassWithPrehoistedKeys(
 
     var key_assigns: std.ArrayListUnmanaged(NodeIndex) = .empty;
     defer key_assigns.deinit(self.allocator);
-    const new_body = try hoistAllComputedKeys(self, node.tag, body_idx, &key_assigns);
+    const new_body = try hoistAllComputedKeys(self, source_idx, node.tag, body_idx, &key_assigns);
     // These expression fragments are emitted before the reconstructed class.
     // Their exact cloned reads now execute in the known enclosing scope.
     if (self.semantic_edit_enabled) {

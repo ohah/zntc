@@ -21,6 +21,7 @@ const unicode = @import("../lexer/unicode.zig");
 /// source: JSON 원본 텍스트 (AST.source로 설정, span이 직접 참조)
 pub fn convert(allocator: std.mem.Allocator, source: []const u8) !Ast {
     var ast = Ast.init(allocator, source);
+    errdefer ast.deinit();
 
     var pos: u32 = 0;
     const value_node = try convertValue(&ast, source, &pos);
@@ -80,13 +81,11 @@ fn buildNamedExportsFromObject(ast: *Ast, value_node: NodeIndex, out_stmts: *std
 
         const inner_span = Span{ .start = key_span.start + 1, .end = key_span.end - 1 };
 
-        // 값 노드 복사 (object property와 공유하면 transformer에서 인덱스 불일치)
+        // Each exported initializer owns its complete JSON subtree. A shallow
+        // container copy would share children across different statements.
         const orig_value = ast.getNode(prop.data.binary.right);
-        const value_copy = try ast.addNode(.{
-            .tag = orig_value.tag,
-            .span = orig_value.span,
-            .data = orig_value.data,
-        });
+        var value_pos = orig_value.span.start;
+        const value_copy = try convertValue(ast, ast.source, &value_pos);
 
         const binding_ident = try ast.addNode(.{
             .tag = .binding_identifier,
@@ -531,4 +530,40 @@ test "convert empty object and array" {
         try std.testing.expectEqual(Node.Tag.array_expression, arr.tag);
         try std.testing.expectEqual(@as(u32, 0), arr.data.list.len);
     }
+}
+
+test "JSON named nested values own distinct statement subtrees" {
+    const a = std.testing.allocator;
+    var ast = try convert(a, "{\"scripts\":{\"test\":\"zntc\"},\"items\":[{\"deep\":[1,null,true]}]}");
+    defer ast.deinit();
+    const root: NodeIndex = @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1)));
+    const program = ast.getNode(root);
+    const default_stmt = ast.getNode(@fromBackingInt(ast.extra_data.items[program.data.list.start]));
+    const object = ast.getNode(default_stmt.data.unary.operand);
+    const original_property = ast.getNode(@fromBackingInt(ast.extra_data.items[object.data.list.start]));
+    const original_value = ast.getNode(original_property.data.binary.right);
+    const named_stmt = ast.getNode(@fromBackingInt(ast.extra_data.items[program.data.list.start + 1]));
+    const declaration = ast.getNode(ast.readExtraNode(named_stmt.data.extra, 0));
+    const declarator = ast.getNode(@fromBackingInt(ast.extra_data.items[ast.extra_data.items[declaration.data.extra + 1]]));
+    const copied_value = ast.getNode(ast.readExtraNode(declarator.data.extra, 2));
+    const original_child = ast.extra_data.items[original_value.data.list.start];
+    const copied_child = ast.extra_data.items[copied_value.data.list.start];
+    std.debug.print("JSON_SUBTREE originalChild={d} copiedChild={d} defaultStmt=0 namedStmt=1 same={any}\n", .{ original_child, copied_child, original_child == copied_child });
+    const coordinates = try @import("../semantic/statement_coordinates.zig").collect(a, &ast, root);
+    defer a.free(coordinates);
+    try std.testing.expect(original_child != copied_child);
+    try std.testing.expectEqual(@as(u32, 0), coordinates[original_child].?.stmt_idx);
+    try std.testing.expectEqual(@as(u32, 1), coordinates[copied_child].?.stmt_idx);
+}
+
+test "JSON named nested values release every failed allocation" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(a: std.mem.Allocator) !void {
+            var ast = try convert(a, "{\"scripts\":{\"test\":\"zntc\"},\"items\":[{\"deep\":[1,null,true]}]}");
+            defer ast.deinit();
+            const root: NodeIndex = @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1)));
+            const coordinates = try @import("../semantic/statement_coordinates.zig").collect(a, &ast, root);
+            defer a.free(coordinates);
+        }
+    }.run, .{});
 }

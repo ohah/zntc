@@ -393,6 +393,10 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
         analyzer.is_ts = parser.source_mode == .ts;
         analyzer.is_flow = parser.is_flow;
         analyzer.enable_stmt_info = true; // tree_shaker가 AST 재순회 없이 StmtInfo 사용
+        // The initial analysis owns these witnesses. Later transforms retain
+        // them instead of reconstructing external lookups or declarations.
+        analyzer.enable_exact_declaration_anchors = true;
+        analyzer.enable_source_external_origins = true;
         // import 바인딩/namespace 멤버 변형(`ns.x = v`/`delete ns.x`) 검출 — 번들 단계만
         // (esbuild/rolldown 처럼 bundle 시 에러, single-file transform/transpile 은 통과).
         analyzer.check_import_mutation = true;
@@ -428,6 +432,8 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
                 .scope_maps = analyzer.scope_maps.items,
                 .scope_owner_map = analyzer.scope_owner_map,
                 .node_scope_provenance = analyzer.node_scope_provenance,
+                .source_owned_retirements = analyzer.source_owned_retirements,
+                .scope_history = analyzer.scope_history,
                 .class_self_symbol_map = analyzer.class_self_symbol_map,
                 .namespace_member_owners = analyzer.namespace_member_owners,
                 .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -456,6 +462,7 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
                     &parser.ast,
                     analyzer.symbols.items,
                     analyzer.scopes.items,
+                    analyzer.symbol_ids.items,
                     analyzer.references.items,
                     if (module.semantic) |*s| &s.unresolved_references else null,
                     false,

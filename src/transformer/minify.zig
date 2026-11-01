@@ -78,6 +78,8 @@ fn resolveMergeableVarDecl(ast: *const Ast, ni: u32) ?MergeableDecl {
 /// 영구 뮤테이션은 누적 감산 → live 선언 오제거로 이어진다. emit 당 임시 delta
 /// 는 `minify` 내부 scratch 배열에 기록하고, check/rewrite 는 그 조합으로 판정한다.
 /// `scopes` 는 eval / with 포함 여부 조회용 (dynamic lookup 보호).
+pub const SemanticJournal = @import("minify/semantic_journal.zig").SemanticJournal;
+
 pub const MinifyCtx = struct {
     symbols: []const symbol_mod.Symbol,
     symbol_ids: []const ?u32,
@@ -86,6 +88,8 @@ pub const MinifyCtx = struct {
     /// codegen/mangler 의 rename 조회가 symbol_id 기준이라(둘 다 `transformer.symbol_ids` 를
     /// 읽음 = 단일 진실의 원천). null 이면 alias inline 자체를 skip (constant inline 무관).
     symbol_ids_mut: ?[]?u32 = null,
+    /// Exact in-place producer events; caller must apply before publishing.
+    semantic_journal: ?*SemanticJournal = null,
     scopes: []const scope_mod.Scope,
     unresolved_globals: ?*const purity.GlobalRefSet,
     /// per-reference 배열. #1666 single-use inline 이 declaration ↔ read adjacency
@@ -237,6 +241,7 @@ pub inline fn replaceNodeFromChild(
     new_node: Node,
     changed: *bool,
 ) void {
+    if (ctx.semantic_journal) |journal| journal.recordCopy(ast, child_idx, idx, ctx.symbol_ids);
     replaceNode(ast, idx, new_node, changed);
     if (ctx.symbol_ids_mut) |symbol_ids| {
         if (idx < symbol_ids.len and child_idx < symbol_ids.len) {
@@ -361,7 +366,7 @@ fn runOnce(
                     foldLogical(ast, ctx, i, node, &changed);
             },
             .unary_expression => foldUnary(ast, i, node, &changed),
-            .call_expression => foldCall(ast, i, node, &changed),
+            .call_expression => foldCall(ast, ctx, i, node, &changed),
             .conditional_expression => foldConditional(ast, ctx, i, node, &changed),
             .if_statement => foldIf(ast, ctx, i, node, &changed),
             .while_statement => foldWhile(ast, ctx, i, node, &changed),
@@ -380,7 +385,7 @@ fn runOnce(
             // 이면 name 안전하게 anonymous. mobx 같은 ES5 class transpile 패턴 큰 영향.
             // debug/stack-trace 식별성을 깨므로 minify_syntax 일 때만 적용 (line 596/753 패턴).
             .function_expression => {
-                if (ctx.hasSemantic() and ctx.allow_top_level_inline and !ctx.preserve_inferred_names) elideUnusedFnExprName(ast, ctx, node, &changed);
+                if (ctx.hasSemantic() and ctx.allow_top_level_inline and !ctx.preserve_inferred_names) elideUnusedFnExprName(ast, ctx, i, node, &changed);
                 if (ctx.allow_top_level_inline) elideTrailingEmptyReturn(ast, node, &changed);
             },
             // 함수 body 마지막 `return;` (no operand) → empty_statement. implicit return undefined
@@ -1283,6 +1288,7 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
             .data = .{ .unary = .{ .operand = init_idx, .flags = 0 } },
         };
     } else {
+        if (ctx.semantic_journal) |journal| journal.recordCopy(ast, init_ni, read_ni, ctx.symbol_ids);
         ast.nodes.items[read_ni] = .{
             .tag = init_node.tag,
             .span = init_node.span,
@@ -1610,7 +1616,7 @@ fn elideTrailingEmptyReturn(ast: *Ast, node: Node, changed: *bool) void {
 /// 의 Name 은 spec 상 *그 함수 body 안에서만* visible — reference_count == 0 이면
 /// 외부에서 안 보이고 self-ref 도 없음. AST mutate (extra[0] → NodeIndex.none).
 /// mobx 같은 ES5 transpile class 패턴 큰 영향 (모든 prototype method 의 name elide).
-fn elideUnusedFnExprName(ast: *Ast, ctx: MinifyCtx, node: Node, changed: *bool) void {
+fn elideUnusedFnExprName(ast: *Ast, ctx: MinifyCtx, owner: u32, node: Node, changed: *bool) void {
     const e = node.data.extra;
     if (e + 4 > ast.extra_data.items.len) return;
     const name_raw = ast.extra_data.items[e];
@@ -1624,6 +1630,7 @@ fn elideUnusedFnExprName(ast: *Ast, ctx: MinifyCtx, node: Node, changed: *bool) 
     // even when no runtime read refers to its inner binding.
     if (ctx.symbols[sym_id].decl_flags.preserve_class_name) return;
     if (ctx.symbols[sym_id].reference_count != 0) return;
+    if (ctx.semantic_journal) |journal| if (!journal.recordFunctionNameElision(ast, owner, ctx.symbol_ids)) return;
     ast.extra_data.items[e] = @backingInt(NodeIndex.none);
     changed.* = true;
 }
@@ -1878,7 +1885,7 @@ fn makeBoolNode(ast: *Ast, value: bool) ?Node {
     };
 }
 
-fn foldCall(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
+fn foldCall(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
     const e = node.data.extra;
     if (!ast.hasExtra(e, 3)) return;
     const flags = ast.readExtra(e, 3);
@@ -1886,7 +1893,7 @@ fn foldCall(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
 
     // IIFE collapse 시도 — `(()=>X)()` / `(()=>{return X})()` → X.
     // oxc `substitute_iife_call` (substitute_alternate_syntax.rs) 의 최소 스펙.
-    if (tryFoldIife(ast, node_idx, e, changed)) return;
+    if (tryFoldIife(ast, ctx, node_idx, e, changed)) return;
 
     const callee_idx: NodeIndex = @fromBackingInt(@intCast(ast.readExtra(e, 0)));
     const callee_ni = @backingInt(callee_idx);
@@ -1928,13 +1935,21 @@ fn foldCall(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
 /// — codegen 이 statement-context paren wrap 보장 안 함 ('{a:1};' 가 block 으로
 /// 파싱되는 statement-level IIFE 회피). expression context (var initializer 등)
 /// 가 99%지만 statement 단독 IIFE side-effect 패턴도 존재.
-fn tryFoldIife(ast: *Ast, node_idx: u32, e: u32, changed: *bool) bool {
+fn tryFoldIife(ast: *Ast, ctx: MinifyCtx, node_idx: u32, e: u32, changed: *bool) bool {
     const args_len = ast.readExtra(e, 2);
     if (args_len != 0) return false;
 
     const callee_raw = ast.readExtra(e, 0);
     if (callee_raw >= ast.nodes.items.len) return false;
-    const callee = unwrapParens(ast, ast.nodes.items[callee_raw]);
+    var owner_raw = callee_raw;
+    var hops: usize = 0;
+    while (ast.nodes.items[owner_raw].tag == .parenthesized_expression) {
+        if (hops >= ast.nodes.items.len) return false;
+        hops += 1;
+        owner_raw = @backingInt(ast.nodes.items[owner_raw].data.unary.operand);
+        if (owner_raw >= ast.nodes.items.len) return false;
+    }
+    const callee = ast.nodes.items[owner_raw];
     if (callee.tag != .arrow_function_expression) return false;
 
     const arrow_e = callee.data.extra;
@@ -1967,6 +1982,7 @@ fn tryFoldIife(ast: *Ast, node_idx: u32, e: u32, changed: *bool) bool {
 
     if (return_ni >= ast.nodes.items.len) return false;
     const return_node = ast.nodes.items[return_ni];
+    if (ctx.semantic_journal) |journal| if (!journal.recordInlineArrow(ast, owner_raw, node_idx)) return false;
 
     // 호출 노드 자리를 반환식 노드를 **가리키는** 괄호 노드로 바꾼다. 반환식을 값 복사하면
     // 복사본은 원래 노드의 심볼·참조와 끊긴다 — 이후 패스(한 번만 쓰는 상수 인라인 등)가

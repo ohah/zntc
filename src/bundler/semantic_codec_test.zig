@@ -860,7 +860,7 @@ test "semantic_codec: import expression use scopes survive cache independently f
     try testing.expectEqual(@as(u32, 3), restored.node_scope_provenance.count());
     var entries = sem.node_scope_provenance.iterator();
     while (entries.next()) |entry| {
-        try testing.expectEqualDeep(entry.value_ptr.*, restored.node_scope_provenance.get(entry.key_ptr.*).?);
+        try @import("../semantic/test_node_equality.zig").expectEqualDeep(entry.value_ptr.*, restored.node_scope_provenance.get(entry.key_ptr.*).?);
         try testing.expect(!restored.scope_owner_map.contains(@backingInt(entry.key_ptr.*)));
     }
     var editor = try sem.beginEdit(a, &parser.ast);

@@ -36,7 +36,7 @@ pub fn visitListNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             });
         }
     }
-    const new_list = try visitExtraList(self, node.data.list);
+    const new_list = try visitExtraListWithCssHoist(self, node.data.list, node.tag == .program);
     // visitExtraList 가 identity (원본 list 그대로) 반환 → 부모도 identity.
     if (new_list.start == node.data.list.start and new_list.len == node.data.list.len) {
         return idx;
@@ -81,6 +81,10 @@ fn visitBlockWithScoping(self: *Transformer, node: Node) Error!NodeIndex {
 /// 변경이 하나도 없으면 원본 `list` 를 그대로 반환한다 (identity) — extra_data
 /// 재할당을 피해 메모리 성장을 억제. caller 가 start/len 동일성으로 판별 가능.
 pub fn visitExtraList(self: *Transformer, list: NodeList) Error!NodeList {
+    return visitExtraListWithCssHoist(self, list, false);
+}
+
+fn visitExtraListWithCssHoist(self: *Transformer, list: NodeList, program: bool) Error!NodeList {
     // 주의: extra_data.items 슬라이스를 캐시하면 안 됨.
     // visitNode 내부에서 ast.extra_data에 append하면 배열이 재할당되어
     // 캐시된 슬라이스가 dangling pointer가 될 수 있다.
@@ -103,6 +107,15 @@ pub fn visitExtraList(self: *Transformer, list: NodeList) Error!NodeList {
         // 매 반복마다 extra_data에서 직접 읽기 (재할당 안전)
         const raw_idx = self.ast.extra_data.items[list.start + i];
         const new_child = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
+
+        // css-prop declarations are module-level storage, so drain only at
+        // the actual program statement boundary. Appending at program end
+        // leaves immediate calls above the generated const initialization.
+        if (program) {
+            const css = &self.plugins.styled_components.css_prop_pending_decls;
+            try self.scratch.appendSlice(self.allocator, css.items);
+            css.clearRetainingCapacity();
+        }
 
         // pending_nodes 드레인: visitNode가 추가한 보류 노드를 먼저 삽입
         if (self.pending_nodes.items.len > pending_top) {

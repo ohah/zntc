@@ -401,6 +401,109 @@ test "module map TypeScript value imports preserve original owner and bindings i
     try expectMapOwner(true);
 }
 
+fn expectImportErasureRetirement(source: []const u8, path: []const u8, declaration_type_only: bool) !void {
+    const Allocator = std.mem.Allocator;
+    const Parser = @import("../parser/parser.zig").Parser;
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const Transformer = @import("../transformer/transformer.zig").Transformer;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator: Allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(path);
+    const source_root = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_ts = std.mem.endsWith(u8, path, ".ts") or std.mem.endsWith(u8, path, ".tsx");
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var import_declaration: ?NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .import_declaration) {
+            import_declaration = @fromBackingInt(@intCast(raw));
+            break;
+        }
+    }
+    const declaration = import_declaration orelse return error.MissingSourceImport;
+    const extras = @import("../parser/module.zig").readImportDeclExtras(&parser.ast, parser.ast.getNode(declaration).data.extra);
+    try std.testing.expect(extras.specs_len == 1);
+    const specifier: NodeIndex = @fromBackingInt(parser.ast.extra_data.items[extras.specs_start]);
+    const spec = parser.ast.getNode(specifier);
+    const local = switch (spec.tag) {
+        .import_specifier => spec.data.binary.right,
+        .import_default_specifier, .import_namespace_specifier => specifier,
+        else => return error.InvalidSourceImportSpecifier,
+    };
+    const source_symbol = analyzer.symbol_ids.items[@backingInt(local)] orelse return error.MissingSourceImportSymbol;
+
+    const mapping = [_]@import("../transformer/options.zig").ModuleSpecifierMapEntry{.{ .module = "./library.mjs", .template = "./parts/{name}.mjs" }};
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .strip_types = analyzer.is_ts,
+        .module_specifier_map = &mapping,
+    });
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+
+    const output_root = try transformer.transform();
+    try std.testing.expectEqual(output_root, transformer.ast.transformed_root.?);
+    const edited = (try transformer.finishSemanticEdit()) orelse return error.MissingImportSemanticEdit;
+    try std.testing.expectEqual(@as(usize, 1), edited.source_owned_retirements.count());
+    const retired = edited.source_owned_retirements.get(source_symbol) orelse return error.MissingImportRetirementWitness;
+    try std.testing.expectEqual(source_symbol, @backingInt(retired.symbol_id));
+    try std.testing.expectEqual(.erased_import_binding, retired.reason);
+    const receipt = retired.erased_import orelse return error.MissingImportErasureReceipt;
+    try std.testing.expectEqual(declaration, receipt.declaration);
+    try std.testing.expectEqual(specifier, receipt.specifier);
+    try std.testing.expectEqual(local, receipt.local);
+    if (declaration_type_only) {
+        try std.testing.expectEqual(.declaration_type_only, receipt.policy);
+    } else {
+        try std.testing.expectEqual(.unused, receipt.policy);
+    }
+    const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(allocator, transformer.ast, output_root);
+    defer allocator.free(reachable);
+    for (reachable) |raw| try std.testing.expect(transformer.ast.nodes.items[raw].tag != .import_declaration);
+    _ = source_root;
+}
+
+test "module map receipts retain split siblings and retire only erased import identities" {
+    try expectImportErasureRetirement(
+        "import {unused} from './library.mjs';console.log('kept');",
+        ".ts",
+        false,
+    );
+    try expectImportErasureRetirement(
+        "import type {OnlyType} from './library.mjs';export interface Box{value:OnlyType}",
+        ".ts",
+        true,
+    );
+}
+
 test "module map retains exact anonymous default facade owner across ten expression forms" {
     const expressions = [_][]const u8{
         "map+filter",                    "({map,filter})",                    "[map,filter]", "(()=>map+filter)",

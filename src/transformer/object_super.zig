@@ -696,6 +696,39 @@ fn homeObjectWrapperParentScope(self: *Transformer, root: NodeIndex, fallback: S
     return findHomeObjectParentScope(self, root, fallback, true);
 }
 
+/// A method lowered to a named expression evaluates outside its self-name
+/// environment. That environment must move with the function, including a
+/// separate formal scope when present; it never owns the surrounding object.
+fn namedFunctionBoundary(self: *Transformer, owner: NodeIndex, inner: ScopeId) ScopeId {
+    const node = self.ast.getNode(owner);
+    if (node.tag != .function_expression) return inner;
+    const name = self.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name);
+    if (name.isNone()) return inner;
+    const sid = self.getSymbolIdAt(name) orelse return inner;
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    const maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
+    if (sid >= symbols.len or inner.isNone() or inner.toIndex() >= scopes.len) return inner;
+    const symbol = symbols[sid];
+    const name_scope = symbol.scope_id;
+    if (name_scope.isNone() or name_scope == inner or name_scope.toIndex() >= scopes.len or name_scope.toIndex() >= maps.len or
+        symbol.origin_scope != name_scope or !symbol.kind.isFunctionLike() or
+        scopes[name_scope.toIndex()].kind != .block or
+        scopes[name_scope.toIndex()].symbol_count != 1 or
+        maps[name_scope.toIndex()].count() != 1) return inner;
+    var boundary = inner;
+    const params = self.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.params);
+    if (self.outputOwnedScope(params)) |parameters| {
+        if (parameters != boundary and parameters.toIndex() < scopes.len and
+            scopes[boundary.toIndex()].parent == parameters and
+            scopes[parameters.toIndex()].kind == .function) boundary = parameters;
+    }
+    if (scopes[boundary.toIndex()].parent != name_scope) return inner;
+    var values = maps[name_scope.toIndex()].valueIterator();
+    if (values.next().?.* != sid) return inner;
+    return name_scope;
+}
+
 fn findHomeObjectParentScope(
     self: *Transformer,
     root: NodeIndex,
@@ -716,7 +749,7 @@ fn findHomeObjectParentScope(
         if (seen.contains(raw)) continue;
         seen.put(self.allocator, raw, {}) catch return fallback;
         if (self.outputOwnedScope(node_idx)) |scope| {
-            const parent = self.outputScopeParent(scope);
+            const parent = self.outputScopeParent(namedFunctionBoundary(self, node_idx, scope));
             if (!parent.isNone()) {
                 // A lowered formal-parameter environment belongs to the
                 // method found below this object literal, not to the object
@@ -899,10 +932,15 @@ fn bindWrappedHomeParameter(
                             }
                         }
                     }
+                    reparent_scope = namedFunctionBoundary(self, work.node, reparent_scope);
                     try self.reparentGeneratedScope(reparent_scope, wrapper_scope);
                 }
             }
         }
+
+        // Direct object-creation expressions now run in this real wrapper.
+        // Nested method bodies retain their own recorded use scopes.
+        try self.relocateNodeScopeProvenance(work.node, parent_scope, scope);
 
         // This wrapper is the actual producer moving the already-created
         // computed-object call under its new function scope. Hand off only

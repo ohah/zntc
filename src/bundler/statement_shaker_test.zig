@@ -35,6 +35,31 @@ fn parseAndGetRoot(allocator: std.mem.Allocator, source: []const u8) !struct {
     };
 }
 
+/// Initial analysis of the unmodified fixture, matching the production source
+/// producer. The graphless shaker API deliberately has no heritage authority.
+fn markWithSourceIdentity(
+    allocator: std.mem.Allocator,
+    ast: *Ast,
+    root: NodeIndex,
+    names: []const []const u8,
+    skip: *std.DynamicBitSet,
+    globals: ?*const purity.GlobalRefSet,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(arena.allocator(), ast);
+    analyzer.is_module = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
+    try analyzer.analyze();
+    try statement_shaker.markUnusedStatementsWithIdentity(allocator, ast, root, names, skip, globals, .{
+        .symbol_ids = analyzer.symbol_ids.items,
+        .symbols = analyzer.symbols.items,
+        .scopes = analyzer.scopes.items,
+        .references = analyzer.references.items,
+    });
+}
+
 test "statement shaker: unused function removed" {
     const alloc = std.testing.allocator;
     var r = try parseAndGetRoot(alloc,
@@ -263,8 +288,8 @@ test "statement shaker: export specifier-only is side-effect-free" {
     try std.testing.expect(skipped >= 1); // unused + export 문
 }
 
-test "statement shaker: class extends identifier is removable" {
-    // esbuild/rolldown 동일: extends가 순수 식별자이면 side-effect 없음 → 미사용 시 제거
+test "statement shaker: unbound class heritage preserves its lookup error" {
+    // ClassDefinitionEvaluation must still perform an unresolved base lookup.
     const alloc = std.testing.allocator;
     var r = try parseAndGetRoot(alloc,
         \\class Derived extends Base {}
@@ -277,11 +302,11 @@ test "statement shaker: class extends identifier is removable" {
 
     try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip, no_globals);
 
-    // class extends identifier → 순수 → Derived + unused 모두 제거
+    // Preserve Derived; only the unused ordinary function can be removed.
     var skipped: u32 = 0;
     var it = skip.iterator(.{});
     while (it.next()) |_| skipped += 1;
-    try std.testing.expectEqual(@as(u32, 2), skipped);
+    try std.testing.expectEqual(@as(u32, 1), skipped);
 }
 
 test "statement shaker: class without extends is removable" {
@@ -461,8 +486,8 @@ test "statement shaker: typeof binary is side-effect-free" {
     try std.testing.expectEqual(@as(u32, 1), skipped);
 }
 
-test "statement shaker: export default class extends identifier is removable" {
-    // esbuild/rolldown 동일: extends가 순수 식별자이면 side-effect 없음
+test "statement shaker: default class unbound heritage preserves its lookup error" {
+    // An unresolved base can throw before class initialization.
     const alloc = std.testing.allocator;
     var r = try parseAndGetRoot(alloc,
         \\export default class extends Base {}
@@ -475,12 +500,11 @@ test "statement shaker: export default class extends identifier is removable" {
 
     try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip, no_globals);
 
-    // export default class extends Base → 순수 식별자 → 미사용 시 제거 가능
-    // 둘 다 제거
+    // Preserve the unresolved Base lookup; remove only the unused function.
     var skipped: u32 = 0;
     var it = skip.iterator(.{});
     while (it.next()) |_| skipped += 1;
-    try std.testing.expectEqual(@as(u32, 2), skipped);
+    try std.testing.expectEqual(@as(u32, 1), skipped);
 }
 
 test "statement shaker: class extends call expression is side-effectful" {
@@ -504,8 +528,8 @@ test "statement shaker: class extends call expression is side-effectful" {
     try std.testing.expectEqual(@as(u32, 1), skipped);
 }
 
-test "statement shaker: class extends member expression is removable" {
-    // extends a.b → member expression은 순수 (esbuild 동일) → 미사용 시 제거
+test "statement shaker: class member heritage preserves its lookup effects" {
+    // Heritage property access can invoke a getter or throw.
     const alloc = std.testing.allocator;
     var r = try parseAndGetRoot(alloc,
         \\class X extends ns.Base {}
@@ -518,11 +542,11 @@ test "statement shaker: class extends member expression is removable" {
 
     try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip, no_globals);
 
-    // extends ns.Base → 순수 member expression → X + unused 모두 제거
+    // Preserve the heritage lookup; remove only the unused function.
     var skipped: u32 = 0;
     var it = skip.iterator(.{});
     while (it.next()) |_| skipped += 1;
-    try std.testing.expectEqual(@as(u32, 2), skipped);
+    try std.testing.expectEqual(@as(u32, 1), skipped);
 }
 
 test "statement shaker: class inheritance chain — unused children removable" {
@@ -541,7 +565,7 @@ test "statement shaker: class inheritance chain — unused children removable" {
     defer skip.deinit();
 
     const names: [1][]const u8 = .{"Child"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
+    try markWithSourceIdentity(alloc, &r.ast, r.root, &names, &skip, no_globals);
 
     // Child → used, Base → Child의 의존. Unused, GrandChild → 미사용 → 제거
     var skipped: u32 = 0;
@@ -564,7 +588,7 @@ test "statement shaker: used class with extends preserves parent" {
     defer skip.deinit();
 
     const names: [1][]const u8 = .{"Used"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
+    try markWithSourceIdentity(alloc, &r.ast, r.root, &names, &skip, no_globals);
 
     // Parent → Used의 의존으로 보존, Used → used, Unused → 미사용 → 제거
     var skipped: u32 = 0;
@@ -587,7 +611,7 @@ test "statement shaker: side-effect on class symbol preserved" {
     defer skip.deinit();
 
     const names: [1][]const u8 = .{"Base"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
+    try markWithSourceIdentity(alloc, &r.ast, r.root, &names, &skip, no_globals);
 
     // Base → used, Base.DEFAULT_UP → side-effect → 보존, Unused → 미사용 → 제거
     var skipped: u32 = 0;

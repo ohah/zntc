@@ -335,6 +335,9 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 builtin.captureAccessorWithOrigins(self, source_object, member_idx, batch) catch |err| return builtin.productionFailure(err)
             else
                 builtin.captureAccessor(self, source_object, member_idx) catch |err| return builtin.productionFailure(err);
+            if (@import("object_descriptor_helper.zig").makePinnedEvalCallee(self, context) catch |err| return builtin.productionFailure(err)) |helper| {
+                return es_helpers.makeCallExpr(self, helper, &.{ temp_ref, key_arg, desc_obj }, span);
+            }
             const object_ref = builtin.makeReference(self, context) catch |err| return builtin.productionFailure(err);
             const property = try es_helpers.makePropertyNameFromSpan(self, define_property_span);
             const callee = try es_helpers.makeStaticMember(self, object_ref, property, span);

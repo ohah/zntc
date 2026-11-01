@@ -280,6 +280,41 @@ test "object builtin producer original ten runtime plain and identifiers" {
     }
 }
 
+test "object home wrappers move named function environments with live parameter frames" {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const Bundler = @import("../bundler/bundler.zig").Bundler;
+    const sources = [_][]const u8{
+        "const p={value:3};const o={__proto__:p,get['x'](){return super.value},f:function Named(value=7){return[Named.name,value]}};console.log(o.x,JSON.stringify(o.f()))",
+        "const p={value:3};const o={__proto__:p,get['x'](){return super.value},f:function Named(value=()=>Named){return[value()===Named,Named.name]}};console.log(o.x,JSON.stringify(o.f()))",
+        "const p={value:3};const o={__proto__:p,get['x'](){return super.value},f:function Named(){return[eval('Named')===Named,this.x]}};console.log(o.x,JSON.stringify(o.f()))",
+    };
+    for (sources) |source| for ([_]bool{ false, true }) |native_parameters| for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", source);
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", entry } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        var unsupported = compat.fromESTarget(.es5);
+        if (native_parameters) unsupported.default_params = false;
+        var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .node, .format = .cjs, .unsupported = unsupported, .minify_identifiers = minify, .keep_names = true });
+        defer b.deinit();
+        const result = try b.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        try helpers.writeFile(tmp.dir, "output.cjs", result.output);
+        const output = try helpers.absPath(&tmp, "output.cjs");
+        defer std.testing.allocator.free(output);
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output } });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    };
+}
+
 test "object builtin producer accessor handoff rejects missing sibling and foreign events" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

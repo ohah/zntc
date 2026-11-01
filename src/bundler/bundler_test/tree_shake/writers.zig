@@ -307,7 +307,7 @@ test "TreeShaking: unused worklet metadata assignments are dropped when sibling 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "validateAnimatedStyles") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "4291796598") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "VALIDATE_ANIMATED_STYLES_MARKER") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "ReanimatedError") == null);
+    try expectNoDeadWorkletCaptureKeys(result.output);
 }
 
 test "TreeShaking: native worklet transform does not leave metadata for dead dev-only export" {
@@ -366,5 +366,80 @@ test "TreeShaking: native worklet transform does not leave metadata for dead dev
     try std.testing.expect(std.mem.indexOf(u8, result.output, "onFrame") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "validateAnimatedStyles") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "VALIDATE_ANIMATED_STYLES_MARKER") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "ReanimatedError") == null);
+    try expectNoDeadWorkletCaptureKeys(result.output);
+}
+
+// Observe metadata edges, not constructor spellings: a retained class IIFE may
+// evaluate an observable heritage expression and must preserve its inner name.
+fn expectNoDeadWorkletCaptureKeys(output: []const u8) !void {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var scanner = try @import("../../../lexer/scanner.zig").Scanner.init(alloc, output);
+    var parser = @import("../../../parser/parser.zig").Parser.init(alloc, &scanner);
+    const root = try parser.parse();
+    const ast = &parser.ast;
+    const reachable = try @import("../../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(alloc, ast, root);
+    for (reachable) |index| {
+        const assignment = ast.getNode(@fromBackingInt(index));
+        if (assignment.tag != .assignment_expression) continue;
+        const member = ast.getNode(assignment.data.binary.left);
+        if (member.tag != .static_member_expression and member.tag != .computed_member_expression) continue;
+        const property = @as(@import("../../../parser/ast.zig").NodeIndex, @fromBackingInt(ast.extra_data.items[member.data.extra + 1]));
+        const name = (try ast.staticKeyName(alloc, property)) orelse continue;
+        if (!std.mem.eql(u8, name, "__closure")) continue;
+        const object = ast.getNode(assignment.data.binary.right);
+        if (object.tag != .object_expression) continue;
+        const properties = ast.extra_data.items[object.data.list.start .. object.data.list.start + object.data.list.len];
+        for (properties) |raw| {
+            const prop = ast.getNode(@fromBackingInt(raw));
+            if (prop.tag != .object_property) continue;
+            const key = (try ast.staticKeyName(alloc, prop.data.binary.left)) orelse continue;
+            try std.testing.expect(!std.mem.eql(u8, key, "ReanimatedError"));
+            try std.testing.expect(!std.mem.eql(u8, key, "ReanimatedError__classFactory"));
+        }
+    }
+}
+
+test "worklet retained class names and heritage getter effects remain observable" {
+    const cases = [_]struct { source: []const u8, expected: []const u8, keep_names: bool = false }{
+        .{ .source = "const outer=class ReanimatedError extends Error {}; console.log(outer.name,new outer().constructor.name);", .expected = "ReanimatedError ReanimatedError\n", .keep_names = true },
+        .{ .source = "let reads=0; Object.defineProperty(globalThis,'Error',{configurable:true,get(){reads++;return function NativeError(){}}}); class ReanimatedError extends Error {} console.log(reads);", .expected = "1\n" },
+        .{ .source = "const Base=0;try{class C extends Base{}}catch(e){console.log(e instanceof TypeError)}", .expected = "true\n" },
+        .{ .source = "const order=[];const Base=new Proxy(function(){},{get(t,k,r){if(k==='prototype')order.push(k);return Reflect.get(t,k,r)}});order.push('before');class C extends Base{}order.push('after');console.log(order.join(','));", .expected = "before,prototype,after\n" },
+    };
+    for (cases) |case| {
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", case.source } });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings(case.expected, native.stdout);
+        for ([_]bool{ false, true }) |legacy| for ([_]bool{ false, true }) |minify| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try writeFile(tmp.dir, "entry.js", case.source);
+            const entry = try absPath(&tmp, "entry.js");
+            defer std.testing.allocator.free(entry);
+            var bundler = Bundler.init(std.testing.allocator, .{
+                .entry_points = &.{entry},
+                .tree_shaking = true,
+                .minify_syntax = true,
+                .minify_whitespace = true,
+                .minify_identifiers = minify,
+                .platform = .node,
+                .keep_names = case.keep_names,
+                .unsupported = if (legacy) @import("../../../transformer/compat.zig").fromESTarget(.es5) else .{},
+            });
+            defer bundler.deinit();
+            const result = try bundler.bundle(std.testing.io);
+            defer result.deinit(std.testing.allocator);
+            try std.testing.expect(!result.hasErrors());
+            const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+            defer std.testing.allocator.free(actual.stdout);
+            defer std.testing.allocator.free(actual.stderr);
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(case.expected, actual.stdout);
+        };
+    }
 }

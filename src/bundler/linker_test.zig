@@ -1185,7 +1185,10 @@ test "#4819: CJS lexical conflicts keep distinct wrapper parameter SymbolIds" {
     try std.testing.expectEqual(scope_count, module.semantic.?.scopes.len);
     try std.testing.expectEqual(scope_map_count, module.semantic.?.scope_maps.len);
 
-    const mutable_scope_maps = @constCast(sem.scope_maps);
+    // Wrapper registration publishes detached semantic maps. Poison the
+    // installed graph, rather than the pre-registration borrowed snapshot.
+    const current_semantic = module.semantic orelse return error.TestUnexpectedResult;
+    const mutable_scope_maps = @constCast(current_semantic.scope_maps);
     mutable_scope_maps[@backingInt(wrapper_scope)].putAssumeCapacity("exports", @backingInt(module_id));
     try std.testing.expectError(error.CjsWrapperParameterScopeMismatch, graph_finalize.registerWrapperSymbols(r.graph));
 }
@@ -1273,8 +1276,8 @@ test "linker: semantic refresh restores graph-owned wrapper identities" {
     // Fresh analysis replaces semantic rows but leaves stale convenience
     // fields. Resync must rebuild those graph-owned rows and update their IDs.
     const parse_arena = module.parse_arena orelse return error.TestUnexpectedResult;
-    try r.graph.resyncModuleMetadataAfterAstMutation(module, parse_arena.allocator(), &r.linker.rename_table);
-    try r.linker.applyPendingRenames();
+    try @import("graph/transform_prepass.zig").resyncAfterAstMutationForTest(r.graph, module, parse_arena.allocator(), &r.linker.rename_table);
+    try r.linker.applyPendingRenamesForTest();
     try r.linker.prepareCjsRuntimeInternalNames();
 
     const semantic = module.semantic orelse return error.TestUnexpectedResult;
@@ -4077,6 +4080,72 @@ test "semantic: non-shorthand {x: y} does not reference x" {
 
 // #1328 Phase 4d: populateSymbolRefCounts
 
+test "#4819 import fanout preserves physical references and module-specific mangle priority" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { popularValue as first, popularValue as second } from './left'; import { popularValue as third } from './right'; console.log(first, second, third);");
+    const provider_source = "export const popularValue = 7; export function localReader() { return popularValue; }";
+    try writeFile(tmp.dir, "left.ts", provider_source);
+    try writeFile(tmp.dir, "right.ts", provider_source);
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+    r.linker.populateImportSymbols();
+    const left = r.graph.getModule(findModuleIdx(r.graph, "left.ts").?).?;
+    const right = r.graph.getModule(findModuleIdx(r.graph, "right.ts").?).?;
+    var ids: [2]semantic_symbol.SymbolId = undefined;
+    for ([_]*const Module{ left, right }, 0..) |module, index| {
+        const binding = for (module.export_bindings) |binding| {
+            if (std.mem.eql(u8, binding.exported_name, "popularValue")) break binding;
+        } else return error.MissingFanoutExport;
+        ids[index] = @fromBackingInt(binding.symbol.semanticIndex() orelse return error.MissingFanoutSemanticSymbol);
+        const sem = module.semantic.?;
+        try std.testing.expect(@backingInt(ids[index]) < sem.symbols.items.len);
+        try std.testing.expectEqual(@as(u32, 1), sem.symbols.items[@backingInt(ids[index])].reference_count);
+    }
+    // The equal local SID belongs to two different physical module graphs.
+    try std.testing.expectEqual(ids[0], ids[1]);
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var rejected = Linker.init(failing.allocator(), r.graph, .esm);
+    defer rejected.deinit();
+    try std.testing.expectError(error.OutOfMemory, rejected.populateSymbolRefCounts());
+    try std.testing.expectEqual(@as(u32, 0), rejected.semantic_import_fanout.count());
+    rejected.allocator = std.testing.allocator;
+    try rejected.populateSymbolRefCounts();
+    try std.testing.expectEqual(@as(u32, 2), rejected.semantic_import_fanout.count());
+    try r.linker.populateSymbolRefCounts();
+    for ([_]*const Module{ left, right }, 0..) |module, index| {
+        const sem = module.semantic.?;
+        try std.testing.expectEqual(@as(u32, 1), sem.symbols.items[@backingInt(ids[index])].reference_count);
+        var actual_reads: u32 = 0;
+        for (sem.references) |reference| {
+            if (reference.symbol_id == ids[index] and reference.flags.read) actual_reads += 1;
+        }
+        try std.testing.expectEqual(@as(u32, 1), actual_reads);
+    }
+    // Recount/relink replaces the build metric instead of adding it into
+    // either the previous fanout or the physical semantic counts.
+    try r.linker.populateSymbolRefCounts();
+    for ([_]*const Module{ left, right }, 0..) |module, index| {
+        const expected_fanout: u32 = if (index == 0) 2 else 1;
+        try std.testing.expectEqual(expected_fanout, r.linker.semantic_import_fanout.get(bundler_symbol.SymbolID.make(module.index, @backingInt(ids[index]))).?);
+    }
+    try r.linker.link();
+    try std.testing.expectEqual(@as(u32, 0), r.linker.semantic_import_fanout.count());
+    r.linker.populateImportSymbols();
+    try r.linker.populateSymbolRefCounts();
+    var collected = try r.linker.collectUnifiedInput(null, &.{});
+    defer collected.deinit();
+    for ([_]*const Module{ left, right }, 0..) |module, index| {
+        const expected: u32 = if (index == 0) 3 else 2;
+        const weight = for (collected.top_level_candidates) |candidate| {
+            if (candidate.module_index == @backingInt(module.index) and candidate.symbol_id == @backingInt(ids[index])) break candidate.ref_count;
+        } else return error.MissingFanoutMangleCandidate;
+        try std.testing.expectEqual(expected, weight);
+    }
+}
+
 test "populateSymbolRefCounts: import이 source default symbol의 ref_count 증가" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -4090,17 +4159,18 @@ test "populateSymbolRefCounts: import이 source default symbol의 ref_count 증�
 
     r.linker.populateReExportAliases();
     r.linker.populateImportSymbols();
-    r.linker.populateSymbolRefCounts();
+    try r.linker.populateSymbolRefCounts();
 
-    // b.ts의 synthetic_default symbol이 참조되어 ref_count == 1.
-    // #1328 Phase 4e-2b: _default는 semantic 공간에 등록됨.
+    // The external default use remains a fanout of one; its source graph
+    // has no physical reference row and keeps a local reference count of zero.
     const b = r.graph.getModule(ModuleIndex.fromUsize(1)).?;
     const b_sem = b.semantic orelse return error.NoSemantic;
     var found_ref: u32 = 0;
-    for (b_sem.symbols.items) |sym| {
+    for (b_sem.symbols.items, 0..) |sym, raw| {
         const sk = sym.synthetic_kind orelse continue;
         if (sk == .default_export) {
-            found_ref = sym.reference_count;
+            try std.testing.expectEqual(@as(u32, 0), sym.reference_count);
+            found_ref = r.linker.semantic_import_fanout.get(bundler_symbol.SymbolID.make(b.index, raw)) orelse 0;
             break;
         }
     } else return error.DefaultNotRegistered;
@@ -4121,7 +4191,7 @@ test "populateSymbolRefCounts: 아무도 안 쓰는 export는 ref_count 0" {
 
     r.linker.populateReExportAliases();
     r.linker.populateImportSymbols();
-    r.linker.populateSymbolRefCounts();
+    try r.linker.populateSymbolRefCounts();
 
     const b = r.graph.getModule(ModuleIndex.fromUsize(1)).?;
     const b_sem = b.semantic orelse return error.NoSemantic;
@@ -4255,26 +4325,26 @@ test "applyPendingRenames: pending 반영 + mutated module stale entry prune (RF
 
     const symbol_mod = @import("symbol.zig");
     const m0 = r.graph.modules.at(0);
-    defer m0.pending_renames.deinit(std.testing.allocator);
+    defer m0.legacy_rename_oracle.renames.deinit(std.testing.allocator);
     const mi: ModuleIndex = @fromBackingInt(@intCast(0));
 
     // carry-over 모사: resync 로 idx 가 바뀌어 (m0, 99) 가 stale 가 된 상태 + new idx (m0, 0) pending.
     try r.linker.rename_table.put(std.testing.allocator, symbol_mod.SymbolID.make(mi, 99), "stale");
-    try m0.pending_renames.put(std.testing.allocator, symbol_mod.SymbolID.make(mi, 0), "fresh");
-    m0.pending_rename_capture_seen = true;
+    try m0.legacy_rename_oracle.renames.put(std.testing.allocator, symbol_mod.SymbolID.make(mi, 0), "fresh");
+    m0.legacy_rename_oracle.capture_seen = true;
 
-    try r.linker.applyPendingRenames();
+    try r.linker.applyPendingRenamesForTest();
 
     // mutated module 의 stale entry (m0, 99) prune + pending (m0, 0) 반영 + pending clear.
     try std.testing.expect(r.linker.rename_table.get(symbol_mod.SymbolID.make(mi, 99)) == null);
     try std.testing.expectEqualStrings("fresh", r.linker.rename_table.get(symbol_mod.SymbolID.make(mi, 0)).?);
-    try std.testing.expectEqual(@as(u32, 0), m0.pending_renames.count());
-    try std.testing.expect(!m0.pending_rename_capture_seen);
+    try std.testing.expectEqual(@as(u32, 0), m0.legacy_rename_oracle.renames.count());
+    try std.testing.expect(!m0.legacy_rename_oracle.capture_seen);
 
     // 빈 carry 결과도 capture state 를 소비해야 다음 build 에서 첫-pass fallback 을 다시 허용한다.
-    m0.pending_rename_capture_seen = true;
-    try r.linker.applyPendingRenames();
-    try std.testing.expect(!m0.pending_rename_capture_seen);
+    m0.legacy_rename_oracle.capture_seen = true;
+    try r.linker.applyPendingRenamesForTest();
+    try std.testing.expect(!m0.legacy_rename_oracle.capture_seen);
 }
 
 // Regression: HMR rebuild 에서 소스가 재파싱된 모듈의 `alias_table` 이 줄어들
@@ -4325,7 +4395,7 @@ test "populateSymbolRefCounts: stale alias id 는 건너뜀 (bounds guard)" {
     defer linker.deinit();
 
     // 수정 전: `index 5, len 0` panic. 수정 후: 조용히 skip.
-    linker.populateSymbolRefCounts();
+    try linker.populateSymbolRefCounts();
 }
 
 test "populateImportSymbols: named import의 local_symbol이 현재 모듈 semantic ref" {
@@ -5686,7 +5756,7 @@ test "HMR canonical roles survive codec reset decoys and fresh graph owners acro
         try std.testing.expect(statements.len > 40);
         statements.start += 40;
         statements.len -= 40;
-        try r.graph.resyncModuleMetadataAfterAstMutation(owner, arena, &r.linker.rename_table);
+        try @import("graph/transform_prepass.zig").resyncAfterAstMutationForTest(r.graph, owner, arena, &r.linker.rename_table);
         const carried = (owner.semantic.?.runtime_identities orelse return error.MissingHmrCarriedRecord).hmr_internal orelse return error.MissingHmrCarriedGroup;
         try std.testing.expect(carried.global != original.global);
         try std.testing.expect(previous_owner != owner.semantic.?.owner_token);
@@ -9008,4 +9078,431 @@ test "generated class Object globals keep constructor private autoaccessor and T
         std.debug.print("PINNED_FAMILY_EXCLUDED index={d} providers={d}\n", .{ index, providers });
         try std.testing.expectEqual(@as(usize, 0), providers);
     }
+}
+
+fn expectCjsExportEqualsWrapper(minify: bool, format: types.Format) !void {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.ts", "const module='local-module';const exports='local-exports';const api={module,exports,add(delta:number){return 40+delta}};export = api;");
+    try writeFile(tmp.dir, "entry.js", "const api=require('./dep.ts');console.log(`${api.module}|${api.exports}|${api.add(2)}`);");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.js");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    graph.minify_identifiers = minify;
+    try graph.build(std.testing.io, &.{entry});
+    const dep = @constCast(graph.getModule(findModuleIdx(&graph, "dep.ts").?).?);
+    const ast = &dep.ast.?;
+    const sem = &dep.semantic.?;
+    const program = ast.getNode(ast.transformed_root.?);
+    const final_stmt = ast.getNode(@fromBackingInt(ast.extra_data.items[program.data.list.start + program.data.list.len - 1]));
+    try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.expression_statement, final_stmt.tag);
+    const assignment = ast.getNode(final_stmt.data.unary.operand);
+    try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.assignment_expression, assignment.tag);
+    const member = ast.getNode(assignment.data.binary.left);
+    try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.static_member_expression, member.tag);
+    const reference = ast.readExtraNode(member.data.extra, 0);
+    const raw = @backingInt(reference);
+    const wrapper = dep.cjs_wrapper_module_parameter_symbol.?;
+    var marked = false;
+    for (dep.transform_cache.?.explicit_global_ref_nodes) |node| if (node == raw) {
+        marked = true;
+    };
+    std.debug.print("CJS_EXPORT_ASSIGNMENT ref={d} physicalSID={any} wrapperSID={d} kind={any} marker={any}\n", .{ raw, sem.symbol_ids[raw], @backingInt(wrapper), sem.symbols.items[@backingInt(wrapper)].synthetic_kind, marked });
+    try std.testing.expectEqual(@as(?u32, @backingInt(wrapper)), sem.symbol_ids[raw]);
+    try std.testing.expect(!marked);
+    // The source shorthand keeps the declaration's own SID and original row.
+    const source_declaration = ast.getNode(@fromBackingInt(ast.extra_data.items[program.data.list.start]));
+    const declaration_list = ast.extra_data.items[source_declaration.data.extra + 1];
+    const declarator = ast.getNode(@fromBackingInt(ast.extra_data.items[declaration_list]));
+    const binding = ast.readExtraNode(declarator.data.extra, 0);
+    const source_sid = sem.symbol_ids[@backingInt(binding)].?;
+    try std.testing.expect(source_sid != @backingInt(wrapper));
+    var source_reads: usize = 0;
+    for (sem.references) |reference_row| if (@backingInt(reference_row.symbol_id) == source_sid and reference_row.flags.read) {
+        source_reads += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 1), source_reads);
+
+    const records = dep.transform_cache.?.cjs_export_assignment_references;
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    const original = records[0];
+    const foreign_source = try a.dupe(u8, original.source_buffer);
+    defer a.free(foreign_source);
+    const symbols_before = sem.symbols.items.len;
+    const ids_before = try a.dupe(?u32, sem.symbol_ids);
+    defer a.free(ids_before);
+    const references_before = try a.dupe(semantic_symbol.Reference, sem.references);
+    defer a.free(references_before);
+    const ids_pointer = sem.symbol_ids.ptr;
+    const references_pointer = sem.references.ptr;
+    for (0..8) |poison| {
+        var rows = [_]@import("../transformer/cjs_export_assignment.zig").ModuleReference{ original, original };
+        switch (poison) {
+            0 => rows[0].source_buffer = foreign_source,
+            1 => rows[0].source = original.reference,
+            2 => rows[0].source_expression = .none,
+            3 => rows[0].statement = original.source,
+            4 => rows[0].member = original.assignment,
+            5 => rows[0].reference = original.source_expression,
+            6 => rows[0].scope = .none,
+            7 => {},
+            else => unreachable,
+        }
+        dep.transform_cache.?.cjs_export_assignment_references = rows[0..if (poison == 7) 2 else 1];
+        graph.wrapper_symbols_registered = false;
+        try std.testing.expectError(error.InvalidCjsWrapperReference, graph_finalize.registerWrapperSymbols(&graph));
+        dep.transform_cache.?.cjs_export_assignment_references = records;
+        graph.wrapper_symbols_registered = true;
+        try std.testing.expect(sem.symbol_ids.ptr == ids_pointer and sem.references.ptr == references_pointer);
+        try std.testing.expectEqual(symbols_before, sem.symbols.items.len);
+        try std.testing.expectEqualDeep(@as([]const ?u32, ids_before), sem.symbol_ids);
+        try std.testing.expectEqualDeep(@as([]const semantic_symbol.Reference, references_before), sem.references);
+    }
+    // Repeat the real producer with its valid receipt; no count or row is added.
+    graph.wrapper_symbols_registered = false;
+    try graph_finalize.registerWrapperSymbols(&graph);
+    try std.testing.expectEqualDeep(@as([]const ?u32, ids_before), sem.symbol_ids);
+    try std.testing.expectEqualDeep(@as([]const semantic_symbol.Reference, references_before), sem.references);
+
+    var linker = Linker.init(a, &graph, format);
+    defer linker.deinit();
+    try linker.link();
+    try linker.finalize(.{ .compute_renames = true, .compute_mangling = minify });
+    linker.populateImportSymbols();
+    const selected = linker.rename_table.get(bundler_symbol.SymbolID.make(dep.index, @backingInt(wrapper))) orelse return error.MissingCjsWrapperParameterName;
+    var metadata = try linker.buildMetadataForAst(ast, dep.index.toU32(), false, sem.symbol_ids, format, true);
+    defer metadata.deinit();
+    try std.testing.expectEqual(@as(?u32, @backingInt(wrapper)), metadata.symbol_ids[raw]);
+    try std.testing.expectEqualStrings(selected, metadata.renames.get(@backingInt(wrapper)) orelse return error.MissingCjsWrapperParameterName);
+    var leaf_codegen = @import("../codegen/codegen.zig").Codegen.initWithOptions(a, ast, .{ .linking_metadata = &metadata });
+    defer leaf_codegen.deinit();
+    const leaf_output = try leaf_codegen.generate(reference);
+    try std.testing.expectEqualStrings(selected, std.mem.trim(u8, leaf_output, " \t\r\n"));
+    std.debug.print("CJS_EXPORT_OUTPUT minify={any} format={s} SID={d} selected={s} leaf={s}\n", .{ minify, @tagName(format), @backingInt(wrapper), selected, leaf_output });
+    const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, &graph, &.{ .format = format, .minify_identifiers = minify }, &linker, null);
+    defer output.deinit(a);
+    const filename: []const u8 = if (format == .esm) "output.mjs" else "output.cjs";
+    try writeFile(tmp.dir, filename, output.output);
+    const output_path = try @import("test_helpers.zig").absPath(&tmp, filename);
+    defer a.free(output_path);
+    const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output_path } });
+    defer a.free(actual.stdout);
+    defer a.free(actual.stderr);
+    if (actual.term != .exited or actual.term.exited != 0) std.debug.print("CJS_EXPORT_RUNTIME {s}\n{s}\n", .{ actual.stderr, output.output });
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+    try std.testing.expectEqualStrings("local-module|local-exports|42\n", actual.stdout);
+}
+
+test "CJS export equals generated module reference uses actual wrapper with local collisions" {
+    for ([_]bool{ false, true }) |minify| {
+        for ([_]types.Format{ .cjs, .esm }) |format| try expectCjsExportEqualsWrapper(minify, format);
+    }
+}
+
+test "retained imported provider declarations survive statement shaking with identifier minification" {
+    const a = std.testing.allocator;
+    const cases = [_]struct { entry: []const u8, dep: []const u8, expected: []const u8 }{
+        .{ .entry = "import {square} from './dep.js';console.log(square(3));", .dep = "export function square(x){return x*x;}", .expected = "9\n" },
+        .{ .entry = "import * as ns from './dep.js';console.log(ns.value);", .dep = "export const value=12;", .expected = "12\n" },
+        .{ .entry = "import {value} from './dep.js';console.log(value);", .dep = "export const value=12;", .expected = "12\n" },
+        .{ .entry = "import value from './dep.js';console.log(value);", .dep = "export default 12;", .expected = "12\n" },
+    };
+    for (cases, 0..) |case, index| for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.js", case.entry);
+        try writeFile(tmp.dir, "dep.js", case.dep);
+        var result = try buildAndLinkWithTransformOptions(a, &tmp, "entry.js", .{}, minify);
+        defer result.cache.deinit();
+        defer result.destroyGraph();
+        defer result.linker.deinit();
+        const entry_idx = findModuleIdx(result.graph, "entry.js").?;
+        const entry_mod = result.graph.getModule(entry_idx).?;
+        const sem = &entry_mod.semantic.?;
+        var actual_reads: usize = 0;
+        for (sem.references) |r| {
+            if (r.flags.declare) continue;
+            try std.testing.expect(!r.node_index.isNone());
+            const raw = @backingInt(r.node_index);
+            try std.testing.expect(raw < sem.symbol_ids.len);
+            try std.testing.expectEqual(@as(?u32, @backingInt(r.symbol_id)), sem.symbol_ids[raw]);
+            try std.testing.expectEqual(@as(u32, 1), r.stmt_idx);
+            actual_reads += 1;
+        }
+        if (index < 2) try std.testing.expectEqual(@as(usize, 1), actual_reads);
+        var shaker = try @import("tree_shaker.zig").TreeShaker.init(a, result.graph, &result.linker);
+        defer shaker.deinit();
+        const entry_path = try @import("test_helpers.zig").absPath(&tmp, "entry.js");
+        defer a.free(entry_path);
+        try shaker.analyze(&.{entry_path});
+        const infos = shaker.getModuleStmtInfos(@backingInt(entry_idx)) orelse return error.MissingProviderStatementInfo;
+        try std.testing.expectEqual(actual_reads, infos.stmts[1].referenced_symbols.len);
+        result.linker.tree_shaker_active = true;
+        try result.linker.finalize(.{ .compute_renames = true, .compute_mangling = minify });
+        result.linker.populateImportSymbols();
+        const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, result.graph, &.{ .format = .esm }, &result.linker, &shaker);
+        defer output.deinit(a);
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", output.output } });
+        defer a.free(actual.stdout);
+        defer a.free(actual.stderr);
+        if (actual.term != .exited or actual.term.exited != 0) std.debug.print("PROVIDER_CODE {s}\nERROR {s}\n", .{ output.output, actual.stderr });
+        try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+        try std.testing.expectEqualStrings(case.expected, actual.stdout);
+    };
+}
+
+test "initial bundler analysis owns dynamic external lookup witnesses through lowering" {
+    const a = std.testing.allocator;
+    const Case = struct { source: []const u8, prefix: []const u8 = "", external: []const u8, file: []const u8 = "entry.js" };
+    const cases = [_]Case{
+        .{ .source = "async function read(){eval('');return Promise.resolve(7)}read().then(value=>console.log(value));", .external = "Promise" },
+        .{ .source = "function read(){eval('');return observed(7)}console.log(read());", .prefix = "globalThis.observed=value=>value;", .external = "observed" },
+        .{ .source = "function read(){eval('');using resource={value:7,[Symbol.dispose](){events.push(7)}}}read();console.log(events[0]);", .prefix = "globalThis.events=[];", .external = "events" },
+        .{ .source = "module.exports={read(){eval('');return Promise.resolve(7)}};module.exports.read().then(value=>console.log(value));", .external = "Promise", .file = "entry.cjs" },
+    };
+    for (cases) |case| {
+        const native_source = try std.fmt.allocPrint(a, "{s}{s}", .{ case.prefix, case.source });
+        defer a.free(native_source);
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", native_source } });
+        defer a.free(native.stdout);
+        defer a.free(native.stderr);
+        try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, native.term);
+        try std.testing.expectEqualStrings("7\n", native.stdout);
+        for ([_]@import("../transformer/compat.zig").ESTarget{ .esnext, .es5 }) |target| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try writeFile(tmp.dir, case.file, case.source);
+            var result = try buildAndLinkWithTransformOptions(a, &tmp, case.file, .{ .unsupported = @import("../transformer/compat.zig").fromESTarget(target) }, true);
+            defer result.cache.deinit();
+            defer result.destroyGraph();
+            defer result.linker.deinit();
+            const entry = result.graph.getModule(findModuleIdx(result.graph, case.file).?).?;
+            const sem = &entry.semantic.?;
+            try std.testing.expect(sem.scope_history.source_scopes.len > 0);
+            var witnessed: usize = 0;
+            var origins = sem.node_scope_provenance.valueIterator();
+            while (origins.next()) |provenance| if (provenance.source_external) |origin| {
+                if (!std.mem.eql(u8, entry.ast.?.getText(origin.name), case.external)) continue;
+                const scope = origin.source_scope.toIndex();
+                try std.testing.expect(scope < sem.scope_history.source_scopes.len);
+                try std.testing.expectEqualDeep(sem.scope_history.source_scopes[scope], origin.source_frame);
+                witnessed += 1;
+            };
+            try std.testing.expect(witnessed > 0);
+            result.linker.setEmitFormat(.cjs, .{});
+            try result.linker.finalize(.{ .compute_renames = true, .compute_mangling = true });
+            const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, result.graph, &.{ .format = .cjs, .unsupported = @import("../transformer/compat.zig").fromESTarget(target) }, &result.linker, null);
+            defer output.deinit(a);
+            const script = try std.fmt.allocPrint(a, "{s}{s}", .{ case.prefix, output.output });
+            defer a.free(script);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", script } });
+            defer a.free(actual.stdout);
+            defer a.free(actual.stderr);
+            if (actual.term != .exited or actual.term.exited != 0) std.debug.print("INITIAL_WITNESS {s}\n{s}\n", .{ actual.stderr, output.output });
+            try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+}
+
+test "initial JSON module analysis keeps its source scope history" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import value from './data.json';console.log(value.answer);");
+    try writeFile(tmp.dir, "data.json", "{\"answer\":7}");
+    var result = try buildAndLinkWithTransformOptions(a, &tmp, "entry.js", .{}, true);
+    defer result.cache.deinit();
+    defer result.destroyGraph();
+    defer result.linker.deinit();
+    const module = result.graph.getModule(findModuleIdx(result.graph, "data.json").?).?;
+    try std.testing.expect(module.semantic.?.scope_history.source_scopes.len > 0);
+    result.linker.setEmitFormat(.cjs, .{});
+    try result.linker.finalize(.{ .compute_renames = true, .compute_mangling = true });
+    const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, result.graph, &.{ .format = .cjs }, &result.linker, null);
+    defer output.deinit(a);
+    const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", output.output } });
+    defer a.free(actual.stdout);
+    defer a.free(actual.stderr);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+    try std.testing.expectEqualStrings("7\n", actual.stdout);
+}
+
+test "worklet generated class and nested function owners retain their actual output scope" {
+    const cases = [_]struct { source: []const u8, observer: []const u8, expected: []const u8 }{
+        .{ .source = "const __zntcWorkletClass\\u0046actory = 75;\nconst Clazz__classFactory = 73;\nconst Other__classFactory = 74;\nclass Clazz { __workletClass = true; static capturedFactoryName() { return Clazz__classFactory; } static capturedStagingName() { return __zntcWorkletClass\\u0046actory; } value() { return 1; } }\nclass Other { __workletClass = true; value() { return 2; } }\nconst __zntcWorkletClosure0 = 88;\nexport function capturedName() {\n  \"worklet\";\n  const other = new Other();\n  const instance = new Clazz();\n  return [other.value(), instance.value(), Clazz__classFactory, Other__classFactory, __zntcWorkletClosure0];\n}\nexport function plainName() {\n  \"worklet\";\n  return Clazz__classFactory;\n}\nexport function localName() {\n  \"worklet\";\n  const Clazz__classFactory = 19;\n  const instance = new Clazz();\n  return [instance.value(), Clazz__classFactory];\n}\nglobalThis.__zntcWorkletClassFactoryResult = () => ({ closureMatchesSource: Clazz.Clazz__classFactory.__closure.Clazz__classFactory === 73, stagingCaptureValue: Clazz.Clazz__classFactory().capturedStagingName(), name: Clazz.Clazz__classFactory.name });", .observer = "console.log(JSON.stringify((({closureMatchesSource,stagingCaptureValue,name})=>[closureMatchesSource,stagingCaptureValue,!name.includes(\"__zntcWorkletClassFactory\")])(globalThis.__zntcWorkletClassFactoryResult())));", .expected = "[true,75,true]\n" },
+        .{ .source = "class LongAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA { __workletClass = true; value() { return 42; } }\nconst Recreated = LongAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.LongAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA__classFactory();\nglobalThis.__zntcLongWorkletClassFactory = new Recreated().value();", .observer = "console.log(globalThis.__zntcLongWorkletClassFactory);", .expected = "42\n" },
+        .{ .source = "function make(global) { return function nested() { \"worklet\"; return 44; }; }\nconst nested = make({ Error: class NestedError {} });\nconsole.log(nested(), nested.__stackDetails[0].constructor.name);", .observer = "", .expected = "44 NestedError\n" },
+    };
+    var failures: usize = 0;
+    for (cases, 0..) |case, index| for ([_]bool{ false, true }) |minify| {
+        checkWorkletOwnerPublicCase(case.source, case.observer, case.expected, minify) catch |err| {
+            std.debug.print("WORKLET_OWNER case={d} minify={any} error={s}\n", .{ index, minify, @errorName(err) });
+            failures += 1;
+        };
+    };
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}
+
+fn checkWorkletOwnerPublicCase(source: []const u8, observer: []const u8, expected: []const u8, minify: bool) !void {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", source);
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.js");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    const graph = try a.create(ModuleGraph);
+    graph.* = ModuleGraph.init(a, &cache);
+    defer {
+        graph.deinit();
+        a.destroy(graph);
+    }
+    graph.worklet_transform = true;
+    graph.minify_identifiers = minify;
+    try graph.build(std.testing.io, &.{entry});
+    for (graph.diagnostics.items) |diag| if (diag.severity == .@"error") return error.WorkletOwnerBuildError;
+    var linker = Linker.init(a, graph, .cjs);
+    defer linker.deinit();
+    try linker.link();
+    var shaker = try @import("tree_shaker.zig").TreeShaker.init(a, graph, &linker);
+    defer shaker.deinit();
+    try shaker.analyze(&.{entry});
+    linker.tree_shaker_active = true;
+    if (minify) {
+        var collected = try linker.collectUnifiedInput(null, &.{});
+        defer collected.deinit();
+        for (collected.top_level_candidates) |candidate| {
+            const skipped = collected.modules[candidate.module_index].module_scope_symbols.isSet(candidate.symbol_id);
+            if (!skipped) std.debug.print("WORKLET_PHASE_OVERLAP module={d} sid={d} name={s}\n", .{ candidate.module_index, candidate.symbol_id, candidate.name });
+            try std.testing.expect(skipped);
+        }
+    }
+    try linker.finalize(.{ .compute_renames = true, .compute_mangling = minify });
+    linker.populateImportSymbols();
+    const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, graph, &.{ .format = .cjs }, &linker, &shaker);
+    defer output.deinit(a);
+    const code = try std.fmt.allocPrint(a, "{s}\n{s}", .{ output.output, observer });
+    defer a.free(code);
+    const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", code } });
+    defer a.free(actual.stdout);
+    defer a.free(actual.stderr);
+    if (actual.term != .exited or actual.term.exited != 0) std.debug.print("WORKLET_NODE {s}\n", .{actual.stderr});
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+    try std.testing.expectEqualStrings(expected, actual.stdout);
+}
+
+test "generic Stage 3 globals retain producer identity without diagnostic state" {
+    const a = std.testing.allocator;
+    for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.js",
+            \\function mark(value, context) { return value; }
+            \\@mark class Example { @mark value = 1; }
+            \\function observe() { return typeof _classThis; }
+            \\console.log(new Example().value, observe());
+            \\export {};
+        );
+        var result = try buildAndLinkWithTransformOptions(a, &tmp, "entry.js", .{}, minify);
+        defer result.cache.deinit();
+        defer result.destroyGraph();
+        defer result.linker.deinit();
+        const module = result.graph.getModule(findModuleIdx(result.graph, "entry.js").?).?;
+        const cache = module.transform_cache orelse return error.MissingGlobalProducerCache;
+        try std.testing.expect(cache.explicit_global_ref_nodes.len > 0);
+        const ast = &module.ast.?;
+        const sem = &module.semantic.?;
+        var physical_globals: usize = 0;
+        for (cache.explicit_global_ref_nodes) |raw| {
+            try std.testing.expect(raw < ast.nodes.items.len and raw < sem.symbol_ids.len);
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, ast.nodes.items[raw].tag);
+            if (sem.symbol_ids[raw] == null) physical_globals += 1;
+        }
+        try std.testing.expect(physical_globals > 0);
+        result.linker.setEmitFormat(.cjs, .{});
+        try result.linker.finalize(.{ .compute_renames = true, .compute_mangling = minify });
+        const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, result.graph, &.{ .format = .cjs }, &result.linker, null);
+        defer output.deinit(a);
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", output.output } });
+        defer a.free(actual.stdout);
+        defer a.free(actual.stderr);
+        if (actual.term != .exited or actual.term.exited != 0) std.debug.print("STAGE3_GLOBALS {s}\n{s}\n", .{ actual.stderr, output.output });
+        try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+        try std.testing.expectEqualStrings("1 undefined\n", actual.stdout);
+    }
+}
+
+test "const enum erasure consumes its source declarations after literal folding" {
+    const cases = [_][]const u8{
+        "const enum Kind { Value=7 } console.log(Kind.Value);",
+        "const enum Kind { Value=7 } console.log(7);",
+        "const enum Kind { Left=3 } const enum Kind { Right=4 } console.log(Kind.Left+Kind.Right);",
+    };
+    for (cases, 0..) |source, source_index| for ([_]bool{ false, true }) |minify| {
+        const a = std.testing.allocator;
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.ts", source);
+        const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.ts");
+        defer a.free(entry);
+        var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+        defer cache.deinit();
+        var graph = ModuleGraph.init(a, &cache);
+        defer graph.deinit();
+        graph.minify_identifiers = minify;
+        try graph.build(std.testing.io, &.{entry});
+        for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+        const module = graph.getModule(findModuleIdx(&graph, "entry.ts").?).?;
+        const sem = &module.semantic.?;
+        const tree = &module.ast.?;
+        const expected_environments: u32 = if (source_index == 2) 2 else 1;
+        try std.testing.expectEqual(1 + expected_environments, sem.source_owned_retirements.count());
+        var retired = sem.source_owned_retirements.valueIterator();
+        var outer: ?@import("../semantic/source_owned_retirement.zig").Witness = null;
+        var environment_count: usize = 0;
+        while (retired.next()) |item| {
+            if (item.reason == .erased_const_enum_binding) outer = item.* else if (item.reason == .erased_const_enum_environment) environment_count += 1 else return error.UnexpectedRetirement;
+        }
+        try std.testing.expectEqual(@as(usize, expected_environments), environment_count);
+        const witness = outer orelse return error.MissingEnumBinding;
+        try std.testing.expect(witness.reason == .erased_const_enum_binding);
+        try std.testing.expectEqual(witness.source_name, tree.readExtraNode(tree.getNode(witness.source_owner).data.extra, @import("../parser/ast.zig").EnumExtra.name));
+        try std.testing.expect(@backingInt(witness.source_name) < sem.symbol_ids.len);
+        try std.testing.expectEqual(@as(?u32, null), sem.symbol_ids[@backingInt(witness.source_name)]);
+        for (sem.references) |row| try std.testing.expect(row.symbol_id != witness.symbol_id);
+        for (sem.scope_maps) |map| {
+            var ids = map.valueIterator();
+            while (ids.next()) |id| try std.testing.expect(id.* != @backingInt(witness.symbol_id));
+        }
+        var encoded: std.ArrayList(u8) = .empty;
+        defer encoded.deinit(a);
+        try @import("semantic_codec.zig").serialize(sem, &encoded, a);
+        var roundtrip_arena = std.heap.ArenaAllocator.init(a);
+        defer roundtrip_arena.deinit();
+        const roundtrip = try @import("semantic_codec.zig").deserialize(encoded.items, roundtrip_arena.allocator());
+        try std.testing.expectEqual(sem.source_owned_retirements.count(), roundtrip.source_owned_retirements.count());
+        try std.testing.expect(roundtrip.source_owned_retirements.contains(@backingInt(witness.symbol_id)));
+        var linker = Linker.init(a, &graph, .cjs);
+        defer linker.deinit();
+        try linker.link();
+        var shaker = try @import("tree_shaker.zig").TreeShaker.init(a, &graph, &linker);
+        defer shaker.deinit();
+        try shaker.analyze(&.{entry});
+        linker.tree_shaker_active = true;
+        try linker.finalize(.{ .compute_renames = true, .compute_mangling = minify });
+        linker.populateImportSymbols();
+        const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, &graph, &.{ .format = .cjs }, &linker, &shaker);
+        defer output.deinit(a);
+        const observed = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", output.output } });
+        defer a.free(observed.stdout);
+        defer a.free(observed.stderr);
+        try std.testing.expect(observed.term == .exited and observed.term.exited == 0);
+        try std.testing.expectEqualStrings("7\n", observed.stdout);
+    };
 }

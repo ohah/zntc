@@ -4772,6 +4772,32 @@ const MemProfile = struct {
     }
 };
 
+/// The debug published-graph report and the mandatory name-planning gate
+/// consume the same actual edited graph and typed retirement/history roots.
+fn standaloneOutputNormalForm(
+    allocator: std.mem.Allocator,
+    transformer: *const Transformer,
+    analyzer: *const SemanticAnalyzer,
+    root: ast_mod.NodeIndex,
+    pre_transform_scope_count: usize,
+) std.mem.Allocator.Error!@import("transformer/symbol_coverage.zig").OutputNormalFormReport {
+    const cov = @import("transformer/symbol_coverage.zig");
+    return cov.checkOutputNormalFormQuiet(allocator, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, &analyzer.scope_owner_map, analyzer.references.items, transformer.helper_ref_nodes.items, &analyzer.helper_scope_map, &analyzer.unresolved_reference_nodes, &transformer.explicit_global_reference_nodes, &transformer.reference_origin_map, .{
+        .known_output_names = if (transformer.block_rename_map) |*names| names else null,
+        .namespace_member_owners = &analyzer.namespace_member_owners,
+        .namespace_declaration_owners = &analyzer.namespace_declaration_owners,
+        .pre_transform_scope_count = pre_transform_scope_count,
+        .erased_const_enum_external_origins = &transformer.erased_const_enum_external_reference_origins,
+    }, &analyzer.source_owned_retirements, .{
+        .node_scope_provenance = &analyzer.node_scope_provenance,
+        .scope_history = &analyzer.scope_history,
+        .runtime_helper_symbols = &transformer.runtime_helper_symbol_ids,
+        .class_self_symbols = &transformer.class_self_symbol_map,
+        .namespace_member_owners = &analyzer.namespace_member_owners,
+        .namespace_declaration_owners = &analyzer.namespace_declaration_owners,
+    });
+}
+
 fn transpileWithCallbackInternal(
     allocator: std.mem.Allocator,
     source: []const u8,
@@ -4872,11 +4898,11 @@ fn transpileWithCallbackInternal(
         analyzer.is_flow = parser.is_flow;
         analyzer.es_target = options.es_target;
         analyzer.unsupported = options.unsupported;
-        analyzer.collect_unresolved_reference_nodes = symbol_coverage_env.enabled() or
-            needsAmbientConstEnumExternalNodeProof(options, &parser) or
-            needsLocalConstEnumExternalNodeProof(options, &parser) or
-            needsLenientAmbientImportExternalNodeProof(options, &parser);
-        analyzer.enable_exact_declaration_anchors = symbol_coverage_env.enabled();
+        analyzer.collect_unresolved_reference_nodes = true;
+        analyzer.enable_source_external_origins = true;
+        // Every full graph carries its source declaration witnesses before any edit.
+        // Syntax-only lowering consumes the same graph as identifier minification.
+        analyzer.enable_exact_declaration_anchors = true;
         analyzer.analyze() catch return error.SemanticError;
         // tsc 호환: 시맨틱 에러가 있어도 codegen 을 진행한다 — 콜백으로 stderr 통지 후
         // 변환 결과도 함께 반환.
@@ -4963,6 +4989,8 @@ fn transpileWithCallbackInternal(
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
         transformer.node_scope_provenance = analyzer.node_scope_provenance;
+        transformer.source_owned_retirements = analyzer.source_owned_retirements;
+        transformer.scope_history = analyzer.scope_history;
         transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
         transformer.helper_scope_map = analyzer.helper_scope_map;
         transformer.namespace_member_owners = &analyzer.namespace_member_owners;
@@ -5011,13 +5039,6 @@ fn transpileWithCallbackInternal(
         }
     }
     const root = transformer.transform() catch return error.TransformError;
-    // Preserve the source analyzer's reference census for the one lenient
-    // import-equals proof that compares source use nodes with the edited graph.
-    // `finishSemanticEdit` replaces `transformer.references` with the edited
-    // reference list below, so capture this proof while the source list is live.
-    const runtime_import_equals_graph_proof = options.minify_identifiers and
-        parser.source_mode == .js_lenient and transformer.ast.has_ts_import_equals and
-        runtimeImportEqualsBindingsHaveExactOutputIdentity(&transformer, root);
     if (transformer.unsupported_arrow_private_scope_span) |span| {
         if (on_error) |cb| cb(source, file_path, &scanner, &.{.{
             .code = .arrow_private_dynamic_scope,
@@ -5087,6 +5108,8 @@ fn transpileWithCallbackInternal(
             transformer.scope_maps = analyzer.scope_maps.items;
             transformer.scope_owner_map = analyzer.scope_owner_map;
             transformer.node_scope_provenance = analyzer.node_scope_provenance;
+            transformer.source_owned_retirements = analyzer.source_owned_retirements;
+            transformer.scope_history = analyzer.scope_history;
             transformer.helper_scope_map = analyzer.helper_scope_map;
         }
     }
@@ -5131,7 +5154,18 @@ fn transpileWithCallbackInternal(
                 pre_transform_scope_count,
                 &transformer.erased_const_enum_external_reference_origins,
             ) catch return error.OutOfMemory;
-            coverage.printExact(file_path, exact);
+            // Raw stable source slots remain observable, but do not describe
+            // the published output graph after typed source retirement.
+            coverage.printExactSourceSlots(file_path, exact);
+            var normal = try standaloneOutputNormalForm(arena_alloc, &transformer, analyzer, root, pre_transform_scope_count);
+            defer normal.deinit(arena_alloc);
+            if (normal.hasCompleteOutputIdentityBeforeNames()) {
+                coverage.printExact(file_path, normal.exact);
+            } else {
+                std.debug.print("zntc: symbol-identity-output-normal-form-rejected {s}: retirement_state_mismatch={d}\n", .{ file_path, normal.retirement_state_mismatch });
+                coverage.printExactRejectedOutput(file_path, normal.exact);
+                coverage.printStrict(file_path, &normal.strict);
+            }
         }
     }
     if (synthetic_coverage_env.enabled()) {
@@ -5166,6 +5200,12 @@ fn transpileWithCallbackInternal(
     if (transformer.used_unsupported_exponentiation) {
         std.log.warn("zntc: {s}: {s}", .{ file_path, TransformOptions.exponentiation_dynamic_scope_msg });
     }
+    if (transformer.used_unsupported_object_accessor_eval) {
+        std.log.warn("zntc: {s}: {s}", .{ file_path, TransformOptions.object_accessor_eval_msg });
+    }
+    if (transformer.used_unsupported_object_accessor_with) {
+        std.log.warn("zntc: {s}: {s}", .{ file_path, TransformOptions.object_accessor_with_msg });
+    }
     if (transformer.used_unsupported_arrow_dynamic_scope) {
         std.log.warn("zntc: {s}: {s}", .{ file_path, TransformOptions.arrow_dynamic_scope_msg });
     }
@@ -5177,15 +5217,78 @@ fn transpileWithCallbackInternal(
         return .{ .code = try allocator.dupe(u8, "") };
     }
 
-    if (options.minify_syntax) {
+    if (options.minify_syntax) minify_transaction: {
         const analyzer = &(analyzer_storage.?);
         const minify_mod = @import("transformer/minify.zig");
+        const SemanticEditor = @import("semantic/editor.zig").SemanticEditor;
+        const KnownFunction = @import("semantic/editor.zig").KnownUnreachableFunction;
+        // Optional syntax optimization publishes AST and semantic rows together.
+        // Snapshot ownership remains in this call's arena, never in its output.
+        const original_ast = try transformer.ast.cloneForTransformer(arena_alloc);
+        var published = false;
+        defer if (!published) {
+            transformer.ast.* = original_ast;
+        };
+        var editor = SemanticEditor.init(arena_alloc, transformer.ast, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, analyzer.scope_owner_map, analyzer.references.items, transformer.symbol_ids.items, analyzer.helper_scope_map) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction,
+        };
+        editor.importScopeHistory(analyzer.scope_history) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction,
+        };
+        editor.importSourceOwnedRetirements(analyzer.source_owned_retirements) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction,
+        };
+        editor.importNodeScopeProvenance(analyzer.node_scope_provenance) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction,
+        };
+        var source_functions: std.ArrayList(KnownFunction) = .empty;
+        const source_nodes = try @import("parser/ast_walk.zig").collectReachableNodeIndicesFrom(arena_alloc, transformer.ast, root);
+        for (source_nodes) |raw| {
+            const node = transformer.ast.nodes.items[raw];
+            const slot: u32 = switch (node.tag) {
+                .function_declaration, .function_expression => @import("parser/ast.zig").FunctionExtra.params,
+                .arrow_function_expression => 0,
+                else => continue,
+            };
+            const scope = editor.scope_owner_map.get(raw) orelse continue;
+            const body = transformer.ast.readExtraNode(node.data.extra, slot + 1);
+            try source_functions.append(arena_alloc, .{
+                .owner = @fromBackingInt(raw),
+                .scope = @fromBackingInt(scope),
+                .params = transformer.ast.readExtraNode(node.data.extra, slot),
+                .body = body,
+                .body_scope = if (editor.scope_owner_map.get(@backingInt(body))) |value| @fromBackingInt(value) else .none,
+            });
+        }
+        const retirement = if (source_functions.items.len != 0) editor.captureFunctionRetirementSources(source_functions.items) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction,
+        } else null;
+        const function_name_sources = editor.captureFunctionNameEnvironments(root, &transformer.native_arguments_declaration_origins) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction,
+        };
+        const static_capture_sources = editor.captureStaticCaptureAliases(root, transformer.completed_static_class_captures) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction,
+        };
+        var candidate_origins = try transformer.reference_origin_map.clone(arena_alloc);
+        var candidate_class_self = try transformer.class_self_symbol_map.clone(arena_alloc);
+        var journal = minify_mod.SemanticJournal.init(arena_alloc, analyzer.references.items, .{ .domain = transformer.ast, .root = root, .symbol_ids = transformer.symbol_ids.items, .owners = &analyzer.scope_owner_map, .expressions = &analyzer.node_scope_provenance, .class_self = &transformer.class_self_symbol_map, .symbols = analyzer.symbols.items, .scopes = analyzer.scopes.items, .scope_maps = analyzer.scope_maps.items }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.TransformError,
+        };
         const ctx: minify_mod.MinifyCtx = .{
             .symbols = analyzer.symbols.items,
-            .symbol_ids = transformer.symbol_ids.items,
-            // 동일 backing 의 mutable view — codegen/mangler 도 `transformer.symbol_ids` 를
-            // 읽으므로(mangle_metadata.symbol_ids) alias inline 의 symbol_id 갱신이 전파됨.
-            .symbol_ids_mut = transformer.symbol_ids.items,
+            .symbol_ids = editor.symbol_ids.items,
+            // Candidate IDs remain private until the AST and complete graph
+            // publish together below.
+            .symbol_ids_mut = editor.symbol_ids.items,
+            .semantic_journal = &journal,
             .scopes = analyzer.scopes.items,
             .unresolved_globals = null,
             .references = analyzer.references.items,
@@ -5199,57 +5302,127 @@ fn transpileWithCallbackInternal(
             transformer.ast.preserve_lexical_declaration_indices.items,
         );
         minify_mod.mergeDecls(transformer.ast, root, null, arena_alloc);
+        // Reopen the same producer graph; minification reports exact source/
+        // target edges instead of asking an analyzer to rediscover identities.
+        const receipt = journal.applyReferenceAndOwnerEdits(&editor, root, &candidate_origins, &candidate_class_self) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction,
+        };
+        defer journal.freeApplicationReceipt(receipt);
+        if (retirement) |plan| {
+            const live_nodes = try @import("parser/ast_walk.zig").collectReachableNodeIndicesFrom(arena_alloc, transformer.ast, root);
+            var live = try std.DynamicBitSet.initEmpty(arena_alloc, transformer.ast.nodes.items.len);
+            for (live_nodes) |raw| live.set(raw);
+            var selected: std.ArrayList(@import("parser/ast.zig").NodeIndex) = .empty;
+            var selected_nodes = try std.DynamicBitSet.initEmpty(arena_alloc, transformer.ast.nodes.items.len);
+            for (plan.functions) |known| {
+                const raw = @backingInt(known.owner);
+                if (live.isSet(raw) or selected_nodes.isSet(raw)) continue;
+                const closure = try @import("parser/ast_walk.zig").collectReachableNodeIndicesFrom(arena_alloc, plan.source, known.owner);
+                var wholly_dead = true;
+                for (closure) |child| if (live.isSet(child)) {
+                    wholly_dead = false;
+                    break;
+                };
+                if (!wholly_dead) continue;
+                var transferred = false;
+                for (receipt.owner_changes) |change| {
+                    for (closure) |child| if (@backingInt(change.source_owner) == child) {
+                        transferred = true;
+                        break;
+                    };
+                }
+                // A moved/elided function is consumed by phase 1, never again
+                // as a whole-function retirement from its former source edges.
+                if (transferred) continue;
+                try selected.append(arena_alloc, known.owner);
+                for (closure) |child| selected_nodes.set(child);
+            }
+            if (selected.items.len != 0 and !(editor.retireSelectedSourceOwnedFunctions(plan, selected.items, receipt) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => break :minify_transaction,
+            })) break :minify_transaction;
+        }
+        _ = editor.retireFunctionNameEnvironments(function_name_sources, receipt, .{
+            .node_scope_provenance = &editor.node_scope_provenance,
+            .scope_history = &transformer.scope_history,
+            .runtime_helper_symbols = &transformer.runtime_helper_symbol_ids,
+            .class_self_symbols = &candidate_class_self,
+            .namespace_member_owners = &analyzer.namespace_member_owners,
+            .namespace_declaration_owners = &analyzer.namespace_declaration_owners,
+        }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction,
+        };
+        _ = editor.retireStaticCaptureAliases(static_capture_sources, receipt, .{
+            .node_scope_provenance = &editor.node_scope_provenance,
+            .scope_history = &transformer.scope_history,
+            .runtime_helper_symbols = &transformer.runtime_helper_symbol_ids,
+            .class_self_symbols = &candidate_class_self,
+            .namespace_member_owners = &analyzer.namespace_member_owners,
+            .namespace_declaration_owners = &analyzer.namespace_declaration_owners,
+        }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction,
+        };
+        journal.retireDeadDeclarationAnchors(&editor, root) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction,
+        };
+        analyzer.applyEdit(editor.finish() catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction,
+        });
+        transformer.reference_origin_map = candidate_origins;
+        transformer.class_self_symbol_map = candidate_class_self;
+        published = true;
+        transformer.symbol_ids = analyzer.symbol_ids;
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
+        transformer.source_owned_retirements = analyzer.source_owned_retirements;
+        transformer.scope_history = analyzer.scope_history;
+        transformer.helper_scope_map = analyzer.helper_scope_map;
+        analyzer.class_self_symbol_map = transformer.class_self_symbol_map;
     }
 
-    // 4.5. 이름 줄이기는 보통 **낮춘 뒤의 코드**를 다시 분석해서 한다 (#4759·#4760).
-    // 상태 기계·`_loop` 은 변수를 다른 함수로 옮기고 새 이름을 만든다. native JS
-    // script 는 visitor 가 AST 노드를 복제하더라도 어휘 그래프가 그대로이므로
-    // 편집된 변환 의미 정보를 쓴다. AST 길이만으로 이 조건을 판정할 수 없다.
+    // Every full-semantic producer finishes one edited output graph. Verify
+    // its reachable source and generated identities before consumers allocate
+    // names; syntax categories never select a replacement identity space.
+    if (options.minify_identifiers) {
+        if (analyzer_storage) |*a| {
+            const cov = @import("transformer/symbol_coverage.zig");
+            var normal = try standaloneOutputNormalForm(arena_alloc, &transformer, a, root, pre_transform_scope_count);
+            defer normal.deinit(arena_alloc);
+            const exact = normal.exact;
+            if (!normal.hasCompleteOutputIdentityBeforeNames()) {
+                if (@import("builtin").is_test) std.debug.print("R1_OUTPUT_INVALID file={s}\n", .{file_path});
+                if (@import("builtin").is_test) {
+                    cov.printStrict(file_path, &normal.strict);
+                    cov.printExact(file_path, exact);
+                    std.debug.print("R1_RETIREMENT_STATE_INVALID count={d}\n", .{normal.retirement_state_mismatch});
+                }
+                return error.TransformError;
+            }
+        }
+    }
     const explicit_global_ref_nodes = try transformer.ownedExplicitGlobalRefNodes(arena_alloc);
-    var post_analyzer_storage: ?SemanticAnalyzer = null;
-    var mangle_analyzer: ?*SemanticAnalyzer = null;
-    var mangle_uses_transform_semantic = false;
     if (options.minify_identifiers and analyzer_storage != null) {
-        if (canMangleWithTransformSemanticAfterEditWithTypeImportShadowSnapshot(
-            options,
-            &parser,
-            &transformer,
-            root,
-            runtime_import_equals_graph_proof,
-            runtime_import_identity_snapshot,
-            type_import_shadow_snapshot,
-        )) {
-            mangle_uses_transform_semantic = true;
-            mangle_analyzer = &analyzer_storage.?;
-        } else {
-            post_analyzer_storage = SemanticAnalyzer.init(arena_alloc, transformer.ast);
-            const post = &post_analyzer_storage.?;
-            post.is_strict_mode = parser.is_strict_mode;
-            post.is_module = parser.is_module;
-            // Reanalysis must keep transform-created free globals free. Without
-            // this producer sidecar, a generated `Object` can bind to a source
-            // lexical declaration introduced by lowering.
-            post.explicit_global_ref_nodes = explicit_global_ref_nodes;
-            // 타입은 이미 지워졌다. 낮춘 코드의 분석 에러(낮추기가 만든 형태)는 이름 짓기와 무관하다.
-            post.analyze() catch return error.SemanticError;
-            mangle_analyzer = post;
-        }
         if (symbol_coverage_env.enabled()) {
-            const graph = if (mangle_uses_transform_semantic) "retained" else "reanalyzed";
-            std.debug.print("zntc: symbol-identity-transpile-mode {s}: semantic_graph={s}\n", .{ file_path, graph });
+            std.debug.print("zntc: symbol-identity-transpile-mode {s}: semantic_graph=retained\n", .{file_path});
         }
-        const post = mangle_analyzer.?;
+        const post = &analyzer_storage.?;
         if (post.symbols.items.len > 0 and post.scope_maps.items.len > 0) {
-            // 변환 전 분석이 "이름 보존"으로 본 심볼(export·import·클래스 식 이름)을
-            // mangler graph 로 옮긴다. 재분석 경로에서는 변환이 그 흔적을 지우기도 한다 —
-            // TS `export = Box` 는 `module.exports = Box` 가 되어 재분석에선 export 가 아니다.
-            // 같은 노드에 변환 전 심볼(트랜스포머가 물려준 것)과 mangler 심볼이 붙으면 짝이다.
-            // 보존 이름은 다른 바인딩이 같은 이름을 받지 않게 예약도 한다.
-            const pre = &(analyzer_storage.?);
+            // Preserve source export/import roles in this same edited identity
+            // space. No post-analysis SID correspondence is constructed.
             var keep = std.DynamicBitSet.initEmpty(arena_alloc, post.symbols.items.len) catch return error.OutOfMemory;
             var reserved: std.StringHashMapUnmanaged(void) = .empty;
             var unresolved_it = post.unresolved_references.keyIterator();
             while (unresolved_it.next()) |k| reserved.put(arena_alloc, k.*, {}) catch return error.OutOfMemory;
+            try @import("semantic/source_external_origin.zig").reserveOutputNames(arena_alloc, transformer.ast, root, transformer.symbol_ids.items, &post.node_scope_provenance, &reserved);
             if (options.module_format == .cjs) {
                 reserveCommonJsCodegenNames(arena_alloc, &reserved) catch return error.OutOfMemory;
             }
@@ -5257,35 +5430,25 @@ fn transpileWithCallbackInternal(
             if (options.keep_names) {
                 const staging_name = try standaloneRuntimeHelperSymbolName(&transformer, "__name", options.minify_whitespace);
                 try reserved.put(arena_alloc, staging_name, {});
-                if (mangle_uses_transform_semantic) {
-                    const helper = transformer.runtime_helper_symbol_ids.get("__name") orelse return error.TransformError;
-                    if (@backingInt(helper) >= post.symbols.items.len) return error.TransformError;
-                    keep.set(@backingInt(helper));
-                }
+                const helper = transformer.runtime_helper_symbol_ids.get("__name") orelse return error.TransformError;
+                if (@backingInt(helper) >= post.symbols.items.len) return error.TransformError;
+                keep.set(@backingInt(helper));
             }
-            const external_symbol_ids = if (mangle_uses_transform_semantic)
-                transformer.symbol_ids.items
-            else
-                post.symbol_ids.items;
             reserveGeneratedExternalNames(
                 arena_alloc,
                 &reserved,
                 transformer.ast,
                 root,
-                external_symbol_ids,
+                transformer.symbol_ids.items,
                 explicit_global_ref_nodes,
             ) catch return error.OutOfMemory;
-            for (post.symbol_ids.items, 0..) |maybe_post_sym, node_i| {
-                const post_sym = maybe_post_sym orelse continue;
-                if (node_i >= transformer.symbol_ids.items.len) continue;
-                const pre_sym = transformer.symbol_ids.items[node_i] orelse continue;
-                if (pre_sym >= pre.symbols.items.len or post_sym >= post.symbols.items.len) continue;
-                if (!Mangler.preservesName(pre.symbols.items[pre_sym])) continue;
-                if (keep.isSet(post_sym)) continue;
-                keep.set(post_sym);
-                reserved.put(arena_alloc, transformer.ast.getText(post.symbols.items[post_sym].name), {}) catch return error.OutOfMemory;
+            for (transformer.symbol_ids.items) |maybe_id| {
+                const id = maybe_id orelse continue;
+                if (id >= post.symbols.items.len or !Mangler.preservesName(post.symbols.items[id]) or keep.isSet(id)) continue;
+                keep.set(id);
+                reserved.put(arena_alloc, transformer.ast.getText(post.symbols.items[id].name), {}) catch return error.OutOfMemory;
             }
-            if (mangle_uses_transform_semantic and transformer.runtime_helpers.hasAny()) {
+            if (transformer.runtime_helpers.hasAny()) {
                 keepHelpersReferencedFromHelperBodies(
                     arena_alloc,
                     transformer.runtime_helpers,
@@ -5332,15 +5495,12 @@ fn transpileWithCallbackInternal(
     // final SymbolId-to-name map. Audit after both decisions so syntax-only,
     // identifier-only, and combined minification all pass through this gate.
     if (symbol_coverage_env.enabled() and (options.minify_syntax or options.minify_identifiers)) {
-        // Audit the exact graph whose node-to-SymbolId map codegen consumes.
-        // Reanalysis owns a new identity space; transform IDs and helper roles
-        // cannot be paired with that graph's symbols or binding resolution.
-        const audit_uses_reanalyzed_graph = mangle_result != null and !mangle_uses_transform_semantic;
-        const audit_graph = if (audit_uses_reanalyzed_graph) mangle_analyzer.? else &(analyzer_storage.?);
-        const audit_symbol_ids = if (audit_uses_reanalyzed_graph) audit_graph.symbol_ids.items else transformer.symbol_ids.items;
-        const audit_helper_nodes = if (audit_uses_reanalyzed_graph) audit_graph.helper_ref_nodes else transformer.helper_ref_nodes.items;
-        const audit_class_self = if (audit_uses_reanalyzed_graph) &audit_graph.class_self_symbol_map else &transformer.class_self_symbol_map;
-
+        // The fresh graph below is an independent oracle only. Output uses
+        // the producer's edited SID/ScopeId space, including syntax edits.
+        const audit_graph = &(analyzer_storage.?);
+        const audit_symbol_ids = transformer.symbol_ids.items;
+        const audit_helper_nodes = transformer.helper_ref_nodes.items;
+        const audit_class_self = &transformer.class_self_symbol_map;
         // Runtime helper declarations live in the emitted preamble, outside
         // the AST being reanalyzed here. Give helper callsites the exact name
         // the preamble/codegen resolver will emit, then restore their AST
@@ -5360,13 +5520,11 @@ fn transpileWithCallbackInternal(
             transformer.ast.nodes.items[rewrite.node_raw].data.string_ref = rewrite.original_span;
         };
 
-        if (!audit_uses_reanalyzed_graph and transformer.semantic_edit_enabled and
+        if (transformer.semantic_edit_enabled and
             !transformer.options.emit_runtime_helper_imports)
         {
             var final_helper_renames: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null;
-            if (mangle_uses_transform_semantic) {
-                if (mangle_result) |*result| final_helper_renames = &result.renames;
-            }
+            if (mangle_result) |*result| final_helper_renames = &result.renames;
             const helper_name_resolver: StandaloneRuntimeHelperNameResolver = .{
                 .transformer = &transformer,
                 .final_renames = final_helper_renames,
@@ -5448,15 +5606,8 @@ fn transpileWithCallbackInternal(
             // 이 해제 — mangle_metadata 는 deinit 되지 않으므로 double-free 없음.
             .renames = mr.renames,
             .final_exports = null,
-            // 이름 표와 노드→심볼은 같은 semantic graph를 사용한다.
-            // Minify can replace a parent node with an identifier child. In the
-            // transform-graph path it transfers that child's ID into the surviving
-            // AST slot, so codegen must consult the same updated node-to-symbol map.
-            // The post-transform reanalysis path instead owns its own complete map.
-            .symbol_ids = if (mangle_uses_transform_semantic)
-                transformer.symbol_ids.items
-            else
-                mangle_analyzer.?.symbol_ids.items,
+            // Minification and codegen consume the same live identity map.
+            .symbol_ids = transformer.symbol_ids.items,
             // 단일 파일 transpile: codegen 의 scope-hoisted 전용 분기를 타지 않도록 false.
             .is_bundle_context = false,
             .allocator = arena_alloc,
@@ -5464,18 +5615,12 @@ fn transpileWithCallbackInternal(
     }
 
     // 6. 코드 생성
-    // Without identifier mangling, the semantic editor's applied result is the
-    // authoritative node->SymbolId map. Syntax minification mutates the
-    // transformer's live map later, so keep using that view in that case.
-    const codegen_symbol_ids = if (mangle_metadata == null and !options.minify_syntax) blk: {
-        if (analyzer_storage) |*analyzer| break :blk analyzer.symbol_ids.items;
-        break :blk transformer.symbol_ids.items;
-    } else transformer.symbol_ids.items;
+    // All output consumers share the producer's live map, with or without
+    // identifier/syntax minification. Graphless callers retain their empty map.
+    const codegen_symbol_ids = transformer.symbol_ids.items;
     var has_helpers = transformer.runtime_helpers.hasAny();
     var helper_final_renames: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null;
-    if (mangle_uses_transform_semantic) {
-        if (mangle_result) |*mr| helper_final_renames = &mr.renames;
-    }
+    if (mangle_result) |*mr| helper_final_renames = &mr.renames;
     const helper_name_resolver: StandaloneRuntimeHelperNameResolver = .{
         .transformer = &transformer,
         .final_renames = helper_final_renames,
@@ -5485,14 +5630,9 @@ fn transpileWithCallbackInternal(
         try helper_name_resolver.resolve("__name", options.minify_whitespace)
     else
         null;
-    // The block-scoping map is keyed by transform-graph SymbolIds. A
-    // post-transform reanalysis builds unrelated IDs, so only expose these
-    // overrides when codegen uses the transform graph (or no mangle graph).
+    // Block aliases and final helper names refer to these same producer SIDs.
     const codegen_transform_name_overrides: ?*const std.AutoHashMapUnmanaged(u32, []const u8) =
-        if (mangle_metadata == null or mangle_uses_transform_semantic)
-            if (transformer.block_rename_map) |*names| names else null
-        else
-            null;
+        if (transformer.block_rename_map) |*names| names else null;
     var codegen_symbol_name_overrides_storage: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
     if (codegen_transform_name_overrides) |names| {
         var entries = names.iterator();
@@ -5649,12 +5789,12 @@ fn transpileWithCallbackInternal(
         .quote_style = options.quote_style,
         .linking_metadata = if (mangle_metadata) |*mm| mm else null,
         .semantic_symbol_ids = codegen_symbol_ids,
-        .semantic_symbols = if (mangle_metadata != null) mangle_analyzer.?.symbols.items else if (analyzer_storage) |*analyzer| analyzer.symbols.items else &.{},
+        .semantic_symbols = if (analyzer_storage) |*analyzer| analyzer.symbols.items else &.{},
         .semantic_symbol_name_overrides = codegen_symbol_name_overrides,
-        .semantic_scope_maps = if (mangle_metadata != null) mangle_analyzer.?.scope_maps.items else if (analyzer_storage) |*analyzer| analyzer.scope_maps.items else &.{},
-        .generated_iife_scope_owner_map = if (mangle_metadata != null) &mangle_analyzer.?.scope_owner_map else if (analyzer_storage) |*analyzer| &analyzer.scope_owner_map else null,
+        .semantic_scope_maps = if (analyzer_storage) |*analyzer| analyzer.scope_maps.items else &.{},
+        .generated_iife_scope_owner_map = if (analyzer_storage) |*analyzer| &analyzer.scope_owner_map else null,
         .require_generated_iife_symbols = true,
-        .namespace_declaration_owners = if (mangle_metadata != null) &mangle_analyzer.?.namespace_declaration_owners else if (analyzer_storage) |*analyzer| &analyzer.namespace_declaration_owners else null,
+        .namespace_declaration_owners = if (analyzer_storage) |*analyzer| &analyzer.namespace_declaration_owners else null,
         .destructuring_temp_bindings = &transformer.destructuring_temp_bindings,
         .platform = options.platform,
         .source_root = options.source_root,
@@ -6069,6 +6209,7 @@ test "#6193 erased ambient module proof rejects lenient syntax outside its subtr
     try std.testing.expect(parser.is_module);
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
     defer analyzer.deinit();
     analyzer.is_module = parser.is_module;
     analyzer.is_strict_mode = parser.is_strict_mode;
@@ -6082,6 +6223,8 @@ test "#6193 erased ambient module proof rejects lenient syntax outside its subtr
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -6124,6 +6267,8 @@ test "#6193 declaration-level type import reuse requires exact output erasure pr
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -6322,6 +6467,8 @@ test "#6193 declaration-level type import reuse requires exact output erasure pr
     hostile_transformer.scope_maps = hostile_analyzer.scope_maps.items;
     hostile_transformer.scope_owner_map = hostile_analyzer.scope_owner_map;
     hostile_transformer.node_scope_provenance = hostile_analyzer.node_scope_provenance;
+    hostile_transformer.source_owned_retirements = hostile_analyzer.source_owned_retirements;
+    hostile_transformer.scope_history = hostile_analyzer.scope_history;
     hostile_transformer.helper_scope_map = hostile_analyzer.helper_scope_map;
     hostile_transformer.namespace_member_owners = &hostile_analyzer.namespace_member_owners;
     hostile_transformer.namespace_declaration_owners = &hostile_analyzer.namespace_declaration_owners;
@@ -6364,6 +6511,8 @@ test "#6193 detached named default namespace and standalone inline type import p
         analyzer.is_module = parser.is_module;
         analyzer.is_strict_mode = parser.is_strict_mode;
         analyzer.collect_unresolved_reference_nodes = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        analyzer.enable_source_external_origins = true;
         try analyzer.analyze();
         const shadow_snapshot = (try captureTypeImportShadowIdentitySnapshot(
             allocator,
@@ -6552,6 +6701,8 @@ test "#6193 mixed inline type import external reads require exact surviving runt
     analyzer.is_module = parser.is_module;
     analyzer.is_strict_mode = parser.is_strict_mode;
     analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
     try analyzer.analyze();
     const shadow_snapshot = (try captureTypeImportShadowIdentitySnapshot(
         allocator,
@@ -6779,6 +6930,8 @@ test "#6193 erased type import permits only exact same-name runtime bindings" {
     analyzer.is_module = parser.is_module;
     analyzer.is_strict_mode = parser.is_strict_mode;
     analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
     try analyzer.analyze();
     const shadow_snapshot = (try captureTypeImportShadowIdentitySnapshot(
         allocator,
@@ -6814,6 +6967,9 @@ test "#6193 erased type import permits only exact same-name runtime bindings" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.scope_history = analyzer.scope_history;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -7004,6 +7160,8 @@ test "#6193 erased ambient namespace import-equals requires exact subtree proof"
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -7194,6 +7352,8 @@ test "#6193 erased ambient namespace import-equals requires exact subtree proof"
     outside_unhandled_transformer.scope_maps = outside_unhandled_analyzer.scope_maps.items;
     outside_unhandled_transformer.scope_owner_map = outside_unhandled_analyzer.scope_owner_map;
     outside_unhandled_transformer.node_scope_provenance = outside_unhandled_analyzer.node_scope_provenance;
+    outside_unhandled_transformer.source_owned_retirements = outside_unhandled_analyzer.source_owned_retirements;
+    outside_unhandled_transformer.scope_history = outside_unhandled_analyzer.scope_history;
     outside_unhandled_transformer.helper_scope_map = outside_unhandled_analyzer.helper_scope_map;
     outside_unhandled_transformer.namespace_member_owners = &outside_unhandled_analyzer.namespace_member_owners;
     outside_unhandled_transformer.namespace_declaration_owners = &outside_unhandled_analyzer.namespace_declaration_owners;
@@ -7247,6 +7407,8 @@ test "#6193 lenient runtime import-equals retains only exact output identities" 
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -7374,6 +7536,8 @@ test "#6193 lenient runtime import-equals retains only exact output identities" 
     mixed_transformer.scope_maps = mixed_analyzer.scope_maps.items;
     mixed_transformer.scope_owner_map = mixed_analyzer.scope_owner_map;
     mixed_transformer.node_scope_provenance = mixed_analyzer.node_scope_provenance;
+    mixed_transformer.source_owned_retirements = mixed_analyzer.source_owned_retirements;
+    mixed_transformer.scope_history = mixed_analyzer.scope_history;
     mixed_transformer.helper_scope_map = mixed_analyzer.helper_scope_map;
     mixed_transformer.namespace_member_owners = &mixed_analyzer.namespace_member_owners;
     mixed_transformer.namespace_declaration_owners = &mixed_analyzer.namespace_declaration_owners;
@@ -7412,6 +7576,8 @@ test "#6193 duplicate ambient import-equals locals keep analyzer fallback" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -7460,6 +7626,8 @@ test "#6193 inline type-only import specifiers require exact output erasure proo
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -7561,6 +7729,8 @@ test "#6193 attributed ambient type imports require exact subtree erasure proof"
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -7720,6 +7890,7 @@ test "#6193 lenient inline-only attributed imports require exact output erasure 
     try std.testing.expect(facts.has_inline_type_import_specifier);
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
     defer analyzer.deinit();
     analyzer.is_module = parser.is_module;
     analyzer.is_strict_mode = parser.is_strict_mode;
@@ -7734,6 +7905,8 @@ test "#6193 lenient inline-only attributed imports require exact output erasure 
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -7895,6 +8068,8 @@ test "#6193 erased ambient import reads need exact unresolved source identity" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -7975,6 +8150,8 @@ test "#6193 erased ambient import-equals reads need exact unresolved source iden
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -8036,6 +8213,7 @@ test "#6193 erased ambient import-equals export locals stay on reanalysis" {
     try std.testing.expect(parser.source_mode == .js_lenient);
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
     defer analyzer.deinit();
     analyzer.is_module = parser.is_module;
     analyzer.is_strict_mode = parser.is_strict_mode;
@@ -8051,6 +8229,8 @@ test "#6193 erased ambient import-equals export locals stay on reanalysis" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -8083,6 +8263,7 @@ test "#6193 erased ambient import export locals stay on reanalysis" {
     try std.testing.expect(parser.source_mode == .js_lenient);
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
     defer analyzer.deinit();
     analyzer.is_module = parser.is_module;
     analyzer.is_strict_mode = parser.is_strict_mode;
@@ -8098,6 +8279,8 @@ test "#6193 erased ambient import export locals stay on reanalysis" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -8140,6 +8323,8 @@ test "#6193 ambient namespace value imports require exact subtree erasure proof"
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -8338,6 +8523,8 @@ test "#6193 ambient const enum external references require source proof" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -8545,6 +8732,8 @@ test "#6193 erased nested const enum may lack source identity when its output na
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -8605,6 +8794,8 @@ test "#4819 detached erased local const enum reads fail closed without exact ori
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -8622,6 +8813,8 @@ test "#4819 detached erased local const enum reads fail closed without exact ori
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
 
     try std.testing.expectEqual(@as(usize, 1), transformer.erased_const_enum_external_reference_origins.count());
@@ -8737,6 +8930,8 @@ test "#6193 extensionless ambient global namespace retains the graph only after 
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -9180,6 +9375,7 @@ test "#6193 TypeScript declaration and inline-only type imports require exact ou
     parser.ast.extra_data.items[attrs_len_slot] = original_attrs_len;
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
     defer analyzer.deinit();
     analyzer.is_module = parser.is_module;
     analyzer.is_strict_mode = parser.is_strict_mode;
@@ -9195,6 +9391,8 @@ test "#6193 TypeScript declaration and inline-only type imports require exact ou
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -9560,6 +9758,7 @@ test "#6193 erased declaration and inline type imports preserve runtime identiti
     ));
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
     defer analyzer.deinit();
     analyzer.is_module = parser.is_module;
     analyzer.is_strict_mode = parser.is_strict_mode;
@@ -9580,6 +9779,8 @@ test "#6193 erased declaration and inline type imports preserve runtime identiti
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -10677,6 +10878,7 @@ test "#6193 inline-only attributed type imports retain the exact edited graph" {
     try std.testing.expect(onlyErasableTypeImports(&parser.ast));
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
     defer analyzer.deinit();
     analyzer.is_module = parser.is_module;
     analyzer.is_strict_mode = parser.is_strict_mode;
@@ -10692,6 +10894,8 @@ test "#6193 inline-only attributed type imports retain the exact edited graph" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.semantic_edit_enabled = true;
     transformer.unresolved_references = &analyzer.unresolved_references;
@@ -10720,6 +10924,7 @@ test "#6193 inline type runtime import attributes retain exact graph without dec
     try std.testing.expect(facts.has_inline_type_import_specifier);
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
     defer analyzer.deinit();
     analyzer.is_module = parser.is_module;
     analyzer.is_strict_mode = parser.is_strict_mode;
@@ -10737,6 +10942,8 @@ test "#6193 inline type runtime import attributes retain exact graph without dec
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
@@ -10787,6 +10994,7 @@ test "#6193 side-effect import retains the graph without binding identity rows" 
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
     defer analyzer.deinit();
     analyzer.is_module = parser.is_module;
     analyzer.is_strict_mode = parser.is_strict_mode;
@@ -10807,6 +11015,8 @@ test "#6193 side-effect import retains the graph without binding identity rows" 
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -11068,6 +11278,8 @@ test "#6003 moved TLA default export avoids escaped eval-visible facade names" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.current_scope = transformer.programScope();
 
     _ = try transformer.visitNode(program);
@@ -11165,6 +11377,8 @@ test "#4819 using temp codegen detects ten corrupted SymbolId table entries" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.semantic_edit_enabled = true;
 
@@ -11526,6 +11740,8 @@ test "#4819 Flow ref-component helper is finalized through its exact SymbolId" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -14202,6 +14418,8 @@ test "#4819 standalone preamble-only helper keeps its producer SymbolId" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
@@ -14216,6 +14434,8 @@ test "#4819 standalone preamble-only helper keeps its producer SymbolId" {
     transformer.scope_maps = edited.scope_maps;
     transformer.scope_owner_map = edited.scope_owner_map;
     transformer.node_scope_provenance = edited.node_scope_provenance;
+    transformer.source_owned_retirements = edited.source_owned_retirements;
+    transformer.scope_history = edited.scope_history;
     transformer.helper_scope_map = edited.helper_scope_map;
     transformer.references = edited.references;
 
@@ -14635,6 +14855,8 @@ test "standalone keepNames candidate helper keeps its exact producer slot" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
@@ -14649,6 +14871,8 @@ test "standalone keepNames candidate helper keeps its exact producer slot" {
     transformer.scope_maps = edited.scope_maps;
     transformer.scope_owner_map = edited.scope_owner_map;
     transformer.node_scope_provenance = edited.node_scope_provenance;
+    transformer.source_owned_retirements = edited.source_owned_retirements;
+    transformer.scope_history = edited.scope_history;
     transformer.helper_scope_map = edited.helper_scope_map;
     transformer.references = edited.references;
 
@@ -14681,7 +14905,7 @@ test "define ordinary callbacks preserve own arguments under outer parameter sha
         .{ .replacement = "()=>arguments[0]", .expected = "42\n" },
     };
     for (cases) |case| {
-        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2017, .esnext }) |target| {
+        for ([_]@import("transformer/compat.zig").ESTarget{ .es5, .es2017, .esnext }) |target| {
             for ([_]bool{ false, true }) |minify| {
                 var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
                 defer arena.deinit();
@@ -14725,7 +14949,7 @@ test "define callback environments preserve ten native and lexical contexts" {
         const oracle_source = try std.mem.replaceOwned(u8, a, source, "TOKEN", expression);
         const oracle = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", oracle_source } });
         try std.testing.expect(oracle.term == .exited and oracle.term.exited == 0);
-        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2017, .esnext }) |target| {
+        for ([_]@import("transformer/compat.zig").ESTarget{ .es5, .es2017, .esnext }) |target| {
             for ([_]bool{ false, true }) |minify| {
                 const result = try transpile(a, source, "input.cjs", .{
                     .define = &.{.{ .key = "TOKEN", .value = replacement }},
@@ -14765,6 +14989,8 @@ fn checkDefineCallbackBirth(a: std.mem.Allocator, source: []const u8, replacemen
     t.scope_maps = analyzer.scope_maps.items;
     t.scope_owner_map = analyzer.scope_owner_map;
     t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.source_owned_retirements = analyzer.source_owned_retirements;
+    t.scope_history = analyzer.scope_history;
     t.unresolved_references = &analyzer.unresolved_references;
     t.semantic_edit_enabled = true;
     const output = try t.transform();
@@ -14841,7 +15067,7 @@ test "define callback arguments preserve private initializer branch instances" {
         const oracle_source = try std.mem.replaceOwned(u8, a, source, "TOKEN", expression);
         const oracle = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", oracle_source } });
         try std.testing.expect(oracle.term == .exited and oracle.term.exited == 0);
-        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2017, .esnext }) |target| {
+        for ([_]@import("transformer/compat.zig").ESTarget{ .es5, .es2017, .esnext }) |target| {
             for ([_]bool{ false, true }) |minify| {
                 const result = try transpile(a, source, "input.cjs", .{
                     .define = &.{.{ .key = "TOKEN", .value = replacement }},
@@ -14894,6 +15120,8 @@ test "#6193 nested erased enum proof preserves distinct source shadow identities
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
         transformer.node_scope_provenance = analyzer.node_scope_provenance;
+        transformer.source_owned_retirements = analyzer.source_owned_retirements;
+        transformer.scope_history = analyzer.scope_history;
         transformer.helper_scope_map = analyzer.helper_scope_map;
         transformer.namespace_member_owners = &analyzer.namespace_member_owners;
         transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -14942,4 +15170,832 @@ test "#6193 nested erased enum proof preserves distinct source shadow identities
         try std.testing.expect(constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
         try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
     }
+}
+
+test "R1 standalone production mangling consumes the edited source graph" {
+    const a = std.testing.allocator;
+    const profile = @import("profile.zig");
+    profile.resetForTest();
+    profile.setIoForTest(std.testing.io);
+    profile.addFromCsv("semantic");
+    defer profile.resetForTest();
+    const cases = [_]struct {
+        name: []const u8,
+        filename: []const u8,
+        source: []const u8,
+        options: TranspileOptions = .{},
+        expected: []const u8 = "42\n",
+        parse_error: bool = false,
+        external_name: ?[]const u8 = null,
+        final_binding_count: usize = 0,
+    }{
+        .{ .name = "strict-js", .filename = "input.cjs", .source = "function read(value){return value+1}console.log(read(41));" },
+        .{ .name = "typed-js", .filename = "input.ts", .source = "type Value=number;const value:Value=42;console.log(value);" },
+        .{ .name = "lenient-type-erasure", .filename = "input.unknown", .source = "type Value=number;const value:Value=42;console.log(value);" },
+        .{ .name = "lenient-namespace", .filename = "input.unknown", .source = "namespace N{export const value=42}console.log(N.value);" },
+        .{ .name = "lenient-const-enum", .filename = "input.unknown", .source = "const enum E{A=42}console.log(E.A);" },
+        .{ .name = "lenient-ambient-namespace", .filename = "input.unknown", .source = "declare namespace Types{const value:number}console.log(42);" },
+        .{ .name = "namespace-export-import-equals", .filename = "input.unknown", .source = "namespace Source{export const value=42}namespace N{export import Alias=Source}console.log(N.Alias.value);" },
+        .{ .name = "namespace-require-import-equals", .filename = "input.unknown", .source = "namespace N{import Alias=require('./alias.cjs');export const value=Alias.value}console.log(N.value);" },
+        .{ .name = "ts-mixed-runtime-import", .filename = "input.ts", .source = "import type{Value}from'./types';import{value}from'./alias.cjs';const answer:Value=value;console.log(answer);", .options = .{ .module_format = .cjs } },
+        .{ .name = "stage3-metadata-ts", .filename = "input.ts", .source = "function dec(value:any){return value}@dec class C{static read(){return 42}}console.log(C.read());", .options = .{ .emit_decorator_metadata = true } },
+        .{ .name = "stage3-metadata-js", .filename = "input.js", .source = "function dec(value){return value}@dec class C{static read(){return 42}}console.log(C.read());", .options = .{ .emit_decorator_metadata = true } },
+        .{ .name = "stage3-metadata-flow", .filename = "input.js", .source = "function dec(value:any){return value}@dec class C{static read(){return 42}}console.log(C.read());", .options = .{ .flow = true, .emit_decorator_metadata = true } },
+        .{ .name = "dynamic-eval", .filename = "input.cjs", .source = "function read(value){eval('value');return value}console.log(read(42));" },
+        .{ .name = "refresh", .filename = "input.tsx", .source = "globalThis.$RefreshReg$=()=>{};globalThis.$RefreshSig$=()=>type=>type;function App(){return 42}console.log(App());", .options = .{ .react_refresh = true, .react_refresh_hook_signatures = true } },
+        .{ .name = "type-import-value-global", .filename = "input.ts", .source = "globalThis.Thing=7;import type{Thing}from'ignored';console.log(Thing);", .expected = "7\n" },
+        .{ .name = "type-import-short-a", .filename = "input.ts", .source = "globalThis.a=7;import type{a}from'ignored';const veryLongLocal=3;console.log(a+veryLongLocal);", .expected = "10\n" },
+        .{ .name = "type-import-short-b", .filename = "input.ts", .source = "globalThis.b=7;import type{b}from'ignored';const firstLongLocal=1,secondLongLocal=2;console.log(b+firstLongLocal+secondLongLocal);", .expected = "10\n" },
+        .{ .name = "type-import-short-a-six-slots", .filename = "input.ts", .source = "globalThis.a=7;import type{a}from'ignored';const longValue0=1,longValue1=2,longValue2=3,longValue3=4,longValue4=5,longValue5=6;console.log(a+longValue0+longValue1+longValue2+longValue3+longValue4+longValue5);", .expected = "28\n", .external_name = "a", .final_binding_count = 6 },
+        .{ .name = "type-import-short-b-twenty-slots", .filename = "input.ts", .source = "globalThis.b=7;import type{b}from'ignored';const longValue0=1,longValue1=2,longValue2=3,longValue3=4,longValue4=5,longValue5=6,longValue6=7,longValue7=8,longValue8=9,longValue9=10,longValue10=11,longValue11=12,longValue12=13,longValue13=14,longValue14=15,longValue15=16,longValue16=17,longValue17=18,longValue18=19,longValue19=20;console.log(b+longValue0+longValue1+longValue2+longValue3+longValue4+longValue5+longValue6+longValue7+longValue8+longValue9+longValue10+longValue11+longValue12+longValue13+longValue14+longValue15+longValue16+longValue17+longValue18+longValue19);", .expected = "217\n", .external_name = "b", .final_binding_count = 20 },
+        .{ .name = "type-default-value-global", .filename = "input.ts", .source = "globalThis.Thing=7;import type Thing from'ignored';console.log(Thing);", .expected = "7\n" },
+        .{ .name = "type-namespace-value-global", .filename = "input.ts", .source = "globalThis.Thing=7;import type * as Thing from'ignored';console.log(Thing);", .expected = "7\n" },
+        .{ .name = "type-inline-value-global", .filename = "input.ts", .source = "globalThis.Thing=7;import{type Thing}from'ignored';console.log(Thing);", .expected = "7\n" },
+        .{ .name = "type-import-nested-runtime-shadow", .filename = "input.ts", .source = "import type{Model}from'./types';function read(Model:number){function nested(){return Model}const value:Model=Model+1;return nested()+value}console.log(read(4));", .expected = "9\n" },
+        .{ .name = "type-import-shadow", .filename = "input.ts", .source = "globalThis.Thing=7;import type{Thing}from'ignored';function f(Thing){return Thing}console.log(Thing+f(3));", .expected = "10\n" },
+        .{ .name = "type-import-write", .filename = "input.ts", .source = "globalThis.Thing=7;import type{Thing}from'ignored';Thing=11;console.log(Thing);", .expected = "11\n" },
+        .{ .name = "type-import-typeof", .filename = "input.ts", .source = "globalThis.Thing=7;import type{Thing}from'ignored';console.log(typeof Thing);", .expected = "number\n" },
+        .{ .name = "type-import-copy", .filename = "input.ts", .source = "globalThis.Thing=7;import type{Thing}from'ignored';console.log(true?Thing:0);", .options = .{ .minify_syntax = true }, .expected = "7\n" },
+        .{ .name = "type-import-dynamic", .filename = "input.ts", .source = "globalThis.Thing=7;import type{Thing}from'ignored';console.log(eval('Thing'),Thing);", .expected = "7 7\n" },
+        .{ .name = "escaped-source-identity", .filename = "input.cjs", .source = "const \\u0078=42;console.log(x);" },
+        .{ .name = "ts-export-assignment", .filename = "input.ts", .source = "const value=42;console.log(value);export=value;", .options = .{ .module_format = .cjs } },
+        .{ .name = "flow-namespace-parser-rejection", .filename = "input.js", .source = "namespace N{export const value=42}console.log(N.value);", .options = .{ .flow = true }, .parse_error = true },
+        .{ .name = "es5-loop-owner", .filename = "input.js", .source = "let f;for(let value of [42])f=()=>value;console.log(f());", .options = .{ .es_target = .es5 } },
+        .{ .name = "generator-external-use-scope", .filename = "input.ts", .source = "export function* gen(items){for(const value of items){const doubled=yield value;record(doubled)}}globalThis.record=v=>console.log(v);const it=gen([4]);it.next();it.next(42);", .options = .{ .es_target = .es5, .module_format = .cjs } },
+        .{ .name = "syntax-edit-identity", .filename = "input.js", .source = "function read(value){if(true)return value+0;return 0}console.log(read(42));", .options = .{ .minify_syntax = true } },
+        .{ .name = "empty-arrow-external-use-scope", .filename = "input.js", .source = "console.log((()=>Number('42'))());", .options = .{ .minify_syntax = true } },
+        .{ .name = "object-rest-helpers", .filename = "input.js", .source = "const {unused,...value}={unused:0,answer:42};console.log(value.answer);", .options = .{ .es_target = .es5 } },
+        .{ .name = "minify-function-owner", .filename = "input.cjs", .source = "console.log((true?function(){return 42}:()=>0)());", .options = .{ .minify_syntax = true } },
+        .{ .name = "minify-class-owner", .filename = "input.cjs", .source = "const C=true?class Inner{static read(){return 42}}:class{};console.log(C.read());", .options = .{ .minify_syntax = true } },
+        .{ .name = "minify-block-owner", .filename = "input.cjs", .source = "if(true){let value=42;let get=()=>value;console.log(get())}", .options = .{ .minify_syntax = true } },
+        .{ .name = "minify-chained-owner", .filename = "input.cjs", .source = "console.log((true?(false?0:function(){return 42}):0)());", .options = .{ .minify_syntax = true } },
+        // These source modes are not public live-import fallback examples:
+        // the standalone parser rejects root module syntax before analysis.
+        .{ .name = "unknown-root-import", .filename = "input.unknown", .source = "import{value}from'./alias.cjs';console.log(value);", .parse_error = true },
+        .{ .name = "unknown-root-export", .filename = "input.unknown", .source = "const value=42;export=value;", .parse_error = true },
+    };
+    var post_consumers: usize = 0;
+    var mismatches: usize = 0;
+    for (cases) |case| {
+        profile.resetCounters();
+        var options = case.options;
+        options.minify_identifiers = true;
+        var result = transpile(a, case.source, case.filename, options) catch |err| {
+            std.debug.print("R1_SOURCE name={s} error={s} semanticCalls={d} parseErrorExpected={any}\n", .{ case.name, @errorName(err), profile.count(.semantic), case.parse_error });
+            if (err != error.ParseError or !case.parse_error) mismatches += 1;
+            continue;
+        };
+        defer result.deinit(a);
+        const semantic_calls = profile.count(.semantic);
+        if (semantic_calls > 1) post_consumers += 1;
+        if (case.external_name) |external| {
+            // Independent emitted-AST check: these exact sources have one
+            // global assignment, then their one const declaration, then log.
+            // Select binding edges by position; no name-to-SID inference.
+            var output_arena = std.heap.ArenaAllocator.init(a);
+            defer output_arena.deinit();
+            const output_allocator = output_arena.allocator();
+            var output_scanner = try Scanner.init(output_allocator, result.code);
+            var output_parser = Parser.init(output_allocator, &output_scanner);
+            output_parser.configureFromExtension(".cjs");
+            const output_root = try output_parser.parse();
+            try std.testing.expectEqual(@as(usize, 0), output_parser.errors.items.len);
+            const statements = output_parser.ast.getNode(output_root).data.list;
+            try std.testing.expect(statements.len >= 3);
+            const declaration = output_parser.ast.getNode(@fromBackingInt(output_parser.ast.extra_data.items[statements.start + 1]));
+            try std.testing.expectEqual(.variable_declaration, declaration.tag);
+            const declaration_start = output_parser.ast.readExtra(declaration.data.extra, 1);
+            const declaration_len = output_parser.ast.readExtra(declaration.data.extra, 2);
+            try std.testing.expectEqual(case.final_binding_count, declaration_len);
+            for (output_parser.ast.extra_data.items[declaration_start..][0..declaration_len]) |raw| {
+                const declarator = output_parser.ast.nodes.items[raw];
+                try std.testing.expectEqual(.variable_declarator, declarator.tag);
+                const binding_node = output_parser.ast.getNode(output_parser.ast.readExtraNode(declarator.data.extra, 0));
+                try std.testing.expectEqual(.binding_identifier, binding_node.tag);
+                try std.testing.expect(!Scanner.identifierValueEquals(output_parser.ast.getText(binding_node.data.string_ref), external));
+            }
+        }
+        if (case.parse_error) mismatches += 1;
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "alias.cjs", .data = "module.exports={value:42};" });
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "output.cjs", .data = result.code });
+        const output = try tmp.dir.realPathFileAlloc(std.testing.io, "output.cjs", a);
+        defer a.free(output);
+        const runtime = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output } });
+        defer a.free(runtime.stdout);
+        defer a.free(runtime.stderr);
+        const matches = runtime.term == .exited and runtime.term.exited == 0 and std.mem.eql(u8, runtime.stdout, case.expected);
+        if (!matches) mismatches += 1;
+        std.debug.print("R1_SOURCE name={s} semanticCalls={d} diagnostics={d} runtimeMatches={any} stdout={s}\n{s}\n", .{ case.name, semantic_calls, result.diagnostics.len, matches, runtime.stdout, runtime.stderr });
+    }
+    std.debug.print("R1_TOTAL sources={d} postConsumerInputs={d} outcomeMismatches={d}\n", .{ cases.len, post_consumers, mismatches });
+    try std.testing.expectEqual(@as(usize, 0), mismatches);
+    try std.testing.expectEqual(@as(usize, 0), post_consumers);
+}
+
+test "R1 standalone dead function optimization consumes its actual source closure" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for ([_][]const u8{
+        "(function unused(p){const local=p;return local});console.log(42);",
+        "(function unused(p){const local=arguments[0];return local});console.log(42);",
+    }) |source| {
+        var result = try transpile(a, source, "input.cjs", .{ .minify_syntax = true, .minify_identifiers = true });
+        defer result.deinit(a);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "function") == null);
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "output.cjs", .data = result.code });
+        const path = try tmp.dir.realPathFileAlloc(std.testing.io, "output.cjs", a);
+        const runtime = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", path } });
+        try std.testing.expect(runtime.term == .exited and runtime.term.exited == 0);
+        try std.testing.expectEqualStrings("42\n", runtime.stdout);
+    }
+}
+
+test "R1 standalone type import erasure externalizes the actual source value read" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "globalThis.Thing=7;import type{Thing}from'ignored';console.log(Thing);";
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".ts");
+    const source_root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_ts = true;
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
+    try analyzer.analyze();
+    const source_body = parser.ast.getNode(source_root).data.list;
+    const imported = parser.ast.nodes.items[parser.ast.extra_data.items[source_body.start + 1]];
+    try std.testing.expectEqual(.import_declaration, imported.tag);
+    const spec = parser.ast.nodes.items[parser.ast.extra_data.items[parser.ast.extra_data.items[imported.data.extra]]];
+    try std.testing.expectEqual(.import_specifier, spec.tag);
+    const binding = spec.data.binary.right;
+    const source_sid = analyzer.symbol_ids.items[@backingInt(binding)].?;
+    try std.testing.expectEqual(.import_binding, analyzer.symbols.items[source_sid].kind);
+    const source_statement = parser.ast.nodes.items[parser.ast.extra_data.items[source_body.start + source_body.len - 1]];
+    const source_call = parser.ast.getNode(source_statement.data.unary.operand);
+    try std.testing.expectEqual(.call_expression, source_call.tag);
+    const read: ast_mod.NodeIndex = @fromBackingInt(parser.ast.extra_data.items[parser.ast.extra_data.items[source_call.data.extra + 1]]);
+    try std.testing.expectEqual(@as(?u32, source_sid), analyzer.symbol_ids.items[@backingInt(read)]);
+    var source_scope: ?@import("semantic/scope.zig").ScopeId = null;
+    for (analyzer.references.items) |row| if (row.node_index == read) {
+        source_scope = row.scope_id;
+    };
+    try std.testing.expect(source_scope != null);
+    var transformer = try Transformer.initFromOwnedAst(a, &parser.ast, .{ .defer_runtime_helper_name_resolution = false });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
+    transformer.record_explicit_global_references = true;
+    transformer.semantic_edit_enabled = true;
+    const output_root = try transformer.transform();
+    if (try transformer.finishSemanticEdit()) |result| {
+        analyzer.applyEdit(result);
+        transformer.symbol_ids = analyzer.symbol_ids;
+    }
+    const body = transformer.ast.getNode(output_root).data.list;
+    const statement = transformer.ast.nodes.items[transformer.ast.extra_data.items[body.start + body.len - 1]];
+    const call = transformer.ast.getNode(statement.data.unary.operand);
+    try std.testing.expectEqual(.call_expression, call.tag);
+    const output_read: ast_mod.NodeIndex = @fromBackingInt(transformer.ast.extra_data.items[transformer.ast.extra_data.items[call.data.extra + 1]]);
+    try std.testing.expectEqual(read, output_read);
+    try std.testing.expect(@backingInt(output_read) < transformer.symbol_ids.items.len);
+    std.debug.print("R1_TYPE_IMPORT sourceBinding={d} sourceSID={d} sourceScope={d} read={d} physicalOutputSID={any} initialUnresolved={any} explicitGlobal={any}\n", .{ @backingInt(binding), source_sid, @backingInt(source_scope.?), @backingInt(output_read), transformer.symbol_ids.items[@backingInt(output_read)], analyzer.unresolved_reference_nodes.contains(@backingInt(output_read)), transformer.explicit_global_reference_nodes.contains(@backingInt(output_read)) });
+    try std.testing.expectEqual(@as(?u32, null), transformer.symbol_ids.items[@backingInt(output_read)]);
+    const retired = analyzer.source_owned_retirements.get(source_sid) orelse return error.MissingErasedImportRetirement;
+    try std.testing.expectEqual(.erased_import_binding, retired.reason);
+    try std.testing.expectEqual(.import_binding, retired.before.kind);
+    try std.testing.expectEqual(source_scope.?, retired.before.scope_id);
+    try std.testing.expectEqual(binding, retired.declaration.declaration_node_index);
+    const origin = analyzer.node_scope_provenance.get(output_read) orelse return error.MissingErasedImportOrigin;
+    const erased = origin.external_import orelse return error.MissingErasedImportOrigin;
+    try std.testing.expectEqual(source_sid, @backingInt(erased.binding_symbol));
+    try std.testing.expectEqual(read, erased.before.node_index);
+    try std.testing.expectEqual(source_scope.?, origin.scope);
+    try std.testing.expect(!analyzer.unresolved_reference_nodes.contains(@backingInt(output_read)));
+    try std.testing.expect(!transformer.explicit_global_reference_nodes.contains(@backingInt(output_read)));
+    var report = try @import("transformer/symbol_coverage.zig").checkOutputNormalFormQuiet(a, transformer.ast, output_root, transformer.parser_node_count, analyzer.symbol_ids.items, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, &analyzer.scope_owner_map, analyzer.references.items, transformer.helper_ref_nodes.items, &analyzer.helper_scope_map, &analyzer.unresolved_reference_nodes, &transformer.explicit_global_reference_nodes, &transformer.reference_origin_map, .{
+        .require_declaration_anchors = true,
+        .pre_transform_scope_count = analyzer.scopes.items.len,
+        .namespace_member_owners = &analyzer.namespace_member_owners,
+        .namespace_declaration_owners = &analyzer.namespace_declaration_owners,
+    }, &analyzer.source_owned_retirements, .{
+        .node_scope_provenance = &analyzer.node_scope_provenance,
+        .scope_history = &analyzer.scope_history,
+        .class_self_symbols = &analyzer.class_self_symbol_map,
+        .namespace_member_owners = &analyzer.namespace_member_owners,
+        .namespace_declaration_owners = &analyzer.namespace_declaration_owners,
+    });
+    defer report.deinit(a);
+    try std.testing.expect(report.hasCompleteOutputIdentityBeforeNames());
+    const Validate = struct {
+        fn run(allocator: std.mem.Allocator, t: *const Transformer, sem: *const SemanticAnalyzer, root: ast_mod.NodeIndex) !bool {
+            const nodes = try @import("parser/ast_walk.zig").collectReachableNodeIndicesFrom(allocator, t.ast, root);
+            defer allocator.free(nodes);
+            var live = try std.DynamicBitSet.initEmpty(allocator, t.ast.nodes.items.len);
+            defer live.deinit();
+            for (nodes) |raw| live.set(raw);
+            var frame_index = try @import("semantic/scope_frame_history.zig").validateAndIndex(allocator, t.ast, sem.scopes.items, &sem.scope_owner_map, &sem.scope_history, null);
+            defer frame_index.deinit(allocator);
+            return frame_index.valid and try @import("semantic/source_owned_retirement.zig").validate(allocator, t.ast, &sem.source_owned_retirements, &live, sem.symbols.items, sem.symbol_ids.items, sem.scopes.items, sem.scope_maps.items, &sem.scope_owner_map, sem.references.items, &sem.helper_scope_map, .{ .node_scope_provenance = &sem.node_scope_provenance }) and
+                try @import("transformer/symbol_coverage.zig").validateNodeScopeProvenance(allocator, t.ast, root, &sem.scope_owner_map, &sem.node_scope_provenance) and
+                @import("semantic/source_external_origin.zig").validate(t.ast, t.parser_node_count, sem.symbol_ids.items, sem.scopes.items, &sem.unresolved_reference_nodes, &sem.node_scope_provenance, &frame_index);
+        }
+    };
+    try std.testing.expect(try Validate.run(a, &transformer, &analyzer, output_root));
+    for (0..9) |poison| {
+        var wrong_origin = origin;
+        var wrong_retired = retired;
+        switch (poison) {
+            0 => wrong_origin.external_import.?.binding_symbol = .none,
+            1 => wrong_origin.external_import.?.before.symbol_id = .none,
+            2 => wrong_origin.external_import.?.before.flags = .{ .write = true },
+            3 => wrong_origin.external_import.?.before.node_index = binding,
+            4 => wrong_origin.external_import.?.before_span.end += 1,
+            5 => wrong_origin.external_import.?.before_name = transformer.ast.getNode(binding).data.string_ref,
+            6 => wrong_retired.erased_import.?.policy = .unused,
+            7 => wrong_retired.before.scope_id = .none,
+            8 => analyzer.symbol_ids.items[@backingInt(output_read)] = source_sid,
+            else => unreachable,
+        }
+        try analyzer.node_scope_provenance.put(a, output_read, wrong_origin);
+        try analyzer.source_owned_retirements.put(a, source_sid, wrong_retired);
+        try std.testing.expect(!try Validate.run(a, &transformer, &analyzer, output_root));
+        analyzer.symbol_ids.items[@backingInt(output_read)] = null;
+        try analyzer.node_scope_provenance.put(a, output_read, origin);
+        try analyzer.source_owned_retirements.put(a, source_sid, retired);
+        try std.testing.expect(try Validate.run(a, &transformer, &analyzer, output_root));
+    }
+    // The first program edge is the actual `globalThis.Thing = 7` LHS.
+    // Select its receiver structurally, without finding a name or inventing IDs.
+    const assignment_statement = parser.ast.getNode(@fromBackingInt(parser.ast.extra_data.items[source_body.start]));
+    const assignment = parser.ast.getNode(assignment_statement.data.unary.operand);
+    const lhs = parser.ast.getNode(assignment.data.binary.left);
+    const global_read = parser.ast.readExtraNode(lhs.data.extra, 0);
+    const source_origin = analyzer.node_scope_provenance.get(global_read) orelse return error.MissingInitialExternalOrigin;
+    try std.testing.expect(source_origin.source_external != null);
+    try std.testing.expect(analyzer.unresolved_reference_nodes.contains(@backingInt(global_read)));
+    for (0..8) |poison| {
+        var wrong = source_origin;
+        switch (poison) {
+            0 => wrong.source_external.?.source_scope = .none,
+            1 => wrong.source_external.?.execution_scope = .none,
+            2 => wrong.source_external.?.source_frame.subtree_has_direct_eval = !wrong.source_external.?.source_frame.subtree_has_direct_eval,
+            3 => wrong.source_external.?.execution_frame.is_strict = !wrong.source_external.?.execution_frame.is_strict,
+            4 => wrong.source_external.?.span.end += 1,
+            5 => wrong.source_external.?.flags = .{ .write = true },
+            6 => wrong.source_node = binding,
+            7 => wrong.with_environment = !wrong.with_environment,
+            else => unreachable,
+        }
+        try analyzer.node_scope_provenance.put(a, global_read, wrong);
+        try std.testing.expect(!try Validate.run(a, &transformer, &analyzer, output_root));
+        try analyzer.node_scope_provenance.put(a, global_read, source_origin);
+        try std.testing.expect(try Validate.run(a, &transformer, &analyzer, output_root));
+    }
+    var data: @import("bundler/module.zig").ModuleSemanticData = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .references = analyzer.references.items,
+        .exported_names = analyzer.exported_names,
+        .unresolved_references = analyzer.unresolved_references,
+        .helper_scope_map = analyzer.helper_scope_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
+        .source_owned_retirements = analyzer.source_owned_retirements,
+        .scope_history = analyzer.scope_history,
+    };
+    var wire: std.ArrayList(u8) = .empty;
+    try @import("bundler/semantic_codec.zig").serialize(&data, &wire, a);
+    var decoded = try @import("bundler/semantic_codec.zig").deserialize(wire.items, a);
+    var repeated = try decoded.beginEdit(a, transformer.ast);
+    decoded.applyEdit(try repeated.finish());
+    try std.testing.expectEqual(.erased_import_binding, decoded.source_owned_retirements.get(source_sid).?.reason);
+    try std.testing.expectEqual(erased.before, decoded.node_scope_provenance.get(output_read).?.external_import.?.before);
+    const decoded_source_origin = decoded.node_scope_provenance.get(global_read).?;
+    try std.testing.expectEqual(source_origin.scope, decoded_source_origin.scope);
+    try std.testing.expectEqual(source_origin.source_node, decoded_source_origin.source_node);
+    try std.testing.expectEqual(source_origin.with_environment, decoded_source_origin.with_environment);
+    inline for (.{ "tag", "name", "span", "flags", "source_scope", "source_frame", "execution_scope", "execution_frame" }) |field| {
+        try std.testing.expectEqualDeep(@field(source_origin.source_external.?, field), @field(decoded_source_origin.source_external.?, field));
+    }
+    try std.testing.expectEqual(@as(usize, 0), decoded_source_origin.source_external.?.scope_moves.len);
+}
+
+test "R1 lexical frame history replays actual temporary reparent epochs and rejects poisoned events" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "{ void globalThis; } { void console; }");
+    var parser = Parser.init(a, &scanner);
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_source_external_origins = true;
+    try analyzer.analyze();
+    const body = parser.ast.getNode(root).data.list;
+    try std.testing.expectEqual(@as(u32, 2), body.len);
+    const first: ast_mod.NodeIndex = @fromBackingInt(parser.ast.extra_data.items[body.start]);
+    const second: ast_mod.NodeIndex = @fromBackingInt(parser.ast.extra_data.items[body.start + 1]);
+    const first_scope: @import("semantic/scope.zig").ScopeId = @fromBackingInt(analyzer.scope_owner_map.get(@backingInt(first)).?);
+    const second_scope: @import("semantic/scope.zig").ScopeId = @fromBackingInt(analyzer.scope_owner_map.get(@backingInt(second)).?);
+    const original_parent = analyzer.scopes.items[first_scope.toIndex()].parent;
+    const History = @import("semantic/scope_frame_history.zig");
+    var recorder = try History.Recorder.init(a, &parser.ast, analyzer.scopes.items, &analyzer.scope_owner_map);
+    analyzer.scope_history = try recorder.finish(a);
+    var editor = try analyzer.beginEdit();
+    defer editor.deinit();
+    try editor.reparentScope(first_scope, second_scope);
+    const moved_epoch = editor.scope_history.epoch();
+    try std.testing.expect(moved_epoch > 0);
+    try editor.reparentScope(first_scope, original_parent);
+    var history = editor.scopeHistoryView();
+    var index = try History.validateAndIndex(a, &parser.ast, editor.scopes.items, &editor.scope_owner_map, &history, null);
+    defer index.deinit(a);
+    try std.testing.expect(index.valid);
+    try std.testing.expectEqual(original_parent, index.frameAt(first_scope, 0).?.parent);
+    try std.testing.expectEqual(second_scope, index.frameAt(first_scope, moved_epoch).?.parent);
+    try std.testing.expectEqual(original_parent, index.frameAt(first_scope, editor.scope_history.epoch()).?.parent);
+    try std.testing.expect(index.frameAt(first_scope, editor.scope_history.epoch() + 1) == null);
+    const events = try a.dupe(History.Event, history.events);
+    for (0..8) |poison| {
+        @memcpy(events, history.events);
+        var wrong = history;
+        wrong.events = events;
+        switch (poison) {
+            0 => events[0].before.?.parent = first_scope,
+            1 => events[0].after.parent = first_scope,
+            2 => wrong.events = events[1..],
+            3 => std.mem.swap(History.Event, &events[0], &events[events.len - 1]),
+            4 => events[0].actor.module_index = 0,
+            5 => events[0].scope = .none,
+            6 => events[0].owner_before = null,
+            7 => events[0].parent_owner = null,
+            else => unreachable,
+        }
+        var rejected = try History.validateAndIndex(a, &parser.ast, editor.scopes.items, &editor.scope_owner_map, &wrong, null);
+        defer rejected.deinit(a);
+        try std.testing.expect(!rejected.valid);
+    }
+
+    // The semantic cache and repeated COW editor retain the ordered epochs.
+    var data: @import("bundler/module.zig").ModuleSemanticData = .{
+        .symbols = editor.symbols,
+        .scopes = editor.scopes.items,
+        .scope_maps = editor.scope_maps.items,
+        .scope_owner_map = editor.scope_owner_map,
+        .symbol_ids = editor.symbol_ids.items,
+        .references = editor.references.items,
+        .exported_names = analyzer.exported_names,
+        .unresolved_references = analyzer.unresolved_references,
+        .helper_scope_map = editor.helper_scope_map,
+        .scope_history = history,
+    };
+    var wire: std.ArrayList(u8) = .empty;
+    try @import("bundler/semantic_codec.zig").serialize(&data, &wire, a);
+    var decoded = try @import("bundler/semantic_codec.zig").deserialize(wire.items, a);
+    var repeated = try decoded.beginEdit(a, &parser.ast);
+    decoded.applyEdit(try repeated.finish());
+    var decoded_index = try History.validateAndIndex(a, &parser.ast, decoded.scopes, &decoded.scope_owner_map, &decoded.scope_history, null);
+    defer decoded_index.deinit(a);
+    try std.testing.expect(decoded_index.valid);
+    try std.testing.expectEqual(history.events.len, decoded.scope_history.events.len);
+    try std.testing.expectEqual(second_scope, decoded_index.frameAt(first_scope, moved_epoch).?.parent);
+    const AllocationTrial = struct {
+        fn run(allocator: std.mem.Allocator, tree: *const ast_mod.Ast, scopes: []const @import("semantic/scope.zig").Scope, owners: *const std.AutoHashMapUnmanaged(u32, u32)) !void {
+            var attempt = try History.Recorder.init(allocator, tree, scopes, owners);
+            defer attempt.deinit(allocator);
+            const owned = try attempt.finish(allocator);
+            defer allocator.free(owned.source_scopes);
+            defer allocator.free(owned.source_owners);
+            defer allocator.free(owned.source_initializers);
+            defer allocator.free(owned.source_computed_awaits);
+            defer allocator.free(owned.source_class_keys);
+            defer allocator.free(owned.worklet_class_creators);
+            defer allocator.free(owned.lowered_worklet_classes);
+            defer allocator.free(owned.events);
+            var checked = try History.validateAndIndex(allocator, tree, scopes, owners, &owned, null);
+            defer checked.deinit(allocator);
+            try std.testing.expect(checked.valid);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, AllocationTrial.run, .{ &parser.ast, analyzer.scopes.items, &analyzer.scope_owner_map });
+}
+
+test "canonical standalone namespace generated scopes completes actual semantic edits" {
+    const source = "namespace X {\n  export class MyPromise<T> extends Promise<T> {}\n}\n\nasync function qualifiedReturn(): X.MyPromise<void> {}\n\ndeclare class C {}\ndeclare const p: Promise<typeof C>;\n\nasync function classAfterAwait(): Promise<void> {\n  class D extends (await p) {}\n}\n\nasync function classExpressionsAfterAwait(): Promise<void> {\n  const First = class extends (await p) {};\n  const Second = class extends (await p) {};\n}\n\nnamespace M {\n  export async function f1() {}\n}\n";
+    for ([_]bool{ false, true }) |minify| {
+        var result = try transpile(std.testing.allocator, source, "4819-namespace-generated-scopes.ts", .{ .minify_identifiers = minify, .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(result.code.len != 0);
+    }
+}
+
+test "canonical standalone object rest contexts preserve output normal form" {
+    const source = "// 객체 rest 선언 — static 블록·형제 함수 같은 임시 이름·제너레이터·async·반복별 클로저 (#4790)\nconst out = [];\n// static 블록\nclass Holder {\n  static {\n    const { valueLong, ...otherLong } = { valueLong: 2, z: 3 };\n    Holder.v = valueLong + Object.keys(otherLong).length;\n  }\n}\nout.push(Holder.v);\n// 형제 함수가 같은 임시 변수 이름을 쓴다\nfunction one(o) {\n  const { keyLong, ...remLong } = o;\n  return keyLong + Object.keys(remLong).length;\n}\nfunction two(o) {\n  let { keyLong, ...remLong } = o;\n  keyLong += 10;\n  return keyLong + Object.keys(remLong).length;\n}\nout.push(one({ keyLong: 1, q: 1 }), two({ keyLong: 1 }));\n// 제너레이터·async 안\nfunction* gen(o) {\n  const { gLong, ...gRest } = o;\n  yield gLong;\n  yield Object.keys(gRest).join();\n}\nout.push([...gen({ gLong: 'g', m: 1, n: 2 })].join('|'));\nasync function run(o) {\n  const { aLong, ...aRest } = await o;\n  return aLong + Object.keys(aRest).length;\n}\n// 반복마다 새 바인딩 (클로저)\nconst fns = [];\nfor (const item of [\n  { idLong: 1, x: 1 },\n  { idLong: 2, x: 2 },\n]) {\n  const { idLong, ...extraLong } = item;\n  fns.push(() => idLong + extraLong.x);\n}\nout.push(fns.map((f) => f()).join());\nrun(Promise.resolve({ aLong: 5, b: 1 })).then((v) => {\n  out.push(v);\n  console.log(out.join(','));\n});\n";
+    var result = try transpile(std.testing.allocator, source, "4790-object-rest-decl-contexts.mjs", .{ .minify_identifiers = true, .unsupported = TransformOptions.compat.fromESTarget(.es2015) });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result.code.len != 0);
+}
+
+test "canonical standalone static block direct eval preserves dynamic frame history" {
+    const source = "const secret=7;class C{static{console.log(eval('secret'))}}";
+    var result = try transpile(std.testing.allocator, source, "input.js", .{ .minify_identifiers = true, .unsupported = TransformOptions.compat.fromESTarget(.es2015) });
+    defer result.deinit(std.testing.allocator);
+    const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+    defer std.testing.allocator.free(native.stdout);
+    defer std.testing.allocator.free(native.stderr);
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("7\n", native.stdout);
+    const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+    defer std.testing.allocator.free(actual.stdout);
+    defer std.testing.allocator.free(actual.stderr);
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    try std.testing.expectEqualStrings("", actual.stderr);
+    try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+}
+
+test "canonical erased inner const enum reads preserve actual source outer binding" {
+    for ([_][]const u8{ "Status", "\\u0053tatus" }) |name| for ([_][]const u8{ "", "globalThis.Status={Ready:77};", "let Status={Ready:78};" }) |prefix| for ([_]@import("transformer/compat.zig").ESTarget{ .esnext, .es5 }) |target| {
+        const source = try std.fmt.allocPrint(std.testing.allocator, "{s}function read(){{const enum {s}{{Ready=42}}return typeof Status}}console.log(read());", .{ prefix, name });
+        defer std.testing.allocator.free(source);
+        const erased = try std.fmt.allocPrint(std.testing.allocator, "{s}function read(){{return typeof Status}}console.log(read());", .{prefix});
+        defer std.testing.allocator.free(erased);
+        const oracle = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", erased }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        defer std.testing.allocator.free(oracle.stdout);
+        defer std.testing.allocator.free(oracle.stderr);
+        try std.testing.expect(oracle.term == .exited and oracle.term.exited == 0);
+        try std.testing.expectEqualStrings("", oracle.stderr);
+        var result = try transpile(std.testing.allocator, source, "input.unknown", .{ .minify_identifiers = true, .unsupported = TransformOptions.compat.fromESTarget(target) });
+        defer result.deinit(std.testing.allocator);
+        const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        defer std.testing.allocator.free(actual.stdout);
+        defer std.testing.allocator.free(actual.stderr);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("", actual.stderr);
+        try std.testing.expectEqualStrings(oracle.stdout, actual.stdout);
+    };
+}
+
+test "canonical generator environment handoff preserves executable external heritage reads" {
+    const sources = [_][]const u8{
+        "class Child extends Promise{};console.log(Object.getPrototypeOf(Child)===Promise);",
+        "globalThis.pendingCtor=Promise.resolve(class Base{});async function run(){const First=class extends(await pendingCtor){};const Second=class extends(await pendingCtor){};const Base=await pendingCtor;console.log(new First() instanceof Base,new Second() instanceof Base);}run();",
+    };
+    for (sources) |source| for ([_]bool{ false, true }) |minify| {
+        const oracle = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        defer std.testing.allocator.free(oracle.stdout);
+        defer std.testing.allocator.free(oracle.stderr);
+        try std.testing.expect(oracle.term == .exited and oracle.term.exited == 0);
+        try std.testing.expectEqualStrings("", oracle.stderr);
+        var result = try transpile(std.testing.allocator, source, "input.js", .{ .minify_identifiers = minify, .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+        defer result.deinit(std.testing.allocator);
+        const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        defer std.testing.allocator.free(actual.stdout);
+        defer std.testing.allocator.free(actual.stderr);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("", actual.stderr);
+        try std.testing.expectEqualStrings(oracle.stdout, actual.stdout);
+    };
+}
+
+test "static capture alias retirement consumes actual producer journal and preserves typed cache state" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Static = @import("semantic/static_capture_retirement.zig");
+    const Retirement = @import("semantic/source_owned_retirement.zig");
+    const Editor = @import("semantic/editor.zig").SemanticEditor;
+    const source = "class C{static{enum E{A=Number((()=>this)()===undefined)}console.log(E.A)}}";
+    const unsupported = TransformOptions.compat.fromReactNativeVersion(0, 80);
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_ts = true;
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.unsupported = unsupported;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_source_external_origins = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var t = try Transformer.initFromOwnedAst(a, &parser.ast, .{ .unsupported = unsupported });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.source_owned_retirements = analyzer.source_owned_retirements;
+    t.scope_history = analyzer.scope_history;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.helper_scope_map = analyzer.helper_scope_map;
+    t.namespace_member_owners = &analyzer.namespace_member_owners;
+    t.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    t.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
+    t.record_explicit_global_references = true;
+    t.semantic_edit_enabled = true;
+    try t.buildBlockRenameMap();
+    const root = try t.transform();
+    analyzer.class_self_symbol_map = t.class_self_symbol_map;
+    if (try t.finishSemanticEdit()) |edited| analyzer.applyEdit(edited);
+    var editor = try analyzer.beginEdit();
+    // The transformer owns the actual output header; the analyzer's input
+    // pointer is the same header because initFromOwnedAst transfers it.
+    try std.testing.expect(editor.ast == t.ast);
+    const captures = try editor.captureStaticCaptureAliases(root, t.completed_static_class_captures);
+    try std.testing.expectEqual(@as(usize, 1), captures.len);
+    const original = captures[0];
+    const sid = @backingInt(original.symbol_id);
+    const old_count = editor.scopes.items[original.before.scope_id.toIndex()].symbol_count;
+    const minify = @import("transformer/minify.zig");
+    var journal = try minify.SemanticJournal.init(a, editor.references.items, .{ .domain = t.ast, .root = root, .symbol_ids = editor.symbol_ids.items, .owners = &editor.scope_owner_map, .expressions = &editor.node_scope_provenance, .class_self = &analyzer.class_self_symbol_map, .symbols = editor.symbols.items, .scopes = editor.scopes.items, .scope_maps = editor.scope_maps.items });
+    minify.minify(t.ast, .{ .symbols = editor.symbols.items, .symbol_ids = editor.symbol_ids.items, .symbol_ids_mut = editor.symbol_ids.items, .semantic_journal = &journal, .scopes = editor.scopes.items, .references = editor.references.items, .unresolved_globals = null, .allow_top_level_inline = true, .preserve_inferred_names = false }, a, root);
+    var origins = t.reference_origin_map;
+    var class_self = analyzer.class_self_symbol_map;
+    const receipt = try journal.applyReferenceAndOwnerEdits(&editor, root, &origins, &class_self);
+    const before_rows = try a.dupe(SemanticReference, editor.references.items);
+    const before_ids = try a.dupe(?u32, editor.symbol_ids.items);
+    for (0..8) |poison| {
+        var wrong = original;
+        var forged = receipt;
+        const copies = try a.dupe(@import("semantic/function_retirement_receipt.zig").Copy, receipt.copies);
+        var foreign = t.ast.*;
+        switch (poison) {
+            0 => wrong.domain = &foreign,
+            1 => wrong.class_symbol = wrong.symbol_id,
+            2 => wrong.witness.class_scope = .none,
+            3 => wrong.before.origin_scope = .none,
+            4 => forged.domain = &foreign,
+            5 => forged.copies = &.{},
+            6 => {
+                for (copies) |*copy| if (copy.source == original.witness.initializer.node_index and copy.target == original.witness.read.node_index) {
+                    copy.source_reference.?.symbol_id = wrong.symbol_id;
+                };
+                forged.copies = copies;
+            },
+            7 => wrong.witness.read.scope_id = .none,
+            else => unreachable,
+        }
+        const rejected: ?usize = editor.retireStaticCaptureAliases(&.{wrong}, forged, .{ .node_scope_provenance = &editor.node_scope_provenance }) catch |err| blk: {
+            try std.testing.expect(err != error.OutOfMemory);
+            break :blk null;
+        };
+        try std.testing.expectEqual(@as(?usize, null), rejected);
+        try std.testing.expectEqualSlices(?u32, before_ids, editor.symbol_ids.items);
+        try std.testing.expectEqualDeep(before_rows, editor.references.items);
+        try std.testing.expectEqual(old_count, editor.scopes.items[original.before.scope_id.toIndex()].symbol_count);
+        try std.testing.expect(!editor.source_owned_retirements.contains(sid));
+    }
+    const AllocationCase = struct {
+        fn run(heap: std.mem.Allocator, template: *const Editor, sources: []const Static.Source, actual_receipt: @import("semantic/function_retirement_receipt.zig").ApplicationReceipt) !void {
+            var candidate = try Editor.init(heap, template.ast, template.symbols.items, template.scopes.items, template.scope_maps.items, template.scope_owner_map, template.references.items, template.symbol_ids.items, template.helper_scope_map);
+            defer candidate.deinit();
+            try candidate.importScopeHistory(template.scopeHistoryView());
+            try candidate.importNodeScopeProvenance(template.node_scope_provenance);
+            try candidate.importSourceOwnedRetirements(template.source_owned_retirements);
+            try std.testing.expectEqual(@as(usize, 1), try candidate.retireStaticCaptureAliases(sources, actual_receipt, .{ .node_scope_provenance = &candidate.node_scope_provenance }));
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, AllocationCase.run, .{ &editor, captures, receipt });
+    try std.testing.expectEqual(@as(usize, 1), try editor.retireStaticCaptureAliases(captures, receipt, .{ .node_scope_provenance = &editor.node_scope_provenance }));
+    try std.testing.expectEqual(@as(usize, 0), try editor.retireStaticCaptureAliases(captures, receipt, .{ .node_scope_provenance = &editor.node_scope_provenance }));
+    try std.testing.expectEqual(old_count - 1, editor.scopes.items[original.before.scope_id.toIndex()].symbol_count);
+    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@backingInt(original.declaration.declaration_node_index)]);
+    const retired = editor.source_owned_retirements.get(sid).?;
+    try std.testing.expectEqual(.static_class_capture_alias, retired.reason);
+    const live_nodes = try @import("parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, t.ast, root);
+    var live = try std.DynamicBitSet.initEmpty(a, t.ast.nodes.items.len);
+    for (live_nodes) |raw| live.set(raw);
+    try std.testing.expect(Static.validateState(retired, t.ast, &live, editor.symbols.items, editor.symbol_ids.items, editor.scopes.items, &editor.scope_owner_map, editor.references.items));
+    try std.testing.expect(try Retirement.validate(a, t.ast, &editor.source_owned_retirements, &live, editor.symbols.items, editor.symbol_ids.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &editor.helper_scope_map, .{ .node_scope_provenance = &editor.node_scope_provenance }));
+    analyzer.applyEdit(try editor.finish());
+    var data: @import("bundler/module.zig").ModuleSemanticData = .{ .symbols = analyzer.symbols, .scopes = analyzer.scopes.items, .scope_maps = analyzer.scope_maps.items, .scope_owner_map = analyzer.scope_owner_map, .symbol_ids = analyzer.symbol_ids.items, .references = analyzer.references.items, .exported_names = analyzer.exported_names, .unresolved_references = analyzer.unresolved_references, .helper_scope_map = analyzer.helper_scope_map, .node_scope_provenance = analyzer.node_scope_provenance, .source_owned_retirements = analyzer.source_owned_retirements, .scope_history = analyzer.scope_history };
+    var wire: std.ArrayList(u8) = .empty;
+    try @import("bundler/semantic_codec.zig").serialize(&data, &wire, a);
+    var decoded = try @import("bundler/semantic_codec.zig").deserialize(wire.items, a);
+    var cached_edit = try decoded.beginEdit(a, t.ast);
+    decoded.applyEdit(try cached_edit.finish());
+    try std.testing.expect(Static.validateState(decoded.source_owned_retirements.get(sid).?, t.ast, &live, decoded.symbols.items, decoded.symbol_ids, decoded.scopes, &decoded.scope_owner_map, decoded.references));
+    try std.testing.expect(try Retirement.validate(a, t.ast, &decoded.source_owned_retirements, &live, decoded.symbols.items, decoded.symbol_ids, decoded.scopes, decoded.scope_maps, &decoded.scope_owner_map, decoded.references, &decoded.helper_scope_map, .{ .node_scope_provenance = &decoded.node_scope_provenance }));
+    var result = try transpile(a, source, "static-capture.ts", .{ .unsupported = unsupported, .minify_identifiers = true, .minify_syntax = true, .minify_whitespace = true });
+    defer result.deinit(a);
+    const runtime = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+    try std.testing.expect(runtime.term == .exited and runtime.term.exited == 0);
+    try std.testing.expectEqualStrings("1\n", runtime.stdout);
+}
+
+test "function name elision retires exact empty environments with journal history and cache proof" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Names = @import("semantic/function_name_retirement.zig");
+    const Retirement = @import("semantic/source_owned_retirement.zig");
+    const Editor = @import("semantic/editor.zig").SemanticEditor;
+    const source = "class P{}class C extends P{#read=async function*inner(value=7){yield value};constructor(flag){if(flag)super();else super()}read(){return this.#read()}}(async()=>console.log((await new C(true).read().next()).value,(await new C(false).read().next()).value))();";
+    const unsupported = TransformOptions.compat.fromESTarget(.es5);
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_ts = true;
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.unsupported = unsupported;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_source_external_origins = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var t = try Transformer.initFromOwnedAst(a, &parser.ast, .{ .unsupported = unsupported });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.source_owned_retirements = analyzer.source_owned_retirements;
+    t.scope_history = analyzer.scope_history;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.helper_scope_map = analyzer.helper_scope_map;
+    t.namespace_member_owners = &analyzer.namespace_member_owners;
+    t.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    t.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
+    t.record_explicit_global_references = true;
+    t.semantic_edit_enabled = true;
+    try t.buildBlockRenameMap();
+    const root = try t.transform();
+    analyzer.class_self_symbol_map = t.class_self_symbol_map;
+    if (try t.finishSemanticEdit()) |edited| analyzer.applyEdit(edited);
+    var editor = try analyzer.beginEdit();
+    // The transformer owns the actual output header; the analyzer's input
+    // pointer is the same header because initFromOwnedAst transfers it.
+    try std.testing.expect(editor.ast == t.ast);
+    const captures = try editor.captureFunctionNameEnvironments(root, &t.native_arguments_declaration_origins);
+    try std.testing.expect(captures.len > 0);
+    var cloned_source: ?Names.Source = null;
+    for (captures) |capture| if (@backingInt(capture.witness.event.name) >= t.parser_node_count) {
+        try std.testing.expect(cloned_source == null);
+        cloned_source = capture;
+    };
+    const original = cloned_source orelse return error.MissingActualClonedFunctionName;
+    const sid = @backingInt(original.witness.event.symbol_id);
+    try std.testing.expect(!original.witness.parameter_scope.isNone());
+    const old_count = editor.scopes.items[original.before.scope_id.toIndex()].symbol_count;
+    const minify = @import("transformer/minify.zig");
+    var journal = try minify.SemanticJournal.init(a, editor.references.items, .{ .domain = t.ast, .root = root, .symbol_ids = editor.symbol_ids.items, .owners = &editor.scope_owner_map, .expressions = &editor.node_scope_provenance, .class_self = &analyzer.class_self_symbol_map, .symbols = editor.symbols.items, .scopes = editor.scopes.items, .scope_maps = editor.scope_maps.items });
+    minify.minify(t.ast, .{ .symbols = editor.symbols.items, .symbol_ids = editor.symbol_ids.items, .symbol_ids_mut = editor.symbol_ids.items, .semantic_journal = &journal, .scopes = editor.scopes.items, .references = editor.references.items, .unresolved_globals = null, .allow_top_level_inline = true, .preserve_inferred_names = false }, a, root);
+    var origins = t.reference_origin_map;
+    var class_self = analyzer.class_self_symbol_map;
+    const receipt = try journal.applyReferenceAndOwnerEdits(&editor, root, &origins, &class_self);
+    try std.testing.expectEqual(captures.len, receipt.function_name_elisions.len);
+    std.debug.print("NAME_ELISION source_count={d} actual_events={d} selected_clone_owner={d} nameSID={d} N={d} P={d} G={d} outer={d}\n", .{ captures.len, receipt.function_name_elisions.len, @backingInt(original.witness.event.owner), sid, @backingInt(original.witness.name_scope), @backingInt(original.witness.parameter_scope), @backingInt(original.witness.body_scope), @backingInt(original.witness.outer_scope) });
+    const before_rows = try a.dupe(SemanticReference, editor.references.items);
+    const before_ids = try a.dupe(?u32, editor.symbol_ids.items);
+    for (0..8) |poison| {
+        var wrong = original;
+        var forged = receipt;
+        const events = try a.dupe(Names.Elision, receipt.function_name_elisions);
+        var foreign = t.ast.*;
+        switch (poison) {
+            0 => wrong.domain = &foreign,
+            1 => wrong.witness.name_scope = .none,
+            2 => wrong.witness.body_scope = wrong.witness.name_scope,
+            3 => wrong.witness.parameter_scope = .none,
+            4 => forged.domain = &foreign,
+            5 => forged.function_name_elisions = &.{},
+            6 => {
+                for (events) |*event| if (event.owner == original.witness.event.owner) {
+                    event.symbol_id = .none;
+                };
+                forged.function_name_elisions = events;
+            },
+            7 => wrong.witness.outer_scope = wrong.witness.name_scope,
+            else => unreachable,
+        }
+        const rejected: ?usize = editor.retireFunctionNameEnvironments(&.{wrong}, forged, .{ .node_scope_provenance = &editor.node_scope_provenance }) catch |err| blk: {
+            try std.testing.expect(err != error.OutOfMemory);
+            break :blk null;
+        };
+        try std.testing.expectEqual(@as(?usize, null), rejected);
+        try std.testing.expectEqualSlices(?u32, before_ids, editor.symbol_ids.items);
+        try std.testing.expectEqualDeep(before_rows, editor.references.items);
+        try std.testing.expectEqual(old_count, editor.scopes.items[original.before.scope_id.toIndex()].symbol_count);
+        try std.testing.expect(!editor.source_owned_retirements.contains(sid));
+    }
+    // A real existing formal moved into P makes that environment live. The
+    // source receipt cannot authorize its removal or any partial publication.
+    var live_parameter = try Editor.init(a, t.ast, editor.symbols.items, editor.scopes.items, editor.scope_maps.items, editor.scope_owner_map, editor.references.items, editor.symbol_ids.items, editor.helper_scope_map);
+    try live_parameter.importScopeHistory(editor.scopeHistoryView());
+    try live_parameter.importNodeScopeProvenance(editor.node_scope_provenance);
+    try live_parameter.importSourceOwnedRetirements(editor.source_owned_retirements);
+    const actual_formal = original.witness.formals[0];
+    try live_parameter.relocateSymbol(actual_formal.symbol_id, original.witness.parameter_scope);
+    try std.testing.expectEqual(original.witness.parameter_scope, live_parameter.symbols.items[@backingInt(actual_formal.symbol_id)].scope_id);
+    try std.testing.expect(live_parameter.scope_maps.items[original.witness.parameter_scope.toIndex()].count() > 0);
+    const live_rejected: ?usize = live_parameter.retireFunctionNameEnvironments(captures, receipt, .{ .node_scope_provenance = &live_parameter.node_scope_provenance }) catch |err| blk: {
+        try std.testing.expect(err != error.OutOfMemory);
+        break :blk null;
+    };
+    try std.testing.expectEqual(@as(?usize, null), live_rejected);
+    try std.testing.expectEqual(original.witness.parameter_scope, live_parameter.symbols.items[@backingInt(actual_formal.symbol_id)].scope_id);
+    try std.testing.expectEqual(@as(usize, 0), live_parameter.source_owned_retirements.count());
+    const AllocationCase = struct {
+        fn run(heap: std.mem.Allocator, template: *const Editor, sources: []const Names.Source, actual_receipt: @import("semantic/function_retirement_receipt.zig").ApplicationReceipt) !void {
+            var candidate = try Editor.init(heap, template.ast, template.symbols.items, template.scopes.items, template.scope_maps.items, template.scope_owner_map, template.references.items, template.symbol_ids.items, template.helper_scope_map);
+            defer candidate.deinit();
+            try candidate.importScopeHistory(template.scopeHistoryView());
+            try candidate.importNodeScopeProvenance(template.node_scope_provenance);
+            try candidate.importSourceOwnedRetirements(template.source_owned_retirements);
+            try std.testing.expectEqual(sources.len, try candidate.retireFunctionNameEnvironments(sources, actual_receipt, .{ .node_scope_provenance = &candidate.node_scope_provenance }));
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, AllocationCase.run, .{ &editor, captures, receipt });
+    try std.testing.expectEqual(captures.len, try editor.retireFunctionNameEnvironments(captures, receipt, .{ .node_scope_provenance = &editor.node_scope_provenance }));
+    try std.testing.expectEqual(@as(usize, 0), try editor.retireFunctionNameEnvironments(captures, receipt, .{ .node_scope_provenance = &editor.node_scope_provenance }));
+    try std.testing.expectEqual(old_count - 1, editor.scopes.items[original.before.scope_id.toIndex()].symbol_count);
+    try std.testing.expectEqual(original.witness.outer_scope, editor.scopes.items[original.witness.body_scope.toIndex()].parent);
+    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@backingInt(original.declaration.declaration_node_index)]);
+    const retired = editor.source_owned_retirements.get(sid).?;
+    const actual_history = editor.scopeHistoryView();
+    const frame_index = try @import("semantic/scope_frame_history.zig").validateAndIndex(a, t.ast, editor.scopes.items, &editor.scope_owner_map, &actual_history, null);
+    try std.testing.expect(frame_index.valid);
+    try std.testing.expectEqual(.elided_function_name, retired.reason);
+    const live_nodes = try @import("parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, t.ast, root);
+    var live = try std.DynamicBitSet.initEmpty(a, t.ast.nodes.items.len);
+    for (live_nodes) |raw| live.set(raw);
+    try std.testing.expect(Names.validateState(retired, t.ast, &live, editor.symbols.items, editor.symbol_ids.items, editor.scopes.items, &editor.scope_owner_map, editor.references.items));
+    try std.testing.expect(try Retirement.validate(a, t.ast, &editor.source_owned_retirements, &live, editor.symbols.items, editor.symbol_ids.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &editor.helper_scope_map, .{ .node_scope_provenance = &editor.node_scope_provenance }));
+    const actual_engine = original.witness.engine orelse return error.MissingActualNativeEngine;
+    const engine_sid = @backingInt(actual_engine.symbol_id);
+    const engine_row = editor.symbols.items[engine_sid];
+    try std.testing.expectEqual(original.witness.parameter_scope, engine_row.origin_scope);
+    try std.testing.expectEqual(original.witness.body_scope, engine_row.scope_id);
+    try std.testing.expect(Retirement.hasHistoricalArgumentsOrigin(&editor.source_owned_retirements, engine_sid, engine_row));
+    try std.testing.expect(!Retirement.hasHistoricalArgumentsOrigin(&editor.source_owned_retirements, @backingInt(actual_formal.symbol_id), editor.symbols.items[@backingInt(actual_formal.symbol_id)]));
+    var foreign_engine = engine_row;
+    foreign_engine.scope_id = original.witness.outer_scope;
+    try std.testing.expect(!Retirement.hasHistoricalArgumentsOrigin(&editor.source_owned_retirements, engine_sid, foreign_engine));
+    var forged_role = retired;
+    forged_role.function_name_elision.?.engine.?.before.origin_scope = original.witness.body_scope;
+    editor.source_owned_retirements.getPtr(sid).?.* = forged_role;
+    try std.testing.expect(!try Retirement.validate(a, t.ast, &editor.source_owned_retirements, &live, editor.symbols.items, editor.symbol_ids.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &editor.helper_scope_map, .{ .node_scope_provenance = &editor.node_scope_provenance }));
+    try std.testing.expect(!Retirement.hasHistoricalArgumentsOrigin(&editor.source_owned_retirements, engine_sid, engine_row));
+    editor.source_owned_retirements.getPtr(sid).?.* = retired;
+    const coverage = @import("transformer/symbol_coverage.zig");
+    const source_scope_count = analyzer.scope_history.source_scopes.len;
+    const default_exact = try coverage.checkExactQuiet(a, t.ast, root, t.parser_node_count, editor.symbol_ids.items, editor.symbols.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, t.helper_ref_nodes.items, &editor.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &origins, .{ .pre_transform_scope_count = source_scope_count });
+    try std.testing.expect(!default_exact.isClean());
+    try std.testing.expect(default_exact.scope_owner_mismatch > 0);
+    const normal = try coverage.checkOutputNormalFormQuiet(a, t.ast, root, t.parser_node_count, editor.symbol_ids.items, editor.symbols.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, t.helper_ref_nodes.items, &editor.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &origins, .{ .pre_transform_scope_count = source_scope_count, .namespace_member_owners = &analyzer.namespace_member_owners, .namespace_declaration_owners = &analyzer.namespace_declaration_owners }, &editor.source_owned_retirements, .{ .node_scope_provenance = &editor.node_scope_provenance, .scope_history = &actual_history, .class_self_symbols = &class_self, .namespace_member_owners = &analyzer.namespace_member_owners, .namespace_declaration_owners = &analyzer.namespace_declaration_owners });
+    try std.testing.expect(normal.hasCompleteOutputIdentityBeforeNames());
+    analyzer.applyEdit(try editor.finish());
+    var data: @import("bundler/module.zig").ModuleSemanticData = .{ .symbols = analyzer.symbols, .scopes = analyzer.scopes.items, .scope_maps = analyzer.scope_maps.items, .scope_owner_map = analyzer.scope_owner_map, .symbol_ids = analyzer.symbol_ids.items, .references = analyzer.references.items, .exported_names = analyzer.exported_names, .unresolved_references = analyzer.unresolved_references, .helper_scope_map = analyzer.helper_scope_map, .node_scope_provenance = analyzer.node_scope_provenance, .source_owned_retirements = analyzer.source_owned_retirements, .scope_history = analyzer.scope_history };
+    var wire: std.ArrayList(u8) = .empty;
+    try @import("bundler/semantic_codec.zig").serialize(&data, &wire, a);
+    var decoded = try @import("bundler/semantic_codec.zig").deserialize(wire.items, a);
+    var cached_edit = try decoded.beginEdit(a, t.ast);
+    decoded.applyEdit(try cached_edit.finish());
+    try std.testing.expect(Names.validateState(decoded.source_owned_retirements.get(sid).?, t.ast, &live, decoded.symbols.items, decoded.symbol_ids, decoded.scopes, &decoded.scope_owner_map, decoded.references));
+    try std.testing.expect(try Retirement.validate(a, t.ast, &decoded.source_owned_retirements, &live, decoded.symbols.items, decoded.symbol_ids, decoded.scopes, decoded.scope_maps, &decoded.scope_owner_map, decoded.references, &decoded.helper_scope_map, .{ .node_scope_provenance = &decoded.node_scope_provenance }));
+    var result = try transpile(a, source, "private-name-environment.cjs", .{ .unsupported = unsupported, .minify_identifiers = true, .minify_syntax = true, .minify_whitespace = true });
+    defer result.deinit(a);
+    const runtime = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+    try std.testing.expect(runtime.term == .exited and runtime.term.exited == 0);
+    try std.testing.expectEqualStrings("7 7\n", runtime.stdout);
 }

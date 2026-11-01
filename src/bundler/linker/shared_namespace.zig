@@ -33,53 +33,104 @@ pub fn nsRewriteDisabled() bool {
     return ns_rewrite_disabled_env.enabled();
 }
 
-/// A shared namespace object is a generated binding owned by its target module. It does not
-/// have an ExportBinding/SymbolId in source semantic data, so match the module and the exact
-/// generated local name recorded when the object is created.
+/// Advisory spelling membership for allocation-only tests. It grants no binding
+/// identity; production identity consumers require sharedNamespaceOutputRef.
 pub fn isSharedNamespaceVar(self: *const Linker, module_index: u32, local_name: []const u8) bool {
     const shared = self.ns_shared_inline_cache.get(module_index) orelse return false;
     return std.mem.eql(u8, shared.var_name, local_name);
 }
 
-/// Keep generated namespace locals occupied while allocating cross-chunk names. The namespace
-/// owner itself temporarily releases its spelling when its global alias is selected.
-pub fn reserveSharedNamespaceVarNames(
-    self: *const Linker,
-    allocator: std.mem.Allocator,
-    used: *std.StringHashMapUnmanaged(void),
-) std.mem.Allocator.Error!void {
+/// The producer's exact output carrier, never selected by a spelling.
+pub fn sharedNamespaceOutputRef(self: *const Linker, target: ModuleIndex) ?@import("../codegen_output_domain.zig").Ref {
+    @constCast(self).ns_cache_mutex.lock();
+    defer @constCast(self).ns_cache_mutex.unlock();
+    return sharedNamespaceOutputRefLocked(self, target);
+}
+
+fn sharedNamespaceOutputRefLocked(self: *const Linker, target: ModuleIndex) ?@import("../codegen_output_domain.zig").Ref {
+    const cached = self.ns_shared_inline_cache.get(target.toU32()) orelse return null;
+    const reference = cached.output_ref orelse return null;
+    if (reference.module != target or !self.codegen_output_registry.validates(reference)) return null;
+    const chosen = self.codegen_output_registry.emittedName(reference) orelse return null;
+    if (chosen.ptr != cached.var_name.ptr or chosen.len != cached.var_name.len) return null;
+    return reference;
+}
+
+pub fn sharedNamespaceOutputSymbol(self: *const Linker, reference: @import("../codegen_output_domain.zig").Ref) ?@import("../codegen_output_domain.zig").Symbol {
+    @constCast(self).ns_cache_mutex.lock();
+    defer @constCast(self).ns_cache_mutex.unlock();
+    const actual = sharedNamespaceOutputRefLocked(self, reference.module) orelse return null;
+    if (!std.meta.eql(actual, reference)) return null;
+    return self.codegen_output_registry.symbolFor(reference);
+}
+
+pub fn sharedNamespaceInitialName(self: *const Linker, reference: @import("../codegen_output_domain.zig").Ref) ?[]const u8 {
+    @constCast(self).ns_cache_mutex.lock();
+    defer @constCast(self).ns_cache_mutex.unlock();
+    const actual = sharedNamespaceOutputRefLocked(self, reference.module) orelse return null;
+    if (!std.meta.eql(actual, reference)) return null;
+    return self.codegen_output_registry.emittedName(reference);
+}
+
+/// Compare public syntax only after independently selecting its known ref.
+pub fn isSharedNamespaceAssignment(self: *const Linker, module_index: u32, public_name: []const u8, alias: []const u8) bool {
+    @constCast(self).ns_cache_mutex.lock();
+    defer @constCast(self).ns_cache_mutex.unlock();
+    _ = sharedNamespaceOutputRefLocked(self, @fromBackingInt(@intCast(module_index))) orelse return false;
+    const cached = self.ns_shared_inline_cache.get(module_index) orelse return false;
+    const selected = self.getCrossChunkGlobalName(module_index, cached.var_name) orelse return false;
+    return std.mem.eql(u8, public_name, cached.var_name) and std.mem.eql(u8, alias, selected);
+}
+
+pub fn reserveSharedNamespaceVarNames(self: *const Linker, allocator: std.mem.Allocator, used: *std.StringHashMapUnmanaged(void)) std.mem.Allocator.Error!void {
+    @constCast(self).ns_cache_mutex.lock();
+    defer @constCast(self).ns_cache_mutex.unlock();
     var names = self.ns_shared_var_names.keyIterator();
     while (names.next()) |name| try used.put(allocator, name.*, {});
 }
 
-/// Record the lazy cross-chunk name for an exact generated namespace binding. The value borrows
-/// the cross-chunk name map, whose lifetime covers this linker build.
-pub fn assignSharedNamespaceGlobalName(
-    self: *const Linker,
-    module_index: u32,
-    local_name: []const u8,
-    global_name: []const u8,
-) std.mem.Allocator.Error!bool {
-    if (!self.isSharedNamespaceVar(module_index, local_name)) return false;
+/// Final namespace aliases own their bytes and are indexed only by known ref.
+pub fn assignSharedNamespaceGlobalName(self: *const Linker, reference: @import("../codegen_output_domain.zig").Ref, global_name: []const u8) std.mem.Allocator.Error!bool {
     const mutable_self = @constCast(self);
-    try mutable_self.ns_shared_global_names.put(self.allocator, module_index, global_name);
-    // The shared-name allocator may run again later in metadata emission. Reserve the alias as
-    // another live spelling while it is in use; clearCrossChunkGlobalNames removes this key
-    // before releasing the borrowed global-name string.
-    try mutable_self.ns_shared_var_names.put(self.allocator, global_name, {});
+    mutable_self.ns_cache_mutex.lock();
+    defer mutable_self.ns_cache_mutex.unlock();
+    const actual = sharedNamespaceOutputRefLocked(self, reference.module) orelse return false;
+    if (!std.meta.eql(actual, reference) or !try validOutputBindingName(self.allocator, global_name)) return false;
+    const initial = self.codegen_output_registry.emittedName(reference).?;
+    const prior = self.ns_shared_global_names.get(reference);
+    if (self.ns_shared_var_names.contains(global_name) and !std.mem.eql(u8, initial, global_name) and
+        (prior == null or !std.mem.eql(u8, prior.?, global_name))) return false;
+    const owned = try self.allocator.dupe(u8, global_name);
+    errdefer self.allocator.free(owned);
+    try mutable_self.ns_shared_global_names.ensureUnusedCapacity(self.allocator, 1);
+    try mutable_self.ns_shared_var_names.ensureUnusedCapacity(self.allocator, 1);
+    if (mutable_self.ns_shared_global_names.get(reference)) |old| {
+        if (!std.mem.eql(u8, initial, old)) _ = mutable_self.ns_shared_var_names.remove(old);
+        self.allocator.free(old);
+    }
+    mutable_self.ns_shared_global_names.putAssumeCapacity(reference, owned);
+    mutable_self.ns_shared_var_names.putAssumeCapacity(owned, {});
     return true;
 }
 
-/// Return a generated namespace binding's lazy global alias only when both owner and original
-/// local spelling match. This is the namespace equivalent of looking up a semantic binding by
-/// exact SymbolId.
-pub fn getSharedNamespaceGlobalName(
-    self: *const Linker,
-    module_index: u32,
-    local_name: []const u8,
-) ?[]const u8 {
-    if (!self.isSharedNamespaceVar(module_index, local_name)) return null;
-    return self.ns_shared_global_names.get(module_index);
+pub fn getSharedNamespaceGlobalName(self: *const Linker, reference: @import("../codegen_output_domain.zig").Ref) ?[]const u8 {
+    @constCast(self).ns_cache_mutex.lock();
+    defer @constCast(self).ns_cache_mutex.unlock();
+    const actual = sharedNamespaceOutputRefLocked(self, reference.module) orelse return null;
+    if (!std.meta.eql(actual, reference)) return null;
+    return self.ns_shared_global_names.get(reference);
+}
+
+pub fn sharedNamespaceEmittedName(self: *const Linker, reference: @import("../codegen_output_domain.zig").Ref) ?[]const u8 {
+    @constCast(self).ns_cache_mutex.lock();
+    defer @constCast(self).ns_cache_mutex.unlock();
+    return sharedNamespaceEmittedNameLocked(self, reference);
+}
+
+fn sharedNamespaceEmittedNameLocked(self: *const Linker, reference: @import("../codegen_output_domain.zig").Ref) ?[]const u8 {
+    const actual = sharedNamespaceOutputRefLocked(self, reference.module) orelse return null;
+    if (!std.meta.eql(actual, reference)) return null;
+    return self.ns_shared_global_names.get(reference) orelse self.codegen_output_registry.emittedName(reference);
 }
 
 /// ESM namespace import를 위한 namespace 객체 preamble 생성.
@@ -452,9 +503,9 @@ pub fn ensureSharedNsVar(
     {
         const mutable_self = @constCast(self);
         mutable_self.ns_cache_mutex.lock();
-        defer mutable_self.ns_cache_mutex.unlock();
-        if (self.ns_shared_inline_cache.get(target_mod_idx)) |cached|
-            return self.getSharedNamespaceGlobalName(target_mod_idx, cached.var_name) orelse cached.var_name;
+        const cached = self.ns_shared_inline_cache.get(target_mod_idx);
+        mutable_self.ns_cache_mutex.unlock();
+        if (cached) |entry| return self.sharedNamespaceEmittedName(entry.output_ref orelse return error.MissingWrapperSymbol) orelse return error.MissingWrapperSymbol;
     }
     var exports: std.ArrayList(NsExportPair) = .empty;
     var seen: std.StringHashMapUnmanaged(void) = .empty;
@@ -513,7 +564,8 @@ fn getOrCreateSharedNamespaceVar(
     mutable_self.ns_cache_mutex.lock();
     if (self.ns_shared_inline_cache.get(target_mod_idx)) |cached| {
         mutable_self.ns_cache_mutex.unlock();
-        return self.getSharedNamespaceGlobalName(target_mod_idx, cached.var_name) orelse cached.var_name;
+        _ = self.sharedNamespaceOutputRef(@fromBackingInt(@intCast(target_mod_idx))) orelse return error.MissingWrapperSymbol;
+        return self.sharedNamespaceEmittedName(cached.output_ref.?) orelse return error.MissingWrapperSymbol;
     }
     mutable_self.ns_cache_mutex.unlock();
 
@@ -531,8 +583,9 @@ fn getOrCreateSharedNamespaceVar(
     defer mutable_self.ns_cache_mutex.unlock();
 
     if (self.ns_shared_inline_cache.get(target_mod_idx)) |raced| {
+        const selected = sharedNamespaceEmittedNameLocked(self, raced.output_ref orelse return error.MissingWrapperSymbol) orelse return error.MissingWrapperSymbol;
         self.allocator.free(object_literal);
-        return self.getSharedNamespaceGlobalName(target_mod_idx, raced.var_name) orelse raced.var_name;
+        return selected;
     }
 
     try ensureNsBaseRank(mutable_self);
@@ -545,13 +598,56 @@ fn getOrCreateSharedNamespaceVar(
 
 /// Caller holds ns_cache_mutex and has checked the exact target cache miss.
 /// Ownership moves only on success; the caller retains both strings on error.
-fn publishSharedNamespace(self: *Linker, target: u32, name: []const u8, object: []const u8) std.mem.Allocator.Error!void {
-    try self.ns_shared_var_names.put(self.allocator, name, {});
-    errdefer _ = self.ns_shared_var_names.remove(name);
-    try self.ns_shared_inline_order.append(self.allocator, target);
-    errdefer _ = self.ns_shared_inline_order.pop();
-    // Publish the owning cache last, after all fallible auxiliary mutations.
-    try self.ns_shared_inline_cache.put(self.allocator, target, .{ .var_name = name, .object_literal = object });
+fn publishSharedNamespace(self: *Linker, target: u32, name: []const u8, object: []const u8) WrapperNameError!void {
+    const output = @import("../codegen_output_domain.zig");
+    const actual = self.getModule(target) orelse return error.MissingWrapperSymbol;
+    if (!try validOutputBindingName(self.allocator, name)) return error.MissingWrapperSymbol;
+    const owner = @constCast(actual);
+    self.codegen_output_registry.ensure(self.allocator, self.graph) catch |err| return outputError(err);
+    var candidate: ?*output.Domain = null;
+    defer if (candidate) |domain| domain.destroy();
+    var registration: ?output.Prepared = null;
+    defer if (registration) |*prepared| prepared.deinit(self.allocator);
+    const reference = if (owner.codegen_output_domain) |domain| existing: {
+        const known = domain.namespaceRef(owner.index) orelse return error.MissingWrapperSymbol;
+        if (!self.codegen_output_registry.validates(known)) return error.MissingWrapperSymbol;
+        break :existing known;
+    } else fresh: {
+        candidate = output.Domain.createNamespace(self.graph.allocator, owner.codegen_output_owner, name) catch |err| return outputError(err);
+        break :fresh candidate.?.namespaceRef(owner.index) orelse return error.MissingWrapperSymbol;
+    };
+    registration = self.codegen_output_registry.prepareNamespace(self.allocator, self.graph, owner, candidate orelse owner.codegen_output_domain.?, name) catch |err| return outputError(err);
+    try self.ns_shared_var_names.ensureUnusedCapacity(self.allocator, 1);
+    try self.ns_shared_inline_order.ensureUnusedCapacity(self.allocator, 1);
+    try self.ns_shared_inline_cache.ensureUnusedCapacity(self.allocator, 1);
+    if (registration) |*prepared| {
+        if (!prepared.isCurrent()) return error.MissingWrapperSymbol;
+        if (candidate) |domain| owner.codegen_output_domain = domain;
+        prepared.publish();
+        candidate = null;
+    }
+    // Namespace identity, cache ownership and emitted declaration are published
+    // together only after every fallible allocation has completed.
+    self.ns_shared_var_names.putAssumeCapacity(name, {});
+    self.ns_shared_inline_order.appendAssumeCapacity(target);
+    self.ns_shared_inline_cache.putAssumeCapacity(target, .{ .var_name = name, .object_literal = object, .output_ref = reference });
+}
+
+fn validOutputBindingName(a: std.mem.Allocator, raw: []const u8) std.mem.Allocator.Error!bool {
+    const value = try @import("../../lexer/scanner.zig").Scanner.decodeIdentifierEscapesAlloc(a, raw);
+    defer if (value.ptr != raw.ptr) a.free(value);
+    return @import("identifier_name.zig").isIdentifierName(value) and !Linker.isReservedName(value);
+}
+
+fn sharedNamespaceEntrySnapshot(self: *const Linker, target: u32) ?SharedNsInline {
+    @constCast(self).ns_cache_mutex.lock();
+    defer @constCast(self).ns_cache_mutex.unlock();
+    _ = sharedNamespaceOutputRefLocked(self, @fromBackingInt(@intCast(target))) orelse return null;
+    return self.ns_shared_inline_cache.get(target);
+}
+
+fn outputError(err: anyerror) WrapperNameError {
+    return if (err == error.OutOfMemory) error.OutOfMemory else error.MissingWrapperSymbol;
 }
 
 pub fn appendSharedNamespacePreamble(self: *const Linker, out: *std.ArrayList(u8)) WrapperNameError!void {
@@ -567,7 +663,11 @@ pub fn appendSharedNamespacePreambleFiltered(
     out: *std.ArrayList(u8),
     target_filter: ?*const std.AutoHashMapUnmanaged(u32, void),
 ) WrapperNameError!void {
-    const sorted_targets = try self.allocator.dupe(u32, self.ns_shared_inline_order.items);
+    const sorted_targets = copy: {
+        @constCast(self).ns_cache_mutex.lock();
+        defer @constCast(self).ns_cache_mutex.unlock();
+        break :copy try self.allocator.dupe(u32, self.ns_shared_inline_order.items);
+    };
     defer self.allocator.free(sorted_targets);
     const SortCtx = struct {
         linker: *const Linker,
@@ -592,8 +692,8 @@ pub fn appendSharedNamespacePreambleFiltered(
         if (target_filter) |f| {
             if (!f.contains(target_mod_idx)) continue;
         }
-        const entry = self.ns_shared_inline_cache.get(target_mod_idx) orelse continue;
-        const shared_var_name = self.getSharedNamespaceGlobalName(target_mod_idx, entry.var_name) orelse entry.var_name;
+        const entry = sharedNamespaceEntrySnapshot(self, target_mod_idx) orelse return error.MissingWrapperSymbol;
+        const shared_var_name = self.sharedNamespaceEmittedName(entry.output_ref orelse return error.MissingWrapperSymbol) orelse return error.MissingWrapperSymbol;
         // (#4101 / #4502) `entry.object_literal` 은 청크·rename 확정 *전*(computeCrossChunkLinks 의
         // ensureSharedNsVar)에 frozen 됐다 — getter 본문이 미-deconflict 원본 이름이다.
         // splitting emit(=`module_to_chunk` 세팅)에서는 이 리터럴이 **정의자 청크**(target 의 청크)
@@ -755,7 +855,7 @@ fn tryRewriteGetterObjToArrowExport(
     return try result.toOwnedSlice(allocator);
 }
 
-pub fn restoreSharedNamespaceDecls(self: *const Linker, decls: []const CompiledModule.SharedNsDecl) std.mem.Allocator.Error!void {
+pub fn restoreSharedNamespaceDecls(self: *const Linker, decls: []const CompiledModule.SharedNsDecl) WrapperNameError!void {
     const mutable_self = @constCast(self);
     for (decls) |decl| {
         const target_idx = self.graph.path_to_module.get(decl.target_path) orelse continue;
@@ -785,13 +885,9 @@ pub fn restoreSharedNamespaceDecls(self: *const Linker, decls: []const CompiledM
             self.allocator.free(owned_obj);
             continue;
         }
-        try mutable_self.ns_shared_inline_order.append(self.allocator, target_mod_idx);
-        errdefer _ = mutable_self.ns_shared_inline_order.pop();
-        try mutable_self.ns_shared_inline_cache.put(self.allocator, target_mod_idx, .{
-            .var_name = owned_var,
-            .object_literal = owned_obj,
-        });
-        try mutable_self.ns_shared_var_names.put(self.allocator, owned_var, {});
+        // The winning cached declaration is an output-template input. Its
+        // actual target gets a registered output ref; no source SID is healed.
+        try publishSharedNamespace(mutable_self, target_mod_idx, owned_var, owned_obj);
     }
 }
 
@@ -799,7 +895,7 @@ pub fn collectSharedNamespaceDecls(
     self: *const Linker,
     allocator: std.mem.Allocator,
     md: *const LinkingMetadata,
-) std.mem.Allocator.Error![]const CompiledModule.SharedNsDecl {
+) WrapperNameError![]const CompiledModule.SharedNsDecl {
     var decls: std.ArrayList(CompiledModule.SharedNsDecl) = .empty;
     errdefer {
         for (decls.items) |d| {
@@ -823,13 +919,14 @@ pub fn collectSharedNamespaceDecls(
         const shared_copy = if (self.ns_shared_inline_cache.get(target_mod_idx)) |shared| SharedNsInline{
             .var_name = shared.var_name,
             .object_literal = shared.object_literal,
+            .output_ref = shared.output_ref,
         } else null;
         @constCast(self).ns_cache_mutex.unlock();
         const shared = shared_copy orelse continue;
 
         const target_path = try allocator.dupe(u8, target.path);
         errdefer allocator.free(target_path);
-        const emitted_name = self.getSharedNamespaceGlobalName(target_mod_idx, shared.var_name) orelse shared.var_name;
+        const emitted_name = self.sharedNamespaceEmittedName(shared.output_ref orelse return error.MissingWrapperSymbol) orelse return error.MissingWrapperSymbol;
         const var_name = try allocator.dupe(u8, emitted_name);
         errdefer allocator.free(var_name);
         const object_literal = try allocator.dupe(u8, shared.object_literal);
@@ -897,6 +994,8 @@ pub fn ensureNsBaseRank(self: *Linker) std.mem.Allocator.Error!void {
         defer if (base.ptr != raw_base.ptr) self.allocator.free(base);
         const gop = try counts.getOrPut(self.allocator, base);
         if (!gop.found_existing) {
+            // Until duplication succeeds, the key still borrows raw_base.
+            errdefer _ = counts.remove(base);
             gop.key_ptr.* = try self.allocator.dupe(u8, base);
             gop.value_ptr.* = 0;
         }
@@ -1433,54 +1532,53 @@ fn testEmptyLinker(a: std.mem.Allocator, cache: *@import("../resolve_cache.zig")
 
 test "lazy shared namespace global names follow the exact generated owner" {
     const a = std.testing.allocator;
-    var cache: @import("../resolve_cache.zig").ResolveCache = undefined;
-    var graph: @import("../graph.zig").ModuleGraph = undefined;
-    var linker = testEmptyLinker(a, &cache, &graph);
-    defer linker.deinit();
-    defer graph.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const helpers = @import("../test_helpers.zig");
+    try helpers.writeFile(tmp.dir, "one.mjs", "export const a=3;");
+    try helpers.writeFile(tmp.dir, "two.mjs", "export const b=7;");
+    const one_path = try helpers.absPath(&tmp, "one.mjs");
+    defer a.free(one_path);
+    const two_path = try helpers.absPath(&tmp, "two.mjs");
+    defer a.free(two_path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(a, .{});
     defer cache.deinit();
-
-    const target = ModuleIndex.fromUsize(7);
-    const local_name = try a.dupe(u8, "shared_ns");
-    try linker.ns_shared_inline_cache.put(a, target.toU32(), .{
-        .var_name = local_name,
-        .object_literal = try a.dupe(u8, "{}"),
-    });
-    try linker.ns_shared_var_names.put(a, local_name, {});
-    const other_target = target.toU32() + 1;
-    const other_local_name = try a.dupe(u8, "shared_ns");
-    try linker.ns_shared_inline_cache.put(a, other_target, .{
-        .var_name = other_local_name,
-        .object_literal = try a.dupe(u8, "{}"),
-    });
-    try linker.ns_shared_var_names.put(a, other_local_name, {});
-
-    try std.testing.expect(linker.isSharedNamespaceVar(target.toU32(), "shared_ns"));
-    try std.testing.expect(!linker.isSharedNamespaceVar(target.toU32() + 2, "shared_ns"));
-    try std.testing.expect(!linker.isSharedNamespaceVar(target.toU32(), "other_ns"));
-
+    var graph = @import("../graph.zig").ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{ one_path, two_path });
+    var linker = Linker.init(a, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    var one: ?ModuleIndex = null;
+    var two: ?ModuleIndex = null;
+    var modules = graph.modulesIterator();
+    while (modules.next()) |module| {
+        if (std.mem.eql(u8, module.path, one_path)) one = module.index;
+        if (std.mem.eql(u8, module.path, two_path)) two = module.index;
+    }
+    const first = try linker.ensureSharedNsVar(one.?);
+    const second = try linker.ensureSharedNsVar(two.?);
+    const first_ref = linker.sharedNamespaceOutputRef(one.?).?;
+    const second_ref = linker.sharedNamespaceOutputRef(two.?).?;
     var used: std.StringHashMapUnmanaged(void) = .empty;
     defer used.deinit(a);
     try linker.reserveSharedNamespaceVarNames(a, &used);
-    try std.testing.expect(used.contains("shared_ns"));
-    _ = used.remove("shared_ns");
-
-    try std.testing.expect(try linker.assignSharedNamespaceGlobalName(target.toU32(), "shared_ns", "shared_ns$2"));
-    try std.testing.expect(try linker.assignSharedNamespaceGlobalName(other_target, "shared_ns", "shared_ns$3"));
-    try std.testing.expectEqualStrings(
-        "shared_ns$2",
-        linker.getSharedNamespaceGlobalName(target.toU32(), "shared_ns").?,
-    );
-    try std.testing.expectEqualStrings("shared_ns$3", linker.getSharedNamespaceGlobalName(other_target, "shared_ns").?);
-    try std.testing.expect(linker.ns_shared_var_names.contains("shared_ns$2"));
-    try std.testing.expect(linker.getSharedNamespaceGlobalName(target.toU32(), "shared_ns$2") == null);
-    try std.testing.expectEqualStrings("shared_ns$2", try linker.ensureSharedNsVar(target));
-    try std.testing.expectEqualStrings("shared_ns$3", try linker.ensureSharedNsVar(@fromBackingInt(other_target)));
+    try std.testing.expect(used.contains(first) and used.contains(second));
+    try std.testing.expect(try linker.assignSharedNamespaceGlobalName(first_ref, "shared_ns$2"));
+    try std.testing.expect(try linker.assignSharedNamespaceGlobalName(second_ref, "shared_ns$3"));
+    try std.testing.expectEqualStrings("shared_ns$2", linker.getSharedNamespaceGlobalName(first_ref).?);
+    try std.testing.expectEqualStrings("shared_ns$3", linker.getSharedNamespaceGlobalName(second_ref).?);
+    var foreign = first_ref;
+    foreign.module = two.?;
+    try std.testing.expect(linker.getSharedNamespaceGlobalName(foreign) == null);
+    try std.testing.expect(!try linker.assignSharedNamespaceGlobalName(foreign, "wrong"));
+    try std.testing.expectEqualStrings("shared_ns$2", try linker.ensureSharedNsVar(one.?));
+    try std.testing.expectEqualStrings("shared_ns$3", try linker.ensureSharedNsVar(two.?));
     linker.clearCrossChunkGlobalNames();
     try std.testing.expect(!linker.ns_shared_var_names.contains("shared_ns$2"));
     try std.testing.expect(!linker.ns_shared_var_names.contains("shared_ns$3"));
-    try std.testing.expect(linker.getSharedNamespaceGlobalName(target.toU32(), "shared_ns") == null);
-    try std.testing.expectEqualStrings("shared_ns", try linker.ensureSharedNsVar(target));
+    try std.testing.expect(linker.getSharedNamespaceGlobalName(first_ref) == null);
+    try std.testing.expectEqualStrings(first, try linker.ensureSharedNsVar(one.?));
 }
 
 test "#3966: rank → 결정적 ns var 이름 (rank 0 base_ns, rank N base_ns_{N+1})" {
@@ -1550,6 +1648,16 @@ test "namespace holder hygiene shared publication rolls back every allocation fa
     const second = try graph.addModule(std.testing.io, second_path);
     try std.testing.checkAllAllocationFailures(a, struct {
         fn run(alloc: std.mem.Allocator, g: *@import("../graph.zig").ModuleGraph, one: u32, two: u32) !void {
+            const first_module = @constCast(g.getModule(@fromBackingInt(@intCast(one))).?);
+            const second_module = @constCast(g.getModule(@fromBackingInt(@intCast(two))).?);
+            const first_before = first_module.codegen_output_domain;
+            const second_before = second_module.codegen_output_domain;
+            defer {
+                if (first_module.codegen_output_domain != first_before) if (first_module.codegen_output_domain) |domain| domain.destroy();
+                if (second_module.codegen_output_domain != second_before) if (second_module.codegen_output_domain) |domain| domain.destroy();
+                first_module.codegen_output_domain = first_before;
+                second_module.codegen_output_domain = second_before;
+            }
             var linker = Linker.init(alloc, g, .esm);
             defer linker.deinit();
             const name = try alloc.dupe(u8, "first_namespace");
@@ -1582,4 +1690,39 @@ test "namespace holder hygiene shared publication rolls back every allocation fa
             try std.testing.expectEqual(@as(usize, 2), linker.ns_shared_inline_cache.count());
         }
     }.run, .{ &graph, first.toU32(), second.toU32() });
+}
+
+test "shared namespace output graphless publication keeps both source domains absent" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const helpers = @import("../test_helpers.zig");
+    try helpers.writeFile(tmp.dir, "raw.mjs", "export const value=3;");
+    const path = try helpers.absPath(&tmp, "raw.mjs");
+    defer a.free(path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = @import("../graph.zig").ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    const index = try graph.addModule(std.testing.io, path);
+    const module = graph.getModule(index).?;
+    try std.testing.expect(module.ast == null and module.semantic == null);
+    var linker = Linker.init(a, &graph, .esm);
+    defer linker.deinit();
+    var published = false;
+    const name = try a.dupe(u8, "raw_namespace");
+    defer if (!published) a.free(name);
+    const object = try a.dupe(u8, "{value:3}");
+    defer if (!published) a.free(object);
+    try publishSharedNamespace(&linker, index.toU32(), name, object);
+    published = true;
+    const reference = linker.sharedNamespaceOutputRef(index).?;
+    try std.testing.expectEqual(module.codegen_output_owner, reference.owner);
+    try std.testing.expect(module.ast == null and module.semantic == null);
+    try std.testing.expectEqualStrings(name, linker.sharedNamespaceEmittedName(reference).?);
+    var preamble: std.ArrayList(u8) = .empty;
+    defer preamble.deinit(a);
+    try linker.appendSharedNamespacePreamble(&preamble);
+    try std.testing.expect(std.mem.indexOf(u8, preamble.items, "var raw_namespace") != null);
+    try std.testing.expect(module.ast == null and module.semantic == null);
 }

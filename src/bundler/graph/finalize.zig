@@ -447,13 +447,9 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) !void {
             if (!esm_runtime_identity_registered) return error.MissingRuntimeHelperSymbol;
         }
     }
-    // Runtime/source witnesses are readonly consumers. Establish the owner at
-    // the actual registration producer only after every fallible role reserve
-    // has succeeded; later transactional capture must not mutate its source.
-    var completed = self.modules.iterator(0);
-    while (completed.next()) |m| {
-        if (m.semantic) |*semantic| _ = semantic.captureOwnerToken();
-    }
+    // Actual owner/backing registration prepares all memory and duplicate
+    // checks before its final nonfallible owner publication.
+    try @import("../../semantic/output_runtime_registration.zig").refresh(self);
 }
 
 /// Runtime helpers and wrappers can be emitted for modules without source ASTs
@@ -783,6 +779,70 @@ fn findCjsRuntimeFactorySymbol(m: *Module) ?semantic_symbol.SymbolId {
 /// function scope as its parent. `scope_maps[0]` keeps its historical module
 /// lookup entries; parent bindings are also present in the callback scope map.
 fn registerCjsWrapperParameters(m: *Module) !void {
+    const original = m.semantic orelse return error.MissingSemantic;
+    const arena = if (m.parse_arena) |a| a.allocator() else return error.MissingSemantic;
+    // The actual registered producer owns this edit. Detached maps/rows and
+    // the cache ID mirror prevent an OOM in any later reserve from publishing
+    // a partial wrapper, its references, or their frequency counts.
+    var candidate = m.*;
+    var semantic = original;
+    semantic.symbols = .empty;
+    try semantic.symbols.appendSlice(arena, original.symbols.items);
+    semantic.scopes = try arena.dupe(Scope, original.scopes);
+    const maps = try arena.alloc(std.StringHashMapUnmanaged(usize), original.scope_maps.len);
+    for (original.scope_maps, maps) |map, *target| target.* = try map.clone(arena);
+    semantic.scope_maps = maps;
+    semantic.symbol_ids = try arena.dupe(?u32, original.symbol_ids);
+    semantic.references = try arena.dupe(semantic_symbol.Reference, original.references);
+    semantic.unresolved_references = try original.unresolved_references.clone(arena);
+    semantic.node_scope_provenance = try original.node_scope_provenance.clone(arena);
+    candidate.semantic = semantic;
+    if (candidate.transform_cache) |*cache| cache.symbol_ids = try arena.dupe(?u32, cache.symbol_ids);
+    try registerCjsWrapperParametersInStaging(&candidate);
+    if (m.ast) |*actual_ast| {
+        const history = @import("../../semantic/scope_frame_history.zig");
+        var recorder = if (original.scope_history.source_scopes.len == 0)
+            try history.Recorder.init(arena, actual_ast, original.scopes, &original.scope_owner_map)
+        else
+            try history.Recorder.fromHistory(arena, original.scope_history);
+        const staged = &candidate.semantic.?;
+        const actor: history.Actor = .{ .role = .cjs_wrapper, .module_index = @backingInt(m.index) };
+        if (staged.scopes.len > original.scopes.len) {
+            for (staged.scopes[original.scopes.len..], original.scopes.len..) |frame, raw| {
+                try recorder.recordBirth(arena, actual_ast, @fromBackingInt(@as(u32, @intCast(raw))), frame, .none, actor);
+            }
+        }
+        if (original.scopes.len != 0 and staged.scopes.len != 0 and !staged.scopes[0].parent.isNone())
+            try recorder.recordFrames(arena, actual_ast, original.scopes, staged.scopes, &original.scope_owner_map, @fromBackingInt(@as(u32, 0)), staged.scopes[0].parent, actor);
+        staged.scope_history = try recorder.finish(arena);
+        // These exact formerly unresolved physical leaves have now acquired
+        // the actual registered callback parameter, not intrinsic authority.
+        for (staged.symbol_ids, 0..) |maybe_sid, raw| {
+            const sid = maybe_sid orelse continue;
+            if (raw >= original.symbol_ids.len or original.symbol_ids[raw] != null) continue;
+            if (sid != @backingInt(candidate.cjs_wrapper_exports_parameter_symbol.?) and
+                sid != @backingInt(candidate.cjs_wrapper_module_parameter_symbol.?)) continue;
+            if (staged.node_scope_provenance.getPtr(@fromBackingInt(@as(u32, @intCast(raw))))) |origin| origin.source_external = null;
+        }
+    }
+    var changed_rows = original.symbols.items.len != candidate.semantic.?.symbols.items.len or original.references.len != candidate.semantic.?.references.len;
+    if (!changed_rows) for (original.references, candidate.semantic.?.references) |before, after| {
+        if (!std.meta.eql(before, after)) {
+            changed_rows = true;
+            break;
+        }
+    };
+    // No fallible work remains; source AST/header and all unrelated metadata
+    // retain their installed domains. The candidate was never source proof.
+    m.semantic = candidate.semantic;
+    m.transform_cache = candidate.transform_cache;
+    m.cjs_wrapper_exports_parameter_symbol = candidate.cjs_wrapper_exports_parameter_symbol;
+    m.cjs_wrapper_module_parameter_symbol = candidate.cjs_wrapper_module_parameter_symbol;
+    // The next consumer rebuilds statement buckets from the now-complete rows.
+    if (changed_rows) m.prebuilt_stmt_info = null;
+}
+
+fn registerCjsWrapperParametersInStaging(m: *Module) !void {
     const sem_ptr = if (m.semantic) |*sem| sem else return error.MissingSemantic;
     const arena = if (m.parse_arena) |a| a.allocator() else return error.MissingSemantic;
 
@@ -862,11 +922,15 @@ fn registerCjsWrapperParameters(m: *Module) !void {
             m.cjs_wrapper_exports_parameter_symbol.?,
             m.cjs_wrapper_module_parameter_symbol.?,
         );
-        if (new_symbol_count > 0) extendCachedRefDeltas(arena, m, old_symbol_count, sem_ptr.symbols.items.len);
+        if (new_symbol_count > 0) try extendCachedRefDeltas(arena, m, old_symbol_count, sem_ptr.symbols.items.len);
         return;
     };
     if (sem_ptr.scopes.len == 0 or sem_ptr.scope_maps.len != sem_ptr.scopes.len) return error.MissingSemantic;
 
+    // Allocate the entire reference publication before wrapper registration
+    // changes any graph state. An unproved structural context keeps the old
+    // binding path; optional same-graph optimizations then reject that graph.
+    var reference_plan = try PreparedCjsReferences.init(arena, ast_ptr, sem_ptr);
     const wrapper_scope = try ensureCjsWrapperParameterScope(sem_ptr, arena);
     const wrapper_scope_raw: usize = @backingInt(wrapper_scope);
     const root_scope_ptr = @constCast(&sem_ptr.scopes[0]);
@@ -962,19 +1026,28 @@ fn registerCjsWrapperParameters(m: *Module) !void {
         module_symbol;
     const explicit_globals = if (m.transform_cache) |cache| cache.explicit_global_ref_nodes else &.{};
     const cache_symbol_ids: ?[]?u32 = if (m.transform_cache) |cache| @constCast(cache.symbol_ids) else null;
+    const export_assignment_references = if (m.transform_cache) |cache| cache.cjs_export_assignment_references else &.{};
+    // Prepare the exact marker consumption before publishing any reference.
+    var remaining_globals: std.ArrayList(u32) = .empty;
+    for (explicit_globals) |raw| {
+        var consumed = false;
+        for (export_assignment_references) |record| if (@backingInt(record.reference) == raw) {
+            consumed = true;
+        };
+        if (!consumed) try remaining_globals.append(arena, raw);
+    }
+    const remaining_global_nodes = try remaining_globals.toOwnedSlice(arena);
 
     // Parser semantic analysis predates the CJS wrapper environment. Resolve
     // only references that remain unresolved in the exact AST/SymbolId table;
     // nested source bindings and explicit globals therefore keep their IDs.
-    const bound_refs = bindCjsWrapperReferences(
-        ast_ptr,
-        @constCast(sem_ptr.symbol_ids),
-        cache_symbol_ids,
-        &sem_ptr.symbols,
-        explicit_globals,
-        exports_reference_symbol,
-        module_reference_symbol,
-    );
+    const bound_refs = if (reference_plan) |*prepared|
+        try prepared.publish(ast_ptr, sem_ptr, cache_symbol_ids, explicit_globals, export_assignment_references, exports_symbol, module_symbol)
+    else
+        bindCjsWrapperReferences(ast_ptr, @constCast(sem_ptr.symbol_ids), cache_symbol_ids, &sem_ptr.symbols, explicit_globals, exports_reference_symbol, module_reference_symbol);
+    if (reference_plan != null) {
+        if (m.transform_cache) |*cache| cache.explicit_global_ref_nodes = remaining_global_nodes;
+    } else if (export_assignment_references.len != 0) return error.InvalidCjsWrapperReference;
     if (!bound_refs.has_unbound_exports) {
         _ = sem_ptr.unresolved_references.remove("exports");
     }
@@ -982,7 +1055,7 @@ fn registerCjsWrapperParameters(m: *Module) !void {
         _ = sem_ptr.unresolved_references.remove("module");
     }
 
-    if (new_symbol_count > 0) extendCachedRefDeltas(arena, m, old_symbol_count, sem_ptr.symbols.items.len);
+    if (new_symbol_count > 0) try extendCachedRefDeltas(arena, m, old_symbol_count, sem_ptr.symbols.items.len);
 
     m.cjs_wrapper_exports_parameter_symbol = exports_symbol;
     m.cjs_wrapper_module_parameter_symbol = module_symbol;
@@ -1262,6 +1335,157 @@ const CjsWrapperBindings = struct {
     has_unbound_module: bool = false,
 };
 
+/// Source-known callback bindings have real AST reference leaves even though
+/// their declarations are emitted by the wrapper. Publish those rows once,
+/// without adding the legacy frequency a second time.
+const PreparedCjsReferences = struct {
+    contexts: []const @import("../../semantic/output_runtime_witness.zig").ReferenceContext,
+    ids: []?u32,
+    references: []semantic_symbol.Reference,
+    references_len: usize,
+    changed: []bool,
+    counts: []Counts,
+    const Counts = struct { uses: u32, writes: u32 };
+
+    fn init(a: std.mem.Allocator, ast: *const Ast, sem: *const ModuleSemanticData) !?PreparedCjsReferences {
+        if (ast.nodes.items.len == 0) return null;
+        const root = ast.transformed_root orelse @as(@import("../../parser/ast.zig").NodeIndex, @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
+        const contexts = (try @import("../../semantic/output_runtime_witness.zig").captureReferenceContexts(a, ast, root, sem.scopes, &sem.scope_owner_map)) orelse return null;
+        const changed = try a.alloc(bool, sem.symbol_ids.len);
+        @memset(changed, false);
+        return .{
+            .contexts = contexts,
+            .changed = changed,
+            .ids = try a.dupe(?u32, sem.symbol_ids),
+            .references = try a.alloc(semantic_symbol.Reference, sem.references.len + contexts.len),
+            .references_len = sem.references.len,
+            .counts = try a.alloc(Counts, sem.symbols.items.len + 2),
+        };
+    }
+
+    fn changeCount(self: *PreparedCjsReferences, sid: u32, flags: semantic_symbol.ReferenceFlags, add: bool) !void {
+        if (sid >= self.counts.len) return error.InvalidCjsWrapperReference;
+        const count = &self.counts[sid];
+        if (flags.read or flags.write) {
+            if (add) {
+                if (count.uses == std.math.maxInt(u32)) return error.InvalidCjsWrapperReference;
+                count.uses += 1;
+            } else {
+                if (count.uses == 0) return error.InvalidCjsWrapperReference;
+                count.uses -= 1;
+            }
+        }
+        if (flags.write) {
+            if (add) {
+                if (count.writes == std.math.maxInt(u32)) return error.InvalidCjsWrapperReference;
+                count.writes += 1;
+            } else {
+                if (count.writes == 0) return error.InvalidCjsWrapperReference;
+                count.writes -= 1;
+            }
+        }
+    }
+
+    fn publish(self: *PreparedCjsReferences, ast: *const Ast, sem: *ModuleSemanticData, cache_ids: ?[]?u32, explicit_globals: []const u32, export_assignments: []const @import("../../transformer/cjs_export_assignment.zig").ModuleReference, exports: semantic_symbol.SymbolId, module: semantic_symbol.SymbolId) !CjsWrapperBindings {
+        if (sem.symbols.items.len > self.counts.len or sem.symbol_ids.len != self.ids.len or sem.references.len != self.references_len) return error.InvalidCjsWrapperReference;
+        // Only this source-created syntax receipt can consume an explicit
+        // host marker into the actual registered callback parameter.
+        for (export_assignments, 0..) |record, index| {
+            if (!record.validates(ast)) return error.InvalidCjsWrapperReference;
+            for (export_assignments[0..index]) |previous| {
+                if (previous.reference == record.reference or previous.source == record.source or previous.statement == record.statement)
+                    return error.InvalidCjsWrapperReference;
+            }
+            var contexts: usize = 0;
+            for (self.contexts) |context| {
+                if (context.node != record.reference) continue;
+                if (context.scope != record.scope or !context.flags.read or context.flags.write or context.flags.declare or context.flags.type_context or context.flags.value_as_type)
+                    return error.InvalidCjsWrapperReference;
+                contexts += 1;
+            }
+            if (contexts != 1) return error.InvalidCjsWrapperReference;
+        }
+        @memcpy(self.references[0..sem.references.len], sem.references);
+        for (sem.symbols.items, 0..) |symbol, sid| self.counts[sid] = .{ .uses = symbol.reference_count, .writes = symbol.write_count };
+        var result: CjsWrapperBindings = .{};
+        for (self.contexts) |context| {
+            const raw = @backingInt(context.node);
+            const node = ast.getNode(context.node);
+            const name = ast.getText(node.data.string_ref);
+            const is_exports = std.mem.eql(u8, name, "exports");
+            const is_module = std.mem.eql(u8, name, "module");
+            if (!is_exports and !is_module) continue;
+            var export_assignment = false;
+            for (export_assignments) |record| if (record.reference == context.node) {
+                export_assignment = true;
+            };
+            if (containsSortedNode(explicit_globals, raw) and !export_assignment) {
+                if (is_exports) result.has_unbound_exports = true else result.has_unbound_module = true;
+                continue;
+            }
+            const target = if (is_exports) exports else module;
+            const target_raw = @backingInt(target);
+            if (raw >= self.ids.len or target_raw >= sem.symbols.items.len or context.scope.isNone() or context.scope.toIndex() >= sem.scopes.len) return error.InvalidCjsWrapperReference;
+            var cursor = context.scope;
+            var fuel = sem.scopes.len + 1;
+            while (!cursor.isNone() and fuel > 0 and cursor != sem.symbols.items[target_raw].scope_id) : (fuel -= 1) cursor = sem.scopes[cursor.toIndex()].parent;
+            if (cursor.isNone() or fuel == 0) return error.InvalidCjsWrapperReference;
+            var existing_row: ?usize = null;
+            for (self.references[0..self.references_len], 0..) |reference, index| {
+                if (reference.node_index != context.node) continue;
+                if (existing_row != null or reference.flags.declare or !reference.declaration_node_index.isNone()) return error.InvalidCjsWrapperReference;
+                existing_row = index;
+            }
+            const before = self.ids[raw];
+            if (before) |old| {
+                if (old >= sem.symbols.items.len) return error.InvalidCjsWrapperReference;
+                if (old != target_raw) {
+                    const expected_kind: semantic_symbol.SyntheticKind = if (is_exports) .cjs_wrapper_exports_parameter else .cjs_wrapper_module_parameter;
+                    if (sem.symbols.items[old].synthetic_kind != expected_kind) {
+                        if (export_assignment) return error.InvalidCjsWrapperReference;
+                        continue;
+                    }
+                }
+                if (existing_row) |index| {
+                    const reference = self.references[index];
+                    if (@backingInt(reference.symbol_id) != old or reference.scope_id != context.scope or !std.meta.eql(reference.flags, context.flags) or reference.stmt_idx != context.stmt_idx or reference.scope_stmt_idx != context.scope_stmt_idx) return error.InvalidCjsWrapperReference;
+                    if (old == target_raw) continue;
+                    try self.changeCount(old, reference.flags, false);
+                } else {
+                    // Legacy callback bindings counted one value use per node but
+                    // had no ordinary row. Consume exactly that old frequency.
+                    try self.changeCount(old, .{ .read = true }, false);
+                }
+            } else if (existing_row != null) return error.InvalidCjsWrapperReference;
+            if (cache_ids) |ids| {
+                if (raw >= ids.len or ids[raw] != before) return error.InvalidCjsWrapperReference;
+            }
+            try self.changeCount(target_raw, context.flags, true);
+            const reference: semantic_symbol.Reference = .{ .node_index = context.node, .symbol_id = target, .scope_id = context.scope, .flags = context.flags, .stmt_idx = context.stmt_idx, .scope_stmt_idx = context.scope_stmt_idx };
+            if (existing_row) |index| self.references[index] = reference else {
+                self.references[self.references_len] = reference;
+                self.references_len += 1;
+            }
+            self.ids[raw] = target_raw;
+            self.changed[raw] = true;
+        }
+        // All validation and allocation finished; publish each component with
+        // no fallible calls, including the transform-cache identity mirror.
+        @memcpy(@constCast(sem.symbol_ids), self.ids);
+        if (cache_ids) |ids| {
+            for (self.changed, 0..) |changed, raw| if (changed) {
+                ids[raw] = self.ids[raw];
+            };
+        }
+        sem.references = self.references[0..self.references_len];
+        for (sem.symbols.items, 0..) |*symbol, sid| {
+            symbol.reference_count = self.counts[sid].uses;
+            symbol.write_count = self.counts[sid].writes;
+        }
+        return result;
+    }
+};
+
 fn bindCjsWrapperReferences(
     ast: *const @import("../../parser/ast.zig").Ast,
     symbol_ids: []?u32,
@@ -1372,10 +1596,10 @@ fn containsSortedNode(nodes: []const u32, target: u32) bool {
     return low < nodes.len and nodes[low] == target;
 }
 
-fn extendCachedRefDeltas(allocator: std.mem.Allocator, m: *Module, old_symbol_count: usize, new_symbol_count: usize) void {
+fn extendCachedRefDeltas(allocator: std.mem.Allocator, m: *Module, old_symbol_count: usize, new_symbol_count: usize) !void {
     const cache = if (m.transform_cache) |*value| value else return;
     if (cache.ref_deltas.len == 0 or cache.ref_deltas.len != old_symbol_count) return;
-    const deltas = allocator.alloc(u32, new_symbol_count) catch return;
+    const deltas = try allocator.alloc(u32, new_symbol_count);
     @memset(deltas, 0);
     @memcpy(deltas[0..cache.ref_deltas.len], cache.ref_deltas);
     cache.ref_deltas = deltas;
@@ -1794,4 +2018,115 @@ test "finalize: CJS wrapper parameter allocation propagates OOM" {
     try std.testing.expectError(error.OutOfMemory, registerCjsWrapperParameters(&module));
     try std.testing.expect(failing.has_induced_failure);
     try std.testing.expectEqual(@as(usize, 0), module.semantic.?.symbols.items.len);
+}
+
+test "Buffer CJS wrapper reference producer is idempotent and OOM atomic" {
+    var source_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer source_arena.deinit();
+    const source_alloc = source_arena.allocator();
+    const source = "exports.answer=7;module.exports=exports;function f(){module.exports=9}exports++;module=exports;";
+    var scanner = try Scanner.init(source_alloc, source);
+    var parser = @import("../../parser/parser.zig").Parser.init(source_alloc, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer.init(source_alloc, &parser.ast);
+    analyzer.is_module = false;
+    analyzer.is_strict_mode = false;
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    const original: ModuleSemanticData = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .exported_names = analyzer.exported_names,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+    };
+    const original_ids = try source_alloc.dupe(?u32, original.symbol_ids);
+    const original_symbols = try source_alloc.dupe(semantic_symbol.Symbol, original.symbols.items);
+    const original_scopes = try source_alloc.dupe(Scope, original.scopes);
+    // Nonzero cache-history sentinels test byte preservation/ownership only;
+    // semantic frequency assertions below derive independently from real rows.
+    const history = try source_alloc.alloc(u32, original.symbols.items.len);
+    for (history, 0..) |*delta, index| delta.* = @intCast(index + 1);
+    var oom_count: usize = 0;
+    var saw_success = false;
+    for (0..64) |fail_index| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        var arena = std.heap.ArenaAllocator.init(failing.allocator());
+        defer arena.deinit();
+        var module = Module.init(@fromBackingInt(@as(u32, 0)), "wrapper.cjs");
+        module.wrap_kind = .cjs;
+        module.ast = parser.ast;
+        module.parse_arena = &arena;
+        module.semantic = original;
+        module.transform_cache = .{ .runtime_helpers = .{}, .symbol_ids = original.symbol_ids, .ref_deltas = history };
+        if (registerCjsWrapperParameters(&module)) |_| {
+            saw_success = true;
+        } else |err| {
+            if (err != error.OutOfMemory) return err;
+            oom_count += 1;
+            try std.testing.expectEqual(@intFromPtr(original.symbol_ids.ptr), @intFromPtr(module.semantic.?.symbol_ids.ptr));
+            try std.testing.expectEqual(@intFromPtr(original.references.ptr), @intFromPtr(module.semantic.?.references.ptr));
+            try std.testing.expectEqual(@intFromPtr(original.scopes.ptr), @intFromPtr(module.semantic.?.scopes.ptr));
+            try std.testing.expectEqual(@intFromPtr(original.symbols.items.ptr), @intFromPtr(module.semantic.?.symbols.items.ptr));
+            try std.testing.expectEqualSlices(?u32, original_ids, original.symbol_ids);
+            try std.testing.expectEqualSlices(semantic_symbol.Symbol, original_symbols, original.symbols.items);
+            try std.testing.expectEqualSlices(Scope, original_scopes, original.scopes);
+            try std.testing.expect(module.cjs_wrapper_exports_parameter_symbol == null and module.cjs_wrapper_module_parameter_symbol == null);
+            try std.testing.expectEqual(@intFromPtr(original.symbol_ids.ptr), @intFromPtr(module.transform_cache.?.symbol_ids.ptr));
+            try std.testing.expectEqual(@intFromPtr(history.ptr), @intFromPtr(module.transform_cache.?.ref_deltas.ptr));
+            try std.testing.expectEqualSlices(u32, history, module.transform_cache.?.ref_deltas);
+            for (original.scope_maps, module.semantic.?.scope_maps) |before, after| {
+                try std.testing.expectEqual(before.count(), after.count());
+                var entries = before.iterator();
+                while (entries.next()) |entry| try std.testing.expectEqual(@as(?usize, entry.value_ptr.*), after.get(entry.key_ptr.*));
+            }
+            failing.fail_index = std.math.maxInt(usize);
+            try registerCjsWrapperParameters(&module);
+        }
+        // The injection window covered the first operation above. The
+        // independent idempotence check must run with a recovered allocator.
+        failing.fail_index = std.math.maxInt(usize);
+        const first = module.semantic.?;
+        try std.testing.expectEqual(first.symbols.items.len, module.transform_cache.?.ref_deltas.len);
+        try std.testing.expectEqualSlices(u32, history, module.transform_cache.?.ref_deltas[0..history.len]);
+        for (module.transform_cache.?.ref_deltas[history.len..]) |delta| try std.testing.expectEqual(@as(u32, 0), delta);
+        const ids = try source_alloc.dupe(?u32, first.symbol_ids);
+        const rows = try source_alloc.dupe(semantic_symbol.Reference, first.references);
+        const symbols = try source_alloc.dupe(semantic_symbol.Symbol, first.symbols.items);
+        var wrapper_uses: usize = 0;
+        var wrapper_writes: usize = 0;
+        for ([_]semantic_symbol.SymbolId{ module.cjs_wrapper_exports_parameter_symbol.?, module.cjs_wrapper_module_parameter_symbol.? }) |sid| {
+            var uses: u32 = 0;
+            var writes: u32 = 0;
+            for (first.references) |reference| {
+                if (reference.symbol_id != sid or reference.flags.declare) continue;
+                try std.testing.expectEqual(@as(?u32, @backingInt(sid)), first.symbol_ids[@backingInt(reference.node_index)]);
+                uses += @intFromBool(reference.flags.read or reference.flags.write);
+                writes += @intFromBool(reference.flags.write);
+            }
+            wrapper_uses += uses;
+            wrapper_writes += writes;
+            try std.testing.expectEqual(uses, first.symbols.items[@backingInt(sid)].reference_count);
+            try std.testing.expectEqual(writes, first.symbols.items[@backingInt(sid)].write_count);
+        }
+        try std.testing.expect(wrapper_uses > 0 and wrapper_writes > 0);
+        for (first.references, 0..) |reference, index| {
+            if (reference.node_index.isNone()) continue;
+            for (first.references[0..index]) |earlier| try std.testing.expect(earlier.node_index != reference.node_index);
+        }
+        try registerCjsWrapperParameters(&module);
+        try std.testing.expectEqualSlices(?u32, ids, module.semantic.?.symbol_ids);
+        try std.testing.expectEqualSlices(semantic_symbol.Reference, rows, module.semantic.?.references);
+        try std.testing.expectEqualSlices(semantic_symbol.Symbol, symbols, module.semantic.?.symbols.items);
+        try std.testing.expectEqualSlices(?u32, module.semantic.?.symbol_ids, module.transform_cache.?.symbol_ids);
+        if (saw_success) break;
+    }
+    try std.testing.expect(saw_success and oom_count > 0);
+    std.debug.print("BUFFER_WRAPPER_PUBLICATION underlying_oom_windows={d} retry=1 idempotent=1\n", .{oom_count});
 }

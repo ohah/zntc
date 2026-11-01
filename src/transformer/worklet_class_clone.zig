@@ -13,7 +13,23 @@ pub fn register(self: anytype, factory: state.WorkletClassFactory, cloned: anyty
         self.class_self_symbol_map.get(@backingInt(factory.target_class)) != @backingInt(factory.target_self))
         @panic("worklet clone registration lost its exact class creator");
     const index = self.plugins.worklet.class_factories.items.len;
-    try self.plugins.worklet.class_factories.append(self.allocator, factory);
+    var captured = factory;
+    captured.source_birth = captureClass(self, factory.source_class, factory.source_scope, factory.source_self);
+    captured.target_birth = captureClass(self, factory.target_class, factory.target_scope, factory.target_self);
+    captured.creator_epoch = self.semantic_editor.?.scope_history.epoch();
+    const creators = &self.semantic_editor.?.scope_history.worklet_class_creators;
+    captured.creator_index = @intCast(creators.items.len);
+    try creators.append(self.allocator, .{
+        .source = captured.source_birth.?,
+        .target = captured.target_birth.?,
+        .factory = captured.function,
+        .factory_binding = captured.binding,
+        .factory_symbol = captured.symbol,
+        .factory_scope = captured.scope,
+        .wrapper_scope = captured.parent,
+        .epoch = captured.creator_epoch,
+    });
+    try self.plugins.worklet.class_factories.append(self.allocator, captured);
     try registerReferences(self, index, cloned, self_binding);
 }
 
@@ -591,4 +607,50 @@ pub fn agreePublication(self: anytype, raw: u32, other: ?@import("transformer.zi
         if (other.?.stmt != worklet.?.stmt or other.?.scope_stmt != worklet.?.scope_stmt) return error.InvalidNode;
     }
     return other orelse worklet;
+}
+
+fn captureClass(self: anytype, node: ast.NodeIndex, scope: @import("../semantic/scope.zig").ScopeId, id: symbol.SymbolId) @import("../semantic/lowered_worklet_class.zig").Class {
+    const value = self.ast.getNode(node);
+    return .{ .node = node, .name = self.ast.readExtraNode(value.data.extra, ast.ClassExtra.name), .body = self.ast.readExtraNode(value.data.extra, ast.ClassExtra.body), .scope = scope, .self = id };
+}
+
+fn captureFunction(self: anytype, node: ast.NodeIndex, scope: @import("../semantic/scope.zig").ScopeId, parent: @import("../semantic/scope.zig").ScopeId, declaration: ast.NodeIndex, id: symbol.SymbolId) @import("../semantic/lowered_worklet_class.zig").Function {
+    const value = self.ast.getNode(node);
+    return .{ .node = node, .name = self.ast.readExtraNode(value.data.extra, ast.FunctionExtra.name), .params = self.ast.readExtraNode(value.data.extra, ast.FunctionExtra.params), .body = self.ast.readExtraNode(value.data.extra, ast.FunctionExtra.body), .scope = scope, .parent = parent, .declaration = declaration, .symbol = id };
+}
+
+/// Publish this logical class environment only from the actual class clone
+/// creator and the lowerer which has just completed its emitted functions.
+/// Its original ScopeKind and SymbolId origins remain unchanged.
+pub fn recordLoweredClass(self: anytype, class: ast.NodeIndex, constructor: ast.NodeIndex, iife: ast.NodeIndex, iife_scope: @import("../semantic/scope.zig").ScopeId) !void {
+    if (!self.semantic_edit_enabled) return;
+    for (self.plugins.worklet.class_factories.items) |factory| {
+        if (factory.target_class != class) continue;
+        const editor = &self.semantic_editor.?;
+        if (factory.ast_owner != self.ast or self.outputOwnedScope(class) != factory.target_scope or
+            self.class_self_symbol_map.get(@backingInt(class)) != @as(?u32, @backingInt(factory.target_self)) or
+            iife_scope.isNone() or self.outputOwnedScope(iife) != iife_scope or
+            editor.scopes.items[iife_scope.toIndex()].parent != factory.scope or
+            editor.scopes.items[factory.target_scope.toIndex()].parent != iife_scope)
+            @panic("lowered worklet class lost its actual creator/output frame");
+        const ctor_scope = self.outputOwnedScope(constructor) orelse @panic("lowered worklet class has no actual constructor frame");
+        const name = self.ast.readExtraNode(self.ast.getNode(constructor).data.extra, ast.FunctionExtra.name);
+        if (name.isNone() or editor.symbol_ids.items[@backingInt(name)] != @as(?u32, @backingInt(factory.target_self)))
+            @panic("lowered worklet constructor lost its exact class-self binding");
+        for (editor.scope_history.lowered_worklet_classes.items) |previous| {
+            if (previous.target.scope == factory.target_scope) @panic("worklet class environment published twice");
+        }
+        try editor.scope_history.lowered_worklet_classes.append(self.allocator, .{
+            .creator_index = factory.creator_index orelse @panic("lowered class has no actual creator receipt"),
+            .source = factory.source_birth orelse @panic("worklet class has no source birth"),
+            .target = factory.target_birth orelse @panic("worklet class has no target birth"),
+            .factory = captureFunction(self, factory.function, factory.scope, factory.parent, factory.binding, factory.symbol),
+            .wrapper_scope = factory.parent,
+            .constructor = captureFunction(self, constructor, ctor_scope, self.outputScopeParent(ctor_scope), name, factory.target_self),
+            .iife = captureFunction(self, iife, iife_scope, factory.scope, .none, .none),
+            .creator_epoch = factory.creator_epoch,
+            .lowered_epoch = editor.scope_history.epoch(),
+        });
+        return;
+    }
 }

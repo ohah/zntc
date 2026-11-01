@@ -1569,6 +1569,7 @@ fn buildStmtInfoSlot(
     cjs_export_object_names: ?*const std.StringHashMapUnmanaged(void),
     cjs_export_facts_buf: *std.ArrayListUnmanaged(CjsExportFact),
     symbol_ids: ?[]const ?u32,
+    heritage: ?*const @import("heritage_authority.zig").Plan,
 ) !StmtInfo {
     if (ni >= ast.nodes.items.len) {
         return .{
@@ -1616,7 +1617,7 @@ fn buildStmtInfoSlot(
     else if (cjs_shape_extracted)
         false
     else
-        purity.stmtHasSideEffects(ast, node, unresolved_globals);
+        purity.stmtHasSideEffectsWithHeritage(ast, node, unresolved_globals, heritage);
     return .{
         .node_idx = ni,
         .span = node.span,
@@ -1637,6 +1638,7 @@ pub fn buildFromSemantic(
     ast: *const Ast,
     symbols: []const Symbol,
     scopes: []const Scope,
+    symbol_ids: []const ?u32,
     references: []const Reference,
     unresolved_globals: ?*const purity.GlobalRefSet,
     collect_cjs_exports: bool,
@@ -1655,11 +1657,20 @@ pub fn buildFromSemantic(
     if (list.start + list.len > ast.extra_data.items.len) return null;
     const stmt_raw_indices = ast.extra_data.items[list.start .. list.start + list.len];
 
+    var heritage = try @import("heritage_authority.zig").prepare(allocator, ast, @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1))), .{
+        .symbols = symbols,
+        .scopes = scopes,
+        .symbol_ids = symbol_ids,
+        .references = references,
+    });
+    defer heritage.deinit(allocator);
+
     const stmt_count = stmt_raw_indices.len;
 
     var stmts = try allocator.alloc(StmtInfo, stmt_count);
+    var initialized_stmt_count: usize = 0;
     errdefer {
-        for (stmts) |s| {
+        for (stmts[0..initialized_stmt_count]) |s| {
             allocator.free(s.declared_symbols);
             allocator.free(s.referenced_symbols);
         }
@@ -1697,7 +1708,10 @@ pub fn buildFromSemantic(
             if (collect_cjs_exports) &cjs_export_object_names else null,
             &cjs_export_facts_buf,
             null,
+            &heritage,
         );
+
+        initialized_stmt_count += 1;
 
         if (stmts[stmt_i].has_side_effects and ni < ast.nodes.items.len) {
             const stmt_node = ast.nodes.items[ni];
@@ -1948,6 +1962,7 @@ pub fn build(
             if (collect_cjs_exports) &cjs_export_object_names else null,
             &cjs_export_facts_buf,
             symbol_ids,
+            null,
         );
         stmt_spans[stmt_i] = stmts[stmt_i].span;
 

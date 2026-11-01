@@ -1934,11 +1934,8 @@ pub const Bundler = struct {
                     const l = &(linker.?);
                     l.populateReExportAliases();
                     l.populateImportSymbols();
-                    // RFC #3940 Sub-PR-L.5a — 이 분기는 rename 을 재계산하지 않고 graph carry-over
-                    // (captureRenamesToPending) 가 module.pending_renames 에 stash 한 rename 을
-                    // rename_table 에 반영한다. tree_shaker 의 *const linker 는 put 불가라 capture(read)는
-                    // tree_shaker, apply(write)는 여기 mutable linker 로 분리.
-                    try l.applyPendingRenames();
+                    // Producer edits preserve the same semantic IDs; there
+                    // is no post-analysis rename correspondence to apply.
                     // Semantic refresh can reassign graph-owned CJS runtime
                     // SymbolIds. Re-discover the factory and restore its
                     // helper-local rename entries after stale module entries
