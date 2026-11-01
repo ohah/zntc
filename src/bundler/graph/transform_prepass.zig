@@ -5742,11 +5742,10 @@ fn isSafePostSuperInitializerValue(
         isSafePostSuperInitializerValue(ast, semantic, value.data.binary.right);
 }
 
-/// A single simple `var` initializer may read one direct `super` property
-/// or a bounded binary expression containing those reads after the derived
-/// receiver has been initialized. Keep compound `var` declarations on
-/// reanalysis; direct lexical declarations use a separate exact same-var-scope
-/// proof.
+/// A single simple `var` initializer may use the bounded post-super value
+/// expression set. Multiple declarators are limited to direct property reads
+/// in every initializer so their source order remains explicit. Direct lexical
+/// declarations use a separate exact same-var-scope proof.
 fn isSafePostSuperVarDeclaration(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -5761,19 +5760,38 @@ fn isSafePostSuperVarDeclaration(
     if (extra > extras.len or extras.len - extra < 3) return false;
     const declarators_start = extras[extra + 1];
     const declarators_len = extras[extra + 2];
-    if (declarators_len != 1 or declarators_start >= extras.len or
-        extras[declarators_start] >= ast.nodes.items.len) return false;
+    if (declarators_len == 0 or declarators_start > extras.len or
+        declarators_len > extras.len - declarators_start) return false;
 
-    const declarator = ast.nodes.items[extras[declarators_start]];
-    if (declarator.tag != .variable_declarator) return false;
-    const declarator_extra = declarator.data.extra;
-    if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
-    const binding_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra]));
-    const type_annotation_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 1]));
-    const initializer_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
-    return type_annotation_idx.isNone() and
-        isBoundSourceIdentifierBinding(ast, semantic, binding_idx) and
-        isSafePostSuperInitializerValue(ast, semantic, initializer_idx);
+    if (declarators_len == 1) {
+        const raw_declarator_idx = extras[declarators_start];
+        if (raw_declarator_idx >= ast.nodes.items.len) return false;
+        const declarator = ast.nodes.items[raw_declarator_idx];
+        if (declarator.tag != .variable_declarator) return false;
+        const declarator_extra = declarator.data.extra;
+        if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
+        const binding_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra]));
+        const type_annotation_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 1]));
+        const initializer_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
+        return type_annotation_idx.isNone() and
+            isBoundSourceIdentifierBinding(ast, semantic, binding_idx) and
+            isSafePostSuperInitializerValue(ast, semantic, initializer_idx);
+    }
+
+    for (extras[declarators_start .. declarators_start + declarators_len]) |raw_declarator_idx| {
+        if (raw_declarator_idx >= ast.nodes.items.len) return false;
+        const declarator = ast.nodes.items[raw_declarator_idx];
+        if (declarator.tag != .variable_declarator) return false;
+        const declarator_extra = declarator.data.extra;
+        if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
+        const binding_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra]));
+        const type_annotation_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 1]));
+        const initializer_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
+        if (!type_annotation_idx.isNone() or
+            !isBoundSourceIdentifierBinding(ast, semantic, binding_idx) or
+            !isSafePostSuperLexicalInitializer(ast, semantic, initializer_idx)) return false;
+    }
+    return true;
 }
 
 /// A derived constructor can use an exact direct `super` property assignment
@@ -23199,6 +23217,7 @@ test "ES5 audited constructor lexical initializers retain the production semanti
         "class Base { get current() { return 18; } } class Read extends Base { constructor() { super(); const local = this['current'] && this.current; this.value = local; } } console.log(new Read().value);",
         "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor(key) { super(); const first = this[key] + 10, second = this.current + 20; this.value = first + second; } } console.log(new Read('current').value);",
         "class Base { constructor(flag) { this.flag = flag; } get current() { return 19; } } class Read extends Base { constructor(flag) { super(flag); const local = this.flag ? this.current : 0; this.value = local; } } console.log(new Read(true).value);",
+        "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor(key) { super(); var first = super[key], second = this[key]; this.value = first + second; } } console.log(new Read('current').value);",
     };
     for (sources) |source| {
         var tmp = std.testing.tmpDir(.{});

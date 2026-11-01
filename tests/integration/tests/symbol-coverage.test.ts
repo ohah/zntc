@@ -41826,6 +41826,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '4 true 9 10\n',
       },
       {
+        name: 'post-super multi-var direct this and super property reads retain order',
+        source:
+          'var reads = 0; class Base { constructor() { this.cursor = 0; } get current() { reads++; return ++this.cursor; } } class Child extends Base { constructor(key) { super(); var first = super[key], second = this[key]; this.value = first + second; } } console.log(new Child("current").value, reads);',
+        graph: 'retained',
+        output: '3 2\n',
+      },
+      {
+        name: 'post-super multi-var property and literal initializer mixture stays on reanalysis',
+        source:
+          'class Base { get current() { return 1; } } class Child extends Base { constructor() { super(); var first = super.current, second = 2; this.value = first + second; } } console.log(new Child().value);',
+        graph: 'reanalyzed',
+        output: '3\n',
+      },
+      {
+        name: 'post-super multi-var call initializer stays on reanalysis',
+        source:
+          'var calls = 0; function current() { calls++; return 2; } class Base { get current() { return 1; } } class Child extends Base { constructor() { super(); var first = super.current, second = current(); this.value = first + second; } } console.log(new Child().value, calls);',
+        graph: 'reanalyzed',
+        output: '3 1\n',
+      },
+      {
         name: 'post-super local updates retain their exact helper-colliding binding',
         source:
           'var _this = 50, _newTarget = 60; function Base() {} class Child extends Base { constructor() { super(); var _this = 1; _this++; _this += 2; this.value = _this; } } var child = new Child(); console.log(child.value, child instanceof Child, _this, _newTarget);',
@@ -43633,6 +43654,70 @@ describe('ES5 same-var-scope lexical declarations retain the bundler graph (#619
         const mutatedList = valueList.replace(token, replacement);
         const mutant = emitted.slice(0, valuesStart) + mutatedList + emitted.slice(valuesEnd);
         const mutantPath = join(dir, `derived-constructor-reference-${index}.cjs`);
+        writeFileSync(mutantPath, mutant);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `reference ${index}: ${syntax.stderr}`).toBe(0);
+        const result = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(result.status, `reference ${index}: ${result.stderr}`).toBe(0);
+        expect(result.stdout, `reference ${index}: ${name} -> ${replacement}`).not.toBe(expected);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('derived constructor multi-var post-super property reads retain exact output identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-derived-multivar-super-retained-'));
+    const input = join(dir, 'entry.mjs');
+    const output = join(dir, 'output.cjs');
+    const names = Array.from({ length: 10 }, (_, index) => `multiVarValue${index}`);
+    const declarators = names.map((name) => `${name} = super.current`).join(', ');
+    const expected = `${names.map((_, index) => index + 1).join(' ')}\n`;
+    const valueExpression = names.join(" + ' ' + ");
+    const source = `class DerivedBase { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } }\nclass DerivedReader extends DerivedBase { constructor() {\n  super();\n  var ${declarators};\n  this.values = ${valueExpression};\n} }\nconsole.log(new DerivedReader().values);`;
+    try {
+      writeFileSync(input, source);
+      const native = spawnSync('node', [input], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe(expected);
+
+      const bundled = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', input, '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(bundled.status, bundled.stderr).toBe(0);
+      const lines = (bundled.stderr ?? '').split(/\r?\n/);
+      const mode = lines.find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+      expect(mode, bundled.stderr).toContain('semantic_graph=retained');
+      const report = lines.find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(report, bundled.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${report}`,
+        ).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const emitted = readFileSync(output, 'utf8');
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(native.stdout);
+      const assignmentStart = emitted.lastIndexOf('.values = ');
+      expect(assignmentStart).toBeGreaterThanOrEqual(0);
+      const valuesStart = assignmentStart + '.values = '.length;
+      const valuesEnd = emitted.indexOf(';', valuesStart);
+      expect(valuesEnd).toBeGreaterThan(valuesStart);
+      const valueList = emitted.slice(valuesStart, valuesEnd);
+      for (let index = 0; index < names.length; index += 1) {
+        const name = names[index];
+        const replacement = names[(index + 1) % names.length];
+        const token = new RegExp(`\\b${name}\\b`);
+        expect(valueList.match(token), name).toHaveLength(1);
+        const mutatedList = valueList.replace(token, replacement);
+        const mutant = emitted.slice(0, valuesStart) + mutatedList + emitted.slice(valuesEnd);
+        const mutantPath = join(dir, `multi-var-reference-${index}.cjs`);
         writeFileSync(mutantPath, mutant);
         const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
         expect(syntax.status, `reference ${index}: ${syntax.stderr}`).toBe(0);
