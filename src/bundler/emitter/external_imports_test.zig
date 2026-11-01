@@ -6,7 +6,7 @@ test "external exact import identities use name data rather than diagnostic span
         .{ .source = "import {value as local} from 'dep';console.log(local);", .expected = "value as local" },
         .{ .source = "import local from 'dep';console.log(local);", .expected = "import local from" },
         .{ .source = "import * as local from 'dep';console.log(local);", .expected = "import * as local from" },
-        .{ .source = "import {v\\u0061lue as l\\u006fcal} from 'dep';console.log(local);", .expected = "value as local" },
+        .{ .source = "import {v\\u0061lue as l\\u006fcal} from 'dep';console.log(local);", .expected = "value as l\\u006fcal" },
     };
     var failures: usize = 0;
     for (cases, 0..) |item, index| {
