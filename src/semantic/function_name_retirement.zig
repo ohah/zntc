@@ -182,7 +182,21 @@ fn originalEngineBirth(editor: anytype, owner: NodeIndex, name_scope: ScopeId, b
     if (node.tag != .function_expression or !editor.ast.hasExtra(node.data.extra, ast_mod.FunctionExtra.flags) or
         !std.meta.eql(before.declaration_span, node.span)) return false;
     const name = editor.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name);
-    if (name.isNone() or editor.scope_owner_map.get(@backingInt(name)) != @as(?u32, @backingInt(name_scope))) return false;
+    if (name.isNone() or @backingInt(name) >= editor.symbol_ids.items.len) return false;
+    const name_sid = editor.symbol_ids.items[@backingInt(name)] orelse return false;
+    if (name_sid >= editor.symbols.items.len) return false;
+    const name_symbol = editor.symbols.items[name_sid];
+    if (name_symbol.scope_id != name_scope or name_symbol.origin_scope != name_scope or !name_symbol.kind.isFunctionLike() or
+        editor.scope_maps.items[name_scope.toIndex()].count() != 1 or
+        editor.scope_maps.items[name_scope.toIndex()].get(editor.ast.getText(editor.ast.getNode(name).data.string_ref)) != @as(?usize, name_sid)) return false;
+    var name_declarations: usize = 0;
+    for (editor.references.items) |row| if (@backingInt(row.symbol_id) == name_sid and row.flags.declare) {
+        if (row.scope_id != name_scope or !row.node_index.isNone() or row.declaration_node_index != name or !std.meta.eql(row.flags, @as(symbol.ReferenceFlags, .{ .declare = true }))) return false;
+        name_declarations += 1;
+    };
+    if (name_declarations != 1) return false;
+    const name_owner = editor.scope_owner_map.get(@backingInt(name));
+    if (name_owner != null and name_owner != @as(?u32, @backingInt(name_scope))) return false;
     const history = editor.scopeHistoryView();
     if (body_scope.toIndex() >= history.source_scopes.len or name_scope.toIndex() >= history.source_scopes.len or
         !History.sameFrame(history.source_scopes[body_scope.toIndex()], editor.scopes.items[body_scope.toIndex()]) or
@@ -207,7 +221,11 @@ fn originalEngineBirth(editor: anytype, owner: NodeIndex, name_scope: ScopeId, b
             name_births += 1;
         }
     }
-    if (function_births != 1 or name_births != 1 or editor.scope_maps.items[body_scope.toIndex()].get("arguments") != @as(?usize, id)) return false;
+    // Analyzer records the function owner at G; its NFE name is a binding
+    // slot, not necessarily another scope-owner entry. Preserve that exact
+    // initial/current owner representation instead of inventing a name owner.
+    if (function_births != 1 or name_births != @as(usize, if (name_owner != null) 1 else 0) or
+        editor.scope_maps.items[body_scope.toIndex()].get("arguments") != @as(?usize, id)) return false;
     var entries = editor.scope_maps.items[body_scope.toIndex()].iterator();
     while (entries.next()) |entry| if (entry.value_ptr.* == id and !std.mem.eql(u8, entry.key_ptr.*, "arguments")) return false;
     return true;
