@@ -202,7 +202,12 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const props_arg = try buildClassicProps(self, attrs_start, attrs_len, span, tag_name_idx);
 
             // remaining args: children
-            const children = try collectChildren(self, children_start, children_len);
+            const lower_spread_child_call = self.options.unsupported.spread and
+                hasJsxSpreadChild(self, children_start, children_len);
+            const children = if (lower_spread_child_call)
+                try collectChildrenWithoutVisiting(self, children_start, children_len)
+            else
+                try collectChildren(self, children_start, children_len);
 
             // call_expression 생성
             const scratch_top = self.scratch.items.len;
@@ -216,7 +221,15 @@ pub fn JsxLowering(comptime Transformer: type) type {
             }
 
             const all_args = self.scratch.items[scratch_top..];
-            return makeCallExpr(self, all_args[0], all_args[1..], span, true);
+            const call = try makeCallExpr(self, all_args[0], all_args[1..], span, true);
+            return if (lower_spread_child_call)
+                try es2015_spread.ES2015Spread(Transformer).lowerSpreadCallWithPrevisitedArgs(
+                    self,
+                    self.ast.getNode(call),
+                    2,
+                )
+            else
+                call;
         }
 
         /// Classic fragment: React.createElement(React.Fragment, null, ...children)
@@ -229,7 +242,12 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const callee = try makeFactoryCallee(self, self.options.jsx_factory);
             const fragment_ref = try makeFactoryCallee(self, self.options.jsx_fragment);
             const null_node = try makeNullLiteral(self, span);
-            const children = try collectChildren(self, children_start, children_len);
+            const lower_spread_child_call = self.options.unsupported.spread and
+                hasJsxSpreadChild(self, children_start, children_len);
+            const children = if (lower_spread_child_call)
+                try collectChildrenWithoutVisiting(self, children_start, children_len)
+            else
+                try collectChildren(self, children_start, children_len);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -242,7 +260,15 @@ pub fn JsxLowering(comptime Transformer: type) type {
             }
 
             const all_args = self.scratch.items[scratch_top..];
-            return makeCallExpr(self, all_args[0], all_args[1..], span, true);
+            const call = try makeCallExpr(self, all_args[0], all_args[1..], span, true);
+            return if (lower_spread_child_call)
+                try es2015_spread.ES2015Spread(Transformer).lowerSpreadCallWithPrevisitedArgs(
+                    self,
+                    self.ast.getNode(call),
+                    2,
+                )
+            else
+                call;
         }
 
         // ================================================================
@@ -607,7 +633,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                     self.options.jsx_runtime != .classic and
                     hasJsxSpreadChild(self, children_start, children_len);
                 const children = if (lower_spread_child)
-                    try collectChildrenForDownlevelSpreadArray(self, children_start, children_len)
+                    try collectChildrenWithoutVisiting(self, children_start, children_len)
                 else
                     try collectChildren(self, children_start, children_len);
                 const list = try self.ast.addNodeList(children);
@@ -780,10 +806,10 @@ pub fn JsxLowering(comptime Transformer: type) type {
             return false;
         }
 
-        /// Build the children array without visiting its expressions. The
-        /// array spread lowerer below owns the single visit of every child,
+        /// Collect spread children without visiting their expressions. The
+        /// array or call spread lowerer owns the single visit of every child,
         /// including nested JSX and ordinary child expressions.
-        fn collectChildrenForDownlevelSpreadArray(
+        fn collectChildrenWithoutVisiting(
             self: *Transformer,
             start: u32,
             len: u32,

@@ -2368,6 +2368,13 @@ fn isRetainableJsxSpreadChild(
     return true;
 }
 
+fn hasJsxSpreadAttribute(ast: *const ast_mod.Ast) bool {
+    for (ast.nodes.items) |node| {
+        if (node.tag == .jsx_spread_attribute) return true;
+    }
+    return false;
+}
+
 fn isRetainableJsxSpreadArrayHole(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -10126,16 +10133,17 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .jsx_spread_child => {
                 if (!options.jsx_transform) return false;
                 if (options.unsupported.spread) {
-                    // Automatic JSX stores children in an array. The lowerer
-                    // now sends that generated array through the ordinary
-                    // spread lowerer, which records the helper/reference
-                    // edits in this graph. Classic JSX and key-after-spread
-                    // fallback emit call-argument spreads and remain on full
-                    // reanalysis until their separate call-shape proof exists.
-                    const automatic_runtime = options.jsx_runtime == .automatic or
-                        options.jsx_runtime == .automatic_dev;
-                    if (!automatic_runtime or ast.has_jsx_key_after_spread or
-                        !isRetainableJsxSpreadChild(ast, semantic, node)) return false;
+                    // Automatic JSX lowers this child in a generated array;
+                    // classic JSX lowers it in factory-call arguments. Both
+                    // generated shapes now pass through the matching spread
+                    // lowerer. Keep automatic key-after-spread fallback and
+                    // classic JSX props-spread lowering on reanalysis.
+                    const supported_runtime = switch (options.jsx_runtime) {
+                        .classic => !options.unsupported.object_spread or !hasJsxSpreadAttribute(ast),
+                        .automatic, .automatic_dev => !ast.has_jsx_key_after_spread,
+                        else => false,
+                    };
+                    if (!supported_runtime or !isRetainableJsxSpreadChild(ast, semantic, node)) return false;
                     found_lowered_array_spread = true;
                 }
             },
@@ -17231,6 +17239,66 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
         const tag = hole_module.ast.?.nodes.items[raw].tag;
         try std.testing.expect(tag != .spread_element and tag != .elision);
     }
+
+    const classic_source = "const React = { createElement: function() {} }; const items = [1, 2]; const result = <div value={items}>{...items}</div>;";
+    var classic_fixture = try jsxSpreadChildTestFixture(allocator, classic_source);
+    const classic_owner = classic_fixture.semantic.captureOwnerToken();
+    var classic_item_symbol: ?u32 = null;
+    var classic_react_symbol: ?u32 = null;
+    for (classic_fixture.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier) continue;
+        const name = classic_fixture.ast.getText(node.data.string_ref);
+        if (std.mem.eql(u8, name, "items")) {
+            classic_item_symbol = classic_fixture.semantic.symbol_ids[raw];
+        } else if (std.mem.eql(u8, name, "React")) {
+            classic_react_symbol = classic_fixture.semantic.symbol_ids[raw];
+        }
+    }
+    const classic_symbol = classic_item_symbol orelse return error.MissingClassicJsxSpreadBinding;
+    const react_symbol = classic_react_symbol orelse return error.MissingClassicJsxFactoryBinding;
+    var classic_module = Module.init(@fromBackingInt(0), "jsx-spread-classic.tsx");
+    classic_module.source = classic_source;
+    classic_module.module_type = .ts;
+    classic_module.state = .ready;
+    classic_module.ast = classic_fixture.ast;
+    classic_module.semantic = classic_fixture.semantic;
+    var classic_context: TestGraph = .{
+        .allocator = std.testing.allocator,
+        .transform_options_base = .{
+            .strip_types = true,
+            .jsx_runtime = .classic,
+            .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+        },
+    };
+    const classic_resyncs_before = profile.count(.graph_resync_semantic);
+    run(&classic_context, &classic_module, allocator);
+    defer if (classic_module.alias_table) |*table| table.deinit();
+    defer if (classic_module.export_index_by_name) |*index| index.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), classic_context.diag_count);
+    try std.testing.expectEqual(classic_resyncs_before, profile.count(.graph_resync_semantic));
+    try std.testing.expectEqual(classic_owner, classic_module.semantic.?.owner_token);
+    const classic_root = classic_module.ast.?.transformed_root.?;
+    const classic_reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, &classic_module.ast.?, classic_root);
+    defer allocator.free(classic_reachable);
+    var classic_output_read_count: usize = 0;
+    var classic_factory_read_count: usize = 0;
+    for (classic_reachable) |raw| {
+        const node = classic_module.ast.?.nodes.items[raw];
+        if (node.tag == .spread_element) return error.ClassicJsxSpreadRemained;
+        if (node.tag != .identifier_reference) continue;
+        const name = classic_module.ast.?.getText(node.data.string_ref);
+        if (std.mem.eql(u8, name, "React")) {
+            try std.testing.expectEqual(react_symbol, classic_module.semantic.?.symbol_ids[raw] orelse return error.MissingClassicJsxFactoryReferenceSymbol);
+            classic_factory_read_count += 1;
+            continue;
+        }
+        if (!std.mem.eql(u8, name, "items")) continue;
+        try std.testing.expectEqual(classic_symbol, classic_module.semantic.?.symbol_ids[raw] orelse return error.MissingClassicJsxSpreadReferenceSymbol);
+        classic_output_read_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), classic_output_read_count);
+    try std.testing.expectEqual(@as(usize, 2), classic_factory_read_count);
 }
 
 fn moduleHasRegisteredOutputRoles(module: *const Module) bool {
@@ -23906,8 +23974,59 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         classic_arena.allocator(),
         "const items = [1, 2]; const result = <div>{...items}</div>;",
     );
-    try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&classic_fixture, .classic, true));
+    try std.testing.expect(auditedJsxSpreadChildAdmissionForTest(&classic_fixture, .classic, true));
     try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&classic_fixture, .automatic, false));
+
+    var classic_spread_props_arena = std.heap.ArenaAllocator.init(allocator);
+    defer classic_spread_props_arena.deinit();
+    var classic_spread_props_fixture = try jsxSpreadChildTestFixture(
+        classic_spread_props_arena.allocator(),
+        "const props = {}; const items = [1]; const result = <div {...props}>{...items}</div>;",
+    );
+    try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&classic_spread_props_fixture, .classic, true));
+}
+
+test "#6193 classic JSX spread child retains only audited factory-call operands" {
+    const allocator = std.testing.allocator;
+    const safe_sources = [_][]const u8{
+        "const items = [1, 2]; const result = <div>{...items}</div>;",
+        "const result = <div>{...[1, 2]}</div>;",
+        "const result = <>{...[, 1]}</>;",
+    };
+    for (safe_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(auditedJsxSpreadChildAdmissionForTest(&fixture, .classic, true));
+    }
+
+    const hostile_sources = [_][]const u8{
+        "const result = <div>{...missingItems}</div>;",
+        "function getItems() { return [1]; } const result = <div>{...getItems()}</div>;",
+        "const source = { items: [1] }; const result = <div>{...source.items}</div>;",
+        "const source = { items: [1] }; const result = <div>{...source?.items}</div>;",
+        "const items = [1]; const result = <div>{...[...items]}</div>;",
+        "const result = <div>{...[[, 1]]}</div>;",
+        "const result = <div>{...({ items: [1] })}</div>;",
+        "const items = [1]; const result = <div>{...(items, items)}</div>;",
+        "const items = [1]; const result = <div>{...`items`}</div>;",
+        "const props = {}; const items = [1]; const result = <div {...props}>{...items}</div>;",
+    };
+    for (hostile_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&fixture, .classic, true));
+    }
+
+    var preserve_arena = std.heap.ArenaAllocator.init(allocator);
+    defer preserve_arena.deinit();
+    var preserve_fixture = try jsxSpreadChildTestFixture(
+        preserve_arena.allocator(),
+        "const items = [1]; const result = <div>{...items}</div>;",
+    );
+    try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&preserve_fixture, .preserve, true));
+    try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&preserve_fixture, .classic, false));
 }
 
 test "#6193 automatic JSX spread child graph proof rejects ten witness mutations" {
