@@ -2302,6 +2302,7 @@ pub fn computeCrossChunkLinks(
                 if (has_star)
                     try fanOutModuleExports(allocator, chunk_graph, chunk, &seen_static, lnk, mod_idx, module_count);
 
+                // Binding-less require/bare-import records call the actual CJS wrapper.
                 // (#4541) raw `require("./x.cjs")` 로 **다른 청크**의 CJS 를 참조: import binding 이
                 // 없어 위 심볼 루프가 못 보고 chunk-level 의존 edge(side-effect import)만 생긴다.
                 // 그 결과 소비자가 provider 청크에만 있는 `require_X()` 썽크를 미-import 참조 →
@@ -2309,7 +2310,7 @@ pub fn computeCrossChunkLinks(
                 // 표시한다(esbuild/rolldown 동형). ⚠️ require_X 는 **lazy**(호출 시점 평가)라 provider
                 // 에서 eager materialize(default$X=require_X())하지 않고 썽크 자체를 넘긴다.
                 for (m.import_records) |rec| {
-                    if (rec.kind != .require) continue;
+                    if (rec.kind != .require and rec.kind != .side_effect) continue;
                     if (rec.resolved.isNone()) continue;
                     const tmod = graph.getModule(rec.resolved) orelse continue;
                     if (tmod.wrap_kind != .cjs) continue; // require_X 썽크(CJS)만 — ESM-wrap 은 후속
