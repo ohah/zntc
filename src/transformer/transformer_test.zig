@@ -4644,3 +4644,99 @@ test "decoded source temp collision names preserve identifier StringValues" {
     defer transformer.deinit();
     try std.testing.expect(try es_helpers.collidesWithUserSymbol(&transformer, "_a"));
 }
+
+fn n4ExpectCollision(source: []const u8, candidate: []const u8, expected: bool, graphless: bool) !void {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer analyzer.deinit();
+    try analyzer.analyze();
+    var transformer = try Transformer.init(std.testing.allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    if (!graphless) {
+        transformer.symbols = analyzer.symbols.items;
+        transformer.unresolved_references = &analyzer.unresolved_references;
+    }
+    try std.testing.expectEqual(expected, try es_helpers.collidesWithUserSymbol(&transformer, candidate));
+}
+
+test "N4 temp reservation covers raw source and every declared candidate" {
+    try n4ExpectCollision("const _a=7;const _b=8;", "_a", true, false);
+    try n4ExpectCollision("const _a=7;const _b=8;", "_b", true, false);
+}
+
+test "N4 temp reservation keeps numbered decoded candidates" {
+    try n4ExpectCollision("const _a\\u0032=7;", "_a2", true, false);
+}
+
+test "N4 temp reservation preserves actual unresolved global references" {
+    try n4ExpectCollision("console.log(_a);", "_a", true, false);
+}
+
+test "N4 temp reservation preserves graphless escaped names and identifier boundaries" {
+    try n4ExpectCollision("const _\\u0061=7;", "_a", true, true);
+    try n4ExpectCollision("const _ab=7;", "_a", false, true);
+}
+
+fn n4ExpectGeneratedRuntime(source: []const u8) !void {
+    const transpile = @import("../transpile.zig");
+    var result = try transpile.transpile(std.testing.allocator, source, "input.cjs", .{
+        .module_format = .cjs,
+        .unsupported = TransformOptions.compat.fromESTarget(.es2018),
+    });
+    defer result.deinit(std.testing.allocator);
+    const generated = try std.process.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ "node", "-e", result.code },
+        .stdout_limit = .limited(16384),
+        .stderr_limit = .limited(16384),
+    });
+    defer std.testing.allocator.free(generated.stdout);
+    defer std.testing.allocator.free(generated.stderr);
+    try std.testing.expectEqualStrings("", generated.stderr);
+    try std.testing.expectEqualStrings("7\n", generated.stdout);
+}
+
+test "N4 temp optional catch consumer preserves decoded lexical outer reads" {
+    try n4ExpectGeneratedRuntime("const _\\u0061=7;try{throw 13}catch{console.log(_\\u0061);eval('0')}");
+}
+
+test "N4 temp optional catch consumer preserves direct eval string reads" {
+    try n4ExpectGeneratedRuntime("globalThis._a=7;try{throw 13}catch{console.log(eval('_a'))}");
+}
+
+test "N4 temp reservation heap OOM does not publish a partial collision cache" {
+    const source = "const _\\u0061=7,_\\u0062=8;";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer analyzer.deinit();
+    try analyzer.analyze();
+    var failures: usize = 0;
+    var completed = false;
+    for (0..32) |offset| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = std.math.maxInt(usize) });
+        var transformer = try Transformer.init(failing.allocator(), &parser.ast, .{});
+        defer transformer.deinit();
+        transformer.symbols = analyzer.symbols.items;
+        transformer.unresolved_references = &analyzer.unresolved_references;
+        failing.fail_index = failing.alloc_index + offset;
+        const collision = es_helpers.collidesWithUserSymbol(&transformer, "_b") catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expect(transformer.temp_collision_set == null);
+            failures += 1;
+            continue;
+        };
+        try std.testing.expect(collision);
+        completed = true;
+        break;
+    }
+    try std.testing.expect(failures > 0);
+    try std.testing.expect(completed);
+}
