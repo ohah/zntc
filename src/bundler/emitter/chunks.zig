@@ -25,6 +25,7 @@ const SourceMap = @import("../../codegen/sourcemap.zig");
 const linker_mod = @import("../linker.zig");
 const Linker = @import("../linker.zig").Linker;
 const SymbolID = @import("../symbol.zig").SymbolID;
+const cross_export = @import("../cross_chunk_export.zig");
 const RenameTable = @import("../symbol.zig").RenameTable;
 const LinkingMetadata = @import("../linker.zig").LinkingMetadata;
 const tree_shaker_mod = @import("../tree_shaker.zig");
@@ -50,6 +51,29 @@ const RunBeforeMainCrossImport = struct {
     source_chunk: ChunkIndex,
     name: []const u8,
 };
+
+const RunBeforeMainExport = struct { owner: *const Module, symbol: SymbolID };
+
+fn checkedEdgeProvider(l: *const Linker, sym: chunk_mod.CrossChunkSym) !cross_export.Provider {
+    const hint: cross_export.Hint = if (l.isSharedNamespaceVar(sym.canonical_module, sym.name)) .shared_namespace else .ordinary_export;
+    const provider = sym.provider orelse try cross_export.Provider.capture(l, sym.canonical_module, sym.name, hint);
+    if (provider.owner.index.toU32() != sym.canonical_module or !std.mem.eql(u8, provider.public_name, sym.name)) return error.InvalidCrossChunkExport;
+    try provider.validate(l);
+    return provider;
+}
+
+fn checkedChunkProvider(l: *const Linker, chunk: *const Chunk, sym: chunk_mod.CrossChunkSym) !cross_export.Provider {
+    const provider = if (sym.provider) |_| try checkedEdgeProvider(l, sym) else return error.MissingCrossChunkProvider;
+    for (chunk.modules.items) |module| if (module == provider.owner.index) return provider;
+    return error.InvalidCrossChunkProviderChunk;
+}
+
+fn crossChunkPublicName(l: *const Linker, sym: chunk_mod.CrossChunkSym, preserve_modules: bool) ![]const u8 {
+    if (l.getCrossChunkGlobalName(sym.canonical_module, sym.name)) |name| return name;
+    // PM's unchanged export key is a protocol property, not a local binding.
+    if (preserve_modules) return sym.name;
+    return error.MissingCrossChunkPublicName;
+}
 
 const ChunkModuleEmitResult = struct {
     code: ?[]const u8 = null,
@@ -145,6 +169,7 @@ fn appendCssLinkPrologue(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), 
 /// cross-chunk 가 발생하지 않으므로 export 명 그대로.
 fn crossChunkBindingName(linker: ?*Linker, sym: chunk_mod.CrossChunkSym) ![]const u8 {
     if (linker) |l| {
+        _ = try checkedEdgeProvider(l, sym);
         // #4101 전역 일관 네이밍: cross-chunk 심볼은 provider/consumer 가 같은 전역 이름을
         // 써야 한다. 전역 맵에 있으면 그걸 우선(같은 이름 다른 모듈 `v`/`v$1` 구분).
         if (l.getCrossChunkGlobalName(sym.canonical_module, sym.name)) |g| return g;
@@ -582,23 +607,6 @@ fn cjsDepDefaultOnly(allocator: std.mem.Allocator, graph: *const ModuleGraph, de
 ///   (`export { _x as renamed }` 의 `_x`). 예약어 local 은 bare 참조 불가 → null.
 /// 못 찾으면 null(호출부가 다른 owner 또는 export 명 fallback 으로 진행). single-owner·collision
 /// 양 경로 공용 — 분리돼 있던 단순 해석/full 해석을 하나로 통일.
-fn resolveOwnerLocal(l: *Linker, graph: *const ModuleGraph, mod_idx: ModuleIndex, mi: u32, name: []const u8) ?[]const u8 {
-    if (l.graph != graph or mod_idx.toU32() != mi) return null;
-    const owner = graph.getModule(mod_idx) orelse return null;
-    if (l.getModule(mi) != owner) return null;
-    // A lazy shared namespace object is a generated binding keyed by its exact target module.
-    // Its global alias must match the provider preamble; it has no ExportBinding to resolve.
-    if (l.getSharedNamespaceGlobalName(mi, name)) |global_name| return global_name;
-    if (chunk_mod.nsReExportTarget(graph, mod_idx, name)) |ns_t| {
-        // ensureSharedNsVar OOM 은 무시하고 canonical fallback 으로 진행(기존 패턴과 일관).
-        if (l.ensureSharedNsVar(ns_t)) |ns_var| return ns_var else |_| {}
-    }
-    const binding = owner.findExportBinding(name) orelse return null;
-    if (binding.kind != .local and !binding.hasSyntheticDefault(owner.semanticSymbols())) return null;
-    _ = @import("../cross_chunk_export.zig").checkedSymbol(l.allocator, owner, binding) catch return null;
-    return l.getCanonicalForExport(binding.*, mi);
-}
-
 /// 모듈이 ESM-wrap + top-level await 인가. 그 `init_X()` 호출은 `await` 를 요구하므로 비-async
 /// 컨텍스트에선 낼 수 없다: reg_split factory·dev_split factory 는 함수라 top-level await 불가,
 /// CJS-format 청크도 top-level await 불가. 세 entry-invoke 지점이 공유해 드리프트를 막는다
@@ -637,6 +645,7 @@ pub fn emitChunks(
     options: *const EmitOptions,
     linker: ?*Linker,
 ) ![]OutputFile {
+    if (linker) |l| if (l.graph != graph) return error.InvalidChunkGraphOwner;
     return emitChunksImpl(null, allocator, graph, chunk_graph, options, linker);
 }
 
@@ -824,6 +833,14 @@ fn emitChunksImpl(
         // 아니면 정상 skip predicate(emit 루프 ↔ resolveContentHashes 동일해야 outputs↔
         // sorted_indices 정렬 유지). 비워진 청크 + PR-3a-ii lazy seed 제외.
         if (chunkRestrictSkip(chunk, ci, options.restrict_to_chunk)) continue;
+        const provider_edges = try allocator.dupe(chunk_mod.CrossChunkSym, chunk.exports_to_bindings.items);
+        defer allocator.free(provider_edges);
+        std.mem.sort(chunk_mod.CrossChunkSym, provider_edges, {}, struct {
+            fn less(_: void, a: chunk_mod.CrossChunkSym, b: chunk_mod.CrossChunkSym) bool {
+                if (a.canonical_module != b.canonical_module) return a.canonical_module < b.canonical_module;
+                return std.mem.lessThan(u8, a.name, b.name);
+            }
+        }.less);
 
         var chunk_output: std.ArrayList(u8) = .empty;
         var initialized_namespaces: std.AutoHashMapUnmanaged(SymbolID, void) = .empty;
@@ -1684,27 +1701,14 @@ fn emitChunksImpl(
             for (rbm_cross_imports.items) |imp| {
                 try appendOwnedOccupied(allocator, &occupied, imp.name);
             }
-            // (#4494) **provider 측** CJS-interop materialize 전역명도 점유. 이 청크가 CJS 모듈의
-            // 멤버를 cross-chunk 로 노출하면 아래 xchunk_exports 블록이 `var <global> = <interop>;`
-            // 를 청크 top-level 에 *새로* 깐다. 이 이름은 어떤 모듈의 심볼도 아니라 rename 입력에
-            // 안 잡혀, 같은 이름의 청크 로컬(`const named = …`)이 있으면 `var`↔`const` 재선언
-            // SyntaxError 가 난다. 점유로 등록해 로컬을 밀어낸다(`named` → `named$1`).
-            //
-            // 조건은 materialize 발화 조건의 **보수적 상위집합**(owner=CJS + 전역명 보유). materialize
-            // 는 여기에 더해 `resolveOwnerLocal == null`(진짜 로컬 없음)·entry 청크 분기 등을 본다.
-            // 과잉 예약은 안전하다 — 동명 로컬을 한 번 더 rename 할 뿐(미스는 SyntaxError, 과잉은
-            // 이름만 바뀜). CJS owner 는 대개 소수라 wrap_kind 로 먼저 걸러 스캔을 줄인다.
+            // CJS member edges create chunk locals outside source lexical
+            // scopes. Reserve their negotiated output names before renaming.
             if (linker) |l| {
-                for (sorted_mods) |mod_idx| {
-                    const mi = @backingInt(mod_idx);
-                    if (mi >= module_count) continue;
-                    const owner = graph.getModule(mod_idx) orelse continue;
-                    if (owner.wrap_kind != .cjs) continue;
-                    var eit = chunk.exports_to.iterator();
-                    while (eit.next()) |e| {
-                        const global = l.getCrossChunkGlobalName(@intCast(mi), e.key_ptr.*) orelse continue;
-                        try appendOwnedOccupied(allocator, &occupied, global);
-                    }
+                for (provider_edges) |edge| {
+                    const provider = try checkedChunkProvider(l, chunk, edge);
+                    if (provider.role != .cjs_member) continue;
+                    const global = try crossChunkPublicName(l, edge, options.preserve_modules);
+                    try appendOwnedOccupied(allocator, &occupied, global);
                 }
             }
         }
@@ -2040,10 +2044,13 @@ fn emitChunksImpl(
             for (rbm_export_names.items) |name| allocator.free(name);
             rbm_export_names.deinit(allocator);
         }
+        var rbm_export_bindings: std.StringHashMapUnmanaged(RunBeforeMainExport) = .empty;
+        defer rbm_export_bindings.deinit(allocator);
         if (options.run_before_main.len > 0) {
             try collectRunBeforeMainExportNames(
                 allocator,
                 &rbm_export_names,
+                &rbm_export_bindings,
                 graph,
                 chunk_graph,
                 chunk,
@@ -2362,36 +2369,19 @@ fn emitChunksImpl(
                 if (export_names.items.len == 0) break :xchunk_exports;
             }
 
-            // (#4120) CJS-interop cross-chunk export materialize: owner 가 CJS-wrapped 면 export 명은
-            // 런타임 멤버라 진짜 로컬 바인딩이 없다(resolveOwnerLocal=null → 예전엔 미존재 로컬을
-            // 그대로 노출해 ReferenceError/표현식 specifier). `export {}`/`exports.x=` *전* 에
-            // `var <global> = <interop>;` 을 깔고, 아래 export 루프는 local=global 로 노출. 소비자는
-            // metadata #4120 가드로 preamble 억제 후 일반 cross-chunk import.
-            // 키는 **owner 의 전역명**(name 아님) — 동명 collision(#4101: 서로 다른 CJS 모듈이 *같은*
-            // export 명을 cross-chunk 노출)에서 owner 마다 다른 전역명(`v`/`v$1`)이라, 각 owner 를
-            // 빠짐없이 materialize 해야 한다(예전 name-키+break 는 첫 owner 만 깔아 둘째 owner 의
-            // `export { v$1 }` 가 미선언 → ReferenceError).
+            // A CJS member edge names a runtime property. Materialize each
+            // requested owner/property before publishing its chunk export.
             var cjs_interop_globals: std.StringHashMapUnmanaged(void) = .empty;
             defer cjs_interop_globals.deinit(allocator);
             if (linker) |l| {
                 for (export_names.items) |name| {
-                    for (sorted_mods) |mod_idx| {
-                        const mi = @backingInt(mod_idx);
-                        if (mi >= module_count) continue;
-                        const global = l.getCrossChunkGlobalName(@intCast(mi), name) orelse continue;
-                        const owner = graph.getModule(mod_idx) orelse continue;
-                        if (owner.wrap_kind != .cjs) continue;
-                        // (#4494) 예전엔 `resolveOwnerLocal != null` 이면 "진짜 로컬이 있으니 interop
-                        // 불요" 로 skip 했다. 하지만 **CJS-wrapped 모듈은 청크 top-level 로컬이 하나도
-                        // 없다** — 본문 전체가 `__commonJS(...)` 클로저 안이다. resolveOwnerLocal 은
-                        // getCanonicalName 으로 *클로저 안* 심볼까지 찾아내므로(예: `function tag(){}` +
-                        // `module.exports={tag}` 를 `import {tag}` — minify 시 rename_table 에 (mod,"tag")
-                        // 엔트리가 생긴다), materialize 를 건너뛰고 클로저-스코프 이름을 그대로
-                        // `export { o as tag }` 로 노출 → ReferenceError. export 명이 `default`(예약어라
-                        // 로컬일 수 없음)뿐이던 시절엔 안 드러났고, #4494 로 멤버명이 cross-chunk 키가
-                        // 되면서 재현됐다. owner=CJS 면 **항상** materialize 한다.
-                        if (cjs_interop_globals.contains(global)) continue; // 이미 materialize
-                        try writeCjsInteropMaterialize(allocator, &chunk_output, l, owner, name, global, options.minify_whitespace);
+                    for (provider_edges) |edge| {
+                        if (!std.mem.eql(u8, edge.name, name)) continue;
+                        const provider = try checkedChunkProvider(l, chunk, edge);
+                        if (provider.role != .cjs_member) continue;
+                        const global = try crossChunkPublicName(l, edge, options.preserve_modules);
+                        if (cjs_interop_globals.contains(global)) continue;
+                        try writeCjsInteropMaterialize(allocator, &chunk_output, l, provider.owner, name, global, options.minify_whitespace);
                         try cjs_interop_globals.put(allocator, global, {});
                     }
                 }
@@ -2405,32 +2395,17 @@ fn emitChunksImpl(
                 }
             }
             for (export_names.items, 0..) |name, ni| {
-                // #4101: cross-chunk export 는 **owner 단위**로 emit. owner = 이 export 명의
-                // 전역명을 가진 모듈(getCrossChunkGlobalName). common=owner 1개, 동명 collision=
-                // N개(다른 모듈이 같은 export 명). provider public = 각 owner 의 전역명(consumer
-                // import key 와 일치 → collapse 방지), local = resolveOwnerLocal(nsReExport→ns
-                // 변수 / canonical / getExportLocalName 권위 / 예약어). collision·single-owner 를
-                // 한 경로로 통합 — 예전엔 둘로 갈렸고 collision 쪽 단순 해석이 ns/예약어 collision
-                // 에서 미존재 로컬 노출(SyntaxError)했다. common(owner 1개)은 `<local> as <global=
-                // export명>` = byte-identical.
                 var emitted_any = false;
                 if (linker) |l| {
                     var first_in_group = true;
-                    for (sorted_mods) |mod_idx| {
-                        const mi = @backingInt(mod_idx);
-                        if (mi >= module_count) continue;
-                        const global = l.getCrossChunkGlobalName(@intCast(mi), name) orelse continue;
-                        // resolveOwnerLocal 이 못 찾으면(예약어 local 무-canonical, 예: `export
-                        // { default } from './cjslib'` 의 CJS default) export 명 fallback — #4117
-                        // single-owner 경로(`found_local orelse name`)와 byte-identical. 해당
-                        // 케이스 자체는 simple identifier 로 해석 불가한 선재 한계(별도 이슈).
-                        // (#4120) 이 owner 의 전역명이 materialize 됐으면 local=global(일반 식별자).
-                        // 그 외는 기존 resolveOwnerLocal 경로. owner 단위 전역명 키라 동명 collision 의
-                        // 둘째 owner 도 자기 전역명으로 정확히 매칭.
-                        const local = if (cjs_interop_globals.contains(global))
-                            global
+                    for (provider_edges) |edge| {
+                        if (!std.mem.eql(u8, edge.name, name)) continue;
+                        const provider = try checkedChunkProvider(l, chunk, edge);
+                        const global = try crossChunkPublicName(l, edge, options.preserve_modules);
+                        const local = if (provider.role == .cjs_member)
+                            if (cjs_interop_globals.contains(global)) global else return error.MissingCrossChunkMaterialization
                         else
-                            resolveOwnerLocal(l, graph, mod_idx, @intCast(mi), name) orelse name;
+                            (try provider.localName(l)) orelse return error.InvalidCrossChunkExport;
                         if (cjs_x) {
                             try appendCjsExportBinding(allocator, &chunk_output, global, null, local, pm_wrapped_esm_provider, options.minify_whitespace);
                         } else {
@@ -2445,18 +2420,20 @@ fn emitChunksImpl(
                         emitted_any = true;
                     }
                 }
-                // fallback: linker 없음(단위 테스트) 또는 전역명 미보유 export(RBM, 또는 re-export
-                // source 가 타 청크 owner 라 이 청크 모듈에 전역명 키 없음). public = export 명,
-                // local = full scan(resolveOwnerLocal 첫 매치). #4117 single-owner 경로와 동치.
                 if (!emitted_any) {
                     const local_name = if (linker) |l| blk: {
-                        for (sorted_mods) |mod_idx| {
-                            const mi = @backingInt(mod_idx);
-                            if (mi >= module_count) continue;
-                            if (resolveOwnerLocal(l, graph, mod_idx, @intCast(mi), name)) |lo| break :blk lo;
-                        }
-                        break :blk name;
-                    } else name;
+                        // Run-before-main exports are exact registered wrapper
+                        // identities. They have no ordinary value-export carrier.
+                        const known = rbm_export_bindings.get(name) orelse return error.MissingCrossChunkProvider;
+                        if (l.getModule(known.owner.index.toU32()) != known.owner or known.symbol.module != known.owner.index) return error.InvalidCrossChunkExport;
+                        const actual = switch (known.owner.wrap_kind) {
+                            .cjs => if (known.owner.require_symbol == known.symbol.inner) known.owner.getRequireName(&l.rename_table) else null,
+                            .esm => try known.owner.esmWrapperName(known.symbol, &l.rename_table),
+                            .none => null,
+                        } orelse return error.MissingWrapperSymbol;
+                        if (!std.mem.eql(u8, actual, name)) return error.InvalidCrossChunkExport;
+                        break :blk actual;
+                    } else name; // Explicit graphless emitter API.
                     if (cjs_x) {
                         try appendCjsExportBinding(allocator, &chunk_output, name, null, local_name, pm_wrapped_esm_provider, options.minify_whitespace);
                     } else {
@@ -2954,6 +2931,7 @@ fn emitRunBeforeMainCrossImports(
 fn collectRunBeforeMainExportNames(
     allocator: std.mem.Allocator,
     out: *std.ArrayList([]const u8),
+    bindings: *std.StringHashMapUnmanaged(RunBeforeMainExport),
     graph: *const ModuleGraph,
     chunk_graph: *const ChunkGraph,
     current_chunk: *const Chunk,
@@ -2966,10 +2944,18 @@ fn collectRunBeforeMainExportNames(
         if (source_chunk == .none or source_chunk != current_chunk.index) continue;
         const name = try runBeforeMainCallName(allocator, rbm, rename_tbl) orelse continue;
         errdefer allocator.free(name);
-        if (containsName(out.items, name)) {
+        const id = switch (rbm.wrap_kind) {
+            .cjs => SymbolID.make(rbm.index, @backingInt(rbm.require_symbol orelse return error.MissingWrapperSymbol)),
+            .esm => try rbm.esmInitSymbol(),
+            .none => unreachable,
+        };
+        if (bindings.get(name)) |known| {
+            if (known.owner != rbm or !std.meta.eql(known.symbol, id)) return error.DuplicateRunBeforeMainExport;
             allocator.free(name);
             continue;
         }
+        try bindings.put(allocator, name, .{ .owner = rbm, .symbol = id });
+        errdefer _ = bindings.remove(name);
         try out.append(allocator, name);
     }
 }
@@ -5706,10 +5692,11 @@ test "cross chunk provider refuses unexported lexical names" {
     defer linker.deinit();
     const known = SymbolID.make(module.index, module.exportBindingSemanticIndex(binding).?);
     try linker.rename_table.put(std.testing.allocator, known, "actual_private");
-    try std.testing.expectEqualStrings("actual_private", resolveOwnerLocal(&linker, &graph, module.index, module.index.toU32(), "publicValue").?);
+    const selected = try cross_export.Provider.capture(&linker, module.index.toU32(), "publicValue", .ordinary_export);
+    try std.testing.expectEqualStrings("actual_private", (try selected.localName(&linker)).?);
     // A public export key selects its carrier. An unrelated lexical spelling
     // must never discover the private declaration through a scope-name lookup.
-    try std.testing.expect(resolveOwnerLocal(&linker, &graph, module.index, module.index.toU32(), "privateValue") == null);
+    try std.testing.expectError(error.InvalidCrossChunkExport, cross_export.Provider.capture(&linker, module.index.toU32(), "privateValue", .ordinary_export));
 }
 
 test "cross chunk provider refuses a foreign graph with matching scalar IDs" {
@@ -5737,8 +5724,11 @@ test "cross chunk provider refuses a foreign graph with matching scalar IDs" {
     defer linker.deinit();
     const known = SymbolID.make(module.index, module.exportBindingSemanticIndex(binding).?);
     try linker.rename_table.put(std.testing.allocator, known, "actual_owner");
-    try std.testing.expectEqualStrings("actual_owner", resolveOwnerLocal(&linker, &graph, module.index, module.index.toU32(), "value").?);
-    try std.testing.expect(resolveOwnerLocal(&linker, &foreign, other.index, other.index.toU32(), "value") == null);
+    var selected = try cross_export.Provider.capture(&linker, module.index.toU32(), "value", .ordinary_export);
+    try std.testing.expectEqualStrings("actual_owner", (try selected.localName(&linker)).?);
+    selected.owner = other;
+    selected.role = .{ .semantic = .{ .binding = &other.export_bindings[0], .original = other.export_bindings[0] } };
+    try std.testing.expectError(error.InvalidCrossChunkExport, selected.localName(&linker));
 }
 
 test "cross chunk provider preserves the original export specifier authority" {
@@ -5760,10 +5750,13 @@ test "cross chunk provider preserves the original export specifier authority" {
     const two = module.findExportBinding("two").?;
     const saved = one.*;
     defer one.* = saved;
-    try std.testing.expectEqualStrings("first", resolveOwnerLocal(&linker, &graph, module.index, module.index.toU32(), "one").?);
+    const selected = try cross_export.Provider.capture(&linker, module.index.toU32(), "one", .ordinary_export);
+    try std.testing.expectEqualStrings("first", (try selected.localName(&linker)).?);
     one.local_symbol_node = two.local_symbol_node;
     one.symbol = two.symbol;
-    try std.testing.expect(resolveOwnerLocal(&linker, &graph, module.index, module.index.toU32(), "one") == null);
+    try std.testing.expectError(error.InvalidCrossChunkExport, selected.localName(&linker));
+    try std.testing.expectError(error.InvalidCrossChunkExport, cross_export.Provider.capture(&linker, module.index.toU32(), "one", .ordinary_export));
     one.source_specifier_node = two.source_specifier_node;
-    try std.testing.expect(resolveOwnerLocal(&linker, &graph, module.index, module.index.toU32(), "one") == null);
+    try std.testing.expectError(error.InvalidCrossChunkExport, selected.localName(&linker));
+    try std.testing.expectError(error.InvalidCrossChunkExport, cross_export.Provider.capture(&linker, module.index.toU32(), "one", .ordinary_export));
 }
