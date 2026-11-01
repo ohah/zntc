@@ -5861,3 +5861,33 @@ test "cross chunk provider retains source birth authority through later edits" {
         try std.testing.expectError(error.InvalidCrossChunkLocalName, selected.localName(&linker));
     }
 }
+
+test "cross chunk default snapshots cannot claim a lowered named declaration reference" {
+    const helpers = @import("../test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "provider.mjs", "let value=()=>7;export default value;");
+    const path = try helpers.absPath(&tmp, "provider.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{path});
+    const module = graph.modules.at(0);
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    const binding = @constCast(module.findExportBinding("default").?);
+    const original = binding.*;
+    defer binding.* = original;
+    const selected = try cross_export.Provider.capture(&linker, module.index.toU32(), "default", .ordinary_export);
+    try selected.validate(&linker);
+    const wrapper = module.ast.?.getNode(binding.source_export_node.?);
+    const operand = wrapper.data.unary.operand;
+    const sid = module.semantic.?.symbol_ids[@backingInt(operand)].?;
+    try std.testing.expect(sid != binding.symbol.semanticIndex().?);
+    binding.symbol = @import("../symbol.zig").SymbolRef.makeSemantic(module.index, sid);
+    binding.local_symbol_node = operand;
+    binding.has_default_export_facade = false;
+    try std.testing.expectError(error.InvalidCrossChunkExport, cross_export.Provider.capture(&linker, module.index.toU32(), "default", .ordinary_export));
+}

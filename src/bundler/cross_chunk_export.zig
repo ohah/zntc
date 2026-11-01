@@ -199,7 +199,17 @@ pub fn checkedSymbol(a: std.mem.Allocator, owner: *const Module, binding: *const
             !std.mem.eql(u8, binding.exported_name, "default") or
             parser_module.defaultExportNeedsFacade(ast, statement.data.unary.operand, statement.data.unary.flags) != binding.has_default_export_facade) return error.InvalidCrossChunkExport;
         const anchor = if (binding.has_default_export_facade) source else binding.local_symbol_node orelse return error.InvalidCrossChunkExport;
-        if (!binding.has_default_export_facade and !try declarationContains(a, ast, statement.data.unary.operand, anchor)) return error.InvalidCrossChunkExport;
+        const anchor_node = nodeAt(ast, anchor) orelse return error.InvalidCrossChunkExport;
+        // Class lowering can publish the live named declaration separately
+        // and leave this exact reference in its original default wrapper.
+        // The parser's named-declaration flag distinguishes it from a snapshot.
+        const lowered_named_reference = !binding.has_default_export_facade and
+            statement.data.unary.flags & parser_module.EXPORT_DEFAULT_NAMED_DECLARATION != 0 and
+            anchor == statement.data.unary.operand and
+            anchor_node.tag == .identifier_reference and
+            sem.symbols.items[sid].decl_flags.is_exported and sem.symbols.items[sid].decl_flags.is_default_export;
+        if (!binding.has_default_export_facade and !lowered_named_reference and
+            !try declarationContains(a, ast, statement.data.unary.operand, anchor)) return error.InvalidCrossChunkExport;
         if (!attached(sem.symbol_ids, anchor, sid)) return error.InvalidCrossChunkExport;
         return binding.symbol;
     }
