@@ -40867,11 +40867,81 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'derived constructor multi-declarator lexical super-property initializer stays on reanalysis',
+        name: 'derived constructor multi-declarator direct super-property initializers retain their graph',
         source:
           'class Base { get current() { return 9; } } class DerivedLocal extends Base { constructor(key) { super(); const value = super[key], other = super.current; this.value = value + other; } } console.log(new DerivedLocal("current").value);',
+        graph: 'retained',
+        output: '18\n',
+      },
+      {
+        name: 'derived constructor multi-declarator super call stays on reanalysis',
+        source:
+          'class Base {} Base.prototype.current = function() { return 2; }; class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = super.current(); this.value = second; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'derived constructor multi-declarator composite key stays on reanalysis',
+        source:
+          'class Base {} Base.prototype.current = 9; class DerivedLocal extends Base { constructor(key) { super(); const first = super.current, second = super[key + ""]; this.value = first + second; } } console.log(new DerivedLocal("current").value);',
         graph: 'reanalyzed',
         output: '18\n',
+      },
+      {
+        name: 'derived constructor multi-declarator optional read stays on reanalysis',
+        source:
+          'class Base {} Base.prototype.current = 9; class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = super.missing?.value; this.value = String(first) + ":" + String(second); } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '9:undefined\n',
+      },
+      {
+        name: 'derived constructor multi-declarator bigint key stays on reanalysis',
+        source:
+          'class Base {} Base.prototype.current = 9; Base.prototype[1] = 5; class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = super[1n]; this.value = first + ":" + second; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '9:5\n',
+      },
+      {
+        name: 'derived constructor multi-declarator unary key stays on reanalysis',
+        source:
+          'class Base {} Base.prototype.current = 9; class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = super[-1]; this.value = String(first) + ":" + String(second); } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '9:undefined\n',
+      },
+      {
+        name: 'derived constructor multi-declarator template key stays on reanalysis',
+        source:
+          'class Base {} Base.prototype.current = 9; class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = super[`current`]; this.value = first + second; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '18\n',
+      },
+      {
+        name: 'derived constructor multi-declarator object key stays on reanalysis',
+        source:
+          'class Base {} Base.prototype.current = 9; class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = super[({ toString() { return "current"; } })]; this.value = first + second; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '18\n',
+      },
+      {
+        name: 'derived constructor multi-declarator nested super key stays on reanalysis',
+        source:
+          'class Base {} Base.prototype.current = 9; Base.prototype.key = "current"; class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = super[super.key]; this.value = first + second; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '18\n',
+      },
+      {
+        name: 'derived constructor multi-declarator later binding TDZ stays on reanalysis',
+        source:
+          'function deferred() { class Base {} Base.prototype.current = 9; class DerivedLocal extends Base { constructor() { super(); const first = super[key], key = "current"; this.value = first; } } } globalThis.deferred = deferred; console.log("ok");',
+        graph: 'reanalyzed',
+        output: 'ok\n',
+      },
+      {
+        name: 'derived constructor multi-declarator destructuring stays on reanalysis',
+        source:
+          'class Base {} Base.prototype.current = 7; class DerivedLocal extends Base { constructor() { super(); const first = super.current, { second } = { second: 4 }; this.value = first + second; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '11\n',
       },
       {
         name: 'derived constructor lexical super-call initializer stays on reanalysis',
@@ -43445,18 +43515,23 @@ describe('ES5 same-var-scope lexical declarations retain the bundler graph (#619
     }
   }, 60_000);
 
-  test('derived constructor primitive-literal super-property lexical initializers retain exact output identities', () => {
+  test('derived constructor multi-declarator primitive-literal super initializers retain exact output identities', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-derived-primitive-super-lexical-retained-'));
     const input = join(dir, 'entry.mjs');
     const output = join(dir, 'output.cjs');
     const names = Array.from({ length: 10 }, (_, index) => `primitiveSuperValue${index}`);
     const propertyKeys = ['"current"', '1', 'true', 'null'];
-    const declarations = names
-      .map(
-        (name, index) =>
-          `${index === 0 ? 'let' : 'const'} ${name} = super[${propertyKeys[index % propertyKeys.length]}];`,
-      )
-      .join('\n');
+    const declarations = Array.from({ length: names.length / 2 }, (_, groupIndex) => {
+      const start = groupIndex * 2;
+      const declarators = names
+        .slice(start, start + 2)
+        .map((name, offset) => {
+          const index = start + offset;
+          return `${name} = super[${propertyKeys[index % propertyKeys.length]}]`;
+        })
+        .join(', ');
+      return `${groupIndex === 0 ? 'let' : 'const'} ${declarators};`;
+    }).join('\n');
     const expected = `${names.map((_, index) => index + 1).join(' ')}\n`;
     const valueExpression = names.join(" + ' ' + ");
     const source = `let cursor = 0;
