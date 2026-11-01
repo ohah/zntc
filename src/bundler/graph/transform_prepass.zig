@@ -4747,11 +4747,11 @@ fn isSafeConstructorDirectLexicalDeclaration(
 }
 
 /// A derived constructor lexical declaration may use direct `super` property
-/// reads or bounded unary, binary, logical, and conditional expressions
-/// containing initialized-`this` or direct `super` property reads after the
-/// leading `super()` call. Every initialized declarator must contain a direct
-/// property read, so mixed property-read and literal-only declarations still
-/// take semantic reanalysis.
+/// reads, static member chains rooted at those reads, or bounded unary, binary,
+/// logical, and conditional expressions containing initialized-`this` or
+/// direct `super` property reads after the leading `super()` call. Every
+/// initialized declarator must contain a direct property read, so mixed
+/// property-read and literal-only declarations still take semantic reanalysis.
 /// Computed access is limited to string, number, boolean, or null literals,
 /// or an exact, unescaped source-bound identifier key. Keep these reads
 /// separate from ordinary safe values because class lowering records the
@@ -4819,6 +4819,27 @@ fn isSafePostSuperLexicalInitializerValue(
     ) and contains_direct_property_read;
 }
 
+fn isSafePostSuperLexicalStaticMemberChainObject(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    object_idx: ast_mod.NodeIndex,
+) bool {
+    if (isSafePostSuperLexicalInitializer(ast, semantic, object_idx) and
+        isRetainableDirectSuperPropertyAccess(ast, object_idx, false)) return true;
+    if (object_idx.isNone() or @backingInt(object_idx) >= ast.nodes.items.len) return false;
+    const object = ast.getNode(object_idx);
+    if (object.tag != .static_member_expression or ast_mod.spineHasOptionalChain(ast, object_idx))
+        return false;
+    const extras = ast.extra_data.items;
+    const member_extra = object.data.extra;
+    if (member_extra > extras.len or extras.len - member_extra < 3) return false;
+    const receiver_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[member_extra]));
+    const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[member_extra + 1]));
+    if (property_idx.isNone() or @backingInt(property_idx) >= ast.nodes.items.len or
+        ast.getNode(property_idx).tag != .identifier_reference) return false;
+    return isSafePostSuperLexicalStaticMemberChainObject(ast, semantic, receiver_idx);
+}
+
 fn isSafePostSuperLexicalInitializerValueInner(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -4832,6 +4853,24 @@ fn isSafePostSuperLexicalInitializerValueInner(
     if (isSafeConstructorValue(ast, semantic, value_idx)) return true;
     if (value_idx.isNone() or @backingInt(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
+    if (value.tag == .static_member_expression) {
+        if (ast_mod.spineHasOptionalChain(ast, value_idx)) return false;
+        const extras = ast.extra_data.items;
+        const member_extra = value.data.extra;
+        if (member_extra > extras.len or extras.len - member_extra < 3) return false;
+        const object_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[member_extra]));
+        const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[member_extra + 1]));
+        if (object_idx.isNone() or @backingInt(object_idx) >= ast.nodes.items.len or
+            property_idx.isNone() or @backingInt(property_idx) >= ast.nodes.items.len or
+            ast.getNode(property_idx).tag != .identifier_reference or
+            !isSafePostSuperLexicalStaticMemberChainObject(ast, semantic, object_idx)) return false;
+        return isSafePostSuperLexicalInitializerValueInner(
+            ast,
+            semantic,
+            object_idx,
+            contains_direct_property_read,
+        );
+    }
     if (value.tag == .binary_expression) {
         const operator: token_mod.Kind = @fromBackingInt(@intCast(value.data.binary.flags));
         return isSafePostSuperLexicalBinaryOperator(operator) and
@@ -23207,6 +23246,13 @@ test "ES5 same-var-scope lexical declarations alone admit the retained graph" {
         .{ .source = "class Base {} class Read extends Base { constructor() { super(); let local; this.value = local; } }", .expected = true },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current; this.value = value; } }", .expected = true },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); const value = super.current; this.value = value; } }", .expected = true },
+        .{ .source = "class Base { get current() { return { value: 1 }; } } class Read extends Base { constructor() { super(); const value = super.current.value; this.value = value; } }", .expected = true },
+        .{ .source = "class Base { get current() { return { child: { value: 2 } }; } } class Read extends Base { constructor() { super(); const value = super.current.child.value; this.value = value; } }", .expected = true },
+        .{ .source = "class Base { get current() { return { value: 1 }; } } class Read extends Base { constructor() { super(); const value = this.current.value; this.value = value; } }", .expected = false },
+        .{ .source = "class Base { get current() { return { value: 1 }; } } class Read extends Base { constructor() { super(); const value = super.current['value']; this.value = value; } }", .expected = false },
+        .{ .source = "class Base { get current() { return { value: 1 }; } } class Read extends Base { constructor() { super(); const value = super.current?.value; this.value = value; } }", .expected = false },
+        .{ .source = "class Base { get current() { return { value() { return 1; } }; } } class Read extends Base { constructor() { super(); const value = super.current.value(); this.value = value; } }", .expected = false },
+        .{ .source = "class Base { get current() { return { value: 1 }; } } class Read extends Base { constructor() { super(); const value = super.current.value = 2; this.value = value; } }", .expected = false },
         .{ .source = "class Base {} var Read = class Local extends Base { constructor(input) { super(); let value = input; this.value = value; } };", .expected = true },
         .{ .source = "class Base {} class Read extends Base { constructor() { super(); let local; this.value = local; } }", .expected = true },
         .{ .source = "class Base {} class Read extends Base { constructor() { super(); let local = local; this.value = local; } }", .expected = false },
@@ -23365,6 +23411,8 @@ test "ES5 audited constructor lexical initializers retain the production semanti
         "const limit = 3; class Base { get current() { return 3; } } class Read extends Base { constructor() { super(); const equal = super.current === limit; this.value = equal; } } console.log(new Read().value);",
         "class Base { get current() { return null; } } class Read extends Base { constructor() { super(); const fallback = 4; const value = super.current ?? fallback; this.value = value; } } console.log(new Read().value);",
         "var events = []; class Base { constructor(value) { this.currentValue = value; } get current() { events.push('get'); return this.currentValue; } } class Read extends Base { constructor(input) { super(input); const fallback = 7; const value = super.current ?? fallback; this.value = value; } } console.log(new Read(null).value, new Read(0).value, events.join(','));",
+        "class Base { get current() { return { value: 22 }; } } class Read extends Base { constructor() { super(); const value = super.current.value; this.value = value; } } console.log(new Read().value);",
+        "class Base { get current() { return { child: { value: 23 } }; } } class Read extends Base { constructor() { super(); const value = super.current.child.value; this.value = value; } } console.log(new Read().value);",
         "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor() { super(); const and = super.current & 3; const or = super.current | 4; const xor = super.current ^ 7; const left = super.current << 1; const right = super.current >> 1; const unsigned = super.current >>> 1; const power = super.current ** 2; this.value = and + or + xor + left + right + unsigned + power; } } console.log(new Read().value);",
     };
     for (sources) |source| {
