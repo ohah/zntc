@@ -511,6 +511,53 @@ test "JSX automatic: spread-only child wraps in array and uses jsxs (#4109)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "children: ...arr") == null);
 }
 
+test "JSX automatic: downlevels spread-only child for ES5" {
+    var r = try helpers.e2eJSXAutomaticTarget(
+        std.testing.allocator,
+        "const arr = [1, 2]; const x = <Foo>{...arr}</Foo>;",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...arr") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children:[].concat") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__toConsumableArray(arr)") != null);
+}
+
+test "JSX automatic: downlevel spread child preserves surrounding child order" {
+    var r = try helpers.e2eJSXAutomaticTarget(
+        std.testing.allocator,
+        "const arr = [2, 3]; function before() { return 1; } const x = <Foo>{before()}{...arr}{before()}</Foo>;",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...arr") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[].concat([before()],__toConsumableArray(arr),[before()])") != null);
+}
+
+test "JSX automatic dev and fragment downlevel spread children" {
+    var dev = try e2eFull(std.testing.allocator, "const items = [1, 2]; const result = <div>{...items}</div>;", .{
+        .jsx_transform = true,
+        .jsx_runtime = .automatic_dev,
+        .jsx_filename = "spread.tsx",
+        .unsupported = compat.fromESTarget(.es5),
+    }, .{ .minify_whitespace = true }, ".tsx");
+    defer dev.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, dev.output, "...items") == null);
+    try std.testing.expect(std.mem.indexOf(u8, dev.output, "children:[].concat") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dev.output, "undefined,true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dev.output, "_jsxDEV") != null);
+
+    var fragment = try helpers.e2eJSXAutomaticTarget(
+        std.testing.allocator,
+        "const items = [1, 2]; const result = <>{...items}</>;",
+        .es5,
+    );
+    defer fragment.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, fragment.output, "...items") == null);
+    try std.testing.expect(std.mem.indexOf(u8, fragment.output, "children:[].concat") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fragment.output, "_jsxs(_Fragment") != null);
+}
+
 test "JSX automatic: fragment spread-only child wraps in array (#4109)" {
     var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <>{...arr}</>;");
     defer r.deinit();

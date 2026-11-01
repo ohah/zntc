@@ -2341,6 +2341,33 @@ fn hasDirectSpreadElement(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     return false;
 }
 
+fn isRetainableJsxSpreadChild(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node: ast_mod.Node,
+) bool {
+    if (node.tag != .jsx_spread_child) return false;
+    const operand = node.data.unary.operand;
+    if (operand.isNone() or @backingInt(operand) >= ast.nodes.items.len) return false;
+    const operand_node = ast.nodes.items[@backingInt(operand)];
+    if (operand_node.tag == .identifier_reference)
+        return isBoundSourceIdentifierReference(ast, semantic, operand);
+    if (operand_node.tag != .array_expression) return false;
+
+    // The array-spread lowerer can preserve a plain literal's exact reads and
+    // calls. Nested spread and holes need a second iterator/shape proof, so
+    // keep those JSX inputs on the existing analyzer path.
+    const members = operand_node.data.list;
+    const extras = ast.extra_data.items;
+    if (members.start > extras.len or members.len > extras.len - members.start) return false;
+    for (extras[members.start .. members.start + members.len]) |raw_idx| {
+        if (raw_idx >= ast.nodes.items.len) return false;
+        const tag = ast.nodes.items[raw_idx].tag;
+        if (tag == .spread_element or tag == .elision) return false;
+    }
+    return true;
+}
+
 fn hasOnlyRetainableSpreadOperands(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -10071,10 +10098,20 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 }
             },
             .jsx_spread_child => {
-                // The JSX child becomes a generated spread_element. Its
-                // downlevel helper and emitted array/call shape are not part
-                // of this source-node allowlist.
-                if (!options.jsx_transform or options.unsupported.spread) return false;
+                if (!options.jsx_transform) return false;
+                if (options.unsupported.spread) {
+                    // Automatic JSX stores children in an array. The lowerer
+                    // now sends that generated array through the ordinary
+                    // spread lowerer, which records the helper/reference
+                    // edits in this graph. Classic JSX and key-after-spread
+                    // fallback emit call-argument spreads and remain on full
+                    // reanalysis until their separate call-shape proof exists.
+                    const automatic_runtime = options.jsx_runtime == .automatic or
+                        options.jsx_runtime == .automatic_dev;
+                    if (!automatic_runtime or ast.has_jsx_key_after_spread or
+                        !isRetainableJsxSpreadChild(ast, semantic, node)) return false;
+                    found_lowered_array_spread = true;
+                }
             },
             .export_named_declaration => {
                 if (!isRetainableTopLevelExportedDeclarationWithSemantic(
@@ -17029,6 +17066,121 @@ test "generic prepass run publishes transformed output and preserves parser AST"
     if (module_without_semantic.export_index_by_name) |*index| index.deinit(graph_allocator);
 }
 
+test "#6193 automatic JSX spread child prepass keeps exact source graph without reanalysis" {
+    const TestGraph = struct {
+        allocator: std.mem.Allocator,
+        transform_options_base: TransformOptions = .{
+            .strip_types = true,
+            .jsx_runtime = .automatic,
+            .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+        },
+        helper_plugin_opts: @import("../../runtime_helper_modules.zig").SourceOptions = .{},
+        plugins: []const plugin_mod.Plugin = &.{},
+        defines: []const @import("../../parser/scan_results.zig").DefineEntry = &.{},
+        pure: []const []const u8 = &.{},
+        flow: bool = false,
+        worklet_transform: bool = false,
+        codegen_transform: bool = false,
+        react_refresh: bool = false,
+        styled_components: bool = false,
+        styled_components_ssr: bool = true,
+        styled_components_minify: bool = false,
+        styled_components_file_name: bool = true,
+        styled_components_pure: bool = false,
+        styled_components_namespace: []const u8 = "",
+        styled_components_meaningless_file_names: []const []const u8 = &.{"index"},
+        styled_components_top_level_import_paths: []const []const u8 = &.{},
+        styled_components_css_prop: bool = false,
+        emotion: bool = false,
+        emotion_auto_label: @import("../../transformer/transformer.zig").AutoLabelMode = .always,
+        emotion_source_map: bool = false,
+        emotion_label_format: []const u8 = "",
+        emotion_extra_css_sources: []const []const u8 = &.{},
+        emotion_extra_styled_sources: []const []const u8 = &.{},
+        minify_identifiers: bool = false,
+        ignore_annotations: bool = false,
+        wrap_kinds_finalized: bool = false,
+        wrapper_symbols_registered: bool = false,
+        diag_count: usize = 0,
+
+        fn addDiag(
+            self: *@This(),
+            _: anytype,
+            _: anytype,
+            _: []const u8,
+            _: anytype,
+            _: anytype,
+            _: []const u8,
+            _: ?[]const u8,
+        ) void {
+            self.diag_count += 1;
+        }
+
+        fn registerWrapperSymbols(_: *@This()) error{}!void {}
+    };
+
+    const source = "const items = [1, 2]; const result = <div>{...items}</div>;";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var fixture = try jsxSpreadChildTestFixture(allocator, source);
+    const source_owner = fixture.semantic.captureOwnerToken();
+    var source_item_symbol: ?u32 = null;
+    for (fixture.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or
+            !std.mem.eql(u8, fixture.ast.getText(node.data.string_ref), "items")) continue;
+        source_item_symbol = fixture.semantic.symbol_ids[raw];
+        break;
+    }
+    const item_symbol = source_item_symbol orelse return error.MissingJsxSpreadBinding;
+
+    profile.resetForTest();
+    defer profile.resetForTest();
+    profile.setIoForTest(std.testing.io);
+    profile.addFromCsv("graph.resync_semantic");
+    const semantic_resyncs_before = profile.count(.graph_resync_semantic);
+
+    var module = Module.init(@fromBackingInt(0), "jsx-spread.tsx");
+    module.source = source;
+    module.module_type = .ts;
+    module.state = .ready;
+    module.ast = fixture.ast;
+    module.semantic = fixture.semantic;
+    var context: TestGraph = .{ .allocator = std.testing.allocator };
+    run(&context, &module, allocator);
+    defer if (module.alias_table) |*table| table.deinit();
+    defer if (module.export_index_by_name) |*index| index.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), context.diag_count);
+    try std.testing.expectEqual(semantic_resyncs_before, profile.count(.graph_resync_semantic));
+    try std.testing.expectEqual(source_owner, module.semantic.?.owner_token);
+    try std.testing.expect(module.ast.?.transformed_root != null);
+    try std.testing.expect(module.transform_cache != null);
+
+    var output_binding_found = false;
+    for (module.ast.?.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or
+            !std.mem.eql(u8, module.ast.?.getText(node.data.string_ref), "items")) continue;
+        try std.testing.expectEqual(item_symbol, module.semantic.?.symbol_ids[raw] orelse return error.MissingOutputItemSymbol);
+        output_binding_found = true;
+    }
+    try std.testing.expect(output_binding_found);
+
+    const root = module.ast.?.transformed_root.?;
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, &module.ast.?, root);
+    defer allocator.free(reachable);
+    var output_read_found = false;
+    for (reachable) |raw| {
+        const node = module.ast.?.nodes.items[raw];
+        if (node.tag == .spread_element) return error.DownlevelJsxSpreadRemained;
+        if (node.tag != .identifier_reference or
+            !std.mem.eql(u8, module.ast.?.getText(node.data.string_ref), "items")) continue;
+        try std.testing.expectEqual(item_symbol, module.semantic.?.symbol_ids[raw] orelse return error.MissingOutputItemReferenceSymbol);
+        output_read_found = true;
+    }
+    try std.testing.expect(output_read_found);
+}
+
 fn moduleHasRegisteredOutputRoles(module: *const Module) bool {
     if (module.transform_cache != null or module.init_symbol != null or module.exports_symbol != null or module.require_symbol != null or
         module.cjs_wrapper_exports_parameter_symbol != null or module.cjs_wrapper_module_parameter_symbol != null or
@@ -18601,6 +18753,43 @@ fn runtimeHelperReanalysisTestFixture(
     source: []const u8,
 ) !RuntimeHelperReanalysisTestFixture {
     return runtimeHelperReanalysisTestFixtureForSource(allocator, source, true);
+}
+
+fn jsxSpreadChildTestFixture(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+) !RuntimeHelperReanalysisTestFixture {
+    var scanner = try Scanner.init(allocator, source);
+    scanner.is_module = true;
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.is_module = true;
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_stmt_info = true;
+    try analyzer.analyze();
+
+    return .{
+        .ast = parser.ast,
+        .semantic = .{
+            .symbols = analyzer.symbols,
+            .scopes = analyzer.scopes.items,
+            .scope_maps = analyzer.scope_maps.items,
+            .scope_owner_map = analyzer.scope_owner_map,
+            .node_scope_provenance = analyzer.node_scope_provenance,
+            .class_self_symbol_map = analyzer.class_self_symbol_map,
+            .namespace_member_owners = analyzer.namespace_member_owners,
+            .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+            .exported_names = analyzer.exported_names,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .unresolved_references = analyzer.unresolved_references,
+            .references = analyzer.references.items,
+            .numeric_const_texts = analyzer.numeric_const_texts,
+            .helper_scope_map = analyzer.helper_scope_map,
+        },
+    };
 }
 
 fn runtimeHelperReanalysisTestFixtureForSource(
@@ -23574,6 +23763,196 @@ fn fullPrepassAuditedGraphAdmissionForTest(f: *const RuntimeHelperReanalysisTest
         .emit_runtime_helper_imports = true,
         .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
     }, plugins, &get, &set, null);
+}
+
+fn auditedJsxSpreadChildAdmissionForTest(
+    fixture: *const RuntimeHelperReanalysisTestFixture,
+    runtime: @import("../../codegen/codegen.zig").JsxRuntime,
+    jsx_transform: bool,
+) bool {
+    var allow_get = false;
+    var allow_set = false;
+    return canRetainGraphForAuditedSyntaxSubset(
+        std.testing.allocator,
+        &fixture.ast,
+        &fixture.semantic,
+        .{
+            .strip_types = true,
+            .jsx_transform = jsx_transform,
+            .jsx_runtime = runtime,
+            .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+        },
+        &allow_get,
+        &allow_set,
+        null,
+        null,
+    );
+}
+
+test "#6193 automatic JSX downlevel spread child admits only audited operands" {
+    const allocator = std.testing.allocator;
+    const safe_sources = [_][]const u8{
+        "const items = [1, 2]; const result = <div>{...items}</div>;",
+        "const result = <div>{...[1, 2]}</div>;",
+        "function render(items) { return <div>{items.length}{...items}</div>; }",
+    };
+    for (safe_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(auditedJsxSpreadChildAdmissionForTest(&fixture, .automatic, true));
+    }
+
+    var dev_arena = std.heap.ArenaAllocator.init(allocator);
+    defer dev_arena.deinit();
+    var dev_fixture = try jsxSpreadChildTestFixture(
+        dev_arena.allocator(),
+        "const items = [1, 2]; const result = <div>{...items}</div>;",
+    );
+    try std.testing.expect(auditedJsxSpreadChildAdmissionForTest(&dev_fixture, .automatic_dev, true));
+
+    const hostile_sources = [_][]const u8{
+        "const result = <div>{...missingItems}</div>;",
+        "function getItems() { return [1]; } const result = <div>{...getItems()}</div>;",
+        "const source = { items: [1] }; const result = <div>{...source.items}</div>;",
+        "const source = { items: [1] }; const result = <div>{...source?.items}</div>;",
+        "const items = [1]; const result = <div>{...[...items]}</div>;",
+        "const result = <div>{...[, 1]}</div>;",
+        "const result = <div>{...({ items: [1] })}</div>;",
+        "const items = [1]; const result = <div>{...(items, items)}</div>;",
+        "const items = [1]; const result = <div>{...`items`}</div>;",
+        "const props = {}; const items = [1]; const result = <div {...props} key=\"x\">{...items}</div>;",
+    };
+    for (hostile_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&fixture, .automatic, true));
+    }
+
+    var hole_arena = std.heap.ArenaAllocator.init(allocator);
+    defer hole_arena.deinit();
+    var hole_fixture = try jsxSpreadChildTestFixture(
+        hole_arena.allocator(),
+        "const result = <div>{...[, 1]}</div>;",
+    );
+    var hole_spread: ?ast_mod.NodeIndex = null;
+    for (hole_fixture.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .jsx_spread_child) {
+            hole_spread = @fromBackingInt(@intCast(raw));
+            break;
+        }
+    }
+    const hole_node = hole_fixture.ast.getNode(hole_spread orelse return error.MissingHoleJsxSpreadChild);
+    try std.testing.expect(!isRetainableJsxSpreadChild(&hole_fixture.ast, &hole_fixture.semantic, hole_node));
+
+    var classic_arena = std.heap.ArenaAllocator.init(allocator);
+    defer classic_arena.deinit();
+    var classic_fixture = try jsxSpreadChildTestFixture(
+        classic_arena.allocator(),
+        "const items = [1, 2]; const result = <div>{...items}</div>;",
+    );
+    try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&classic_fixture, .classic, true));
+    try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&classic_fixture, .automatic, false));
+}
+
+test "#6193 automatic JSX spread child graph proof rejects ten witness mutations" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var fixture = try jsxSpreadChildTestFixture(
+        arena.allocator(),
+        "const items = [1, 2]; const result = <div>{...items}</div>;",
+    );
+    var spread_raw: ?usize = null;
+    var operand_raw: ?usize = null;
+    for (fixture.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .jsx_spread_child) continue;
+        spread_raw = raw;
+        operand_raw = @backingInt(node.data.unary.operand);
+        break;
+    }
+    const spread_index = spread_raw orelse return error.MissingJsxSpreadChild;
+    const operand_index = operand_raw orelse return error.MissingJsxSpreadOperand;
+    const original_spread = fixture.ast.nodes.items[spread_index];
+    const original_operand = fixture.ast.nodes.items[operand_index];
+    const mutable_symbol_ids = @constCast(fixture.semantic.symbol_ids);
+    const original_symbol_id = mutable_symbol_ids[operand_index];
+    const symbol_raw = original_symbol_id orelse return error.MissingJsxSpreadSymbol;
+    const original_symbol_scope = fixture.semantic.symbols.items[symbol_raw].scope_id;
+
+    var detected_mutations: usize = 0;
+    var changed_spread = original_spread;
+    changed_spread.tag = .jsx_expression_container;
+    try std.testing.expect(!isRetainableJsxSpreadChild(&fixture.ast, &fixture.semantic, changed_spread));
+    detected_mutations += 1;
+
+    changed_spread = original_spread;
+    changed_spread.data.unary.operand = .none;
+    try std.testing.expect(!isRetainableJsxSpreadChild(&fixture.ast, &fixture.semantic, changed_spread));
+    detected_mutations += 1;
+
+    changed_spread = original_spread;
+    changed_spread.data.unary.operand = @fromBackingInt(std.math.maxInt(u32));
+    try std.testing.expect(!isRetainableJsxSpreadChild(&fixture.ast, &fixture.semantic, changed_spread));
+    detected_mutations += 1;
+
+    fixture.ast.nodes.items[operand_index].tag = .call_expression;
+    try std.testing.expect(!isRetainableJsxSpreadChild(&fixture.ast, &fixture.semantic, original_spread));
+    fixture.ast.nodes.items[operand_index] = original_operand;
+    detected_mutations += 1;
+
+    mutable_symbol_ids[operand_index] = null;
+    try std.testing.expect(!isRetainableJsxSpreadChild(&fixture.ast, &fixture.semantic, original_spread));
+    mutable_symbol_ids[operand_index] = original_symbol_id;
+    detected_mutations += 1;
+
+    mutable_symbol_ids[operand_index] = std.math.maxInt(u32);
+    try std.testing.expect(!isRetainableJsxSpreadChild(&fixture.ast, &fixture.semantic, original_spread));
+    mutable_symbol_ids[operand_index] = original_symbol_id;
+    detected_mutations += 1;
+
+    fixture.semantic.symbols.items[symbol_raw].scope_id = .none;
+    try std.testing.expect(!isRetainableJsxSpreadChild(&fixture.ast, &fixture.semantic, original_spread));
+    fixture.semantic.symbols.items[symbol_raw].scope_id = original_symbol_scope;
+    detected_mutations += 1;
+
+    fixture.semantic.symbols.items[symbol_raw].scope_id = @fromBackingInt(std.math.maxInt(u32));
+    try std.testing.expect(!isRetainableJsxSpreadChild(&fixture.ast, &fixture.semantic, original_spread));
+    fixture.semantic.symbols.items[symbol_raw].scope_id = original_symbol_scope;
+    detected_mutations += 1;
+
+    var array_arena = std.heap.ArenaAllocator.init(allocator);
+    defer array_arena.deinit();
+    var array_fixture = try jsxSpreadChildTestFixture(
+        array_arena.allocator(),
+        "const result = <div>{...[1, 2]}</div>;",
+    );
+    var array_spread: ?ast_mod.NodeIndex = null;
+    var array_operand: ?ast_mod.NodeIndex = null;
+    for (array_fixture.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .jsx_spread_child) continue;
+        array_spread = @fromBackingInt(@intCast(raw));
+        array_operand = node.data.unary.operand;
+        break;
+    }
+    const array_spread_node = array_fixture.ast.getNode(array_spread orelse return error.MissingArrayJsxSpreadChild);
+    const array_operand_node = array_fixture.ast.getNode(array_operand orelse return error.MissingArrayJsxSpreadOperand);
+    const original_array_data = array_operand_node.data.list;
+    const original_array_member_raw = array_fixture.ast.extra_data.items[original_array_data.start];
+    const original_array_member = array_fixture.ast.nodes.items[original_array_member_raw];
+
+    array_fixture.ast.nodes.items[@backingInt(array_operand.?)].data.list.start = std.math.maxInt(u32);
+    try std.testing.expect(!isRetainableJsxSpreadChild(&array_fixture.ast, &array_fixture.semantic, array_spread_node));
+    array_fixture.ast.nodes.items[@backingInt(array_operand.?)].data.list = original_array_data;
+    detected_mutations += 1;
+
+    array_fixture.ast.nodes.items[original_array_member_raw].tag = .spread_element;
+    try std.testing.expect(!isRetainableJsxSpreadChild(&array_fixture.ast, &array_fixture.semantic, array_spread_node));
+    array_fixture.ast.nodes.items[original_array_member_raw] = original_array_member;
+    detected_mutations += 1;
+
+    try std.testing.expectEqual(@as(usize, 10), detected_mutations);
 }
 
 fn expectRegexTransformPreservesExactSemanticIds(
