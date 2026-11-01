@@ -238,6 +238,15 @@ fn runControl(source: []const u8, storage_count: u32, entry_count: u32, remainin
         if (statement.tag != .function_declaration) continue;
         const name = t.ast.readExtraNode(statement.data.extra, ast.FunctionExtra.name);
         try removed_names.put(allocator, @backingInt(name), {});
+        const actual_sid = t.getSymbolIdAt(name) orelse return error.MissingSourceFunctionBinding;
+        var actual_anchors: usize = 0;
+        for (analyzer.references.items) |reference| {
+            if (!reference.flags.declare or reference.declaration_node_index != name) continue;
+            try std.testing.expectEqual(actual_sid, @backingInt(reference.symbol_id));
+            try std.testing.expect(!reference.flags.read and !reference.flags.write);
+            actual_anchors += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), actual_anchors);
     }
     const source_references = try allocator.dupe(@import("../semantic/symbol.zig").Reference, analyzer.references.items);
     const source_symbols = try allocator.dupe(@import("../semantic/symbol.zig").Symbol, analyzer.symbols.items);
@@ -365,13 +374,13 @@ fn runControl(source: []const u8, storage_count: u32, entry_count: u32, remainin
 
 test "native constructor function cells exact storage and eleven generated AST native controls" {
     const Case = struct { body: []const u8, storage: u32 = 1, entries: u32 = 1, remaining: u32, anchors: usize = 1 };
-    try runControl(original_control, 4, 5, 5, 5);
+    try runControl(original_control, 4, 5, 5, 6);
     const cases = [_]Case{
         .{ .body = "super();console.log(read());function read(){return 7}", .remaining = 2 },
         .{ .body = "function f(){return 7}super();console.log(f(),f.name)", .storage = 0, .remaining = 2 },
         .{ .body = "try{read()}catch(e){console.log(e.name)}let x=7;function read(){return x}super();console.log(read())", .remaining = 4 },
         .{ .body = "function read(){return read}const old=read;read=9;super();console.log(old())", .remaining = 4 },
-        .{ .body = "console.log(read());function read(){return 1}function read(){return 2}super();", .remaining = 2 },
+        .{ .body = "console.log(read());function read(){return 1}function read(){return 2}super();", .remaining = 2, .anchors = 2 },
         .{ .body = "var read=9;function read(){return 7}super();console.log(read)", .remaining = 3 },
         .{ .body = "function read(){return 7}var read=9;super();console.log(read)", .remaining = 3 },
         .{ .body = "function \\u0066oo(){return 7}super();console.log(foo.name,foo())", .remaining = 2 },
