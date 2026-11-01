@@ -63,11 +63,23 @@ const cases = {
     }
     console.log(new Box('current', 6).value, reads);
   `,
-  'derived constructor string super-property lexical read': `
+  'derived constructor primitive-literal super-property lexical reads': `
     var reads = 0;
-    class Base { get current() { reads++; return 7; } }
+    class Base {
+      get current() { reads++; return 7; }
+      get true() { reads++; return 9; }
+      get null() { reads++; return 10; }
+    }
+    Object.defineProperty(Base.prototype, '1', { get: function() { reads++; return 8; } });
     class Box extends Base {
-      constructor() { super(); const local = super['current']; this.value = local; }
+      constructor() {
+        super();
+        const stringValue = super['current'];
+        const numberValue = super[1];
+        const booleanValue = super[true];
+        const nullValue = super[null];
+        this.value = stringValue + numberValue + booleanValue + nullValue;
+      }
     }
     console.log(new Box().value, reads);
   `,

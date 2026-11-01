@@ -40741,6 +40741,111 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
+        name: 'derived constructor numeric-literal super-property key retains its graph',
+        source:
+          'class Base {} Base.prototype[1] = 10; class DerivedLocal extends Base { constructor() { super(); const value = super[1]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'retained',
+        output: '10\n',
+      },
+      {
+        name: 'derived constructor boolean-literal super-property key retains its graph',
+        source:
+          'class Base {} Base.prototype["true"] = 11; class DerivedLocal extends Base { constructor() { super(); const value = super[true]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'retained',
+        output: '11\n',
+      },
+      {
+        name: 'derived constructor null-literal super-property key retains its graph',
+        source:
+          'class Base {} Base.prototype["null"] = 12; class DerivedLocal extends Base { constructor() { super(); const value = super[null]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'retained',
+        output: '12\n',
+      },
+      {
+        name: 'derived constructor arithmetic numeric super-property key stays on reanalysis',
+        source:
+          'class Base {} Base.prototype[1] = 13; class DerivedLocal extends Base { constructor() { super(); const value = super[1 + 0]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '13\n',
+      },
+      {
+        name: 'derived constructor unary numeric super-property key stays on reanalysis',
+        source:
+          'class Base {} Base.prototype[1] = 14; class DerivedLocal extends Base { constructor() { super(); const value = super[-1]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: 'undefined\n',
+      },
+      {
+        name: 'derived constructor bigint super-property key stays on reanalysis',
+        source:
+          'class Base {} Base.prototype[1] = 15; class DerivedLocal extends Base { constructor() { super(); const value = super[1n]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '15\n',
+      },
+      {
+        name: 'derived constructor regexp super-property key stays on reanalysis',
+        source:
+          'class Base {} Base.prototype["/1/"] = 16; class DerivedLocal extends Base { constructor() { super(); const value = super[/1/]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '16\n',
+      },
+      {
+        name: 'derived constructor template super-property key stays on reanalysis',
+        source:
+          'class Base {} Base.prototype[1] = 17; class DerivedLocal extends Base { constructor() { super(); const value = super[`1`]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '17\n',
+      },
+      {
+        name: 'derived constructor call super-property key stays on reanalysis',
+        source:
+          'class Base {} Base.prototype[1] = 18; class DerivedLocal extends Base { constructor() { super(); const value = super[Number(1)]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '18\n',
+      },
+      {
+        name: 'derived constructor array super-property key stays on reanalysis',
+        source:
+          'class Base {} Base.prototype[1] = 19; class DerivedLocal extends Base { constructor() { super(); const value = super[[1]]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '19\n',
+      },
+      {
+        name: 'derived constructor object super-property key stays on reanalysis',
+        source:
+          'class Base {} Base.prototype[1] = 20; class DerivedLocal extends Base { constructor() { super(); const value = super[({ toString() { return "1"; } })]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '20\n',
+      },
+      {
+        name: 'derived constructor function super-property key stays on reanalysis',
+        source:
+          'function key() { return 1; } class Base {} Base.prototype[1] = 21; class DerivedLocal extends Base { constructor() { super(); const value = super[key()]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '21\n',
+      },
+      {
+        name: 'derived constructor nested super-property key stays on reanalysis',
+        source:
+          'class Base { get key() { return 1; } } Base.prototype[1] = 22; class DerivedLocal extends Base { constructor() { super(); const value = super[super.key]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '22\n',
+      },
+      {
+        name: 'derived constructor composite null super-property key stays on reanalysis',
+        source:
+          'class Base {} Base.prototype["null"] = 23; class DerivedLocal extends Base { constructor() { super(); const value = super[null + ""]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '23\n',
+      },
+      {
+        name: 'derived constructor composite boolean super-property key stays on reanalysis',
+        source:
+          'class Base {} Base.prototype["true"] = 24; class DerivedLocal extends Base { constructor() { super(); const value = super[!false]; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '24\n',
+      },
+      {
         name: 'derived constructor lexical super-property call key stays on reanalysis',
         source:
           'var calls = 0; function key() { calls++; return "current"; } class Base { get current() { return 9; } } class DerivedLocal extends Base { constructor() { super(); const value = super[key()]; this.value = value; } } console.log(new DerivedLocal().value, calls);',
@@ -43340,17 +43445,32 @@ describe('ES5 same-var-scope lexical declarations retain the bundler graph (#619
     }
   }, 60_000);
 
-  test('derived constructor string-literal super-property lexical initializers retain exact output identities', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-derived-string-super-lexical-retained-'));
+  test('derived constructor primitive-literal super-property lexical initializers retain exact output identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-derived-primitive-super-lexical-retained-'));
     const input = join(dir, 'entry.mjs');
     const output = join(dir, 'output.cjs');
-    const names = Array.from({ length: 10 }, (_, index) => `stringSuperValue${index}`);
+    const names = Array.from({ length: 10 }, (_, index) => `primitiveSuperValue${index}`);
+    const propertyKeys = ['"current"', '1', 'true', 'null'];
     const declarations = names
-      .map((name, index) => `${index === 0 ? 'let' : 'const'} ${name} = super["current"];`)
+      .map(
+        (name, index) =>
+          `${index === 0 ? 'let' : 'const'} ${name} = super[${propertyKeys[index % propertyKeys.length]}];`,
+      )
       .join('\n');
     const expected = `${names.map((_, index) => index + 1).join(' ')}\n`;
     const valueExpression = names.join(" + ' ' + ");
-    const source = `class DerivedBase { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } }\nclass DerivedReader extends DerivedBase { constructor() {\n  super();\n${declarations}\n  this.values = ${valueExpression};\n} }\nconsole.log(new DerivedReader().values);`;
+    const source = `let cursor = 0;
+class DerivedBase {}
+Object.defineProperty(DerivedBase.prototype, 'current', { get: function() { return ++cursor; } });
+Object.defineProperty(DerivedBase.prototype, '1', { get: function() { return ++cursor; } });
+Object.defineProperty(DerivedBase.prototype, 'true', { get: function() { return ++cursor; } });
+Object.defineProperty(DerivedBase.prototype, 'null', { get: function() { return ++cursor; } });
+class DerivedReader extends DerivedBase { constructor() {
+  super();
+${declarations}
+  this.values = ${valueExpression};
+} }
+console.log(new DerivedReader().values);`;
     try {
       writeFileSync(input, source);
       const native = spawnSync('node', [input], { encoding: 'utf8' });
@@ -43393,7 +43513,7 @@ describe('ES5 same-var-scope lexical declarations retain the bundler graph (#619
         expect(valueList.match(token), name).toHaveLength(1);
         const mutatedList = valueList.replace(token, replacement);
         const mutant = emitted.slice(0, valuesStart) + mutatedList + emitted.slice(valuesEnd);
-        const mutantPath = join(dir, `string-super-reference-${index}.cjs`);
+        const mutantPath = join(dir, `primitive-super-reference-${index}.cjs`);
         writeFileSync(mutantPath, mutant);
         const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
         expect(syntax.status, `reference ${index}: ${syntax.stderr}`).toBe(0);

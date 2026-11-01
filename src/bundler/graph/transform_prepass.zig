@@ -4720,8 +4720,8 @@ fn isSafeConstructorDirectLexicalDeclaration(
 
 /// A derived constructor lexical declaration may use one direct `super`
 /// property initializer after the leading `super()` call. Computed access is
-/// limited to a string literal key or an exact, unescaped source-bound
-/// identifier key. Direct
+/// limited to string, number, boolean, or null literals, or an exact,
+/// unescaped source-bound identifier key. Direct
 /// `this.property` initializers are handled by the shared declaration gate,
 /// which this function reaches only after the same leading-super check. Keep
 /// `super` reads separate from ordinary safe values because class lowering
@@ -4754,11 +4754,13 @@ fn isSafePostSuperDirectLexicalDeclaration(
         const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[member_extra + 1]));
         if (property_idx.isNone() or @backingInt(property_idx) >= ast.nodes.items.len) return false;
         const property = ast.getNode(property_idx);
-        if (property.tag == .identifier_reference) {
-            if (!isBoundSourceIdentifierReference(ast, semantic, property_idx) or
-                std.mem.indexOfScalar(u8, ast.getText(property.span), '\\') != null) return false;
-        } else if (property.tag != .string_literal) {
-            return false;
+        switch (property.tag) {
+            .identifier_reference => {
+                if (!isBoundSourceIdentifierReference(ast, semantic, property_idx) or
+                    std.mem.indexOfScalar(u8, ast.getText(property.span), '\\') != null) return false;
+            },
+            .string_literal, .numeric_literal, .boolean_literal, .null_literal => {},
+            else => return false,
         }
     } else if (member.tag != .static_member_expression) {
         return false;
@@ -23041,6 +23043,9 @@ test "ES5 audited constructor lexical initializers retain the production semanti
         "class Base { get current() { return 5; } } class Read extends Base { constructor() { super(); const local = this.current; this.value = local; } } console.log(new Read().value);",
         "class Base { get current() { return 6; } } class Read extends Base { constructor(key) { super(); const local = super[key]; this.value = local; } } console.log(new Read('current').value);",
         "class Base { get current() { return 7; } } class Read extends Base { constructor() { super(); const local = super['current']; this.value = local; } } console.log(new Read().value);",
+        "class Base {} Base.prototype[1] = 8; class Read extends Base { constructor() { super(); const local = super[1]; this.value = local; } } console.log(new Read().value);",
+        "class Base { get true() { return 9; } } class Read extends Base { constructor() { super(); const local = super[true]; this.value = local; } } console.log(new Read().value);",
+        "class Base { get null() { return 10; } } class Read extends Base { constructor() { super(); const local = super[null]; this.value = local; } } console.log(new Read().value);",
     };
     for (sources) |source| {
         var tmp = std.testing.tmpDir(.{});
