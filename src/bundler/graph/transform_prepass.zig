@@ -4664,15 +4664,16 @@ fn isSafeConstructorVarDeclaration(
 /// A direct constructor `let`/`const` already belongs to its emitted function
 /// scope. Keep simple bindings with exact source rows, safe initializers (or an
 /// uninitialized `let`), and no reads before the complete declaration
-/// statement. A direct static `this.property` read is also safe once `this` is
-/// initialized: at the body root for base constructors or after a proven
-/// leading `super()` call for derived constructors. Nested blocks keep their
-/// separate scope contract.
+/// statement. A direct static `this.property` read is safe once `this` is
+/// initialized. Direct computed `this[key]` reads are limited to a proven
+/// post-`super()` constructor position and an audited primitive or exact
+/// source-bound identifier key. Nested blocks keep their separate scope
+/// contract.
 fn isSafeConstructorDirectLexicalDeclaration(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     declaration: ast_mod.Node,
-    allow_direct_super_property_initializer: bool,
+    allow_post_super_property_initializer: bool,
 ) bool {
     if (!isRetainableSameVarScopeLexicalDeclaration(ast, semantic, declaration)) return false;
     const extras = ast.extra_data.items;
@@ -4698,8 +4699,9 @@ fn isSafeConstructorDirectLexicalDeclaration(
         else
             isSafeConstructorValue(ast, semantic, initializer) or
                 isSafeConstructorThisPropertyTarget(ast, initializer) or
-                (allow_direct_super_property_initializer and
-                    isSafePostSuperPropertyRead(ast, semantic, initializer));
+                (allow_post_super_property_initializer and
+                    (isSafePostSuperPropertyRead(ast, semantic, initializer) or
+                        isSafePostSuperComputedThisPropertyAccess(ast, semantic, initializer)));
         if (!type_annotation.isNone() or !safe_initializer or
             !isBoundSourceIdentifierBinding(ast, semantic, binding)) return false;
 
@@ -4757,6 +4759,7 @@ fn isSafePostSuperLexicalInitializer(
     semantic: *const ModuleSemanticData,
     initializer: ast_mod.NodeIndex,
 ) bool {
+    if (isSafePostSuperComputedThisPropertyAccess(ast, semantic, initializer)) return true;
     if (initializer.isNone() or @backingInt(initializer) >= ast.nodes.items.len or
         !isRetainableDirectSuperPropertyAccess(ast, initializer, false)) return false;
     const extras = ast.extra_data.items;
@@ -4765,20 +4768,45 @@ fn isSafePostSuperLexicalInitializer(
         const member_extra = member.data.extra;
         if (member_extra > extras.len or extras.len - member_extra < 3) return false;
         const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[member_extra + 1]));
-        if (property_idx.isNone() or @backingInt(property_idx) >= ast.nodes.items.len) return false;
-        const property = ast.getNode(property_idx);
-        switch (property.tag) {
-            .identifier_reference => {
-                if (!isBoundSourceIdentifierReference(ast, semantic, property_idx) or
-                    std.mem.indexOfScalar(u8, ast.getText(property.span), '\\') != null) return false;
-            },
-            .string_literal, .numeric_literal, .boolean_literal, .null_literal => {},
-            else => return false,
-        }
+        if (!isSafePostSuperLexicalPropertyKey(ast, semantic, property_idx)) return false;
     } else if (member.tag != .static_member_expression) {
         return false;
     }
     return true;
+}
+
+fn isSafePostSuperComputedThisPropertyAccess(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    expression_idx: ast_mod.NodeIndex,
+) bool {
+    if (expression_idx.isNone() or @backingInt(expression_idx) >= ast.nodes.items.len or
+        ast_mod.spineHasOptionalChain(ast, expression_idx)) return false;
+    const member = ast.getNode(expression_idx);
+    if (member.tag != .computed_member_expression) return false;
+    const extras = ast.extra_data.items;
+    const extra = member.data.extra;
+    if (extra > extras.len or extras.len - extra < 3) return false;
+    const receiver_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+    const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + 1]));
+    if (receiver_idx.isNone() or @backingInt(receiver_idx) >= ast.nodes.items.len or
+        ast.getNode(receiver_idx).tag != .this_expression) return false;
+    return isSafePostSuperLexicalPropertyKey(ast, semantic, property_idx);
+}
+
+fn isSafePostSuperLexicalPropertyKey(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    property_idx: ast_mod.NodeIndex,
+) bool {
+    if (property_idx.isNone() or @backingInt(property_idx) >= ast.nodes.items.len) return false;
+    const property = ast.getNode(property_idx);
+    return switch (property.tag) {
+        .identifier_reference => isBoundSourceIdentifierReference(ast, semantic, property_idx) and
+            std.mem.indexOfScalar(u8, ast.getText(property.span), '\\') == null,
+        .string_literal, .numeric_literal, .boolean_literal, .null_literal => true,
+        else => false,
+    };
 }
 
 fn isSafeConstructorForEachHead(
@@ -23060,6 +23088,11 @@ test "ES5 audited constructor lexical initializers retain the production semanti
         "class Base {} Base.prototype[1] = 8; class Read extends Base { constructor() { super(); const local = super[1]; this.value = local; } } console.log(new Read().value);",
         "class Base { get true() { return 9; } } class Read extends Base { constructor() { super(); const local = super[true]; this.value = local; } } console.log(new Read().value);",
         "class Base { get null() { return 10; } } class Read extends Base { constructor() { super(); const local = super[null]; this.value = local; } } console.log(new Read().value);",
+        "class Base { get current() { return 11; } } class Read extends Base { constructor() { super(); const local = this['current']; this.value = local; } } console.log(new Read().value);",
+        "class Base {} Base.prototype[1] = 12; class Read extends Base { constructor() { super(); const local = this[1]; this.value = local; } } console.log(new Read().value);",
+        "class Base { constructor() { this.current = 13; } } class Read extends Base { constructor(key) { super(); const local = this[key]; this.value = local; } } console.log(new Read('current').value);",
+        "class Base {} Base.prototype['true'] = 14; class Read extends Base { constructor() { super(); const local = this[true]; this.value = local; } } console.log(new Read().value);",
+        "class Base {} Base.prototype['null'] = 15; class Read extends Base { constructor() { super(); const local = this[null]; this.value = local; } } console.log(new Read().value);",
     };
     for (sources) |source| {
         var tmp = std.testing.tmpDir(.{});

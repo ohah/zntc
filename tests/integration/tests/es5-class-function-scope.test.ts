@@ -83,6 +83,27 @@ const cases = {
     }
     console.log(new Box().value, reads);
   `,
+  'derived constructor computed this-property lexical reads': `
+    var reads = 0;
+    class Base {
+      get current() { reads++; return this instanceof Box ? 5 : -1; }
+    }
+    Base.prototype[1] = 6;
+    Base.prototype['true'] = 7;
+    Base.prototype['null'] = 8;
+    class Box extends Base {
+      constructor(key) {
+        super();
+        const stringValue = this['current'];
+        const numberValue = this[1];
+        const booleanValue = this[true];
+        const nullValue = this[null];
+        const boundValue = this[key];
+        this.value = stringValue + numberValue + booleanValue + nullValue + boundValue;
+      }
+    }
+    console.log(new Box('current').value, reads);
+  `,
   'derived constructor multi-declarator direct super-property reads': `
     var reads = 0;
     class Base {
