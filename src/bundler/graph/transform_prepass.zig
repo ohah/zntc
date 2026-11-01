@@ -16774,6 +16774,8 @@ fn sameGenericPrepassSemanticBacking(left: *const ModuleSemanticData, right: *co
         !sameSnapshotSliceBacking(@import("../../semantic/scope_frame_history.zig").ClassKeySource, left.scope_history.source_class_keys, right.scope_history.source_class_keys) or
         !sameSnapshotSliceBacking(@import("../../semantic/lowered_worklet_class.zig").Creator, left.scope_history.worklet_class_creators, right.scope_history.worklet_class_creators) or
         !sameSnapshotSliceBacking(@import("../../semantic/lowered_worklet_class.zig").Witness, left.scope_history.lowered_worklet_classes, right.scope_history.lowered_worklet_classes) or
+        !sameSnapshotSliceBacking(@import("../../semantic/source_drop_registry.zig").Statement, left.scope_history.source_dropped_statements, right.scope_history.source_dropped_statements) or
+        !sameSnapshotSliceBacking(@import("../../semantic/source_drop_registry.zig").Edge, left.scope_history.source_drop_edges, right.scope_history.source_drop_edges) or
         !sameSnapshotSliceBacking(@import("../../bundler/strict_function_context.zig").Role, left.strict_output_context.functions, right.strict_output_context.functions)) return false;
     if (left.runtime_identities) |before| {
         const current = right.runtime_identities orelse return false;
@@ -16796,6 +16798,8 @@ fn sameGenericPrepassSemanticContents(left: *const ModuleSemanticData, right: *c
         !sameSnapshotSliceValues(@import("../../semantic/scope_frame_history.zig").ClassKeySource, left.scope_history.source_class_keys, right.scope_history.source_class_keys) or
         !sameSnapshotSliceValues(@import("../../semantic/lowered_worklet_class.zig").Creator, left.scope_history.worklet_class_creators, right.scope_history.worklet_class_creators) or
         !sameSnapshotSliceValues(@import("../../semantic/lowered_worklet_class.zig").Witness, left.scope_history.lowered_worklet_classes, right.scope_history.lowered_worklet_classes) or
+        !sameSnapshotSliceValues(@import("../../semantic/source_drop_registry.zig").Statement, left.scope_history.source_dropped_statements, right.scope_history.source_dropped_statements) or
+        !sameSnapshotSliceValues(@import("../../semantic/source_drop_registry.zig").Edge, left.scope_history.source_drop_edges, right.scope_history.source_drop_edges) or
         !sameSnapshotSliceValues(@import("../../bundler/strict_function_context.zig").Role, left.strict_output_context.functions, right.strict_output_context.functions) or
         !sameSemanticMapSnapshots(left, right)) return false;
     if (left.runtime_identities) |before| {

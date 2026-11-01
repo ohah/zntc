@@ -40,7 +40,8 @@ pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
 // v27: source-owned typed retirement graph state survives cache round trips.
 // v39: exact producer-owned static capture aliases retain their retirement proof.
 // v43: extracted await-loop source witnesses and function-name environment retirements.
-pub const FORMAT_VERSION: u32 = 48;
+// v49: class-key, Worklet, enum-member and explicit-drop proofs share one wire layout.
+pub const FORMAT_VERSION: u32 = 49;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -231,14 +232,14 @@ comptime {
         @backingInt(StrictName.binding) != 0 or @backingInt(StrictName.anonymous_default) != 1)
         @compileError("strict role wire tags changed; update codec/version");
     const Retirement = @import("../semantic/source_owned_retirement.zig").Witness;
-    const retirement_fields = [_][]const u8{ "symbol_id", "before", "declaration", "declaration_node", "source_owner", "source_owner_node", "source_scope", "source_parent", "source_name", "source_name_symbol", "closure_scope", "closure_parent", "reason", "erased_import", "static_capture_alias", "function_name_elision", "enum_environment" };
+    const retirement_fields = [_][]const u8{ "symbol_id", "before", "declaration", "declaration_node", "source_owner", "source_owner_node", "source_scope", "source_parent", "source_name", "source_name_symbol", "closure_scope", "closure_parent", "reason", "erased_import", "static_capture_alias", "function_name_elision", "enum_environment", "dropped_statement" };
     if (@typeInfo(Retirement).@"struct".field_names.len != retirement_fields.len) @compileError("source retirement wire fields changed; update codec/version");
     for (retirement_fields, @typeInfo(Retirement).@"struct".field_names) |expected, actual| if (!std.mem.eql(u8, expected, actual)) @compileError("source retirement wire order changed; update codec/version");
     const StaticAlias = @import("../semantic/static_capture_retirement.zig").Witness;
     const static_alias_fields = [_][]const u8{ "statement", "statement_node", "declarator", "declarator_node", "initializer", "initializer_node", "read", "read_node", "class_binding_node", "class_before", "class_scope", "replacement" };
     if (@typeInfo(StaticAlias).@"struct".field_names.len != static_alias_fields.len) @compileError("static capture wire fields changed; update codec/version");
     for (static_alias_fields, @typeInfo(StaticAlias).@"struct".field_names) |expected, actual| if (!std.mem.eql(u8, expected, actual)) @compileError("static capture wire order changed; update codec/version");
-    if (std.enums.values(@FieldType(Retirement, "reason")).len != 6) @compileError("source retirement reason tags changed; update codec/version");
+    if (std.enums.values(@FieldType(Retirement, "reason")).len != 7) @compileError("source retirement reason tags changed; update codec/version");
     const NameElision = @import("../semantic/function_name_retirement.zig");
     const name_witness_fields = [_][]const u8{ "event", "name_scope", "parameter_scope", "retire_parameters", "body_scope", "outer_scope", "name_frame", "parameter_frame", "body_frame", "formals", "engine", "owners" };
     if (@typeInfo(NameElision.Witness).@"struct".field_names.len != name_witness_fields.len) @compileError("name retirement wire fields changed; update codec/version");
@@ -264,7 +265,7 @@ comptime {
     const LoweredWorklet = @import("../semantic/lowered_worklet_class.zig");
     const history_types = .{ FrameHistory.History, FrameHistory.Event, FrameHistory.Owner, FrameHistory.OwnerBinding, FrameHistory.Actor, FrameHistory.ClassKeySource, @import("../semantic/class_key_evaluation.zig").Transfer, LoweredWorklet.Class, LoweredWorklet.Function, LoweredWorklet.Creator, LoweredWorklet.Witness };
     const history_fields = .{
-        &.{ "source_scopes", "source_owners", "source_initializers", "source_computed_awaits", "source_class_keys", "worklet_class_creators", "lowered_worklet_classes", "events" },
+        &.{ "source_scopes", "source_owners", "source_initializers", "source_computed_awaits", "source_class_keys", "worklet_class_creators", "lowered_worklet_classes", "source_dropped_statements", "source_drop_edges", "events" },
         &.{ "kind", "scope", "before", "after", "owner_before", "owner_after", "owner_edges", "trigger_scope", "trigger_parent", "parent_owner", "actor" },
         &.{ "node", "tag", "span", "words" },
         &.{ "scope", "owner", "edges" },
@@ -450,7 +451,7 @@ fn putNumTexts(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, m: *const std.
 
 fn putRetirementNode(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, node: @import("../parser/ast.zig").Node) !void {
     switch (node.tag) {
-        .binding_identifier, .identifier_reference, .import_default_specifier, .import_namespace_specifier, .function_declaration, .function_expression, .arrow_function_expression, .ts_enum_declaration, .import_declaration, .import_specifier, .class_declaration, .class_expression, .variable_declaration, .variable_declarator => {},
+        .binding_identifier, .identifier_reference, .import_default_specifier, .import_namespace_specifier, .function_declaration, .function_expression, .arrow_function_expression, .ts_enum_declaration, .import_declaration, .import_specifier, .class_declaration, .class_expression, .variable_declaration, .variable_declarator, .labeled_statement, .expression_statement, .debugger_statement => {},
         else => return error.InvalidSourceOwnedRetirement,
     }
     try putU32(buf, alloc, @backingInt(node.tag));
@@ -461,11 +462,16 @@ fn putRetirementNode(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, node: @i
             try putU32(buf, alloc, node.data.string_ref.start);
             try putU32(buf, alloc, node.data.string_ref.end);
         },
-        .import_specifier => {
+        .import_specifier, .labeled_statement => {
             try putU32(buf, alloc, @backingInt(node.data.binary.left));
             try putU32(buf, alloc, @backingInt(node.data.binary.right));
             try putU32(buf, alloc, node.data.binary.flags);
         },
+        .expression_statement => {
+            try putU32(buf, alloc, @backingInt(node.data.unary.operand));
+            try putU32(buf, alloc, node.data.unary.flags);
+        },
+        .debugger_statement => try putU32(buf, alloc, node.data.none),
         else => try putU32(buf, alloc, node.data.extra),
     }
 }
@@ -477,18 +483,24 @@ fn readRetirementNode(r: *Reader, declaration: bool) Error!@import("../parser/as
         .binding_identifier, .identifier_reference, .import_default_specifier, .import_namespace_specifier => {},
         else => return error.Truncated,
     } else switch (tag) {
-        .function_declaration, .function_expression, .arrow_function_expression, .ts_enum_declaration, .import_declaration, .import_specifier, .import_default_specifier, .import_namespace_specifier, .class_declaration, .class_expression, .variable_declaration, .variable_declarator => {},
+        .function_declaration, .function_expression, .arrow_function_expression, .ts_enum_declaration, .import_declaration, .import_specifier, .import_default_specifier, .import_namespace_specifier, .class_declaration, .class_expression, .variable_declaration, .variable_declarator, .labeled_statement, .expression_statement, .debugger_statement => {},
         else => return error.Truncated,
     }
     var node: Node = .{ .tag = tag, .span = .{ .start = try r.u32v(), .end = try r.u32v() }, .data = std.mem.zeroes(Node.Data) };
     switch (tag) {
         .binding_identifier, .identifier_reference, .import_default_specifier, .import_namespace_specifier => node.data.string_ref = .{ .start = try r.u32v(), .end = try r.u32v() },
-        .import_specifier => {
+        .import_specifier, .labeled_statement => {
             const left = try r.u32v();
             const right = try r.u32v();
             const flags = std.math.cast(u16, try r.u32v()) orelse return error.Truncated;
             node.data.binary = .{ .left = @fromBackingInt(left), .right = @fromBackingInt(right), .flags = flags };
         },
+        .expression_statement => {
+            const operand = try r.u32v();
+            const flags = std.math.cast(u16, try r.u32v()) orelse return error.Truncated;
+            node.data.unary = .{ .operand = @fromBackingInt(operand), .flags = flags };
+        },
+        .debugger_statement => node.data.none = try r.u32v(),
         else => node.data.extra = try r.u32v(),
     }
     return node;
@@ -753,6 +765,36 @@ fn readEnumMember(r: *Reader) Error!@import("../semantic/enum_environment_retire
     return .{ .declaration = declaration, .declaration_node = node, .key = @fromBackingInt(try r.u32v()), .key_node = try readEnumMemberLeaf(r), .read_node = try readEnumMemberLeaf(r) };
 }
 
+fn putDropNode(buf: *std.ArrayList(u8), a: std.mem.Allocator, node: @import("../semantic/source_drop_registry.zig").Node) !void {
+    try putU32(buf, a, @backingInt(node.index));
+    try putU32(buf, a, @backingInt(node.tag));
+    try putU32(buf, a, node.span.start);
+    try putU32(buf, a, node.span.end);
+    try putU32(buf, a, node.source_symbol orelse std.math.maxInt(u32));
+    for (node.data) |byte| try putU8(buf, a, byte);
+    try putU32(buf, a, node.extra_len);
+    for (node.extra[0..node.extra_len]) |word| try putU32(buf, a, word);
+}
+
+fn readDropNode(r: *Reader, node_count: usize, symbol_count: usize) Error!@import("../semantic/source_drop_registry.zig").Node {
+    const Drop = @import("../semantic/source_drop_registry.zig");
+    const raw = try r.u32v();
+    const tag = std.enums.fromInt(@import("../parser/ast.zig").Node.Tag, try r.u32v()) orelse return error.Truncated;
+    var result: Drop.Node = .{ .index = @fromBackingInt(raw), .tag = tag, .span = .{ .start = try r.u32v(), .end = try r.u32v() } };
+    if (raw >= node_count or result.span.start > result.span.end) return error.Truncated;
+    const source_symbol = try r.u32v();
+    if (source_symbol != std.math.maxInt(u32)) {
+        if (source_symbol >= symbol_count) return error.Truncated;
+        result.source_symbol = source_symbol;
+    }
+    for (&result.data) |*byte| byte.* = try r.byte();
+    const count = try r.u32v();
+    if (count != (tag.runtimeExtraWords() orelse 0) or count > result.extra.len) return error.Truncated;
+    result.extra_len = @intCast(count);
+    for (result.extra[0..count]) |*word| word.* = try r.u32v();
+    return result;
+}
+
 fn putFrameHistory(buf: *std.ArrayList(u8), a: std.mem.Allocator, history: @import("../semantic/scope_frame_history.zig").History) !void {
     try putU32(buf, a, @intCast(history.source_scopes.len));
     for (history.source_scopes) |scope| try putScope(buf, a, scope);
@@ -787,6 +829,26 @@ fn putFrameHistory(buf: *std.ArrayList(u8), a: std.mem.Allocator, history: @impo
     for (history.worklet_class_creators) |creator| try putWorkletClassCreator(buf, a, creator);
     try putU32(buf, a, @intCast(history.lowered_worklet_classes.len));
     for (history.lowered_worklet_classes) |witness| try putLoweredWorkletClass(buf, a, witness);
+    try putU32(buf, a, @intCast(history.source_dropped_statements.len));
+    for (history.source_dropped_statements) |entry| {
+        try putU32(buf, a, @backingInt(entry.action));
+        try putDropNode(buf, a, entry.source);
+        try putDropNode(buf, a, entry.selected);
+        try putU32(buf, a, entry.entry_epoch);
+        try putU32(buf, a, entry.selection_epoch);
+        try putU32(buf, a, @backingInt(entry.execution_scope));
+        try putScope(buf, a, entry.execution_frame);
+        try putU32(buf, a, entry.edge_start);
+        try putU32(buf, a, entry.edge_len);
+    }
+    try putU32(buf, a, @intCast(history.source_drop_edges.len));
+    for (history.source_drop_edges) |entry| {
+        try putDropNode(buf, a, entry.parent);
+        try putU8(buf, a, @intFromBool(entry.child != null));
+        if (entry.child) |child| try putDropNode(buf, a, child);
+        try putU32(buf, a, entry.ordinal);
+        try putU32(buf, a, entry.child_count);
+    }
     try putU32(buf, a, @intCast(history.events.len));
     for (history.events) |event| {
         try putU32(buf, a, @backingInt(event.kind));
@@ -805,7 +867,7 @@ fn putFrameHistory(buf: *std.ArrayList(u8), a: std.mem.Allocator, history: @impo
         if (event.actor.module_index) |module_index| try putU32(buf, a, module_index);
     }
 }
-fn readFrameHistory(r: *Reader, a: std.mem.Allocator, scope_count: usize, node_count: usize) Error!@import("../semantic/scope_frame_history.zig").History {
+fn readFrameHistory(r: *Reader, a: std.mem.Allocator, scope_count: usize, node_count: usize, symbol_count: usize) Error!@import("../semantic/scope_frame_history.zig").History {
     const H = @import("../semantic/scope_frame_history.zig");
     const count = try r.u32v();
     if (count > scope_count or count > r.remaining() / 4) return error.Truncated;
@@ -854,6 +916,33 @@ fn readFrameHistory(r: *Reader, a: std.mem.Allocator, scope_count: usize, node_c
     const lowered_count = try checkedMapCount(r, try r.u32v());
     const lowered = try a.alloc(@import("../semantic/lowered_worklet_class.zig").Witness, lowered_count);
     for (lowered) |*witness| witness.* = try readLoweredWorkletClass(r, scope_count, node_count);
+    const Drop = @import("../semantic/source_drop_registry.zig");
+    const dropped_count = try checkedMapCount(r, try r.u32v());
+    const dropped = try a.alloc(Drop.Statement, dropped_count);
+    for (dropped) |*entry| {
+        entry.* = .{
+            .action = std.enums.fromInt(Drop.Action, try r.u32v()) orelse return error.Truncated,
+            .source = try readDropNode(r, node_count, symbol_count),
+            .selected = try readDropNode(r, node_count, symbol_count),
+            .entry_epoch = try r.u32v(),
+            .selection_epoch = try r.u32v(),
+            .execution_scope = @fromBackingInt(try r.u32v()),
+            .execution_frame = try readScope(r),
+            .edge_start = try r.u32v(),
+            .edge_len = try r.u32v(),
+        };
+        if (entry.execution_scope.isNone() or entry.execution_scope.toIndex() >= scope_count or entry.entry_epoch > entry.selection_epoch) return error.Truncated;
+    }
+    const drop_edge_count = try checkedMapCount(r, try r.u32v());
+    const drop_edges = try a.alloc(Drop.Edge, drop_edge_count);
+    for (drop_edges) |*entry| {
+        const parent = try readDropNode(r, node_count, symbol_count);
+        const has_child = try r.byte();
+        if (has_child > 1) return error.Truncated;
+        entry.* = .{ .parent = parent, .child = if (has_child == 1) try readDropNode(r, node_count, symbol_count) else null, .ordinal = try r.u32v(), .child_count = try r.u32v() };
+        if (entry.ordinal >= entry.child_count) return error.Truncated;
+    }
+    for (dropped) |entry| if (entry.edge_start > drop_edges.len or entry.edge_len > drop_edges.len - entry.edge_start) return error.Truncated;
     const event_count = try checkedMapCount(r, try r.u32v());
     const events = try a.alloc(H.Event, event_count);
     for (events) |*event| {
@@ -877,8 +966,8 @@ fn readFrameHistory(r: *Reader, a: std.mem.Allocator, scope_count: usize, node_c
         inline for (.{ old_owner, new_owner, parent }) |owner| if (owner) |value| if (@backingInt(value.node) >= node_count) return error.Truncated;
         event.* = .{ .kind = kind, .scope = scope, .before = before, .after = after, .owner_before = old_owner, .owner_after = new_owner, .owner_edges = owner_edges, .trigger_scope = trigger_scope, .trigger_parent = trigger_parent, .parent_owner = parent, .actor = .{ .role = role, .module_index = module_index } };
     }
-    if (count == 0 and (owner_count != 0 or initializer_count != 0 or computed_count != 0 or creator_count != 0 or lowered_count != 0 or class_key_count != 0 or event_count != 0)) return error.Truncated;
-    return .{ .source_scopes = scopes, .source_owners = owners, .source_initializers = initializers, .source_computed_awaits = computed, .worklet_class_creators = creators, .lowered_worklet_classes = lowered, .source_class_keys = class_keys, .events = events };
+    if (count == 0 and (owner_count != 0 or initializer_count != 0 or computed_count != 0 or creator_count != 0 or lowered_count != 0 or class_key_count != 0 or dropped_count != 0 or drop_edge_count != 0 or event_count != 0)) return error.Truncated;
+    return .{ .source_scopes = scopes, .source_owners = owners, .source_initializers = initializers, .source_computed_awaits = computed, .worklet_class_creators = creators, .lowered_worklet_classes = lowered, .source_class_keys = class_keys, .source_dropped_statements = dropped, .source_drop_edges = drop_edges, .events = events };
 }
 
 /// semantic 의 relocatable 부분을 `out` 에 직렬화 (append).
@@ -1131,6 +1220,11 @@ pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc:
             try putU32(&payload, alloc, @intFromBool(environment.member != null));
             if (environment.member) |member| try putEnumMember(&payload, alloc, member);
         }
+        try putU32(&payload, alloc, @intFromBool(witness.dropped_statement != null));
+        if (witness.dropped_statement) |drop| {
+            try putU32(&payload, alloc, drop.statement);
+            try putU32(&payload, alloc, drop.scope_owner orelse std.math.maxInt(u32));
+        }
     }
 
     const checksum = wyhash.hashU64(payload.items);
@@ -1328,7 +1422,7 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
         if (key >= symbol_ids_len or value >= scopes_len or scope_owner_map.contains(key)) return error.Truncated;
         scope_owner_map.putAssumeCapacity(key, value);
     }
-    const scope_history = try readFrameHistory(&r, arena, scopes_len, symbol_ids_len);
+    const scope_history = try readFrameHistory(&r, arena, scopes_len, symbol_ids_len, symbols_len);
     var node_scope_provenance: @import("../semantic/node_scope_provenance.zig").Map = .empty;
     const use_count = try checkedMapCount(&r, try r.u32v());
     try node_scope_provenance.ensureTotalCapacity(arena, use_count);
@@ -1550,10 +1644,20 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
             const member = if (has_member == 1) try readEnumMember(&r) else null;
             break :environment .{ .owner = owner_entry, .parameter_symbol = parameter, .binding_declaration = binding_declaration, .binding_node = binding_node, .member = member };
         } else null;
+        const has_drop = try r.u32v();
+        if (has_drop > 1) return error.Truncated;
+        const dropped_statement: ?@import("../semantic/drop_statement_retirement.zig").Witness = if (has_drop == 1) drop: {
+            const statement = try r.u32v();
+            const owner_index = try r.u32v();
+            if (statement >= scope_history.source_dropped_statements.len or
+                (owner_index != std.math.maxInt(u32) and owner_index >= scope_history.source_owners.len)) return error.Truncated;
+            break :drop .{ .statement = statement, .scope_owner = if (owner_index == std.math.maxInt(u32)) null else owner_index };
+        } else null;
+        if ((reason == .dropped_statement) != (dropped_statement != null)) return error.Truncated;
         if ((reason == .erased_const_enum_environment) != (enum_environment != null)) return error.Truncated;
         if (enum_environment) |environment| if (@backingInt(environment.parameter_symbol) >= symbols_len) return error.Truncated;
         if ((reason == .erased_import_binding) != (erased_import != null) or owner.isNone() or @backingInt(owner) >= symbol_ids.len or source_scope.isNone() or source_scope.toIndex() >= scopes.len or
-            (if (reason == .source_function_closure or reason == .elided_function_name or reason == .erased_const_enum_environment) closure_scope.isNone() or closure_scope.toIndex() >= scopes.len else !closure_scope.isNone() or !closure_parent.isNone()) or
+            (if (reason == .source_function_closure or reason == .elided_function_name or reason == .erased_const_enum_environment or (reason == .dropped_statement and dropped_statement.?.scope_owner != null)) closure_scope.isNone() or closure_scope.toIndex() >= scopes.len else !closure_scope.isNone() or !closure_parent.isNone()) or
             (!source_name.isNone() and @backingInt(source_name) >= symbol_ids.len) or (!source_name_symbol.isNone() and @backingInt(source_name_symbol) >= symbols_len) or
             source_name.isNone() != source_name_symbol.isNone() or @backingInt(declaration.symbol_id) != sid) return error.Truncated;
         var expected = before;
@@ -1578,6 +1682,7 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
             .static_capture_alias = static_alias,
             .function_name_elision = name_elision,
             .enum_environment = enum_environment,
+            .dropped_statement = dropped_statement,
         });
     }
     if (r.remaining() != 0) return error.Truncated;

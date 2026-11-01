@@ -197,3 +197,7 @@ test {
 test {
     _ = @import("erased_const_enum_handoff.zig");
 }
+
+test {
+    _ = @import("drop_statement_retirement.zig");
+}

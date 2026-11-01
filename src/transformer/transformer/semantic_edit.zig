@@ -60,6 +60,11 @@ fn editorFor(self: *Transformer) Transformer.Error!*SemanticEditor {
     return &self.semantic_editor.?;
 }
 
+pub fn selectDroppedStatement(self: *Transformer, statement: NodeIndex) Transformer.Error!void {
+    const editor = try editorFor(self);
+    try @import("../drop_statement_retirement.zig").select(self, editor, statement);
+}
+
 fn setSymbolId(self: *Transformer, node: NodeIndex, id: SymbolId) Transformer.Error!void {
     const index = @backingInt(node);
     if (self.symbol_ids.items.len <= index)
@@ -5889,6 +5894,7 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
             try elideUnreachableEmptyGeneratedScopes(self, editor, &live);
             @import("../erased_const_enum_handoff.zig").detachErasedUses(self, editor, &live) catch |err| return editError(err);
             @import("../erased_const_enum_handoff.zig").retireDeclarations(self, editor, &live) catch |err| return editError(err);
+            @import("../drop_statement_retirement.zig").consume(self, editor, &live) catch |err| return editError(err);
             @import("../erased_const_enum_handoff.zig").apply(self, editor, &live) catch |err| return editError(err);
             try detachErasedConstEnumExternalReads(self, editor, &live, root);
             try reanchorDetachedDeclarations(self, editor, &live);

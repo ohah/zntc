@@ -460,6 +460,8 @@ pub const SemanticAnalyzer = struct {
         self.allocator.free(self.scope_history.source_class_keys);
         self.allocator.free(self.scope_history.worklet_class_creators);
         self.allocator.free(self.scope_history.lowered_worklet_classes);
+        self.allocator.free(self.scope_history.source_dropped_statements);
+        self.allocator.free(self.scope_history.source_drop_edges);
         self.allocator.free(self.scope_history.events);
         self.implicit_arguments_owners.deinit(self.allocator);
         self.annex_b_variable_targets.deinit(self.allocator);

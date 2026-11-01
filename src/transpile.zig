@@ -15602,6 +15602,8 @@ test "R1 lexical frame history replays actual temporary reparent epochs and reje
             defer allocator.free(owned.source_class_keys);
             defer allocator.free(owned.worklet_class_creators);
             defer allocator.free(owned.lowered_worklet_classes);
+            defer allocator.free(owned.source_dropped_statements);
+            defer allocator.free(owned.source_drop_edges);
             defer allocator.free(owned.events);
             var checked = try History.validateAndIndex(allocator, tree, scopes, owners, &owned, null);
             defer checked.deinit(allocator);

@@ -342,6 +342,7 @@ pub const Transformer = struct {
     /// type import. The key is the surviving external output reference node.
     erased_type_import_external_references: std.AutoHashMapUnmanaged(u32, ErasedTypeImportExternalReferenceProof) = .empty,
     erased_const_enum_binding_handoffs: std.ArrayList(@import("erased_const_enum_handoff.zig").Plan) = .empty,
+    dropped_statement_sources: std.ArrayList(@import("drop_statement_retirement.zig").Source) = .empty,
     erased_const_enum_declaration_sources: std.ArrayList(@import("erased_const_enum_handoff.zig").DeclarationSource) = .empty,
     /// Graph prepass can retain this provenance across a later semantic resync.
     record_explicit_global_references: bool = false,

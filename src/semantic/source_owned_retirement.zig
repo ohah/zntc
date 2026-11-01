@@ -18,11 +18,12 @@ pub const Witness = struct {
     source_name_symbol: symbols.SymbolId,
     closure_scope: ScopeId,
     closure_parent: ScopeId,
-    reason: enum { source_function_closure, erased_import_binding, erased_const_enum_binding, static_class_capture_alias, elided_function_name, erased_const_enum_environment },
+    reason: enum { source_function_closure, erased_import_binding, erased_const_enum_binding, static_class_capture_alias, elided_function_name, erased_const_enum_environment, dropped_statement },
     erased_import: ?@import("import_erasure.zig").Binding = null,
     static_capture_alias: ?@import("static_capture_retirement.zig").Witness = null,
     function_name_elision: ?@import("function_name_retirement.zig").Witness = null,
     enum_environment: ?@import("enum_environment_retirement.zig").Witness = null,
+    dropped_statement: ?@import("drop_statement_retirement.zig").Witness = null,
 };
 
 pub const Map = std.AutoHashMapUnmanaged(u32, Witness);
@@ -76,6 +77,24 @@ pub fn validate(
     helper_map: *const std.StringHashMapUnmanaged(usize),
     roots: Roots,
 ) std.mem.Allocator.Error!bool {
+    return validateWithIndex(allocator, ast_ptr, state, reachable, symbol_rows, symbol_ids, scopes, scope_maps, owners, references, helper_map, roots, null);
+}
+
+pub fn validateWithIndex(
+    allocator: std.mem.Allocator,
+    ast_ptr: *const ast.Ast,
+    state: *const Map,
+    reachable: *const std.DynamicBitSet,
+    symbol_rows: []const symbols.Symbol,
+    symbol_ids: []const ?u32,
+    scopes: []const @import("scope.zig").Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const symbols.Reference,
+    helper_map: *const std.StringHashMapUnmanaged(usize),
+    roots: Roots,
+    frame_index: ?*const @import("scope_frame_history.zig").Index,
+) std.mem.Allocator.Error!bool {
     if (state.count() == 0) {
         var uses = roots.node_scope_provenance.valueIterator();
         while (uses.next()) |use| if (use.external_import != null) return false;
@@ -93,6 +112,12 @@ pub fn validate(
     while (entries.next()) |entry| {
         const sid = entry.key_ptr.*;
         const witness = entry.value_ptr.*;
+        if (witness.reason == .dropped_statement) {
+            if (@backingInt(witness.symbol_id) != sid or !@import("drop_statement_retirement.zig").validate(witness, ast_ptr, reachable, symbol_rows, symbol_ids, scopes, owners, frame_index orelse return false)) return false;
+            if (!witness.closure_scope.isNone()) closure_roots.set(witness.closure_scope.toIndex());
+            continue;
+        }
+        if (witness.dropped_statement != null) return false;
         if (witness.reason == .erased_const_enum_environment) {
             if (@backingInt(witness.symbol_id) != sid) return false;
             if (!try @import("enum_environment_retirement.zig").validate(allocator, witness, state, ast_ptr, reachable, symbol_rows, symbol_ids, scopes, owners, roots.scope_history)) return false;
@@ -287,7 +312,7 @@ pub fn validate(
         if (entry.value_ptr.external_import) |origin| {
             const retired = state.get(@backingInt(origin.binding_symbol)) orelse return false;
             const raw = @backingInt(entry.key_ptr.*);
-            if ((retired.reason != .erased_import_binding and retired.reason != .erased_const_enum_binding) or raw >= ast_ptr.nodes.items.len or raw >= symbol_ids.len or symbol_ids[raw] != null or
+            if ((retired.reason != .erased_import_binding and retired.reason != .erased_const_enum_binding and retired.reason != .dropped_statement) or raw >= ast_ptr.nodes.items.len or raw >= symbol_ids.len or symbol_ids[raw] != null or
                 !reachable.isSet(raw) or entry.value_ptr.source_node != origin.before.node_index or
                 origin.before.symbol_id != origin.binding_symbol or origin.before.flags.declare or
                 !origin.before.declaration_node_index.isNone() or origin.before.scope_id.isNone() or origin.before.scope_id.toIndex() >= scopes.len) return false;

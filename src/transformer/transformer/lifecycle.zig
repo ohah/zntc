@@ -144,6 +144,8 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.erased_type_import_external_references.deinit(self.allocator);
     for (self.erased_const_enum_binding_handoffs.items) |plan| self.allocator.free(plan.reads);
     self.erased_const_enum_binding_handoffs.deinit(self.allocator);
+    for (self.dropped_statement_sources.items) |source| source.deinit(self.allocator);
+    self.dropped_statement_sources.deinit(self.allocator);
     for (self.erased_const_enum_declaration_sources.items) |source| {
         self.allocator.free(source.declarations);
         self.allocator.free(source.exposed_bindings);
