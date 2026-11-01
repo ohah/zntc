@@ -520,4 +520,29 @@ test "original Analyzer arguments engine requires exact initial G name-owner bir
     try std.testing.expectError(error.InvalidSymbol, actualEngine(&editor, g, &origins, copied, n));
     try editor.scope_history.events.append(a, event);
     try std.testing.expect((try actualEngine(&editor, g, &origins, copied, n)) != null);
+    const original_allocator = editor.allocator;
+    defer editor.allocator = original_allocator;
+    const row_count = editor.references.items.len;
+    const event_count = editor.scope_history.events.items.len;
+    var fail_index: usize = 0;
+    while (fail_index < 128) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
+        editor.allocator = failing.allocator();
+        const outcome = actualEngine(&editor, g, &origins, copied, n);
+        if (outcome) |engine| {
+            try std.testing.expect(engine != null);
+            try std.testing.expect(!failing.has_induced_failure);
+            try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+            break;
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expect(failing.has_induced_failure);
+            try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        }
+        try std.testing.expectEqual(row_count, editor.references.items.len);
+        try std.testing.expectEqual(event_count, editor.scope_history.events.items.len);
+        try std.testing.expectEqual(@as(?u32, @backingInt(g)), editor.scope_owner_map.get(@backingInt(copied)));
+        try std.testing.expectEqual(@as(?usize, id), editor.scope_maps.items[g.toIndex()].get("arguments"));
+    }
+    try std.testing.expect(fail_index > 0 and fail_index < 128);
 }
