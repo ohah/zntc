@@ -2925,11 +2925,11 @@ const ErasedTypeImportExternalCandidate = struct {
     reference: SemanticReference,
 };
 
-/// A declaration-level `import type` is absent from runtime output. If a
-/// malformed value read survives anyway, detach only that exact source read
-/// from the erased import SymbolId and carry explicit external-name evidence.
-/// Writes, generated aliases, captures, and same-named output bindings stay on
-/// the analyzer fallback path.
+/// A declaration-level `import type` or an all-inline-type import is absent
+/// from runtime output. If a malformed value read survives anyway, detach only
+/// that exact source read from the erased import SymbolId and carry explicit
+/// external-name evidence. Writes, generated aliases, captures, and same-named
+/// output bindings stay on the analyzer fallback path.
 fn detachErasedTypeImportExternalReads(
     allocator: std.mem.Allocator,
     transformer: *Transformer,
@@ -2970,9 +2970,10 @@ fn detachErasedTypeImportExternalReads(
         if (import_node.tag != .import_declaration or import_node.data.extra >= transformer.ast.extra_data.items.len or
             transformer.ast.extra_data.items.len - import_node.data.extra < 6) continue;
         const import_decl = module_parser.readImportDeclExtras(transformer.ast, import_node.data.extra);
-        if (!import_decl.is_type_only or import_decl.phase != .none or
-            import_decl.specs_start > transformer.ast.extra_data.items.len or
+        if (import_decl.phase != .none or import_decl.specs_start > transformer.ast.extra_data.items.len or
             import_decl.specs_len > transformer.ast.extra_data.items.len - import_decl.specs_start) continue;
+        const inline_type_only = importDeclarationHasOnlyInlineTypeSpecifiers(transformer.ast, import_decl);
+        if (!import_decl.is_type_only and !inline_type_only) continue;
 
         var spec_offset: u32 = 0;
         while (spec_offset < import_decl.specs_len) : (spec_offset += 1) {
@@ -2981,11 +2982,15 @@ fn detachErasedTypeImportExternalReads(
             const spec_index: ast_mod.NodeIndex = @fromBackingInt(@intCast(spec_raw));
             const spec_node = transformer.ast.getNode(spec_index);
             const local_index = switch (spec_node.tag) {
-                .import_specifier => if (spec_node.data.binary.flags == 0)
+                .import_specifier => if ((import_decl.is_type_only and spec_node.data.binary.flags == 0) or
+                    (inline_type_only and spec_node.data.binary.flags == module_parser.SPEC_FLAG_TYPE_ONLY))
                     spec_node.data.binary.right
                 else
                     continue,
-                .import_default_specifier, .import_namespace_specifier => spec_index,
+                .import_default_specifier, .import_namespace_specifier => if (import_decl.is_type_only)
+                    spec_index
+                else
+                    continue,
                 else => continue,
             };
             if (local_index.isNone() or @backingInt(local_index) >= transformer.parser_node_count) continue;
@@ -3168,7 +3173,8 @@ fn exactErasedTypeImportExternalReference(
         proof.reference.scope_id.toIndex() >= transformer.scopes.len) return false;
 
     const import_decl = module_parser.readImportDeclExtras(transformer.ast, proof.import_node.data.extra);
-    if (!import_decl.is_type_only or import_decl.phase != .none or
+    const inline_type_only = importDeclarationHasOnlyInlineTypeSpecifiers(transformer.ast, import_decl);
+    if ((!import_decl.is_type_only and !inline_type_only) or import_decl.phase != .none or
         import_decl.specs_start > transformer.ast.extra_data.items.len or
         import_decl.specs_len > transformer.ast.extra_data.items.len - import_decl.specs_start) return false;
     var local_specifier_matches: usize = 0;
@@ -3179,9 +3185,11 @@ fn exactErasedTypeImportExternalReference(
         const spec_index: ast_mod.NodeIndex = @fromBackingInt(@intCast(spec_raw));
         const spec = transformer.ast.getNode(spec_index);
         const is_local_specifier = switch (spec.tag) {
-            .import_specifier => spec.data.binary.flags == 0 and
-                spec.data.binary.right == proof.import_local_node_index,
-            .import_default_specifier, .import_namespace_specifier => spec_index == proof.import_local_node_index,
+            .import_specifier => spec.data.binary.right == proof.import_local_node_index and
+                ((import_decl.is_type_only and spec.data.binary.flags == 0) or
+                    (inline_type_only and spec.data.binary.flags == module_parser.SPEC_FLAG_TYPE_ONLY)),
+            .import_default_specifier, .import_namespace_specifier => import_decl.is_type_only and
+                spec_index == proof.import_local_node_index,
             else => false,
         };
         if (!is_local_specifier) continue;
@@ -6168,11 +6176,12 @@ test "#6193 declaration-level type import reuse requires exact output erasure pr
     ));
 }
 
-test "#6193 detached named default and namespace type import proofs reject fifteen graph mutations each" {
+test "#6193 detached named default namespace and standalone inline type import proofs reject fifteen graph mutations each" {
     const sources = [_][]const u8{
         "import type { Shape } from './types'; globalThis.Shape = 21; console.log(Shape);",
         "import type Shape from './types'; globalThis.Shape = 21; console.log(Shape);",
         "import type * as Shape from './types'; globalThis.Shape = 21; console.log(Shape);",
+        "import { type Shape } from './types'; globalThis.Shape = 21; console.log(Shape);",
     };
     for (sources) |source| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
