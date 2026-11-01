@@ -37012,7 +37012,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
-  test('NAPI onAstFunction trailingCode keeps minified references in the insertion scope', () => {
+  test('NAPI onAstFunction trailingCode keeps exact graph identities through identifier minification', () => {
     const cases = [
       {
         label: 'program scope',
@@ -37040,7 +37040,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         platform: 'node',
         format: 'cjs',
         target: 'esnext',
-        minify: true,
+        minifyIdentifiers: true,
         write: false,
       });
       const runner = [
@@ -37053,9 +37053,25 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       try {
         const buildResult = spawnSync('bun', ['-e', runner], {
           cwd: join(import.meta.dir, '../../..'),
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
           encoding: 'utf8',
         });
         expect(buildResult.status, `${fixture.label}: ${buildResult.stderr}`).toBe(0);
+        const stderr = buildResult.stderr ?? '';
+        const mode = stderr
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
+          );
+        expect(mode, `${fixture.label}: ${stderr}`).toContain('semantic_graph=retained');
+        const identity = stderr
+          .split(/\r?\n/)
+          .find(
+            (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry),
+          );
+        expect(identity, `${fixture.label}: ${stderr}`).toBeDefined();
+        expect(exactSchemaProblems(identity ?? ''), `${fixture.label}: ${identity}`).toEqual([]);
         const outputs = JSON.parse(buildResult.stdout) as string[];
         expect(outputs).toHaveLength(1);
         writeFileSync(output, outputs[0]);
@@ -37129,7 +37145,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         platform: 'node',
         format: 'cjs',
         target: 'esnext',
-        minify: true,
+        minifyIdentifiers: true,
         write: false,
       });
       const runner = [
@@ -37142,9 +37158,25 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       try {
         const buildResult = spawnSync('bun', ['-e', runner], {
           cwd: join(import.meta.dir, '../../..'),
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
           encoding: 'utf8',
         });
         expect(buildResult.status, `${fixture.label}: ${buildResult.stderr}`).toBe(0);
+        const stderr = buildResult.stderr ?? '';
+        const mode = stderr
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
+          );
+        expect(mode, `${fixture.label}: ${stderr}`).toContain('semantic_graph=retained');
+        const identity = stderr
+          .split(/\r?\n/)
+          .find(
+            (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry),
+          );
+        expect(identity, `${fixture.label}: ${stderr}`).toBeDefined();
+        expect(exactSchemaProblems(identity ?? ''), `${fixture.label}: ${identity}`).toEqual([]);
         const outputs = JSON.parse(buildResult.stdout) as string[];
         expect(outputs).toHaveLength(1);
         writeFileSync(output, outputs[0]);
@@ -37162,6 +37194,210 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+    }
+  }, 60_000);
+
+  test('NAPI onAstFunction generated direct eval keeps dynamic names intact', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-generated-eval-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(entry, 'function outer(shared) { function marker() {} marker(); } outer(40);');
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const baseOptions = JSON.stringify({
+      entryPoints: [entry],
+      platform: 'node',
+      format: 'cjs',
+      target: 'esnext',
+      minifyIdentifiers: true,
+      write: false,
+    });
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build({ ...${baseOptions}, plugins: [{ name: 'generated-eval', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: ["throw eval('shared');"] } : null); } }] });`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+
+    try {
+      const buildResult = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      expect(buildResult.status, buildResult.stderr).toBe(0);
+      const stderr = buildResult.stderr ?? '';
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
+        );
+      expect(mode, stderr).toContain('semantic_graph=reanalyzed');
+      const identity = stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry));
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity ?? ''), identity).toEqual([]);
+      const outputs = JSON.parse(buildResult.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      writeFileSync(output, outputs[0]);
+
+      const execute = spawnSync(
+        'node',
+        [
+          '-e',
+          `try { require(${JSON.stringify(output)}); } catch (error) { process.stdout.write(String(error) + '\\n'); }`,
+        ],
+        { encoding: 'utf8' },
+      );
+      expect(execute.status, execute.stderr).toBe(0);
+      expect(execute.stdout).toBe('40\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('NAPI onAstFunction retained graph exposes ten compileable identity mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-graph-mutants-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    writeFileSync(
+      entry,
+      'function outer(shared) { let base = 100; function marker() {} marker(); } try { outer(40); } catch (error) { console.log(error); }',
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const baseOptions = JSON.stringify({
+      entryPoints: [entry],
+      platform: 'node',
+      format: 'cjs',
+      target: 'esnext',
+      minifyIdentifiers: true,
+      write: false,
+    });
+    const trailingCode = [
+      'var shared = shared + 1; var injected = shared + 1; var total = injected + base; console.log(shared + injected + total);',
+    ];
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build({ ...${baseOptions}, plugins: [{ name: 'identity-mutants', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: ${JSON.stringify(trailingCode)} } : null); } }] });`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+
+    try {
+      const buildResult = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      expect(buildResult.status, buildResult.stderr).toBe(0);
+      const stderr = buildResult.stderr ?? '';
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
+        );
+      expect(mode, stderr).toContain('semantic_graph=retained');
+      const identity = stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry));
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity ?? ''), identity).toEqual([]);
+
+      const outputs = JSON.parse(buildResult.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      const emitted = outputs[0];
+      writeFileSync(output, emitted);
+      const original = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(original.status, original.stderr).toBe(0);
+      expect(original.stdout).toBe('225\n');
+
+      const declaration = emitted.match(
+        /var ([\w$]+) = \1 \+ 1,([\w$]+) = \1 \+ 1,([\w$]+) = \2 \+ 100;/,
+      );
+      expect(declaration, emitted).not.toBeNull();
+      const parameter = declaration?.[1] ?? '';
+      const injected = declaration?.[2] ?? '';
+      const total = declaration?.[3] ?? '';
+      const functionName = emitted.match(/function ([\w$]+)\(\) \{/)?.[1] ?? '';
+      expect(parameter).not.toBe('');
+      expect(injected).not.toBe('');
+      expect(total).not.toBe('');
+      expect(functionName).not.toBe('');
+      const logCall = `console.log(${parameter} + ${injected} + ${total});`;
+      expect(emitted).toContain(logCall);
+
+      const mutations = [
+        {
+          name: 'generated-var-does-not-redeclare-the-parameter',
+          from: `var ${parameter} = ${parameter} + 1`,
+          to: `var ${functionName} = ${parameter} + 1`,
+        },
+        {
+          name: 'first-initializer-uses-the-wrong-symbol',
+          from: `var ${parameter} = ${parameter} + 1`,
+          to: `var ${parameter} = ${functionName} + 1`,
+        },
+        {
+          name: 'second-initializer-uses-the-wrong-symbol',
+          from: `,${injected} = ${parameter} + 1`,
+          to: `,${injected} = ${functionName} + 1`,
+        },
+        {
+          name: 'total-initializer-uses-the-outer-parameter',
+          from: `,${total} = ${injected} + 100`,
+          to: `,${total} = ${parameter} + 100`,
+        },
+        {
+          name: 'log-reads-the-function-instead-of-the-parameter',
+          from: logCall,
+          to: `console.log(${functionName} + ${injected} + ${total});`,
+        },
+        {
+          name: 'log-reads-the-parameter-twice',
+          from: logCall,
+          to: `console.log(${parameter} + ${parameter} + ${total});`,
+        },
+        {
+          name: 'log-reads-the-injected-binding-twice',
+          from: logCall,
+          to: `console.log(${parameter} + ${injected} + ${injected});`,
+        },
+        {
+          name: 'log-skips-the-injected-binding',
+          from: logCall,
+          to: `console.log(${parameter} + ${total} + ${total});`,
+        },
+        {
+          name: 'constant-folded-outer-binding-value-changes',
+          from: `,${total} = ${injected} + 100`,
+          to: `,${total} = ${injected} + 99`,
+        },
+        {
+          name: 'function-declaration-identity-changes',
+          from: `function ${functionName}() {`,
+          to: `function ${total}() {`,
+        },
+      ];
+      for (const mutation of mutations) {
+        const offset = emitted.indexOf(mutation.from);
+        expect(offset, mutation.name).not.toBe(-1);
+        const mutated =
+          emitted.slice(0, offset) + mutation.to + emitted.slice(offset + mutation.from.length);
+        const mutantPath = join(dir, `${mutation.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutation.name}: ${syntax.stderr}`).toBe(0);
+        const actual = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(
+          actual.status !== 0 || actual.stdout !== original.stdout,
+          `${mutation.name} escaped the runtime oracle`,
+        ).toBe(true);
+      }
+      expect(mutations).toHaveLength(10);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
 

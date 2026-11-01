@@ -18,7 +18,19 @@ test "plugin graph retention classifies every AST mutation capability" {
     try std.testing.expect(!(Plugin{ .name = "observer" }).hasAstTransformHooks());
     try std.testing.expect(!(Plugin{ .name = "empty-visitor", .visitor = .{} }).hasAstTransformHooks());
     try std.testing.expect((Plugin{ .name = "function", .onFunction = builtin.onFunction }).hasAstTransformHooks());
+    try std.testing.expect(!(Plugin{ .name = "function", .onFunction = builtin.onFunction }).hasTrackedFunctionGraphContract());
+    try std.testing.expect((Plugin{
+        .name = "tracked-function",
+        .onFunction = builtin.onFunction,
+        .ast_graph_contract = .tracked_function_edits,
+    }).hasTrackedFunctionGraphContract());
     try std.testing.expect((Plugin{ .name = "auto-worklet", .autoWorkletCallees = builtin.autoWorkletCallees }).hasAstTransformHooks());
+    try std.testing.expect(!(Plugin{
+        .name = "tracked-function-and-visitor",
+        .onFunction = builtin.onFunction,
+        .visitor = .{ .on_program = builtin.visitor.?.on_program },
+        .ast_graph_contract = .tracked_function_edits,
+    }).hasTrackedFunctionGraphContract());
     inline for (@typeInfo(plugin_mod.Visitor).@"struct".field_names) |field| {
         var visitor: plugin_mod.Visitor = .{};
         @field(visitor, field) = @field(builtin.visitor.?, field);

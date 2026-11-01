@@ -944,6 +944,7 @@ fn NapiPluginAdapter(comptime Self: type) type {
                 .renderChunk = pluginRenderChunk,
                 .generateBundle = pluginGenerateBundle,
                 .onFunction = if (self.has_ast_function_hooks) pluginAstFunction else null,
+                .ast_graph_contract = if (self.has_ast_function_hooks) .tracked_function_edits else .untracked,
                 .resolveContext = pluginResolveContext,
                 .buildStart = pluginBuildStart,
                 .buildEnd = pluginBuildEnd,
