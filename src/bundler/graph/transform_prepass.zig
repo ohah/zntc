@@ -2368,6 +2368,44 @@ fn isRetainableJsxSpreadChild(
     return true;
 }
 
+/// Keep identifier operands only with their exact source binding. Inline
+/// object literals are limited to static data properties whose values cannot
+/// add references, scopes, getters, computed-key effects, or nested spreads.
+fn isRetainableJsxSpreadPropsOperand(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    operand: ast_mod.NodeIndex,
+) bool {
+    if (operand.isNone() or @backingInt(operand) >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[@backingInt(operand)];
+    if (node.tag == .identifier_reference) return isBoundSourceIdentifierReference(ast, semantic, operand);
+    if (node.tag != .object_expression) return false;
+
+    const properties = node.data.list;
+    const extras = ast.extra_data.items;
+    if (properties.start > extras.len or properties.len > extras.len - properties.start) return false;
+    for (extras[properties.start .. properties.start + properties.len]) |raw_idx| {
+        if (raw_idx >= ast.nodes.items.len) return false;
+        const property = ast.nodes.items[raw_idx];
+        if (property.tag != .object_property or property.data.binary.flags != 0) return false;
+
+        const key_idx = property.data.binary.left;
+        if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return false;
+        switch (ast.nodes.items[@backingInt(key_idx)].tag) {
+            .identifier_reference, .string_literal, .numeric_literal, .bigint_literal => {},
+            else => return false,
+        }
+
+        const value_idx = property.data.binary.right;
+        if (value_idx.isNone() or @backingInt(value_idx) >= ast.nodes.items.len) return false;
+        switch (ast.nodes.items[@backingInt(value_idx)].tag) {
+            .string_literal, .numeric_literal, .bigint_literal, .boolean_literal, .null_literal => {},
+            else => return false,
+        }
+    }
+    return true;
+}
+
 fn isRetainableClassicJsxSpreadPropsBundle(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -2473,9 +2511,7 @@ fn isRetainableAutomaticJsxKeyFallbackBundle(
             const attribute = ast.nodes.items[raw_idx];
             if (attribute.tag != .jsx_spread_attribute) continue;
             const operand = attribute.data.unary.operand;
-            if (operand.isNone() or @backingInt(operand) >= ast.nodes.items.len or
-                ast.nodes.items[@backingInt(operand)].tag != .identifier_reference or
-                !isBoundSourceIdentifierReference(ast, semantic, operand)) return false;
+            if (!isRetainableJsxSpreadPropsOperand(ast, semantic, operand)) return false;
         }
     }
     return found_key_after_spread == ast.has_jsx_key_after_spread;
@@ -17419,7 +17455,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), classic_props_read_count);
     try std.testing.expectEqual(@as(usize, 2), classic_factory_read_count);
 
-    const key_fallback_source = "const props = {}; const items = [1, 2]; const result = <Comp {...props} key=\"k\"><span />{...items}<i /></Comp>;";
+    const key_fallback_source = "const props = {}; const items = [1, 2]; const result = <Comp {...props} {...{ id: \"literal\", count: 2 }} key=\"k\"><span />{...items}<i /></Comp>;";
     var key_fallback_fixture = try jsxSpreadChildTestFixture(allocator, key_fallback_source);
     const key_fallback_owner = key_fallback_fixture.semantic.captureOwnerToken();
     var key_fallback_item_symbol: ?u32 = null;
@@ -24088,6 +24124,49 @@ fn auditedJsxSpreadChildAdmissionForTest(
     );
 }
 
+fn auditedJsxSpreadPropsOperandForTest(fixture: *const RuntimeHelperReanalysisTestFixture) bool {
+    for (fixture.ast.nodes.items) |node| {
+        if (node.tag != .jsx_spread_attribute) continue;
+        return isRetainableJsxSpreadPropsOperand(&fixture.ast, &fixture.semantic, node.data.unary.operand);
+    }
+    return false;
+}
+
+test "#6193 automatic key fallback props spread admits only bound identifiers and static object literals" {
+    const allocator = std.testing.allocator;
+    const safe_sources = [_][]const u8{
+        "const props = {}; const items = [1]; const result = <Comp {...props} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{}} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ id: \"x\", count: 2, enabled: true, empty: null }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ \"data-id\": \"x\", 2: false }} key=\"k\">{...items}</Comp>;",
+    };
+    for (safe_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(auditedJsxSpreadPropsOperandForTest(&fixture));
+    }
+
+    const hostile_sources = [_][]const u8{
+        "const items = [1]; const result = <Comp {...missingProps} key=\"k\">{...items}</Comp>;",
+        "function getProps() { return {}; } const items = [1]; const result = <Comp {...getProps()} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...[1, 2]} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ id: missingValue }} key=\"k\">{...items}</Comp>;",
+        "const id = \"x\"; const items = [1]; const result = <Comp {...{ id }} key=\"k\">{...items}</Comp>;",
+        "const key = \"id\"; const items = [1]; const result = <Comp {...{ [key]: \"x\" }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ get id() { return \"x\"; } }} key=\"k\">{...items}</Comp>;",
+        "const source = {}; const items = [1]; const result = <Comp {...{ ...source }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ nested: { value: 1 } }} key=\"k\">{...items}</Comp>;",
+        "function getValue() { return 1; } const items = [1]; const result = <Comp {...{ value: getValue() }} key=\"k\">{...items}</Comp>;",
+    };
+    for (hostile_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(!auditedJsxSpreadPropsOperandForTest(&fixture));
+    }
+}
+
 test "#6193 automatic JSX downlevel spread child admits only audited operands" {
     const allocator = std.testing.allocator;
     const safe_sources = [_][]const u8{
@@ -24096,6 +24175,8 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         "const result = <div>{...[, 1]}</div>;",
         "function render(items) { return <div>{items.length}{...items}</div>; }",
         "const props = {}; const items = [1, 2]; const result = <Comp {...props} key=\"k\">{...items}</Comp>;",
+        "const items = [1, 2]; const result = <Comp {...{ id: \"literal\", count: 2, enabled: true, empty: null }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{}} key=\"k\">{...items}</Comp>;",
         "const props = {}; const items = [1, 2]; const result = <Comp key=\"k\" {...props}>{...items}</Comp>;",
         "const props = {}; const items = [1]; const one = <Comp {...props} key=\"k\" />; const two = <div>{...items}</div>;",
         "const props = {}; const items = [1]; const result = <Comp {...props} key=\"k\"><span>{...items}</span></Comp>;",
@@ -24112,7 +24193,7 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
     defer dev_arena.deinit();
     var dev_fixture = try jsxSpreadChildTestFixture(
         dev_arena.allocator(),
-        "const items = [1, 2]; const result = <div>{...items}</div>;",
+        "const items = [1, 2]; const result = <Comp {...{ id: \"dev\" }} key=\"k\">{...items}</Comp>;",
     );
     try std.testing.expect(auditedJsxSpreadChildAdmissionForTest(&dev_fixture, .automatic_dev, true));
 
@@ -24164,6 +24245,16 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         "const props = {}; const items = [1]; const result = <Comp {...props} key=\"k\">{...items}{...getItems()}</Comp>;",
         "const props = {}; const items = [1]; const result = <Comp {...props} {...missingProps} key=\"k\">{...items}</Comp>;",
         "const goodProps = {}; const goodItems = [1]; const badItems = [2]; const good = <Good {...goodProps} key=\"g\">{...goodItems}</Good>; const bad = <Bad {...missingProps} key=\"b\">{...badItems}</Bad>;",
+        "const id = \"x\"; const items = [1]; const result = <Comp {...{ id: id }} key=\"k\">{...items}</Comp>;",
+        "const id = \"x\"; const items = [1]; const result = <Comp {...{ id }} key=\"k\">{...items}</Comp>;",
+        "const key = \"id\"; const items = [1]; const result = <Comp {...{ [key]: \"x\" }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ get id() { return \"x\"; } }} key=\"k\">{...items}</Comp>;",
+        "const source = {}; const items = [1]; const result = <Comp {...{ ...source }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ nested: { value: 1 } }} key=\"k\">{...items}</Comp>;",
+        "function getValue() { return 1; } const items = [1]; const result = <Comp {...{ value: getValue() }} key=\"k\">{...items}</Comp>;",
+        "function getProps() { return {}; } const items = [1]; const result = <Comp {...getProps()} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...[1, 2]} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...({ id: \"x\" })} key=\"k\">{...items}</Comp>;",
     };
     for (hostile_key_fallback_sources) |source| {
         var arena = std.heap.ArenaAllocator.init(allocator);
