@@ -2354,18 +2354,39 @@ fn isRetainableJsxSpreadChild(
         return isBoundSourceIdentifierReference(ast, semantic, operand);
     if (operand_node.tag != .array_expression) return false;
 
-    // The array-spread lowerer can preserve a plain literal's exact reads and
-    // calls. Nested spread and holes need a second iterator/shape proof, so
-    // keep those JSX inputs on the existing analyzer path.
+    // The array-spread lowerer preserves a plain literal's exact reads and
+    // calls, and fills direct holes with `void 0` before using concat. Nested
+    // spread remains outside this JSX-specific proof.
     const members = operand_node.data.list;
     const extras = ast.extra_data.items;
     if (members.start > extras.len or members.len > extras.len - members.start) return false;
     for (extras[members.start .. members.start + members.len]) |raw_idx| {
         if (raw_idx >= ast.nodes.items.len) return false;
         const tag = ast.nodes.items[raw_idx].tag;
-        if (tag == .spread_element or tag == .elision) return false;
+        if (tag == .spread_element) return false;
     }
     return true;
+}
+
+fn isRetainableJsxSpreadArrayHole(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    hole_raw: usize,
+) bool {
+    if (hole_raw >= ast.nodes.items.len or ast.nodes.items[hole_raw].tag != .elision) return false;
+    for (ast.nodes.items) |node| {
+        if (node.tag != .jsx_spread_child or !isRetainableJsxSpreadChild(ast, semantic, node)) continue;
+        const operand = node.data.unary.operand;
+        const operand_node = ast.nodes.items[@backingInt(operand)];
+        if (operand_node.tag != .array_expression) continue;
+        const members = operand_node.data.list;
+        const extras = ast.extra_data.items;
+        if (members.start > extras.len or members.len > extras.len - members.start) continue;
+        for (extras[members.start .. members.start + members.len]) |raw_idx| {
+            if (raw_idx == hole_raw) return true;
+        }
+    }
+    return false;
 }
 
 fn hasOnlyRetainableSpreadOperands(
@@ -9672,6 +9693,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     found_lowered_parameter_destructuring = true;
                 } else if (lowered_destructuring_assignment_nodes.contains(raw_idx)) {
                     found_lowered_destructuring_assignment = true;
+                } else if (options.unsupported.spread and isRetainableJsxSpreadArrayHole(ast, semantic, raw_idx)) {
+                    // The JSX spread-child proof ties this direct hole to a
+                    // plain array operand. Its lowerer replaces the hole with
+                    // `void 0` before concat, preserving iterator semantics.
+                    found_lowered_array_spread = true;
                 } else return false;
             },
             .template_literal => {
@@ -17179,6 +17205,32 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
         output_read_found = true;
     }
     try std.testing.expect(output_read_found);
+
+    const hole_source = "const result = <div>{...[, 1]}</div>;";
+    var hole_fixture = try jsxSpreadChildTestFixture(allocator, hole_source);
+    const hole_owner = hole_fixture.semantic.captureOwnerToken();
+    var hole_module = Module.init(@fromBackingInt(0), "jsx-spread-hole.tsx");
+    hole_module.source = hole_source;
+    hole_module.module_type = .ts;
+    hole_module.state = .ready;
+    hole_module.ast = hole_fixture.ast;
+    hole_module.semantic = hole_fixture.semantic;
+    var hole_context: TestGraph = .{ .allocator = std.testing.allocator };
+    const hole_resyncs_before = profile.count(.graph_resync_semantic);
+    run(&hole_context, &hole_module, allocator);
+    defer if (hole_module.alias_table) |*table| table.deinit();
+    defer if (hole_module.export_index_by_name) |*index| index.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), hole_context.diag_count);
+    try std.testing.expectEqual(hole_resyncs_before, profile.count(.graph_resync_semantic));
+    try std.testing.expectEqual(hole_owner, hole_module.semantic.?.owner_token);
+    const hole_root = hole_module.ast.?.transformed_root.?;
+    const hole_reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, &hole_module.ast.?, hole_root);
+    defer allocator.free(hole_reachable);
+    for (hole_reachable) |raw| {
+        const tag = hole_module.ast.?.nodes.items[raw].tag;
+        try std.testing.expect(tag != .spread_element and tag != .elision);
+    }
 }
 
 fn moduleHasRegisteredOutputRoles(module: *const Module) bool {
@@ -23794,6 +23846,7 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
     const safe_sources = [_][]const u8{
         "const items = [1, 2]; const result = <div>{...items}</div>;",
         "const result = <div>{...[1, 2]}</div>;",
+        "const result = <div>{...[, 1]}</div>;",
         "function render(items) { return <div>{items.length}{...items}</div>; }",
     };
     for (safe_sources) |source| {
@@ -23817,7 +23870,7 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         "const source = { items: [1] }; const result = <div>{...source.items}</div>;",
         "const source = { items: [1] }; const result = <div>{...source?.items}</div>;",
         "const items = [1]; const result = <div>{...[...items]}</div>;",
-        "const result = <div>{...[, 1]}</div>;",
+        "const result = <div>{...[[, 1]]}</div>;",
         "const result = <div>{...({ items: [1] })}</div>;",
         "const items = [1]; const result = <div>{...(items, items)}</div>;",
         "const items = [1]; const result = <div>{...`items`}</div>;",
@@ -23844,7 +23897,8 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         }
     }
     const hole_node = hole_fixture.ast.getNode(hole_spread orelse return error.MissingHoleJsxSpreadChild);
-    try std.testing.expect(!isRetainableJsxSpreadChild(&hole_fixture.ast, &hole_fixture.semantic, hole_node));
+    try std.testing.expect(isRetainableJsxSpreadChild(&hole_fixture.ast, &hole_fixture.semantic, hole_node));
+    try std.testing.expect(auditedJsxSpreadChildAdmissionForTest(&hole_fixture, .automatic, true));
 
     var classic_arena = std.heap.ArenaAllocator.init(allocator);
     defer classic_arena.deinit();
