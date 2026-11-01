@@ -209,9 +209,10 @@ pub const ExportBinding = struct {
     import_record_index: ?u32 = null,
     /// #1328 Phase 2: 이 export가 가리키는 심볼.
     ///   - .local: 현재 모듈의 심볼 (semantic 선언 또는 bundler 합성 `_default`)
-    ///   - .re_export: source 모듈의 export 심볼 (Phase 3에서 linker가 채움)
-    /// invalid = 미해결. 문자열 이름 기반 resolve 경로는 re-export(.re_export) 등을
-    /// 위해 영구 병존 — 제거 대상 아님.
+    ///   - .re_export: 현재 모듈 AliasTable의 AliasId 또는 명시 default bridge SID.
+    /// Remote/public keys select export records. They do not recover a source
+    /// lexical SID; canonical output consumers validate the producer carrier.
+    /// Invalid remains possible in explicit graphless/output-owned roles.
     symbol: symbol_mod.SymbolRef = symbol_mod.SymbolRef.invalid,
     /// `export default` source node. Anonymous expression defaults receive an
     /// analyzer facade SymbolId on this exact node; name lookup is ambiguous
@@ -641,6 +642,7 @@ pub fn extractExportBindings(
                         .local_name = name_text,
                         .local_span = node.span,
                         .kind = .re_export_namespace,
+                        .source_export_node = @fromBackingInt(ni),
                         .import_record_index = rec_idx,
                     });
                 } else {

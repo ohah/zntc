@@ -27,11 +27,9 @@ pub fn propagateCrossModulePurity(
     allocator: std.mem.Allocator,
 ) void {
     const sem = module.semantic orelse return;
-    if (sem.scope_maps.len == 0) return;
+    if (linker.graph.getModule(module.index) != module) return;
     if (module.import_bindings.len == 0) return;
     if (symbol_ids.len == 0) return;
-    const module_scope = sem.scope_maps[0];
-    const module_index: u32 = module.index.toU32();
 
     const sym_count = sem.symbols.items.len;
     if (sym_count == 0) return;
@@ -89,29 +87,20 @@ pub fn propagateCrossModulePurity(
         defer scope.end();
         for (module.import_bindings) |ib| {
             if (ib.kind == .namespace) continue;
-            const local_sym_idx = if (ib.local_symbol.semanticIndex()) |idx|
-                @as(usize, idx)
-            else
-                module_scope.get(ib.local_name) orelse continue;
+            _ = module.checkedImportBindingLocalName(ib) catch continue;
+            const local_sym_idx = ib.local_symbol.semanticIndex() orelse continue;
             if (local_sym_idx >= sym_count or import_call_state[local_sym_idx] != 1) continue;
 
-            const resolved = linker.getResolvedBinding(module_index, ib.local_span) orelse continue;
-
-            const canon_mod_idx = @backingInt(resolved.canonical.module_index);
-            const target_module = linker.graph.getModule(resolved.canonical.module_index) orelse continue;
+            if (ib.import_record_index >= module.import_records.len) continue;
+            const record = module.import_records[ib.import_record_index];
+            if (record.resolved.isNone() or record.is_external) continue;
+            const canonical = linker.resolveExportChain(record.resolved, ib.imported_name, 0) orelse continue;
+            if (canonical.synthetic_member != null) continue;
+            const target_module = linker.graph.getModule(canonical.module_index) orelse continue;
             const target_sem = target_module.semantic orelse continue;
-
-            if (target_sem.scope_maps.len == 0) continue;
-            const target_scope = target_sem.scope_maps[0];
-
-            // default export는 local_name이 다를 수 있음 ("default" → 실제 함수명)
-            const target_sym_name = if (std.mem.eql(u8, resolved.canonical.export_name, "default"))
-                linker.getExportLocalName(canon_mod_idx, "default") orelse resolved.canonical.export_name
-            else
-                resolved.canonical.export_name;
-
-            const target_sym_idx = target_scope.get(target_sym_name) orelse continue;
-            if (target_sym_idx >= target_sem.symbols.items.len) continue;
+            const target_binding = target_module.findExportBinding(canonical.export_name) orelse continue;
+            const target_ref = @import("../cross_chunk_export.zig").checkedSymbol(allocator, target_module, target_binding) catch continue;
+            const target_sym_idx = target_ref.semanticIndex() orelse continue;
             if (!target_sem.symbols.items[target_sym_idx].decl_flags.no_side_effects) continue;
 
             import_call_state[local_sym_idx] = 2;

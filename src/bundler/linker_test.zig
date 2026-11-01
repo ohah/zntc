@@ -18,6 +18,332 @@ const bundler_symbol = @import("symbol.zig");
 const semantic_symbol = @import("../semantic/symbol.zig");
 const PreservedRenames = bundler_symbol.PreservedRenames;
 
+test "resolved export local cannot borrow an unexported lexical binding" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "const privateName=7;export const value=1;console.log(privateName,value);");
+    const path = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{path});
+    const m = graph.modules.at(0);
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    const ast = &m.ast.?;
+    var private_sid: ?u32 = null;
+    for (ast.nodes.items, 0..) |node, index| {
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, ast.getText(node.data.string_ref), "privateName")) continue;
+        private_sid = m.semantic.?.symbol_ids[index];
+        break;
+    }
+    try std.testing.expect(private_sid != null);
+    try linker.rename_table.put(std.testing.allocator, bundler_symbol.SymbolID.make(m.index, private_sid.?), "private_output");
+    const public_local: ?[]const u8 = linker.resolveToLocalName(.{ .module_index = m.index, .export_name = "value" });
+    try std.testing.expectEqualStrings("value", public_local.?);
+    const missing_local: ?[]const u8 = linker.resolveToLocalName(.{ .module_index = m.index, .export_name = "privateName" });
+    try std.testing.expect(missing_local == null);
+}
+
+test "canonical export authority preserves actual imported source aliases" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "source.mjs", "export const a=3;export const b=7;");
+    try writeFile(tmp.dir, "barrel.mjs", "import {a,b} from './source.mjs';export {b as a,a as b};export * as ns from './source.mjs';");
+    try writeFile(tmp.dir, "entry.mjs", "import {a,b,ns} from './barrel.mjs';console.log(a,b,ns.a);");
+    const path = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph_value = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph_value.deinit();
+    const graph = &graph_value;
+    try graph.build(std.testing.io, &.{path});
+    var linker_value = Linker.init(std.testing.allocator, graph, .esm);
+    defer linker_value.deinit();
+    const linker = &linker_value;
+    try linker.link();
+    const source_idx = findModuleIdx(graph, "source.mjs").?;
+    const barrel_idx = findModuleIdx(graph, "barrel.mjs").?;
+    const owner = graph.getModule(source_idx).?;
+    const source_a = owner.findExportBinding("a").?;
+    const source_b = owner.findExportBinding("b").?;
+    const a_sid = source_a.symbol.semanticIndex().?;
+    const b_sid = source_b.symbol.semanticIndex().?;
+    try std.testing.expect(a_sid != b_sid);
+    try linker.rename_table.put(std.testing.allocator, bundler_symbol.SymbolID.make(source_idx, a_sid), "source_a");
+    try linker.rename_table.put(std.testing.allocator, bundler_symbol.SymbolID.make(source_idx, b_sid), "source_b");
+    linker.populateReExportAliases();
+    const a = linker.resolveToLocalName(.{ .module_index = barrel_idx, .export_name = "a" });
+    const b = linker.resolveToLocalName(.{ .module_index = barrel_idx, .export_name = "b" });
+    try std.testing.expectEqualStrings("source_b", a.?);
+    try std.testing.expectEqualStrings("source_a", b.?);
+    const actual = graph.getModule(barrel_idx).?;
+    const ns = actual.findExportBinding("ns").?;
+    try std.testing.expect(linker.getCanonicalForExport(ns.*, barrel_idx.toU32()) != null);
+    try std.testing.expectEqual(@as(usize, 2), actual.import_bindings.len);
+    const imported_a = actual.findExportBinding("a").?;
+    try std.testing.expect(@import("canonical_export.zig").sameImportedSourceLocal(actual, imported_a.*, actual.import_bindings[1]));
+    try std.testing.expect(!@import("canonical_export.zig").sameImportedSourceLocal(actual, imported_a.*, actual.import_bindings[0]));
+    const saved = actual.export_bindings[0];
+    actual.export_bindings[0].local_name = "forged_local";
+    try std.testing.expect(linker.getCanonicalForExport(actual.export_bindings[0], barrel_idx.toU32()) == null);
+    actual.export_bindings[0] = saved;
+    try std.testing.expectEqualStrings("source_b", linker.resolveToLocalName(.{ .module_index = barrel_idx, .export_name = "a" }).?);
+}
+
+test "canonical export strict handoff validates actual roles and publishes atomically" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import './foreign.mjs';export function value(){return 7}export {value as alias};console.log(value());");
+    try writeFile(tmp.dir, "foreign.mjs", "export function foreign(){return 1}console.log(foreign());");
+    const path = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{ .platform = .react_native });
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{path});
+    var linker = Linker.init(std.testing.allocator, &graph, .cjs);
+    defer linker.deinit();
+    try linker.link();
+    const owner = graph.moduleAtMut(findModuleIdx(&graph, "entry.mjs").?).?;
+    const foreign = graph.moduleAtMut(findModuleIdx(&graph, "foreign.mjs").?).?;
+    try std.testing.expectEqual(.esm, owner.wrap_kind);
+    const binding = owner.findExportBinding("value").?;
+    const alias = owner.findExportBinding("alias").?;
+    const sid = binding.symbol.semanticIndex().?;
+    try std.testing.expectEqual(sid, alias.symbol.semanticIndex().?);
+    try std.testing.expect(!owner.semantic.?.symbols.items[sid].binding_instantiation.strict_output_function);
+    try @import("strict_function_context.zig").lowerModule(owner);
+    try @import("strict_function_context.zig").lowerModule(foreign);
+    try std.testing.expectEqual(@as(usize, 1), owner.semantic.?.strict_output_context.functions.len);
+    try std.testing.expectEqual(@as(usize, 1), foreign.semantic.?.strict_output_context.functions.len);
+    const actual_role = &owner.semantic.?.strict_output_context.functions[0];
+    const foreign_role = &foreign.semantic.?.strict_output_context.functions[0];
+    const first = linker.canonical_export_receipts.getPtr(@intFromPtr(binding)).?;
+    const second = linker.canonical_export_receipts.getPtr(@intFromPtr(alias)).?;
+    const before_first = first.*;
+    const before_second = second.*;
+    const foreign_binding = foreign.findExportBinding("foreign").?;
+    const third = linker.canonical_export_receipts.getPtr(@intFromPtr(foreign_binding)).?;
+    const before_third = third.*;
+    const provider = switch (first.role) {
+        .local => |*known| known,
+        else => return error.MissingCanonicalLocalReceipt,
+    };
+    try std.testing.expectError(error.InvalidCrossChunkExport, provider.validateStrictOutputFunction(&linker, foreign_role, std.testing.allocator));
+    const role_copy = actual_role.*;
+    try std.testing.expectError(error.InvalidCrossChunkExport, provider.validateStrictOutputFunction(&linker, &role_copy, std.testing.allocator));
+    const roles = @constCast(owner.semantic.?.strict_output_context.functions);
+    const original = roles[0];
+    roles[0].symbol = .none;
+    try std.testing.expectError(error.InvalidCrossChunkExport, provider.validateStrictOutputFunction(&linker, &roles[0], std.testing.allocator));
+    roles[0] = original;
+    roles[0].binding = .none;
+    try std.testing.expectError(error.InvalidCrossChunkExport, provider.validateStrictOutputFunction(&linker, &roles[0], std.testing.allocator));
+    roles[0] = original;
+    try std.testing.expect(std.meta.eql(before_first, first.*));
+    try std.testing.expect(std.meta.eql(before_second, second.*));
+    const Trial = struct {
+        fn run(a: std.mem.Allocator, l: *Linker, one: *@import("canonical_export.zig").Receipt, two: *@import("canonical_export.zig").Receipt, old_one: @import("canonical_export.zig").Receipt, old_two: @import("canonical_export.zig").Receipt, three: *@import("canonical_export.zig").Receipt, old_three: @import("canonical_export.zig").Receipt, module: *const Module, expected_sid: u32) !void {
+            const previous_allocator = l.allocator;
+            l.allocator = a;
+            defer l.allocator = previous_allocator;
+            defer one.* = old_one;
+            defer two.* = old_two;
+            defer three.* = old_three;
+            l.publishCanonicalStrictFunctionReceipts() catch |err| {
+                try std.testing.expect(std.meta.eql(old_one, one.*));
+                try std.testing.expect(std.meta.eql(old_two, two.*));
+                try std.testing.expect(std.meta.eql(old_three, three.*));
+                return err;
+            };
+            try std.testing.expect(module.semantic.?.symbols.items[expected_sid].binding_instantiation.strict_output_function);
+            try std.testing.expectEqualStrings("value", l.getCanonicalForExport(one.binding.*, module.index.toU32()).?);
+            try std.testing.expectEqualStrings("value", l.getCanonicalForExport(two.binding.*, module.index.toU32()).?);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Trial.run, .{ &linker, first, second, before_first, before_second, third, before_third, owner, sid });
+    try linker.publishCanonicalStrictFunctionReceipts();
+    try std.testing.expectEqualStrings("value", linker.getCanonicalForExport(binding.*, owner.index.toU32()).?);
+    try std.testing.expectEqualStrings("value", linker.getCanonicalForExport(alias.*, owner.index.toU32()).?);
+}
+
+test "canonical export strict anonymous default preserves the source facade handoff" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "export default function(value=1){return value};export function other(input=2){return input};console.log('loaded');");
+    const path = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{ .platform = .react_native });
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{path});
+    var linker = Linker.init(std.testing.allocator, &graph, .cjs);
+    defer linker.deinit();
+    try linker.link();
+    const owner = graph.moduleAtMut(findModuleIdx(&graph, "entry.mjs").?).?;
+    try std.testing.expectEqual(.esm, owner.wrap_kind);
+    const binding = owner.findExportBinding("default").?;
+    const original = binding.*;
+    const original_sid = original.symbol.semanticIndex().?;
+    try std.testing.expect(original.has_default_export_facade);
+    const source_wrapper = original.default_export_node.?;
+    try std.testing.expect(owner.ast.?.getNode(source_wrapper).tag == .export_default_declaration);
+    try @import("strict_function_context.zig").lowerModule(owner);
+    try std.testing.expectEqual(@as(usize, 2), owner.semantic.?.strict_output_context.functions.len);
+    const roles = @constCast(owner.semantic.?.strict_output_context.functions);
+    var selected: ?usize = null;
+    for (roles, 0..) |candidate, index| if (@backingInt(candidate.symbol) == original_sid) {
+        selected = index;
+    };
+    const role = &roles[selected.?];
+    try std.testing.expectEqual(.anonymous_default, role.name_role);
+    try std.testing.expectEqual(original_sid, @backingInt(role.symbol));
+    try std.testing.expectEqual(original_sid, binding.symbol.semanticIndex().?);
+    try std.testing.expect(!binding.has_default_export_facade);
+    try std.testing.expect(role.binding != source_wrapper);
+    try std.testing.expect(owner.ast.?.getNode(source_wrapper).tag == .export_named_declaration);
+    const Receipt = @import("canonical_export.zig").Receipt;
+    const Snapshot = struct { target: *Receipt, before: Receipt };
+    var snapshots: std.ArrayList(Snapshot) = .empty;
+    defer snapshots.deinit(std.testing.allocator);
+    var receipts = linker.canonical_export_receipts.valueIterator();
+    while (receipts.next()) |target| try snapshots.append(std.testing.allocator, .{ .target = target, .before = target.* });
+    const output_binding = binding.*;
+    const actual_symbol = owner.semantic.?.symbols.items[original_sid];
+    const role_before = role.*;
+    const other = &roles[if (selected.? == 0) 1 else 0];
+    // A same-SID reference is not the registered new declaration binding.
+    role.binding = binding.local_symbol_node.?;
+    const invalid_anchor = ok: {
+        linker.publishCanonicalStrictFunctionReceipts() catch break :ok false;
+        break :ok true;
+    };
+    try std.testing.expect(!invalid_anchor);
+    role.* = role_before;
+    const returned = owner.ast.?.getNode(role.returned_function);
+    const original_params = owner.ast.?.readExtraNode(returned.data.extra, @import("../parser/ast.zig").FunctionExtra.params);
+    const other_returned = owner.ast.?.getNode(other.returned_function);
+    owner.ast.?.extra_data.items[returned.data.extra + @import("../parser/ast.zig").FunctionExtra.params] = @backingInt(owner.ast.?.readExtraNode(other_returned.data.extra, @import("../parser/ast.zig").FunctionExtra.params));
+    const invalid_params = ok: {
+        linker.publishCanonicalStrictFunctionReceipts() catch break :ok false;
+        break :ok true;
+    };
+    try std.testing.expect(!invalid_params);
+    owner.ast.?.extra_data.items[returned.data.extra + @import("../parser/ast.zig").FunctionExtra.params] = @backingInt(original_params);
+    const original_body = owner.ast.?.readExtraNode(returned.data.extra, @import("../parser/ast.zig").FunctionExtra.body);
+    owner.ast.?.extra_data.items[returned.data.extra + @import("../parser/ast.zig").FunctionExtra.body] = @backingInt(owner.ast.?.readExtraNode(other_returned.data.extra, @import("../parser/ast.zig").FunctionExtra.body));
+    const invalid_body = ok: {
+        linker.publishCanonicalStrictFunctionReceipts() catch break :ok false;
+        break :ok true;
+    };
+    try std.testing.expect(!invalid_body);
+    owner.ast.?.extra_data.items[returned.data.extra + @import("../parser/ast.zig").FunctionExtra.body] = @backingInt(original_body);
+    role.source_scope = other.source_scope;
+    const invalid_scope = ok: {
+        linker.publishCanonicalStrictFunctionReceipts() catch break :ok false;
+        break :ok true;
+    };
+    try std.testing.expect(!invalid_scope);
+    role.* = role_before;
+    role.returned_function = other.returned_function;
+    const invalid_function = ok: {
+        linker.publishCanonicalStrictFunctionReceipts() catch break :ok false;
+        break :ok true;
+    };
+    try std.testing.expect(!invalid_function);
+    role.* = role_before;
+    const other_binding = owner.findExportBinding("other").?.*;
+    var paired_binding = other_binding;
+    paired_binding.exported_name = binding.exported_name;
+    paired_binding.symbol = binding.symbol;
+    @constCast(binding).* = paired_binding;
+    const invalid_binding = ok: {
+        linker.publishCanonicalStrictFunctionReceipts() catch break :ok false;
+        break :ok true;
+    };
+    try std.testing.expect(!invalid_binding);
+    @constCast(binding).* = output_binding;
+    for (snapshots.items) |snapshot| try std.testing.expect(std.meta.eql(snapshot.before, snapshot.target.*));
+    const Trial = struct {
+        fn run(a_: std.mem.Allocator, l: *Linker, before: []const Snapshot, module: *const Module, actual_sid: u32, row: semantic_symbol.Symbol, expected_binding: @import("binding_scanner.zig").ExportBinding) !void {
+            const previous_allocator = l.allocator;
+            l.allocator = a_;
+            defer l.allocator = previous_allocator;
+            defer for (before) |snapshot| {
+                snapshot.target.* = snapshot.before;
+            };
+            l.publishCanonicalStrictFunctionReceipts() catch |err| {
+                for (before) |snapshot| try std.testing.expect(std.meta.eql(snapshot.before, snapshot.target.*));
+                try std.testing.expect(std.meta.eql(row, module.semantic.?.symbols.items[actual_sid]));
+                try std.testing.expect(std.meta.eql(expected_binding, module.findExportBinding("default").?.*));
+                return err;
+            };
+            try std.testing.expect(std.meta.eql(row, module.semantic.?.symbols.items[actual_sid]));
+            try std.testing.expect(l.getCanonicalForExport(module.findExportBinding("default").?.*, module.index.toU32()) != null);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Trial.run, .{ &linker, @as([]const Snapshot, snapshots.items), owner, original_sid, actual_symbol, output_binding });
+    const published = ok: {
+        linker.publishCanonicalStrictFunctionReceipts() catch break :ok false;
+        break :ok true;
+    };
+    try std.testing.expect(published);
+    try std.testing.expect(linker.getCanonicalForExport(binding.*, owner.index.toU32()) != null);
+    try linker.publishCanonicalStrictFunctionReceipts();
+    var relinked = Linker.init(std.testing.allocator, &graph, .cjs);
+    defer relinked.deinit();
+    try relinked.link();
+    try relinked.publishCanonicalStrictFunctionReceipts();
+    try std.testing.expect(relinked.getCanonicalForExport(binding.*, owner.index.toU32()) != null);
+}
+
+test "canonical export strict named default retains its real wrapper handoff" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "export default function named(value=1){return named.name+value};console.log('loaded');");
+    const path = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{ .platform = .react_native });
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{path});
+    var linker = Linker.init(std.testing.allocator, &graph, .cjs);
+    defer linker.deinit();
+    try linker.link();
+    const owner = graph.moduleAtMut(findModuleIdx(&graph, "entry.mjs").?).?;
+    try std.testing.expectEqual(.esm, owner.wrap_kind);
+    const binding = owner.findExportBinding("default").?;
+    const before = binding.*;
+    const sid = before.symbol.semanticIndex().?;
+    try std.testing.expect(!before.has_default_export_facade);
+    const original_binding = before.local_symbol_node.?;
+    const source_wrapper = before.default_export_node.?;
+    try @import("strict_function_context.zig").lowerModule(owner);
+    try std.testing.expectEqual(@as(usize, 1), owner.semantic.?.strict_output_context.functions.len);
+    const role = &owner.semantic.?.strict_output_context.functions[0];
+    try std.testing.expectEqual(.binding, role.name_role);
+    try std.testing.expectEqual(.factory, role.kind);
+    try std.testing.expectEqual(original_binding, role.binding);
+    try std.testing.expectEqual(sid, @backingInt(role.symbol));
+    try std.testing.expectEqual(sid, binding.symbol.semanticIndex().?);
+    try std.testing.expect(binding.local_symbol_node.? != role.binding);
+    try std.testing.expect(owner.ast.?.getNode(source_wrapper).tag == .export_named_declaration);
+    const published = ok: {
+        linker.publishCanonicalStrictFunctionReceipts() catch break :ok false;
+        break :ok true;
+    };
+    try std.testing.expect(published);
+    try std.testing.expectEqualStrings("named", linker.getCanonicalForExport(binding.*, owner.index.toU32()).?);
+}
+
 fn dirPath(tmp: *std.testing.TmpDir) ![:0]u8 {
     return try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
 }
@@ -3103,7 +3429,7 @@ test "re-export alias: export { J as render } resolves to J" {
     const canon = binding.?.canonical;
     try std.testing.expectEqualStrings("J", canon.export_name);
     // resolveToLocalName도 "J" (impl.ts에서 함수명과 export명이 동일)
-    const local = r.linker.resolveToLocalName(canon);
+    const local = r.linker.resolveToLocalName(canon) orelse return error.MissingCanonicalExport;
     try std.testing.expectEqualStrings("J", local);
 }
 
@@ -3124,7 +3450,7 @@ test "re-export alias: export { default as groupBy } — function declaration" {
     const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     // canonical은 impl.ts의 "default" → local_name = "hello" (함수명)
-    const local = r.linker.resolveToLocalName(binding.?.canonical);
+    const local = r.linker.resolveToLocalName(binding.?.canonical) orelse return error.MissingCanonicalExport;
     try std.testing.expectEqualStrings("hello", local);
 }
 
@@ -3151,7 +3477,7 @@ test "re-export alias: export { default as X } — identifier default uses snaps
     const operand = target.ast.?.getNode(exported.default_export_node.?).data.unary.operand;
     const source_sid = target.semantic.?.symbol_ids[@backingInt(operand)].?;
     try std.testing.expect(facade_sid != source_sid);
-    try std.testing.expectEqualStrings(r.linker.getCanonicalByRef(exported.symbol).?, r.linker.resolveToLocalName(binding.?.canonical));
+    try std.testing.expectEqualStrings(r.linker.getCanonicalByRef(exported.symbol).?, r.linker.resolveToLocalName(binding.?.canonical).?);
 }
 
 // ============================================================
@@ -3285,7 +3611,7 @@ test "re-export alias: double-hop chain (z -> y -> x)" {
     // 3-hop chain → 최종 origin.ts의 "x"
     const canon = binding.?.canonical;
     try std.testing.expectEqualStrings("x", canon.export_name);
-    const local = r.linker.resolveToLocalName(canon);
+    const local = r.linker.resolveToLocalName(canon) orelse return error.MissingCanonicalExport;
     try std.testing.expectEqualStrings("x", local);
 }
 
@@ -3306,7 +3632,7 @@ test "re-export alias: default class declaration resolves to class name" {
     const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     // default class declaration → local_name = "MyWidget"
-    const local = r.linker.resolveToLocalName(binding.?.canonical);
+    const local = r.linker.resolveToLocalName(binding.?.canonical) orelse return error.MissingCanonicalExport;
     try std.testing.expectEqualStrings("MyWidget", local);
 }
 
@@ -5979,7 +6305,7 @@ test "runtime helper CJS factory scope zero shadows rename the exact provider" {
             try std.testing.expect(source_binding_id != local);
         }
         try result.linker.computeRenames();
-        const selected = result.linker.rename_table.get(exact) orelse result.linker.resolveToLocalName(resolved.canonical);
+        const selected = result.linker.rename_table.get(exact) orelse result.linker.resolveToLocalName(resolved.canonical) orelse return error.MissingCanonicalExport;
         std.debug.print("CJS0 HELPER case={d} canonical={s}\n", .{ index, selected });
         if (index < 2) {
             try std.testing.expect(!std.mem.eql(u8, selected, "__callSuper"));

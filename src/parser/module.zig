@@ -802,6 +802,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
 
         if (is_type_only_export) return NodeIndex.none;
 
+        const first_star_binding = self.scan_export_bindings.items.len;
         // Inline scan: export * from "module" / export * as ns from "module"
         if (self.enable_scan and !self.ctx.in_ambient and !source_node.isNone()) {
             self.scan_result.has_esm_syntax = true;
@@ -840,11 +841,13 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
             attrs.start,
             attrs.len,
         });
-        return try self.ast.addNode(.{
+        const export_node = try self.ast.addNode(.{
             .tag = .export_all_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
             .data = .{ .extra = extra_start },
         });
+        for (self.scan_export_bindings.items[first_star_binding..]) |*binding| binding.source_export_node_index = @backingInt(export_node);
+        return export_node;
     }
 
     // export { a, b } / export { a } from "module"

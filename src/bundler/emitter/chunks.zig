@@ -197,7 +197,7 @@ fn crossChunkBindingName(linker: ?*Linker, sym: chunk_mod.CrossChunkSym) ![]cons
             return l.resolveToLocalName(.{
                 .module_index = @fromBackingInt(@intCast(sym.canonical_module)),
                 .export_name = sym.name,
-            });
+            }) orelse return error.InvalidCrossChunkLocalName;
         }
     }
     return sym.name;
@@ -575,7 +575,7 @@ fn emitHoistedFnExports(
     const m = graph.getModule(@fromBackingInt(@intCast(mod_idx))) orelse return;
     for (m.export_bindings) |eb| {
         if (!exportBindingIsHoistableFn(m, eb)) continue;
-        const local = l.getCanonicalForExport(eb, mod_idx);
+        const local = l.getCanonicalForExport(eb, mod_idx) orelse return error.InvalidCrossChunkExport;
         const verified = try m.ordinaryQuotedExportLiteral(eb);
         try appendCjsExportBinding(allocator, out, eb.exported_name, if (verified) |value| value.literal_syntax else null, local, false, false);
     }
@@ -3263,10 +3263,10 @@ fn rewriteDynamicImports(
                     for (target_mod.export_bindings) |eb| {
                         if (eb.kind != .local) continue; // re-export 계열 제외(상단 주석)
                         const exported = eb.exported_name;
-                        const local = if (linker) |l|
+                        const local = (if (linker) |l|
                             l.getCanonicalForExport(eb, tmi)
                         else
-                            target_mod.exportBindingLocalName(eb);
+                            target_mod.exportBindingLocalName(eb)) orelse return error.InvalidCrossChunkExport;
                         if (n > 0) try ns.append(allocator, ',');
                         if (isAsciiJsIdent(exported)) {
                             try ns.appendSlice(allocator, exported);
@@ -4229,7 +4229,7 @@ fn emitLazyEntryExportAll(
             if (!lazyEntryExportAllHasLocalBinding(eb.kind)) continue;
             // 노출 키 = ExportBinding의 exact local identity. Name lookup은 anonymous
             // default facade와 같은 이름의 source binding을 혼동할 수 있다.
-            const local = l.getCanonicalForExport(eb, @intCast(mi));
+            const local = l.getCanonicalForExport(eb, @intCast(mi)) orelse return error.InvalidCrossChunkExport;
             if (local.len == 0) continue;
             const gop = try seen.getOrPut(allocator, local);
             if (gop.found_existing) continue;
@@ -5483,6 +5483,19 @@ test "PM barrel import target actual source canonical selected export tuple" {
     const valid_handle = linker.ordinaryCanonicalImportTarget(canonical) orelse return error.MissingBarrelOrdinaryHandle;
     const valid_pair = Linker.NsExportPair{ .exported = "default", .local = "unused-fallback", .canonical_import = valid_handle };
     try std.testing.expectEqualStrings(selected, (try linker.selectedFinalImportLocal(barrel.index.toU32(), valid_pair)).?);
+    var foreign_graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer foreign_graph.deinit();
+    foreign_graph.preserve_modules = true;
+    try foreign_graph.build(std.testing.io, &.{path});
+    var foreign_linker = Linker.init(std.testing.allocator, &foreign_graph, .cjs);
+    defer foreign_linker.deinit();
+    try foreign_linker.link();
+    try foreign_linker.finalize(.{ .compute_renames = true, .compute_mangling = true });
+    const foreign_handle = foreign_linker.ordinaryCanonicalImportTarget(canonical) orelse return error.MissingForeignOrdinaryHandle;
+    try std.testing.expect(@import("../symbol.zig").SymbolRef.eql(foreign_handle.provider_symbol, valid_handle.provider_symbol));
+    var foreign_pair = valid_pair;
+    foreign_pair.canonical_import = foreign_handle;
+    try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), foreign_pair));
     var corrupt = valid_pair;
     corrupt.canonical_import.?.provider_symbol = source.local_symbol;
     try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), corrupt));
@@ -5956,4 +5969,76 @@ test "shared namespace output consumer selects final alias by known output refer
     var missing = edge;
     missing.provider = null;
     try std.testing.expectError(error.MissingCrossChunkProvider, crossChunkBindingName(&linker, missing));
+}
+
+fn checkAliasedPurity(source: []const u8, expected_pure: bool) !void {
+    const helpers = @import("../test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.mjs", "import{visible}from'./provider.mjs';visible();");
+    try helpers.writeFile(tmp.dir, "provider.mjs", source);
+    const path = try helpers.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{path});
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    linker.populateImportSymbols();
+    var it = graph.modulesIterator();
+    var entry: ?*const Module = null;
+    while (it.next()) |m| if (std.mem.eql(u8, m.path, path)) {
+        entry = m;
+        break;
+    };
+    const m = @constCast(entry orelse return error.MissingPurityControl);
+    const ast = &m.ast.?;
+    const sem = &m.semantic.?;
+    var call_count: usize = 0;
+    for (ast.nodes.items) |node| if (node.tag == .call_expression) {
+        try std.testing.expect(ast.extra_data.items[node.data.extra + 3] & @import("../../parser/ast.zig").CallFlags.is_pure == 0);
+        call_count += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 1), call_count);
+    @import("tree_shake.zig").propagateCrossModulePurity(&linker, m, ast, sem.symbol_ids, std.testing.allocator);
+    for (ast.nodes.items) |node| if (node.tag == .call_expression) {
+        try std.testing.expectEqual(expected_pure, ast.extra_data.items[node.data.extra + 3] & @import("../../parser/ast.zig").CallFlags.is_pure != 0);
+    };
+}
+
+test "cross module purity cannot borrow a sibling binding through an export key" {
+    try checkAliasedPurity("/* @__NO_SIDE_EFFECTS__ */ function visible(){}function actual(){console.log('side')}export{actual as visible};", false);
+}
+
+test "cross module purity follows the actual aliased export binding" {
+    try checkAliasedPurity("function visible(){console.log('side')}/* @__NO_SIDE_EFFECTS__ */ function actual(){return 7}export{actual as visible};", true);
+}
+
+test "PM ordinary import target rejects a replaced source export carrier" {
+    const helpers = @import("../test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "provider.mjs", "const first=7,second=99;export{first as value,second as other};");
+    const path = try helpers.absPath(&tmp, "provider.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{path});
+    const module = graph.modules.at(0);
+    var linker = Linker.init(std.testing.allocator, &graph, .cjs);
+    defer linker.deinit();
+    const canonical = @import("../linker.zig").SymbolRef{ .module_index = module.index, .export_name = "value" };
+    try std.testing.expect(linker.ordinaryCanonicalImportTarget(canonical) != null);
+    const selected = @constCast(module.findExportBinding("value").?);
+    const other = module.findExportBinding("other").?;
+    const original = selected.*;
+    defer selected.* = original;
+    selected.symbol = other.symbol;
+    selected.local_symbol_node = other.local_symbol_node;
+    try std.testing.expect(linker.ordinaryCanonicalImportTarget(canonical) == null);
 }

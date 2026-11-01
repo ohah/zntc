@@ -217,6 +217,7 @@ pub const Linker = struct {
 
     /// 모듈별 export 맵: (module_index, exported_name) → ExportEntry. 키는 name 을 borrow.
     export_map: std.HashMapUnmanaged(ExportKey, ExportEntry, ExportKeyContext, 80) = .empty,
+    canonical_export_receipts: std.AutoHashMapUnmanaged(usize, @import("canonical_export.zig").Receipt) = .empty,
 
     /// import→export 바인딩 결과: (module_index, local_span_key) → ResolvedBinding
     resolved_bindings: std.AutoHashMapUnmanaged(BindingKey, ResolvedBinding) = .empty,
@@ -493,6 +494,7 @@ pub const Linker = struct {
     pub const CanonicalImportTarget = struct {
         canonical: SymbolRef,
         provider_symbol: bundler_symbol.SymbolRef,
+        provider: @import("cross_chunk_export.zig").Provider,
     };
 
     /// namespace 객체 preamble 생성 시 사용하는 export 쌍.
@@ -582,6 +584,7 @@ pub const Linker = struct {
         // 키 name 은 borrow(export_bindings 소유) → 개별 free 불필요.
         self.export_map.deinit(self.allocator);
         self.semantic_import_fanout.deinit(self.allocator);
+        self.canonical_export_receipts.deinit(self.allocator);
         self.resolved_bindings.deinit(self.allocator);
         for (self.canonical_strings.items) |s| self.allocator.free(s);
         self.canonical_strings.deinit(self.allocator);
@@ -3804,10 +3807,10 @@ pub const Linker = struct {
             // 그 이름을 들여옴), same-chunk/글로벌이면 canonical **local**(같은 청크 참조는 로컬명). 이
             // 이름과 동명인 nested 바인딩이 self-TDZ 를 낸다. ⚠️ same-chunk 에 전역명을 쓰면(local!=global)
             // 로컬명 shadow 를 놓쳐 #4563 이 회귀(code-review).
-            const ref_name = if (per_chunk and !target_same_chunk)
+            const ref_name = (if (per_chunk and !target_same_chunk)
                 (self.getCrossChunkGlobalName(cmod, resolved.canonical.export_name) orelse self.resolveToLocalName(resolved.canonical))
             else
-                self.resolveToLocalName(resolved.canonical);
+                self.resolveToLocalName(resolved.canonical)) orelse continue;
 
             // Ordinary imports cannot retain a reference through a same-name nested binding,
             // so equal local/canonical spellings need no repair for them. Generated helper
@@ -5009,19 +5012,16 @@ pub const Linker = struct {
         const mi: u32 = m.index.toU32();
         for (m.export_bindings) |eb| {
             var eh: u64 = std.hash.Wyhash.hash(0x21, eb.exported_name);
-            eh ^= std.hash.Wyhash.hash(0x22, self.getCanonicalForExport(eb, mi));
+            if (self.getCanonicalForExport(eb, mi)) |canonical| eh ^= std.hash.Wyhash.hash(0x22, canonical);
             // 소비자가 인라인하는 const 값 — buildCrossModuleConstValues 의 provider-side read 와 동일.
             if (m.semantic) |sem| {
-                if (sem.scope_maps.len > 0) {
-                    const local = m.exportBindingLocalName(eb);
-                    if (sem.scope_maps[0].get(local)) |sidx| {
-                        if (sidx < sem.symbols.items.len) {
-                            const sym = sem.symbols.items[sidx];
-                            eh ^= (@as(u64, @backingInt(sym.const_kind)) +% 1) *% 0x9e3779b1;
-                            eh ^= @as(u64, sym.write_count) *% 0x100000001b3;
-                            if (sym.const_kind == .number) {
-                                eh ^= std.hash.Wyhash.hash(0x24, sem.numericConstText(@intCast(sidx)));
-                            }
+                if (self.getCanonicalForExport(eb, mi) != null) {
+                    if (m.exportBindingSemanticIndex(eb)) |sidx| {
+                        const sym = sem.symbols.items[sidx];
+                        eh ^= (@as(u64, @backingInt(sym.const_kind)) +% 1) *% 0x9e3779b1;
+                        eh ^= @as(u64, sym.write_count) *% 0x100000001b3;
+                        if (sym.const_kind == .number) {
+                            eh ^= std.hash.Wyhash.hash(0x24, sem.numericConstText(@intCast(sidx)));
                         }
                     }
                 }
@@ -5093,18 +5093,27 @@ pub const Linker = struct {
         return self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(module_index))), idx));
     }
 
-    /// ExportBinding의 canonical local name을 kind별 safe한 방법으로 조회.
-    /// `.local`은 `eb.symbol`(semantic) 기반 ref 조회; 그 외는 문자열 조회.
-    /// `.re_export` alias는 chain-resolved canonical을 쓰므로 final exports/scope
-    /// hoisting에서 원하는 "현재 모듈 rename"과 다름 → 문자열 경로 유지.
-    pub fn getCanonicalForExport(self: *const Linker, eb: ExportBinding, module_index: u32) []const u8 {
-        const m = self.getModule(module_index).?;
-        const local = m.exportBindingLocalName(eb);
-        if (eb.kind == .local or eb.hasSyntheticDefault(m.semanticSymbols())) {
-            const canonical = self.getCanonicalByRef(eb.symbol) orelse local;
-            return self.safeIdentifierName(canonical, module_index);
-        }
-        return self.getCanonicalName(module_index, local) orelse local;
+    /// Consume the export-map producer's actual source binding or alias receipt.
+    /// The public key selects an ExportBinding, never a lexical SymbolId.
+    /// Late canonical names remain owned by the known SID or original AliasId.
+    pub fn getCanonicalForExport(self: *const Linker, eb: ExportBinding, module_index: u32) ?[]const u8 {
+        const owner = self.getModule(module_index) orelse return null;
+        const actual = owner.findExportBinding(eb.exported_name) orelse return null;
+        if (!std.meta.eql(actual.*, eb)) return null;
+        const receipt = self.canonical_export_receipts.get(@intFromPtr(actual)) orelse {
+            // Split-entry guards are installed after the source export map.
+            // Their registered AST producer already owns an exact binding
+            // receipt; absence from this earlier map is not lexical authority.
+            if (self.graph.entry_guard_ast_provider) |provider| if (provider.module_index == owner.index) {
+                const known = @import("canonical_export.zig").Receipt.capture(self, owner, actual) catch return null;
+                return known.localName(self) catch null;
+            };
+            // This compatibility branch has no analyzer or source AST and
+            // performs no lexical lookup, even when a spelling is reserved.
+            if (owner.ast == null and owner.semantic == null) return materializedPublicName(eb.local_name);
+            return null;
+        };
+        return receipt.localName(self) catch null;
     }
 
     /// SymbolRef 기반 canonical name 조회 facade. #1328 Phase 4c-3.
@@ -5150,12 +5159,22 @@ pub const Linker = struct {
     fn buildExportMap(self: *Linker) !void {
         var scope = profile.begin(.link_build_export_map);
         defer scope.end();
+        self.canonical_export_receipts.clearRetainingCapacity();
+        self.export_map.clearRetainingCapacity();
 
         for (0..self.graph.moduleCount()) |i| {
             const m = self.getModule(@intCast(i)) orelse continue;
             const mod_idx: ModuleIndex = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
-            for (m.export_bindings) |eb| {
+            const actual = self.moduleAtMut(@intCast(i)) orelse return error.InvalidCrossChunkExport;
+            if (actual != m) return error.InvalidCrossChunkExport;
+            if (actual.semantic) |*sem| _ = sem.captureOwnerToken();
+            for (m.export_bindings) |*binding| {
+                const eb = binding.*;
                 if (std.mem.eql(u8, eb.exported_name, "*")) continue;
+                if (!m.ts_type_export_names.contains(eb.exported_name)) {
+                    const receipt = try @import("canonical_export.zig").Receipt.capture(self, m, binding);
+                    try self.canonical_export_receipts.put(self.allocator, @intFromPtr(binding), receipt);
+                }
                 // 키는 name borrow → 중복 키는 put 이 value 만 덮어씀(free 불필요).
                 try self.export_map.put(self.allocator, .{ .module_index = @intCast(i), .name = eb.exported_name }, .{
                     .binding = eb,
@@ -5163,6 +5182,52 @@ pub const Linker = struct {
                 });
             }
         }
+    }
+
+    /// Strict output lowering happens after the initial link. Publish only
+    /// its validated actual-role mutation into already captured source receipts.
+    pub fn publishCanonicalStrictFunctionReceipts(self: *Linker) !void {
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const Receipt = @import("canonical_export.zig").Receipt;
+        const Update = struct { target: *Receipt, value: Receipt };
+        var pending: std.ArrayList(Update) = .empty;
+        var modules = self.graph.modulesIterator();
+        while (modules.next()) |owner| {
+            const sem = owner.semantic orelse continue;
+            if (sem.strict_output_context.functions.len == 0) continue;
+            const ast = if (owner.ast) |*value| value else return error.InvalidCrossChunkExport;
+            try @import("strict_function_context.zig").validateContext(ast, sem, scratch.allocator());
+            var roles: std.AutoHashMapUnmanaged(@import("../semantic/symbol.zig").SymbolId, *const @import("strict_function_context.zig").Role) = .empty;
+            for (sem.strict_output_context.functions) |*role| {
+                const slot = try roles.getOrPut(scratch.allocator(), role.symbol);
+                if (slot.found_existing) return error.InvalidStrictFunctionRole;
+                slot.value_ptr.* = role;
+            }
+            for (owner.export_bindings) |*binding| {
+                if (binding.symbol.moduleIndex() != owner.index) continue;
+                const sid = binding.symbol.semanticIndex() orelse continue;
+                const role = roles.get(@fromBackingInt(sid)) orelse continue;
+                const receipt = self.canonical_export_receipts.getPtr(@intFromPtr(binding)) orelse continue;
+                if (receipt.owner != owner or receipt.binding != binding) return error.InvalidCrossChunkExport;
+                var prepared = receipt.*;
+                switch (receipt.role) {
+                    .local => |provider| {
+                        const original = switch (provider.role) {
+                            .semantic, .entry_guard => |known| known.original,
+                            else => return error.InvalidCrossChunkExport,
+                        };
+                        if (!std.meta.eql(receipt.before, original)) return error.InvalidCrossChunkExport;
+                        prepared.role = .{ .local = try provider.prepareStrictOutputFunction(self, role, scratch.allocator()) };
+                    },
+                    else => return error.InvalidCrossChunkExport,
+                }
+                prepared.before = binding.*;
+                try pending.append(scratch.allocator(), .{ .target = receipt, .value = prepared });
+            }
+        }
+        // All role/source checks and allocations precede the no-fail publish.
+        for (pending.items) |update| update.target.* = update.value;
     }
 
     /// 모든 모듈의 import 바인딩을 해석하여 canonical export에 연결.
@@ -5322,7 +5387,7 @@ pub const Linker = struct {
                 },
                 .local => {
                     for (m.import_bindings) |ib| {
-                        if (ib.kind != .named or !std.mem.eql(u8, ib.local_name, eb.local_name)) continue;
+                        if (ib.kind != .named or !@import("canonical_export.zig").sameImportedSourceLocal(m, eb, ib)) continue;
                         const target = resolvedRecordModule(m.import_records, ib.import_record_index) orelse return false;
                         return self.exportIsTsType(@fromBackingInt(@intCast(target)), ib.imported_name, depth + 1);
                     }
@@ -5473,7 +5538,7 @@ pub const Linker = struct {
             // namespace import인 경우 현재 모듈의 바인딩을 반환.
             const m_local = m_any;
             for (m_local.import_bindings) |ib| {
-                if (std.mem.eql(u8, ib.local_name, entry.binding.local_name)) {
+                if (@import("canonical_export.zig").sameImportedSourceLocal(m_local, entry.binding, ib)) {
                     if (ib.kind == .namespace) {
                         return .{
                             .module_index = module_idx,
@@ -5663,16 +5728,21 @@ pub const Linker = struct {
 
     /// SymbolRef를 scope hoisting 후 최종 로컬 이름으로 해결.
     /// local export는 이름을 다시 찾지 않고 ExportBinding의 exact SymbolRef를 사용한다.
-    pub fn resolveToLocalName(self: *const Linker, ref: SymbolRef) []const u8 {
+    pub fn resolveToLocalName(self: *const Linker, ref: SymbolRef) ?[]const u8 {
         const cmod = ref.module_index.toU32();
-        if (self.getModule(cmod)) |m| {
-            if (m.findExportBinding(ref.export_name)) |eb| {
-                return self.getCanonicalForExport(eb.*, cmod);
-            }
-        }
-        const local = self.getExportLocalName(cmod, ref.export_name) orelse ref.export_name;
-        const canonical = self.getCanonicalName(cmod, local) orelse local;
-        return self.safeIdentifierName(canonical, cmod);
+        const m = self.getModule(cmod) orelse return null;
+        if (m.findExportBinding(ref.export_name)) |eb| return self.getCanonicalForExport(eb.*, cmod);
+        // A CJS member is materialized from the registered require runtime,
+        // not from a private lexical binding with the same public spelling.
+        if (m.wrap_kind == .cjs and m.getRequireName(&self.rename_table) != null)
+            return materializedPublicName(ref.export_name);
+        // Explicit graphless compatibility has no symbol authority to recover.
+        if (m.ast == null and m.semantic == null) return materializedPublicName(ref.export_name);
+        return null;
+    }
+
+    fn materializedPublicName(public_name: []const u8) []const u8 {
+        return if (std.mem.eql(u8, public_name, "default")) "_default" else public_name;
     }
 
     /// #1328 Phase 3b: 각 모듈의 `re_export_alias` 합성 심볼에 대해 체인 resolve를
@@ -5733,7 +5803,7 @@ pub const Linker = struct {
                 } orelse continue;
 
                 const ref = self.resolveExportChain(mod_idx, eb.exported_name, 0) orelse continue;
-                const name = self.resolveToLocalName(ref);
+                const name = self.resolveToLocalName(ref) orelse continue;
                 table_ptr.setCanonicalName(sym_id, name);
             }
         }
@@ -6129,11 +6199,8 @@ pub const Linker = struct {
 
     /// "default"는 JS 예약어 — 값 위치에 식별자로 사용 불가.
     /// codegen 합성 변수명(_default)의 canonical name으로 대체.
-    fn safeIdentifierName(self: *const Linker, name: []const u8, module_index: u32) []const u8 {
-        if (std.mem.eql(u8, name, "default")) {
-            return self.getCanonicalName(module_index, "_default") orelse "_default";
-        }
-        return name;
+    fn safeIdentifierName(_: *const Linker, name: []const u8, _: u32) []const u8 {
+        return materializedPublicName(name);
     }
 
     fn cjsNamespaceExportAccess(self: *const Linker, ref: SymbolRef) WrapperNameError!?[]const u8 {
@@ -6252,7 +6319,7 @@ pub const Linker = struct {
 
         // `import x from './src'; export { x }` — binding_scanner 가 .local 로 두는 형태.
         for (m.import_bindings) |ib| {
-            if (!std.mem.eql(u8, ib.local_name, entry.binding.local_name)) continue;
+            if (!@import("canonical_export.zig").sameImportedSourceLocal(m, entry.binding, ib)) continue;
             if (ib.import_record_index >= m.import_records.len) return null;
             const src = m.import_records[ib.import_record_index].resolved;
             if (src.isNone()) return null;
@@ -6310,7 +6377,11 @@ pub const Linker = struct {
         if (provider.wrap_kind == .cjs) return null;
         const binding = provider.findExportBinding(canonical.export_name) orelse return null;
         if (binding.kind != .local or provider.exportBindingSemanticIndex(binding.*) == null or binding.hasSyntheticDefault(provider.semanticSymbols())) return null;
-        return .{ .canonical = canonical, .provider_symbol = binding.symbol };
+        const sid = provider.exportBindingSemanticIndex(binding.*) orelse return null;
+        if (provider.semantic.?.symbols.items[sid].decl_flags.is_namespace_import) return null;
+        const witness = @import("cross_chunk_export.zig").Provider.capture(self, provider.index.toU32(), binding.exported_name, .ordinary_export) catch return null;
+        if (witness.role != .semantic and witness.role != .entry_guard) return null;
+        return .{ .canonical = canonical, .provider_symbol = binding.symbol, .provider = witness };
     }
 
     pub fn collectExportsRecursive(
@@ -6413,7 +6484,7 @@ pub const Linker = struct {
                             init_mod = null;
                             break :blk expr;
                         }
-                        break :blk self.resolveToLocalName(canonical);
+                        break :blk self.resolveToLocalName(canonical) orelse continue;
                     }
                     break :blk eb_local;
                 }
