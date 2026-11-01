@@ -109,23 +109,23 @@ const EXACT_MATRIX_REPORT_PREFIX_BY_KIND = {
   post: 'zntc: symbol-identity-post-minify ',
 } as const;
 const EXACT_MATRIX_OBSERVATION_FINGERPRINT =
-  '91e3dc97f367bf342d291ddef06ebc4f9de04495ff829b24353671f68aabebe4';
+  '130ef94dc60dc63e4f1c4cb089c4dd4afbd5c3c9986e775771fa6693347c8179';
 const EXACT_MATRIX_OBSERVATION_TOTALS = {
   'exact.generated_bindings': 14832,
-  'exact.generated_references': 45951,
+  'exact.generated_references': 45960,
   'exact.generated_scope_owners_checked': 13071,
-  'exact.external': 13203,
-  'exact.declaration_anchors_checked': 46290,
+  'exact.external': 13221,
+  'exact.declaration_anchors_checked': 46344,
   'exact.namespace_iife_params': 270,
   'exact.enum_iife_params': 36,
   'coverage.new_user_idents': 7710,
-  'strict.bound': 58746,
+  'strict.bound': 58755,
   'strict.external': 1869,
-  'strict.marked_synthetic': 51258,
-  'post.bindings': 47709,
-  'post.references': 103596,
-  'post.external': 13203,
-  'post.helpers': 7803,
+  'strict.marked_synthetic': 51267,
+  'post.bindings': 47763,
+  'post.references': 103695,
+  'post.external': 13221,
+  'post.helpers': 7812,
   'post.preserved_transform_refs': 204,
 } as const;
 const LOOP_BINDING_MANIFEST = [
@@ -152,6 +152,7 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
   file: string;
   target: (typeof TARGETS)[number];
   expectedStdout: string;
+  expectedGraph?: 'retained' | 'reanalyzed';
   observations: readonly ProducerObservationRequirement[];
 }> = [
   {
@@ -216,6 +217,16 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
     target: TARGETS[0],
     expectedStdout: 'function\n',
     observations: [{ report: 'exact', field: 'generated_bindings', minimum: 1 }],
+  },
+  {
+    file: '4819-standalone-named-regexp-helper.mjs',
+    target: TARGETS[0],
+    expectedStdout: 'abc\n',
+    expectedGraph: 'retained',
+    observations: [
+      { report: 'exact', field: 'generated_references', minimum: 1 },
+      { report: 'strict', field: 'marked_synthetic', minimum: 1 },
+    ],
   },
   {
     file: '4819-namespace-iife-params.ts',
@@ -2074,12 +2085,12 @@ describe('symbol identity coverage gate (#4819)', () => {
     const fixtureInventory = createHash('sha256')
       .update(fixtureNames.join('\n') + '\n')
       .digest('hex');
-    expect(fixtureNames).toHaveLength(303);
+    expect(fixtureNames).toHaveLength(304);
     expect(fixtureInventory).toBe(
-      'b8eb89e5ce54f834103c31965dd8f847878323453a16d71ea19e81f4d12e0e90',
+      '622c96bbf0fa056dcc31c2c24ffc81cf73c58626a30e812adccce59d946b74c6',
     );
     expect(fixtureContentFingerprint(fixtures, FIXTURE_DIR)).toBe(
-      'c5ad57c41752f19784d3c4195a7154c41d300468101d260de91f1f169e0d198d',
+      'c844e5ee4feab20f4598d8a17c8867f4c1208790baa4eb0e3559a5b344c30f71',
     );
     expect(TARGETS).toEqual([
       { name: 'es5', arg: '--target=es5' },
@@ -2244,11 +2255,17 @@ describe('symbol identity coverage gate (#4819)', () => {
       '4819-private-generator.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=5,strict.marked_synthetic>=1',
       '4801-static-field-arrow-this-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=9,exact.generated_scope_owners_checked>=2,strict.marked_synthetic>=1',
       '4819-import-equals-producer-observation.ts:es5:exact.generated_bindings>=1',
+      '4819-standalone-named-regexp-helper.mjs:es5:exact.generated_references>=1,strict.marked_synthetic>=1',
       '4819-namespace-iife-params.ts:es5:exact.namespace_iife_params>=3,exact.generated_references>=6,exact.declaration_anchors_checked>=13',
       '4819-namespace-generated-scopes.ts:es5:exact.generated_bindings>=23,exact.generated_references>=80,exact.generated_scope_owners_checked>=18,exact.declaration_anchors_checked>=32,exact.namespace_iife_params>=2,strict.marked_synthetic>=79',
       '4819-enum-iife-params.ts:es5:exact.enum_iife_params>=1',
       '4819-native-parameter-arrow-cells.mjs:es2015:exact.generated_bindings>=2,exact.generated_references>=5,exact.declaration_anchors_checked>=5,strict.marked_synthetic>=1',
     ]);
+    expect(
+      REQUIRED_PRODUCER_OBSERVATIONS.filter((entry) => entry.expectedGraph !== undefined).map(
+        (entry) => `${entry.file}:${entry.expectedGraph}`,
+      ),
+    ).toEqual(['4819-standalone-named-regexp-helper.mjs:retained']);
     expect(
       new Set(REQUIRED_PRODUCER_OBSERVATIONS.map((entry) => `${entry.file}:${entry.target.name}`))
         .size,
@@ -2276,6 +2293,12 @@ describe('symbol identity coverage gate (#4819)', () => {
           const { stderr, exitCode } = runCoverage(file, entry.target, outDir, minifyIdentifiers);
           expect(exitCode, `${label}: ${stderr}`).toBe(0);
           expect(transformIdentityAuditProblems(stderr), `${label}: ${stderr}`).toEqual([]);
+          if (minifyIdentifiers && entry.expectedGraph !== undefined) {
+            expect(
+              transpileGraphModeProblems(stderr, true, entry.expectedGraph, file),
+              `${label}: expected semantic graph mode`,
+            ).toEqual([]);
+          }
 
           const lines = stderr.split(/\r?\n/);
           const exact = lines.find((line) => line.startsWith('zntc: symbol-identity '));
