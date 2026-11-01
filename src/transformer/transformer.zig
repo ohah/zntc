@@ -48,11 +48,19 @@ pub const FunctionInfo = ast_plugin_mod.FunctionInfo;
 pub const AutoLabelMode = options_mod.AutoLabelMode;
 pub const BindingLite = options_mod.BindingLite;
 
+pub const ErasedTypeImportInlineSpecifierProof = struct {
+    specifier_index: NodeIndex,
+    specifier_node: Node,
+    imported_index: NodeIndex,
+    imported_node: Node,
+};
+
 pub const ErasedTypeImportExternalReferenceProof = struct {
     import_node: Node,
     import_node_index: NodeIndex,
     import_local_node: Node,
     import_local_node_index: NodeIndex,
+    inline_specifier: ?ErasedTypeImportInlineSpecifierProof = null,
     import_symbol_id: u32,
     import_symbol: Symbol,
     reference_node: Node,

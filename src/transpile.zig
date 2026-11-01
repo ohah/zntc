@@ -1862,7 +1862,18 @@ fn erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
             transformer.allocator,
             ast.getText(node.span),
         ) catch return false;
-        if (erased_names.contains(name)) return false;
+        if (erased_names.contains(name)) {
+            if (!output_reference_nodes.contains(raw) or
+                !exactErasedTypeImportExternalReference(
+                    transformer,
+                    output_reachable,
+                    &output_nodes,
+                    &output_reference_nodes,
+                    raw,
+                    name,
+                )) return false;
+            continue;
+        }
     }
     for (transformer.references) |reference| {
         if (!reference.node_index.isNone() and erased_symbols.contains(@backingInt(reference.symbol_id)) and
@@ -2918,6 +2929,7 @@ const ErasedTypeImportExternalCandidate = struct {
     import_node: ast_mod.Node,
     import_local_node_index: ast_mod.NodeIndex,
     import_local_node: ast_mod.Node,
+    inline_specifier_identity: ?RuntimeImportSpecifierIdentity,
     import_symbol_id: u32,
     import_symbol: SemanticSymbol,
     reference_node_index: ast_mod.NodeIndex,
@@ -2925,17 +2937,26 @@ const ErasedTypeImportExternalCandidate = struct {
     reference: SemanticReference,
 };
 
-/// A declaration-level `import type` or an all-inline-type import is absent
-/// from runtime output. If a malformed value read survives anyway, detach only
-/// that exact source read from the erased import SymbolId and carry explicit
-/// external-name evidence. Writes, generated aliases, captures, and same-named
-/// output bindings stay on the analyzer fallback path.
+const ErasedTypeImportLocalCandidate = struct {
+    import_node_index: ast_mod.NodeIndex,
+    import_node: ast_mod.Node,
+    import_local_node_index: ast_mod.NodeIndex,
+    import_local_node: ast_mod.Node,
+    inline_specifier_identity: ?RuntimeImportSpecifierIdentity,
+};
+
+/// A declaration-level `import type`, an all-inline-type import, or an inline
+/// type specifier in a mixed import can leave malformed value reads after
+/// erasure. Detach only an exact source read and carry explicit external-name
+/// evidence. Writes, generated aliases, captures, and same-named output
+/// bindings stay on the analyzer fallback path.
 fn detachErasedTypeImportExternalReads(
     allocator: std.mem.Allocator,
     transformer: *Transformer,
     analyzer: *SemanticAnalyzer,
     root: ast_mod.NodeIndex,
     maybe_shadow_snapshot: ?TypeImportShadowIdentitySnapshot,
+    maybe_runtime_import_identity_snapshot: ?RuntimeImportIdentitySnapshot,
 ) Transformer.Error!bool {
     if (maybe_shadow_snapshot == null) return false;
     if (root.isNone() or transformer.parser_node_count == 0 or
@@ -2961,6 +2982,8 @@ fn detachErasedTypeImportExternalReads(
 
     var candidates: std.ArrayListUnmanaged(ErasedTypeImportExternalCandidate) = .empty;
     defer candidates.deinit(allocator);
+    var import_locals: std.ArrayListUnmanaged(ErasedTypeImportLocalCandidate) = .empty;
+    defer import_locals.deinit(allocator);
     var candidate_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer candidate_nodes.deinit(allocator);
     var seen_import_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -3001,74 +3024,164 @@ fn detachErasedTypeImportExternalReads(
                 local_node.tag != .import_namespace_specifier) or
                 !isValidSourceTextSpan(transformer.ast, local_node.span) or
                 local_raw >= transformer.symbol_ids.items.len) continue;
-            const symbol_id = transformer.symbol_ids.items[local_raw] orelse continue;
-            if (symbol_id >= transformer.symbols.len or seen_import_symbols.contains(symbol_id)) continue;
-            const raw_local_name = transformer.ast.getText(local_node.span);
-            const local_name = Scanner.decodeIdentifierEscapesAlloc(allocator, raw_local_name) catch continue;
-            defer if (local_name.ptr != raw_local_name.ptr) allocator.free(local_name);
-            if (local_name.len == 0) continue;
-            const symbol = transformer.symbols[symbol_id];
-            if (symbol.kind != .import_binding or symbol.scope_id.isNone() or
-                symbol.scope_id.toIndex() >= transformer.scope_maps.len or
-                transformer.scope_maps[symbol.scope_id.toIndex()].get(local_name) != @as(?usize, @intCast(symbol_id)) or
-                symbol.name.start != local_node.span.start or symbol.name.end != local_node.span.end or
-                symbol.declaration_span.start < import_node.span.start or
-                symbol.declaration_span.end > import_node.span.end) continue;
-
-            if (hasReachableOutputBindingNamed(transformer, reachable, local_name)) continue;
-
-            var found_reference = false;
-            var safe = true;
-            for (transformer.references) |reference| {
-                if (@backingInt(reference.symbol_id) != symbol_id or reference.flags.declare) continue;
-                if (reference.node_index.isNone()) {
-                    safe = false;
-                    break;
-                }
-                const reference_raw = @backingInt(reference.node_index);
-                if (!reachable_nodes.contains(reference_raw)) continue;
-                if (reference_raw >= transformer.parser_node_count or
-                    reference_raw >= transformer.ast.nodes.items.len or
-                    reference_raw >= transformer.symbol_ids.items.len or
-                    transformer.symbol_ids.items[reference_raw] != @as(?u32, symbol_id) or
-                    !output_reference_nodes.contains(reference_raw) or
-                    transformer.ast.getNode(reference.node_index).tag != .identifier_reference or
-                    !std.meta.eql(reference.flags, .{ .read = true }) or
-                    reference.scope_id.isNone() or reference.scope_id.toIndex() >= transformer.scopes.len or
-                    !scopeResolvesNameToSymbol(transformer, reference.scope_id, local_name, symbol_id) or
-                    !Scanner.identifierNamesEqual(
-                        transformer.ast.getText(transformer.ast.getNode(reference.node_index).span),
-                        local_name,
-                    ) or
-                    (transformer.reference_origin_map.get(reference_raw) orelse reference_raw) != reference_raw or
-                    transformer.erased_type_import_external_references.contains(reference_raw) or
-                    candidate_nodes.contains(reference_raw))
-                {
-                    safe = false;
-                    break;
-                }
-                try candidate_nodes.put(allocator, reference_raw, {});
-                try candidates.append(allocator, .{
-                    .import_node_index = @fromBackingInt(@intCast(import_raw)),
-                    .import_node = import_node,
-                    .import_local_node_index = local_index,
-                    .import_local_node = local_node,
-                    .import_symbol_id = symbol_id,
-                    .import_symbol = symbol,
-                    .reference_node_index = reference.node_index,
-                    .reference_node = transformer.ast.getNode(reference.node_index),
-                    .reference = reference,
-                });
-                found_reference = true;
-            }
-            if (!safe or !found_reference) {
-                // Candidates are committed only after every live read for this
-                // imported SymbolId passes the exact source-node checks.
-                if (!safe) return false;
-                continue;
-            }
-            try seen_import_symbols.put(allocator, symbol_id, {});
+            try import_locals.append(allocator, .{
+                .import_node_index = @fromBackingInt(@intCast(import_raw)),
+                .import_node = import_node,
+                .import_local_node_index = local_index,
+                .import_local_node = local_node,
+                .inline_specifier_identity = null,
+            });
         }
+    }
+
+    if (maybe_runtime_import_identity_snapshot) |runtime_snapshot| {
+        for (runtime_snapshot.inline_type_specifiers) |identity| {
+            const imported_index = identity.imported_index orelse return false;
+            const imported_node = identity.imported_node orelse return false;
+            const local_raw = @backingInt(identity.local_index);
+            const specifier_raw = @backingInt(identity.specifier_index);
+            const imported_raw = @backingInt(imported_index);
+            if (local_raw >= transformer.parser_node_count or specifier_raw >= transformer.parser_node_count or
+                imported_raw >= transformer.parser_node_count or
+                local_raw >= transformer.ast.nodes.items.len or
+                specifier_raw >= transformer.ast.nodes.items.len or
+                imported_raw >= transformer.ast.nodes.items.len or
+                identity.import_span.start >= identity.specifier_node.span.start or
+                identity.import_span.end <= identity.specifier_node.span.end or
+                identity.specifier_node.tag != .import_specifier or
+                identity.specifier_node.data.binary.flags != module_parser.SPEC_FLAG_TYPE_ONLY or
+                identity.specifier_node.data.binary.right != identity.local_index or
+                identity.specifier_node.data.binary.left != imported_index or
+                identity.local_node.tag != .identifier_reference or
+                !sameNodeValue(identity.specifier_node, transformer.ast.getNode(identity.specifier_index)) or
+                !sameNodeValue(identity.local_node, transformer.ast.getNode(identity.local_index)) or
+                !sameNodeValue(imported_node, transformer.ast.getNode(imported_index))) return false;
+
+            var matching_import: ?ast_mod.NodeIndex = null;
+            for (transformer.ast.nodes.items[0..transformer.parser_node_count], 0..) |node, raw| {
+                if (node.tag != .import_declaration or !std.meta.eql(node.span, identity.import_span)) continue;
+                if (matching_import != null) return false;
+                matching_import = @fromBackingInt(@intCast(raw));
+            }
+            const import_index = matching_import orelse return false;
+            const import_node = transformer.ast.getNode(import_index);
+            if (import_node.data.extra >= transformer.ast.extra_data.items.len or
+                transformer.ast.extra_data.items.len - import_node.data.extra < 6) return false;
+            const import_decl = module_parser.readImportDeclExtras(transformer.ast, import_node.data.extra);
+            if (import_decl.is_type_only or import_decl.phase != .none or
+                import_decl.attrs_len != 0 or
+                import_decl.specs_start > transformer.ast.extra_data.items.len or
+                import_decl.specs_len > transformer.ast.extra_data.items.len - import_decl.specs_start or
+                !isValidSourceTextSpan(transformer.ast, identity.local_node.span) or
+                !isValidSourceTextSpan(transformer.ast, imported_node.span) or
+                !isValidSourceTextSpan(transformer.ast, identity.specifier_node.span)) return false;
+            try import_locals.append(allocator, .{
+                .import_node_index = import_index,
+                .import_node = import_node,
+                .import_local_node_index = identity.local_index,
+                .import_local_node = identity.local_node,
+                .inline_specifier_identity = identity,
+            });
+        }
+    }
+
+    for (import_locals.items) |local_candidate| {
+        const import_node = local_candidate.import_node;
+        const local_index = local_candidate.import_local_node_index;
+        const local_node = local_candidate.import_local_node;
+        const local_raw = @backingInt(local_index);
+        if (local_raw >= transformer.parser_node_count or local_raw >= transformer.symbol_ids.items.len or
+            local_raw >= transformer.ast.nodes.items.len or
+            !sameNodeValue(local_node, transformer.ast.getNode(local_index))) return false;
+        if (local_candidate.inline_specifier_identity) |identity| {
+            const imported_index = identity.imported_index orelse return false;
+            const imported_node = identity.imported_node orelse return false;
+            if (identity.specifier_index.isNone() or @backingInt(identity.specifier_index) >= transformer.parser_node_count or
+                @backingInt(imported_index) >= transformer.parser_node_count or
+                @backingInt(identity.specifier_index) >= transformer.ast.nodes.items.len or
+                @backingInt(imported_index) >= transformer.ast.nodes.items.len or
+                !std.meta.eql(identity.import_span, import_node.span) or
+                identity.local_index != local_index or
+                identity.specifier_node.tag != .import_specifier or
+                identity.specifier_node.data.binary.flags != module_parser.SPEC_FLAG_TYPE_ONLY or
+                identity.specifier_node.data.binary.right != local_index or
+                identity.specifier_node.data.binary.left != imported_index or
+                !sameNodeValue(identity.specifier_node, transformer.ast.getNode(identity.specifier_index)) or
+                !sameNodeValue(imported_node, transformer.ast.getNode(imported_index))) return false;
+        }
+        const symbol_id = transformer.symbol_ids.items[local_raw] orelse continue;
+        if (symbol_id >= transformer.symbols.len or seen_import_symbols.contains(symbol_id)) continue;
+        const raw_local_name = transformer.ast.getText(local_node.span);
+        const local_name = Scanner.decodeIdentifierEscapesAlloc(allocator, raw_local_name) catch continue;
+        defer if (local_name.ptr != raw_local_name.ptr) allocator.free(local_name);
+        if (local_name.len == 0) continue;
+        const symbol = transformer.symbols[symbol_id];
+        if (symbol.kind != .import_binding or symbol.scope_id.isNone() or
+            symbol.scope_id.toIndex() >= transformer.scope_maps.len or
+            transformer.scope_maps[symbol.scope_id.toIndex()].get(local_name) != @as(?usize, @intCast(symbol_id)) or
+            symbol.name.start != local_node.span.start or symbol.name.end != local_node.span.end or
+            symbol.declaration_span.start < import_node.span.start or
+            symbol.declaration_span.end > import_node.span.end) continue;
+        if (local_candidate.inline_specifier_identity) |identity| {
+            if (symbol_id != identity.symbol_id or symbol.scope_id != identity.symbol_scope or
+                !std.meta.eql(symbol.name, identity.symbol_name) or
+                !std.meta.eql(symbol.declaration_span, identity.symbol_declaration)) return false;
+        }
+
+        if (hasReachableOutputBindingNamed(transformer, reachable, local_name)) continue;
+
+        var found_reference = false;
+        var safe = true;
+        for (transformer.references) |reference| {
+            if (@backingInt(reference.symbol_id) != symbol_id or reference.flags.declare) continue;
+            if (reference.node_index.isNone()) {
+                safe = false;
+                break;
+            }
+            const reference_raw = @backingInt(reference.node_index);
+            if (!reachable_nodes.contains(reference_raw)) continue;
+            if (reference_raw >= transformer.parser_node_count or
+                reference_raw >= transformer.ast.nodes.items.len or
+                reference_raw >= transformer.symbol_ids.items.len or
+                transformer.symbol_ids.items[reference_raw] != @as(?u32, symbol_id) or
+                !output_reference_nodes.contains(reference_raw) or
+                transformer.ast.getNode(reference.node_index).tag != .identifier_reference or
+                !std.meta.eql(reference.flags, .{ .read = true }) or
+                reference.scope_id.isNone() or reference.scope_id.toIndex() >= transformer.scopes.len or
+                !scopeResolvesNameToSymbol(transformer, reference.scope_id, local_name, symbol_id) or
+                !Scanner.identifierNamesEqual(
+                    transformer.ast.getText(transformer.ast.getNode(reference.node_index).span),
+                    local_name,
+                ) or
+                (transformer.reference_origin_map.get(reference_raw) orelse reference_raw) != reference_raw or
+                transformer.erased_type_import_external_references.contains(reference_raw) or
+                candidate_nodes.contains(reference_raw))
+            {
+                safe = false;
+                break;
+            }
+            try candidate_nodes.put(allocator, reference_raw, {});
+            try candidates.append(allocator, .{
+                .import_node_index = local_candidate.import_node_index,
+                .import_node = import_node,
+                .import_local_node_index = local_index,
+                .import_local_node = local_node,
+                .inline_specifier_identity = local_candidate.inline_specifier_identity,
+                .import_symbol_id = symbol_id,
+                .import_symbol = symbol,
+                .reference_node_index = reference.node_index,
+                .reference_node = transformer.ast.getNode(reference.node_index),
+                .reference = reference,
+            });
+            found_reference = true;
+        }
+        if (!safe or !found_reference) {
+            // Candidates are committed only after every live read for this
+            // imported SymbolId passes the exact source-node checks.
+            if (!safe) return false;
+            continue;
+        }
+        try seen_import_symbols.put(allocator, symbol_id, {});
     }
     if (candidates.items.len == 0) return false;
 
@@ -3121,6 +3234,12 @@ fn detachErasedTypeImportExternalReads(
             .import_node_index = candidate.import_node_index,
             .import_local_node = candidate.import_local_node,
             .import_local_node_index = candidate.import_local_node_index,
+            .inline_specifier = if (candidate.inline_specifier_identity) |identity| .{
+                .specifier_index = identity.specifier_index,
+                .specifier_node = identity.specifier_node,
+                .imported_index = identity.imported_index.?,
+                .imported_node = identity.imported_node.?,
+            } else null,
             .import_symbol_id = candidate.import_symbol_id,
             .import_symbol = candidate.import_symbol,
             .reference_node = candidate.reference_node,
@@ -3173,27 +3292,72 @@ fn exactErasedTypeImportExternalReference(
         proof.reference.scope_id.toIndex() >= transformer.scopes.len) return false;
 
     const import_decl = module_parser.readImportDeclExtras(transformer.ast, proof.import_node.data.extra);
-    const inline_type_only = importDeclarationHasOnlyInlineTypeSpecifiers(transformer.ast, import_decl);
-    if ((!import_decl.is_type_only and !inline_type_only) or import_decl.phase != .none or
-        import_decl.specs_start > transformer.ast.extra_data.items.len or
-        import_decl.specs_len > transformer.ast.extra_data.items.len - import_decl.specs_start) return false;
     var local_specifier_matches: usize = 0;
-    var spec_offset: u32 = 0;
-    while (spec_offset < import_decl.specs_len) : (spec_offset += 1) {
-        const spec_raw = transformer.ast.extra_data.items[import_decl.specs_start + spec_offset];
-        if (spec_raw >= transformer.parser_node_count) return false;
-        const spec_index: ast_mod.NodeIndex = @fromBackingInt(@intCast(spec_raw));
-        const spec = transformer.ast.getNode(spec_index);
-        const is_local_specifier = switch (spec.tag) {
-            .import_specifier => spec.data.binary.right == proof.import_local_node_index and
-                ((import_decl.is_type_only and spec.data.binary.flags == 0) or
-                    (inline_type_only and spec.data.binary.flags == module_parser.SPEC_FLAG_TYPE_ONLY)),
-            .import_default_specifier, .import_namespace_specifier => import_decl.is_type_only and
-                spec_index == proof.import_local_node_index,
-            else => false,
-        };
-        if (!is_local_specifier) continue;
-        local_specifier_matches += 1;
+    if (proof.inline_specifier) |inline_proof| {
+        const specifier_raw = @backingInt(inline_proof.specifier_index);
+        const imported_raw = @backingInt(inline_proof.imported_index);
+        if (import_decl.is_type_only or import_decl.phase != .none or
+            import_decl.specs_len == 0 or
+            import_decl.specs_start > transformer.ast.extra_data.items.len or
+            import_decl.specs_len > transformer.ast.extra_data.items.len - import_decl.specs_start or
+            specifier_raw >= transformer.parser_node_count or imported_raw >= transformer.parser_node_count or
+            specifier_raw >= transformer.ast.nodes.items.len or imported_raw >= transformer.ast.nodes.items.len or
+            output_nodes.contains(specifier_raw) or output_nodes.contains(imported_raw) or
+            output_nodes.contains(local_raw) or
+            inline_proof.specifier_index.isNone() or
+            inline_proof.specifier_node.tag != .import_specifier or
+            inline_proof.specifier_node.data.binary.flags != module_parser.SPEC_FLAG_TYPE_ONLY or
+            inline_proof.specifier_node.data.binary.left != inline_proof.imported_index or
+            inline_proof.specifier_node.data.binary.right != proof.import_local_node_index or
+            !std.meta.eql(inline_proof.specifier_node.span, transformer.ast.getNode(inline_proof.specifier_index).span) or
+            !std.meta.eql(inline_proof.imported_node.span, transformer.ast.getNode(inline_proof.imported_index).span) or
+            !sameNodeValue(inline_proof.specifier_node, transformer.ast.getNode(inline_proof.specifier_index)) or
+            !sameNodeValue(inline_proof.imported_node, transformer.ast.getNode(inline_proof.imported_index)) or
+            !isValidSourceTextSpan(transformer.ast, inline_proof.specifier_node.span) or
+            !isValidSourceTextSpan(transformer.ast, inline_proof.imported_node.span) or
+            inline_proof.specifier_node.span.start < proof.import_node.span.start or
+            inline_proof.specifier_node.span.end > proof.import_node.span.end or
+            inline_proof.imported_node.span.start < inline_proof.specifier_node.span.start or
+            inline_proof.imported_node.span.end > inline_proof.specifier_node.span.end) return false;
+
+        var matching_source_imports: usize = 0;
+        for (transformer.ast.nodes.items[0..transformer.parser_node_count], 0..) |node, raw| {
+            if (node.tag != .import_declaration or
+                !std.meta.eql(node.span, proof.import_node.span)) continue;
+            if (raw != import_raw) return false;
+            matching_source_imports += 1;
+        }
+        if (matching_source_imports != 1) return false;
+        var matching_output_imports: usize = 0;
+        for (output_reachable) |raw| {
+            const output_node = transformer.ast.getNode(@fromBackingInt(@intCast(raw)));
+            if (output_node.tag == .import_declaration and
+                std.meta.eql(output_node.span, proof.import_node.span)) matching_output_imports += 1;
+        }
+        if (matching_output_imports != 1) return false;
+        local_specifier_matches = 1;
+    } else {
+        const inline_type_only = importDeclarationHasOnlyInlineTypeSpecifiers(transformer.ast, import_decl);
+        if ((!import_decl.is_type_only and !inline_type_only) or import_decl.phase != .none or
+            import_decl.specs_start > transformer.ast.extra_data.items.len or
+            import_decl.specs_len > transformer.ast.extra_data.items.len - import_decl.specs_start) return false;
+        var spec_offset: u32 = 0;
+        while (spec_offset < import_decl.specs_len) : (spec_offset += 1) {
+            const spec_raw = transformer.ast.extra_data.items[import_decl.specs_start + spec_offset];
+            if (spec_raw >= transformer.parser_node_count) return false;
+            const spec_index: ast_mod.NodeIndex = @fromBackingInt(@intCast(spec_raw));
+            const spec = transformer.ast.getNode(spec_index);
+            const is_local_specifier = switch (spec.tag) {
+                .import_specifier => spec.data.binary.right == proof.import_local_node_index and
+                    ((import_decl.is_type_only and spec.data.binary.flags == 0) or
+                        (inline_type_only and spec.data.binary.flags == module_parser.SPEC_FLAG_TYPE_ONLY)),
+                .import_default_specifier, .import_namespace_specifier => import_decl.is_type_only and
+                    spec_index == proof.import_local_node_index,
+                else => false,
+            };
+            if (!is_local_specifier) continue;
+            local_specifier_matches += 1;
+        }
     }
     if (local_specifier_matches != 1) return false;
 
@@ -4935,6 +5099,7 @@ fn transpileWithCallbackInternal(
                 analyzer,
                 root,
                 type_import_shadow_snapshot,
+                runtime_import_identity_snapshot,
             );
         }
     }
@@ -6206,6 +6371,11 @@ test "#6193 detached named default namespace and standalone inline type import p
             &parser,
             &analyzer,
         )) orelse return error.MissingTypeImportShadowSnapshot;
+        const runtime_import_snapshot = try captureRuntimeImportIdentitySnapshot(
+            allocator,
+            &parser,
+            &analyzer,
+        );
 
         var transformer = try Transformer.init(allocator, &parser.ast, .{});
         defer transformer.deinit();
@@ -6240,6 +6410,7 @@ test "#6193 detached named default namespace and standalone inline type import p
             &analyzer,
             output_root,
             shadow_snapshot,
+            runtime_import_snapshot,
         ));
 
         const GraphProof = struct {
@@ -6361,6 +6532,182 @@ test "#6193 detached named default namespace and standalone inline type import p
 
         try std.testing.expectEqual(@as(usize, 15), detected_mutations);
     }
+}
+
+test "#6193 mixed inline type import external reads require exact surviving runtime import identity" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "import { type Shape, runtimeValue as amount } from './values.mjs'; " ++
+        "globalThis.Shape = 21; console.log(Shape + amount);";
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    const source_root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_ts = true;
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    const shadow_snapshot = (try captureTypeImportShadowIdentitySnapshot(
+        allocator,
+        &parser,
+        &analyzer,
+    )) orelse return error.MissingTypeImportShadowSnapshot;
+    const runtime_snapshot = (try captureRuntimeImportIdentitySnapshot(
+        allocator,
+        &parser,
+        &analyzer,
+    )) orelse return error.MissingRuntimeImportIdentitySnapshot;
+    try std.testing.expectEqual(@as(usize, 1), runtime_snapshot.inline_type_specifiers.len);
+    try std.testing.expectEqual(@as(usize, 1), runtime_snapshot.declarations.len);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
+    const output_root = try transformer.visitNode(source_root);
+    if (try transformer.finishSemanticEdit()) |edited| {
+        analyzer.applyEdit(edited);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.helper_scope_map = analyzer.helper_scope_map;
+    }
+    try std.testing.expect(try detachErasedTypeImportExternalReads(
+        allocator,
+        &transformer,
+        &analyzer,
+        output_root,
+        shadow_snapshot,
+        runtime_snapshot,
+    ));
+
+    const GraphProof = struct {
+        fn accepts(
+            output_transformer: *const Transformer,
+            root: ast_mod.NodeIndex,
+            snapshot: RuntimeImportIdentitySnapshot,
+        ) bool {
+            return erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+                output_transformer,
+                root,
+                snapshot,
+            ) and runtimeImportsHaveExactOutputIdentity(output_transformer, root, snapshot);
+        }
+    };
+    try std.testing.expect(erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_snapshot,
+    ));
+    try std.testing.expect(runtimeImportsHaveExactOutputIdentity(&transformer, output_root, runtime_snapshot));
+
+    var proof_iterator = transformer.erased_type_import_external_references.iterator();
+    const proof_entry = proof_iterator.next() orelse return error.MissingDetachedExternalReferenceProof;
+    const reference_raw = proof_entry.key_ptr.*;
+    const original_proof = proof_entry.value_ptr.*;
+    try std.testing.expect(original_proof.inline_specifier != null);
+    try std.testing.expect(proof_iterator.next() == null);
+    var detected_mutations: usize = 0;
+
+    _ = transformer.explicit_global_reference_nodes.remove(reference_raw);
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, runtime_snapshot));
+    try transformer.explicit_global_reference_nodes.put(allocator, reference_raw, {});
+    detected_mutations += 1;
+
+    _ = transformer.erased_type_import_external_references.remove(reference_raw);
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, runtime_snapshot));
+    try transformer.erased_type_import_external_references.put(allocator, reference_raw, original_proof);
+    detected_mutations += 1;
+
+    const proof = transformer.erased_type_import_external_references.getPtr(reference_raw).?;
+    proof.inline_specifier = null;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, runtime_snapshot));
+    proof.* = original_proof;
+    detected_mutations += 1;
+
+    var inline_proof = proof.inline_specifier.?;
+    inline_proof.specifier_index = .none;
+    proof.inline_specifier = inline_proof;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, runtime_snapshot));
+    proof.* = original_proof;
+    detected_mutations += 1;
+
+    inline_proof = proof.inline_specifier.?;
+    inline_proof.imported_index = .none;
+    proof.inline_specifier = inline_proof;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, runtime_snapshot));
+    proof.* = original_proof;
+    detected_mutations += 1;
+
+    inline_proof = proof.inline_specifier.?;
+    inline_proof.specifier_node.data.binary.flags = 0;
+    proof.inline_specifier = inline_proof;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, runtime_snapshot));
+    proof.* = original_proof;
+    detected_mutations += 1;
+
+    inline_proof = proof.inline_specifier.?;
+    inline_proof.specifier_node.data.binary.right = .none;
+    proof.inline_specifier = inline_proof;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, runtime_snapshot));
+    proof.* = original_proof;
+    detected_mutations += 1;
+
+    inline_proof = proof.inline_specifier.?;
+    inline_proof.imported_node.span.end -= 1;
+    proof.inline_specifier = inline_proof;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, runtime_snapshot));
+    proof.* = original_proof;
+    detected_mutations += 1;
+
+    proof.import_node.span.end -= 1;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, runtime_snapshot));
+    proof.* = original_proof;
+    detected_mutations += 1;
+
+    proof.reference.flags = .{ .write = true };
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, runtime_snapshot));
+    proof.* = original_proof;
+    detected_mutations += 1;
+
+    const specifier_raw = @backingInt(original_proof.inline_specifier.?.specifier_index);
+    const original_specifier = transformer.ast.nodes.items[specifier_raw];
+    transformer.ast.nodes.items[specifier_raw].data.binary.flags = 0;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, runtime_snapshot));
+    transformer.ast.nodes.items[specifier_raw] = original_specifier;
+    detected_mutations += 1;
+
+    const original_references = transformer.references;
+    const residual_references = try allocator.alloc(SemanticReference, original_references.len + 1);
+    @memcpy(residual_references[0..original_references.len], original_references);
+    residual_references[original_references.len] = original_proof.reference;
+    transformer.references = residual_references;
+    try std.testing.expect(!GraphProof.accepts(&transformer, output_root, runtime_snapshot));
+    transformer.references = original_references;
+    detected_mutations += 1;
+
+    try std.testing.expectEqual(@as(usize, 12), detected_mutations);
 }
 
 test "#6193 erased type import permits only exact same-name runtime bindings" {
