@@ -6445,6 +6445,38 @@ fn isRetainableSimpleStaticClassField(
         isRetainableStaticFieldCall(allocator, ast, semantic, init_idx, true, true, false);
 }
 
+/// A small ES5 instance-field subset can be moved into the generated
+/// constructor without changing semantic edges: a non-computed public key
+/// assigned a primitive literal under legacy assignment semantics. Keep
+/// keys with special or escaped spelling out until their exact property-name
+/// and assignment behavior has a dedicated certificate.
+fn isRetainableSimpleInstanceClassField(
+    ast: *const ast_mod.Ast,
+    node: ast_mod.Node,
+    allow_legacy_assignment: bool,
+) bool {
+    if (!allow_legacy_assignment or node.tag != .property_definition) return false;
+    const extras = ast.extra_data.items;
+    const extra = node.data.extra;
+    if (extra > extras.len or extras.len - extra <= ast_mod.PropertyExtra.deco_len) return false;
+
+    const flags = extras[extra + ast_mod.PropertyExtra.flags];
+    const key_raw = extras[extra + ast_mod.PropertyExtra.key];
+    const init_raw = extras[extra + ast_mod.PropertyExtra.init];
+    if (flags != 0 or extras[extra + ast_mod.PropertyExtra.deco_len] != 0 or
+        key_raw >= ast.nodes.items.len or init_raw >= ast.nodes.items.len) return false;
+    const key = ast.nodes.items[key_raw];
+    if (key.tag != .identifier_reference) return false;
+    const key_text = ast.getText(key.span);
+    if (key_text.len == 0 or std.mem.eql(u8, key_text, "__proto__") or
+        std.mem.indexOfScalar(u8, key_text, '\\') != null) return false;
+
+    return switch (ast.nodes.items[init_raw].tag) {
+        .boolean_literal, .null_literal, .numeric_literal, .string_literal => true,
+        else => false,
+    };
+}
+
 fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
     if (ast.nodes.items.len == 0) return false;
     const root_idx = ast.transformed_root orelse @as(
@@ -6492,10 +6524,11 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
 /// on reanalysis.
 /// Anonymous expressions are safe because lowering registers the generated
 /// constructor self binding and call-check reference in the exact output
-/// function scope. Static fields must pass
-/// `isRetainableSimpleStaticClassField`; unsafe computed/escaped keys, class-self
-/// heritage reads, and nested lexical `super` outside the audited async-class-
-/// method shapes stay excluded. Direct `super` in synchronous methods and async
+/// function scope. Static fields must pass `isRetainableSimpleStaticClassField`;
+/// instance fields must pass the primitive legacy-assignment subset above.
+/// Unsafe computed/escaped keys, class-self heritage reads, and nested lexical
+/// `super` outside the audited async class-method shapes stay excluded. Direct
+/// `super` in synchronous methods and async
 /// instance/static methods stays tied to the owning class home; one synchronous
 /// arrow scope may also capture an async method's use. Async-arrow super uses
 /// retain their separate single-arrow home-object preflight.
@@ -6506,6 +6539,7 @@ fn isSimpleClass(
     node: ast_mod.Node,
     raw_node: usize,
     source_object_shadows_class: bool,
+    allow_legacy_assignment_instance_fields: bool,
     allow_es5_async_arrow_super: bool,
     allow_es5_async_class_methods: bool,
     allow_es5_async_generator_class_methods: bool,
@@ -6552,8 +6586,14 @@ fn isSimpleClass(
         if (member_idx.isNone() or @backingInt(member_idx) >= ast.nodes.items.len) return false;
         const member = ast.getNode(member_idx);
         if (isRetainableSimpleStaticClassField(allocator, ast, semantic, member)) continue;
-        // Plain methods, simple accessors, and the static-field subset above
-        // use exact explicit-global Object refs. Keep unsupported field/
+        if (isRetainableSimpleInstanceClassField(ast, member, allow_legacy_assignment_instance_fields)) {
+            // Field initialization in a derived constructor has ordering and
+            // `super()` placement constraints outside this bounded proof.
+            if (!super.isNone()) return false;
+            continue;
+        }
+        // Plain methods, simple accessors, and admitted static fields use exact
+        // explicit-global Object refs. Keep unsupported field/
         // accessor producers and extends helpers on reanalysis.
         if (source_object_shadows_class and member.tag != .method_definition) return false;
         if (member.tag != .method_definition) return false;
@@ -6814,6 +6854,7 @@ fn isRetainableGraphClass(
     function_body_class_declarations: *const std.AutoHashMapUnmanaged(u32, void),
     direct_var_class_expressions: *const std.AutoHashMapUnmanaged(u32, void),
     source_object_shadows_class: bool,
+    allow_legacy_assignment_instance_fields: bool,
     allow_es5_async_arrow_super: bool,
     allow_es5_async_class_methods: bool,
     allow_es5_async_generator_class_methods: bool,
@@ -6832,6 +6873,7 @@ fn isRetainableGraphClass(
         node,
         raw_node,
         source_object_shadows_class,
+        allow_legacy_assignment_instance_fields,
         allow_es5_async_arrow_super,
         allow_es5_async_class_methods,
         allow_es5_async_generator_class_methods,
@@ -9250,6 +9292,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 &function_body_class_declarations,
                 &direct_var_class_expressions,
                 source_object_shadows_class,
+                !options.effectiveUseDefineForClassFields(),
                 options.unsupported.async_await and options.unsupported.generator,
                 options.unsupported.async_await and options.unsupported.generator,
                 options.unsupported.async_generator and options.unsupported.async_await and options.unsupported.generator,
@@ -9830,8 +9873,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (ast.nodes.items[@backingInt(key)].tag == .private_identifier) {
                     if (options.unsupported.class_private_field) return false;
                 } else if (options.unsupported.class_field or options.unsupported.class) {
-                    if (!isRetainableSimpleStaticClassField(allocator, ast, semantic, node)) return false;
-                    found_lowered_simple_static_class_field = true;
+                    if (isRetainableSimpleStaticClassField(allocator, ast, semantic, node)) {
+                        found_lowered_simple_static_class_field = true;
+                    } else if (!(options.unsupported.class and
+                        !options.effectiveUseDefineForClassFields() and
+                        isRetainableSimpleInstanceClassField(ast, node, true))) return false;
                 }
             },
             .private_field_expression => {
@@ -11291,6 +11337,7 @@ fn canKeepPrepassSemanticGraphPrepared(
         (has_drop_console and !retained_simple_console_drops) or
         (uses_define and !retained_define_references) or
         (!options.effectiveUseDefineForClassFields() and hasClassFieldSyntax(ast) and
+            !safe_graph_subset and
             !legacy_static_field_block_candidate and
             (if (module.semantic) |*sem| !hasLegacyAssignmentFieldSource(self.allocator, ast, sem, options) and
                 !hasNativePrivateFieldSource(self.allocator, ast, sem, options) else true)) or
@@ -22150,6 +22197,132 @@ fn auditedFlatForOfAssignmentGraphAdmissionForTest(f: *const RuntimeHelperReanal
     return canRetainGraphForAuditedSyntaxSubset(std.testing.allocator, &f.ast, &f.semantic, .{
         .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
     }, &get, &set, null, null);
+}
+
+test "ES5 legacy assignment fields retain only primitive literal instance fields" {
+    {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var fixture = try runtimeHelperReanalysisTestFixture(allocator, "class Box { value = 1; }");
+        var field: ?ast_mod.NodeIndex = null;
+        for (fixture.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag == .property_definition) {
+                field = @fromBackingInt(@intCast(raw));
+                break;
+            }
+        }
+        const field_idx = field orelse return error.MissingInstanceField;
+        const property = fixture.ast.getNode(field_idx);
+        const flags_index = property.data.extra + ast_mod.PropertyExtra.flags;
+        const decorators_index = property.data.extra + ast_mod.PropertyExtra.deco_len;
+        const original_flags = fixture.ast.extra_data.items[flags_index];
+        const original_decorators = fixture.ast.extra_data.items[decorators_index];
+        for ([_]u32{
+            ast_mod.PropertyFlags.is_static,
+            ast_mod.PropertyFlags.is_abstract,
+            ast_mod.PropertyFlags.is_declare,
+            ast_mod.PropertyFlags.flow_variance,
+        }) |invalid_flags| {
+            fixture.ast.extra_data.items[flags_index] = invalid_flags;
+            try std.testing.expect(!isRetainableSimpleInstanceClassField(&fixture.ast, property, true));
+        }
+        fixture.ast.extra_data.items[flags_index] = original_flags;
+        fixture.ast.extra_data.items[decorators_index] = 1;
+        try std.testing.expect(!isRetainableSimpleInstanceClassField(&fixture.ast, property, true));
+        fixture.ast.extra_data.items[decorators_index] = original_decorators;
+        try std.testing.expect(!isRetainableSimpleInstanceClassField(&fixture.ast, property, false));
+        try std.testing.expect(isRetainableSimpleInstanceClassField(&fixture.ast, property, true));
+    }
+
+    const safe_sources = [_][]const u8{
+        "class Box { value = 1; }",
+        "class Box { value = 'text'; }",
+        "class Box { value = true; }",
+        "class Box { value = null; }",
+        "class Box { first = 1; second = 'two'; }",
+        "class Box { value = 1; constructor() {} }",
+        "class Box { value = 1; read() { return this.value; } }",
+        "var Box = class Inner { value = 1; read() { return this.value; } };",
+        "function make() { class Box { value = 1; } return new Box().value; }",
+        "class Box { value = 1; static read() { return 2; } }",
+    };
+    const es5 = @import("../../transformer/compat.zig").fromESTarget(.es5);
+    for (safe_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+        var get = false;
+        var set = false;
+        try std.testing.expect(canRetainGraphForAuditedSyntaxSubset(
+            allocator,
+            &fixture.ast,
+            &fixture.semantic,
+            .{ .unsupported = es5, .use_define_for_class_fields = false },
+            &get,
+            &set,
+            null,
+            null,
+        ));
+    }
+
+    const hostile_sources = [_][]const u8{
+        "class Box { ['value'] = 1; }",
+        "class Box { \\u0076alue = 1; }",
+        "class Box { __proto__ = 1; }",
+        "class Box { value; }",
+        "const seed = 1; class Box { value = seed; }",
+        "class Box { value = missingGlobal; }",
+        "class Box { value = makeValue(); }",
+        "class Box { value = () => 1; }",
+        "class Base {} class Box extends Base { value = 1; }",
+        "class Box { #value = 1; }",
+    };
+    for (hostile_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+        if (std.mem.indexOf(u8, source, "extends") == null) {
+            var field_count: usize = 0;
+            for (fixture.ast.nodes.items) |node| {
+                if (node.tag != .property_definition) continue;
+                field_count += 1;
+                try std.testing.expect(!isRetainableSimpleInstanceClassField(&fixture.ast, node, true));
+            }
+            try std.testing.expect(field_count > 0);
+        }
+        var get = false;
+        var set = false;
+        try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+            allocator,
+            &fixture.ast,
+            &fixture.semantic,
+            .{ .unsupported = es5, .use_define_for_class_fields = false },
+            &get,
+            &set,
+            null,
+            null,
+        ));
+    }
+
+    var define_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer define_arena.deinit();
+    const define_allocator = define_arena.allocator();
+    var define_fixture = try runtimeHelperReanalysisTestFixture(define_allocator, "class Box { value = 1; }");
+    var get = false;
+    var set = false;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+        define_allocator,
+        &define_fixture.ast,
+        &define_fixture.semantic,
+        .{ .unsupported = es5, .use_define_for_class_fields = true },
+        &get,
+        &set,
+        null,
+        null,
+    ));
 }
 
 test "ES5 for-of retains flat bound array assignment targets" {
