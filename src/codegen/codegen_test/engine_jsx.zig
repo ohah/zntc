@@ -537,7 +537,7 @@ test "JSX automatic: fills array holes in downlevel spread children" {
 test "JSX automatic: key-after-spread fallback downlevels spread child for ES5" {
     var r = try helpers.e2eJSXAutomaticTarget(
         std.testing.allocator,
-        "const props = {}; const label = \"literal\"; const count = 2; const items = [1, 2]; const result = <Comp {...props} {...{ id: label, count: count }} key=\"k\"><span />{...items}<i /></Comp>;",
+        "const props = {}; const label = \"literal\"; const count = 2; const items = [1, 2]; const result = <Comp {...props} {...{ id: label, count: count, optional: undefined }} key=\"k\"><span />{...items}<i /></Comp>;",
         .es5,
     );
     defer r.deinit();
@@ -551,6 +551,7 @@ test "JSX automatic: key-after-spread fallback downlevels spread child for ES5" 
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"i\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "id:label") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "count:count") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "optional:undefined") != null);
 }
 
 test "JSX automatic: downlevel spread child preserves surrounding child order" {
@@ -637,7 +638,7 @@ test "JSX classic: downlevels spread props and child in the same element" {
 test "JSX classic: downlevels static literal spread props with spread child" {
     var r = try helpers.e2eJSXClassicTarget(
         std.testing.allocator,
-        "const label = 'literal'; const count = 2; const arr = [1, 2]; const x = <Foo {...{ id: label, count: count }}>{...arr}</Foo>;",
+        "const label = 'literal'; const count = 2; const arr = [1, 2]; const x = <Foo {...{ id: label, count: count, optional: undefined }}>{...arr}</Foo>;",
         .es5,
     );
     defer r.deinit();
@@ -647,6 +648,7 @@ test "JSX classic: downlevels static literal spread props with spread child" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "id:label") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "count:count") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "optional:undefined") != null);
 }
 
 test "JSX classic: retains detached spread props with a different spread child" {
