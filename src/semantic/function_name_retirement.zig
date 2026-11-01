@@ -172,7 +172,7 @@ pub fn validateOwnerAliases(w: Witness, ast: *const ast_mod.Ast, live: *const st
 // Initial Analyzer engines have no lowering receipt: their storage and
 // origin are the same original function frame. Authenticate that birth from
 // the sealed initial frame/owner edges, never from a later equal-shaped scope.
-fn originalEngineBirth(editor: anytype, owner: NodeIndex, name_scope: ScopeId, body_scope: ScopeId, id: u32, before: symbol.Symbol) bool {
+fn originalEngineBirth(editor: anytype, owner: NodeIndex, name_scope: ScopeId, body_scope: ScopeId, id: u32, before: symbol.Symbol) !bool {
     if (owner.isNone() or name_scope.isNone() or body_scope.isNone() or
         before.origin_scope != body_scope or before.scope_id != body_scope or
         !std.meta.eql(before.decl_flags, symbol.SymbolKind.parameter.declFlags()) or
@@ -204,27 +204,46 @@ fn originalEngineBirth(editor: anytype, owner: NodeIndex, name_scope: ScopeId, b
         history.source_scopes[body_scope.toIndex()].kind != .function or
         history.source_scopes[body_scope.toIndex()].parent != name_scope or
         history.source_scopes[name_scope.toIndex()].kind != .block) return false;
-    const actual_owner = History.Owner.capture(editor.ast, owner) catch return false;
-    const actual_name = History.Owner.capture(editor.ast, name) catch return false;
-    if (actual_owner == null or actual_name == null) return false;
-    var function_births: usize = 0;
+    var index = try History.validateAndIndex(editor.allocator, editor.ast, editor.scopes.items, &editor.scope_owner_map, &history, null);
+    defer index.deinit(editor.allocator);
+    if (!index.valid) return false;
+    const actual_owner = (try History.Owner.capture(editor.ast, owner)) orelse return false;
+    const actual_name = (try History.Owner.capture(editor.ast, name)) orelse return false;
+    var initial_owner: ?History.Owner = null;
+    var final_edges: History.SourceEdges = .{};
     var name_births: usize = 0;
     for (history.source_owners) |birth| {
-        if (birth.owner.node == owner) {
-            if (birth.scope != body_scope or !std.meta.eql(birth.owner, actual_owner.?) or
-                birth.edges.parameters != editor.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.params) or
-                birth.edges.body != editor.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.body)) return false;
-            function_births += 1;
+        if (birth.scope == body_scope and birth.owner.tag == .function_expression) {
+            if (initial_owner != null or !std.meta.eql(birth.owner.span, before.declaration_span)) return false;
+            initial_owner = birth.owner;
+            final_edges = birth.edges;
         }
         if (birth.owner.node == name) {
-            if (birth.scope != name_scope or !std.meta.eql(birth.owner, actual_name.?)) return false;
+            if (birth.scope != name_scope or !std.meta.eql(birth.owner, actual_name)) return false;
             name_births += 1;
         }
     }
+    var final_owner = initial_owner orelse return false;
+    // Replay only the exact original function owner's registered transfers.
+    // Current params/body may be new carriers; an actual owner event supplies
+    // their edges instead of reinterpreting them as the initial birth.
+    for (history.events) |event| {
+        if (event.kind != .owner or event.scope != body_scope) continue;
+        if (event.owner_before) |previous| if (previous.node == final_owner.node) {
+            if (!std.meta.eql(previous, final_owner)) return false;
+            const next = event.owner_after orelse return false;
+            if (next.tag != .function_expression or !std.meta.eql(next.span, before.declaration_span)) return false;
+            final_owner = next;
+            final_edges = event.owner_edges;
+        };
+    }
+    if (!std.meta.eql(final_owner, actual_owner) or
+        final_edges.parameters != editor.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.params) or
+        final_edges.body != editor.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.body)) return false;
     // Analyzer records the function owner at G; its NFE name is a binding
     // slot, not necessarily another scope-owner entry. Preserve that exact
     // initial/current owner representation instead of inventing a name owner.
-    if (function_births != 1 or name_births != @as(usize, if (name_owner != null) 1 else 0) or
+    if (name_births != @as(usize, if (name_owner != null) 1 else 0) or
         editor.scope_maps.items[body_scope.toIndex()].get("arguments") != @as(?usize, id)) return false;
     var entries = editor.scope_maps.items[body_scope.toIndex()].iterator();
     while (entries.next()) |entry| if (entry.value_ptr.* == id and !std.mem.eql(u8, entry.key_ptr.*, "arguments")) return false;
@@ -238,7 +257,7 @@ fn actualEngine(editor: anytype, body_scope: ScopeId, origins: *const std.AutoHa
         if (origins.get(@intCast(id))) |origin| {
             // A present but conflicting lowering receipt must never fall back.
             if (origin != body_scope) return error.InvalidSymbol;
-        } else if (!originalEngineBirth(editor, original_owner, name_scope, body_scope, @intCast(id), before)) return error.InvalidSymbol;
+        } else if (!try originalEngineBirth(editor, original_owner, name_scope, body_scope, @intCast(id), before)) return error.InvalidSymbol;
         var declaration: ?Reference = null;
         for (editor.references.items) |row| if (@backingInt(row.symbol_id) == id and row.flags.declare) {
             if (declaration != null or row.scope_id != body_scope or !row.node_index.isNone() or !row.declaration_node_index.isNone() or !std.meta.eql(row.flags, @as(symbol.ReferenceFlags, .{ .declare = true }))) return error.InvalidSymbol;
