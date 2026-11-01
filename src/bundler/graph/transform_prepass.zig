@@ -4720,10 +4720,11 @@ fn isSafeConstructorDirectLexicalDeclaration(
 }
 
 /// A derived constructor lexical declaration may use direct `super` property
-/// reads or bounded expressions containing initialized-`this` property reads
-/// after the leading `super()` call. Every initialized declarator must contain
-/// a direct property read, so mixed property-read and literal-only declarations
-/// still take semantic reanalysis.
+/// reads or bounded unary, binary, logical, and conditional expressions
+/// containing initialized-`this` property reads after the leading `super()`
+/// call. Every initialized declarator must contain a direct property read, so
+/// mixed property-read and literal-only declarations still take semantic
+/// reanalysis.
 /// Computed access is limited to string, number, boolean, or null literals,
 /// or an exact, unescaped source-bound identifier key. Keep these reads
 /// separate from ordinary safe values because class lowering records the
@@ -4849,6 +4850,26 @@ fn isSafePostSuperLexicalInitializerValueInner(
                 ast,
                 semantic,
                 operand_idx,
+                contains_direct_property_read,
+            );
+    }
+    if (value.tag == .conditional_expression) {
+        return isSafePostSuperLexicalInitializerValueInner(
+            ast,
+            semantic,
+            value.data.ternary.a,
+            contains_direct_property_read,
+        ) and
+            isSafePostSuperLexicalInitializerValueInner(
+                ast,
+                semantic,
+                value.data.ternary.b,
+                contains_direct_property_read,
+            ) and
+            isSafePostSuperLexicalInitializerValueInner(
+                ast,
+                semantic,
+                value.data.ternary.c,
                 contains_direct_property_read,
             );
     }
@@ -23177,6 +23198,7 @@ test "ES5 audited constructor lexical initializers retain the production semanti
         "class Base { get current() { return 17; } } class Read extends Base { constructor(key) { super(); const local = +this[key] * 2; this.value = local; } } console.log(new Read('current').value);",
         "class Base { get current() { return 18; } } class Read extends Base { constructor() { super(); const local = this['current'] && this.current; this.value = local; } } console.log(new Read().value);",
         "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor(key) { super(); const first = this[key] + 10, second = this.current + 20; this.value = first + second; } } console.log(new Read('current').value);",
+        "class Base { constructor(flag) { this.flag = flag; } get current() { return 19; } } class Read extends Base { constructor(flag) { super(flag); const local = this.flag ? this.current : 0; this.value = local; } } console.log(new Read(true).value);",
     };
     for (sources) |source| {
         var tmp = std.testing.tmpDir(.{});
