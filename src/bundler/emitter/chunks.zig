@@ -5692,3 +5692,56 @@ test "quoted ordinary consumer preserves no rename and rejects invalid override 
     try linker.rename_table.put(std.testing.allocator, known, "known_local");
     try std.testing.expectEqualStrings("known_local", try crossChunkBindingName(&linker, symbol));
 }
+
+test "cross chunk provider refuses unexported lexical names" {
+    const helpers = @import("../test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "provider.mjs", "const privateValue=41;export{privateValue as publicValue};");
+    const path = try helpers.absPath(&tmp, "provider.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{path});
+    const module = graph.modules.at(0);
+    const binding = module.export_bindings[0];
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    const known = SymbolID.make(module.index, module.exportBindingSemanticIndex(binding).?);
+    try linker.rename_table.put(std.testing.allocator, known, "actual_private");
+    try std.testing.expectEqualStrings("actual_private", resolveOwnerLocal(&linker, &graph, module.index, module.index.toU32(), "publicValue").?);
+    // A public export key selects its carrier. An unrelated lexical spelling
+    // must never discover the private declaration through a scope-name lookup.
+    try std.testing.expect(resolveOwnerLocal(&linker, &graph, module.index, module.index.toU32(), "privateValue") == null);
+}
+
+test "cross chunk provider refuses a foreign graph with matching scalar IDs" {
+    const helpers = @import("../test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "provider.mjs", "export const value=7;");
+    const path = try helpers.absPath(&tmp, "provider.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var foreign = ModuleGraph.init(std.testing.allocator, &cache);
+    defer foreign.deinit();
+    try graph.build(std.testing.io, &.{path});
+    try foreign.build(std.testing.io, &.{path});
+    const module = graph.modules.at(0);
+    const other = foreign.modules.at(0);
+    const binding = module.export_bindings[0];
+    try std.testing.expect(module != other);
+    try std.testing.expect(module.index == other.index);
+    try std.testing.expect(binding.symbol.eql(other.export_bindings[0].symbol));
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    const known = SymbolID.make(module.index, module.exportBindingSemanticIndex(binding).?);
+    try linker.rename_table.put(std.testing.allocator, known, "actual_owner");
+    try std.testing.expectEqualStrings("actual_owner", resolveOwnerLocal(&linker, &graph, module.index, module.index.toU32(), "value").?);
+    try std.testing.expect(resolveOwnerLocal(&linker, &foreign, other.index, other.index.toU32(), "value") == null);
+}
