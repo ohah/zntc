@@ -2370,8 +2370,8 @@ fn isRetainableJsxSpreadChild(
 
 /// Keep identifier operands only with their exact source binding. Inline
 /// object literals are limited to static data properties with primitive
-/// literals or exact bound identifier reads; no new scopes, accessors,
-/// computed-key effects, or nested spreads are admitted.
+/// literals, exact bound/global-undefined reads, or the void-zero literal; no
+/// new scopes, accessors, computed-key effects, or nested spreads are admitted.
 fn isRetainableJsxSpreadPropsOperand(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -2404,6 +2404,9 @@ fn isRetainableJsxSpreadPropsOperand(
             .identifier_reference => {
                 if (!isBoundSourceIdentifierReference(ast, semantic, value_idx) and
                     !isUnresolvedGlobalUndefinedReference(ast, semantic, value_idx)) return false;
+            },
+            .unary_expression => {
+                if (!isExactJsxVoidZeroValue(ast, value_idx)) return false;
             },
             else => return false,
         }
@@ -3068,6 +3071,23 @@ fn isUnresolvedGlobalUndefinedReference(
 ) bool {
     if (!isUnresolvedSourceIdentifierReference(ast, semantic, node_idx)) return false;
     return std.mem.eql(u8, ast.getText(ast.getNode(node_idx).span), "undefined");
+}
+
+/// void 0 is a side-effect-free undefined value with no identifier to bind.
+/// Keep the admitted spelling exact so other void operands remain fallback.
+fn isExactJsxVoidZeroValue(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
+    if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[@backingInt(node_idx)];
+    if (node.tag != .unary_expression) return false;
+    const extras = ast.extra_data.items;
+    const extra = node.data.extra;
+    if (extra > extras.len or extras.len - extra < 2) return false;
+    const operator: token_mod.Kind = @fromBackingInt(@intCast(extras[extra + 1] & 0xff));
+    if (operator != .kw_void) return false;
+    const operand_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+    if (operand_idx.isNone() or @backingInt(operand_idx) >= ast.nodes.items.len) return false;
+    const operand = ast.nodes.items[@backingInt(operand_idx)];
+    return operand.tag == .numeric_literal and std.mem.eql(u8, ast.getText(operand.span), "0");
 }
 
 /// `var` and function bindings are initialized by scope instantiation, so
@@ -17377,7 +17397,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
         try std.testing.expect(tag != .spread_element and tag != .elision);
     }
 
-    const classic_source = "const React = { createElement: function() {} }; const props = { id: 'from-props' }; const detachedRole = 'dialog'; const detachedCount = 2; const items = [1, 2]; const result = <div {...props} {...{ optional: undefined }} value={items}>{...items}</div>; const detached = <aside {...{ role: detachedRole, count: detachedCount }} />;";
+    const classic_source = "const React = { createElement: function() {} }; const props = { id: 'from-props' }; const detachedRole = 'dialog'; const detachedCount = 2; const items = [1, 2]; const result = <div {...props} {...{ optional: undefined, unset: void 0 }} value={items}>{...items}</div>; const detached = <aside {...{ role: detachedRole, count: detachedCount }} />;";
     var classic_fixture = try jsxSpreadChildTestFixture(allocator, classic_source);
     const classic_owner = classic_fixture.semantic.captureOwnerToken();
     var classic_item_symbol: ?u32 = null;
@@ -17478,7 +17498,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), classic_detached_count_read_count);
     try std.testing.expectEqual(@as(usize, 1), classic_undefined_read_count);
 
-    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const items = [1, 2]; const result = <Comp {...props} {...{ id: label, count: count, optional: undefined }} key=\"k\"><span />{...items}<i /></Comp>;";
+    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const items = [1, 2]; const result = <Comp {...props} {...{ id: label, count: count, optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;";
     var key_fallback_fixture = try jsxSpreadChildTestFixture(allocator, key_fallback_source);
     const key_fallback_owner = key_fallback_fixture.semantic.captureOwnerToken();
     var key_fallback_item_symbol: ?u32 = null;
@@ -17566,6 +17586,81 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), key_fallback_label_read_count);
     try std.testing.expectEqual(@as(usize, 1), key_fallback_count_read_count);
     try std.testing.expectEqual(@as(usize, 1), key_fallback_undefined_read_count);
+
+    const dev_source = "const items = [1, 2]; const result = <Comp {...{ optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}</Comp>;";
+    var dev_fixture = try jsxSpreadChildTestFixture(allocator, dev_source);
+    const dev_owner = dev_fixture.semantic.captureOwnerToken();
+    var source_dev_undefined_span: ?Span = null;
+    var source_dev_void_zero_span: ?Span = null;
+    for (dev_fixture.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .identifier_reference and
+            std.mem.eql(u8, dev_fixture.ast.getText(node.span), "undefined"))
+        {
+            source_dev_undefined_span = node.span;
+        }
+        if (node.tag == .unary_expression and isExactJsxVoidZeroValue(
+            &dev_fixture.ast,
+            @fromBackingInt(@intCast(raw)),
+        )) source_dev_void_zero_span = node.span;
+    }
+    const dev_undefined_span = source_dev_undefined_span orelse return error.MissingAutomaticDevUndefinedSourceReference;
+    const dev_void_zero_span = source_dev_void_zero_span orelse return error.MissingAutomaticDevVoidZeroSourceValue;
+    var dev_module = Module.init(@fromBackingInt(0), "jsx-key-fallback-dev-spread.tsx");
+    dev_module.source = dev_source;
+    dev_module.module_type = .ts;
+    dev_module.state = .ready;
+    dev_module.ast = dev_fixture.ast;
+    dev_module.semantic = dev_fixture.semantic;
+    var dev_context: TestGraph = .{
+        .allocator = std.testing.allocator,
+        .transform_options_base = .{
+            .strip_types = true,
+            .jsx_runtime = .automatic_dev,
+            .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+        },
+    };
+    const dev_resyncs_before = profile.count(.graph_resync_semantic);
+    run(&dev_context, &dev_module, allocator);
+    defer if (dev_module.alias_table) |*table| table.deinit();
+    defer if (dev_module.export_index_by_name) |*index| index.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), dev_context.diag_count);
+    try std.testing.expectEqual(dev_resyncs_before, profile.count(.graph_resync_semantic));
+    try std.testing.expectEqual(dev_owner, dev_module.semantic.?.owner_token);
+    try std.testing.expect(dev_module.transform_cache != null);
+
+    const dev_root = dev_module.ast.?.transformed_root.?;
+    const dev_reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, &dev_module.ast.?, dev_root);
+    defer allocator.free(dev_reachable);
+    var dev_undefined_reference_count: usize = 0;
+    var dev_source_undefined_read_count: usize = 0;
+    var dev_generated_undefined_read_count: usize = 0;
+    var dev_source_void_zero_count: usize = 0;
+    for (dev_reachable) |raw| {
+        const node = dev_module.ast.?.nodes.items[raw];
+        if (node.tag == .spread_element or node.tag == .jsx_spread_child or node.tag == .jsx_element)
+            return error.AutomaticDevJsxSpreadRemained;
+        if (node.tag == .identifier_reference and
+            std.mem.eql(u8, dev_module.ast.?.getText(node.data.string_ref), "undefined"))
+        {
+            try std.testing.expect(dev_module.semantic.?.symbol_ids[raw] == null);
+            try std.testing.expect(dev_module.semantic.?.unresolved_references.contains("undefined"));
+            dev_undefined_reference_count += 1;
+            if (node.span.start == dev_undefined_span.start and node.span.end == dev_undefined_span.end) {
+                dev_source_undefined_read_count += 1;
+            } else {
+                dev_generated_undefined_read_count += 1;
+            }
+        }
+        if (node.tag == .unary_expression and isExactJsxVoidZeroValue(
+            &dev_module.ast.?,
+            @fromBackingInt(@intCast(raw)),
+        ) and node.span.start == dev_void_zero_span.start and node.span.end == dev_void_zero_span.end)
+            dev_source_void_zero_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), dev_undefined_reference_count);
+    try std.testing.expectEqual(@as(usize, 1), dev_source_undefined_read_count);
+    try std.testing.expectEqual(@as(usize, 1), dev_generated_undefined_read_count);
+    try std.testing.expectEqual(@as(usize, 1), dev_source_void_zero_count);
 }
 
 fn moduleHasRegisteredOutputRoles(module: *const Module) bool {
@@ -24194,6 +24289,7 @@ test "#6193 automatic key fallback props spread admits static data and bound val
         "const label = \"x\"; const count = 2; const items = [1]; const result = <Comp {...{ id: label, count: count }} key=\"k\">{...items}</Comp>;",
         "const id = \"x\"; const items = [1]; const result = <Comp {...{ id: id }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ optional: undefined }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ optional: void 0 }} key=\"k\">{...items}</Comp>;",
     };
     for (safe_sources) |source| {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -24207,6 +24303,8 @@ test "#6193 automatic key fallback props spread admits static data and bound val
         "function getProps() { return {}; } const items = [1]; const result = <Comp {...getProps()} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...[1, 2]} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ id: missingValue }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ optional: void 1 }} key=\"k\">{...items}</Comp>;",
+        "function getValue() { return 0; } const items = [1]; const result = <Comp {...{ optional: void getValue() }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ optional: \\u0075ndefined }} key=\"k\">{...items}</Comp>;",
         "const props = {}; const items = [1]; const result = <Comp {...{ id: props.id }} key=\"k\">{...items}</Comp>;",
         "const id = \"x\"; const items = [1]; const result = <Comp {...{ id }} key=\"k\">{...items}</Comp>;",
@@ -24352,6 +24450,7 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         "const items = [1]; const result = <div {...{ id: 'x', count: 2, enabled: true, empty: null }}>{...items}</div>;",
         "const label = 'x'; const count = 2; const items = [1]; const result = <div {...{ id: label, count: count }}>{...items}</div>;",
         "const items = [1]; const result = <div {...{ optional: undefined }}>{...items}</div>;",
+        "const items = [1]; const result = <div {...{ optional: void 0 }}>{...items}</div>;",
         "const props = {}; const items = [1]; const one = <div {...props} />; const two = <div>{...items}</div>;",
         "const items = [1]; const one = <div {...{ id: 'x' }} />; const two = <div>{...items}</div>;",
         "const props = {}; const items = [1]; const one = <div {...props}>before</div>; const two = <div>{...items}</div>;",
@@ -24372,6 +24471,8 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         "const props = {}; const items = [1]; const result = <div {...props}>{...items}{...getItems()}</div>;",
         "const props = {}; const items = [1]; const result = <div {...props}>{...[, ...items]}</div>;",
         "const items = [1]; const result = <div {...{ id: missingValue }}>{...items}</div>;",
+        "const items = [1]; const result = <div {...{ optional: void 1 }}>{...items}</div>;",
+        "function getValue() { return 0; } const items = [1]; const result = <div {...{ optional: void getValue() }}>{...items}</div>;",
         "const items = [1]; const result = <div {...{ optional: \\u0075ndefined }}>{...items}</div>;",
         "const id = 'x'; const items = [1]; const result = <div {...{ id }}>{...items}</div>;",
         "const key = 'id'; const items = [1]; const result = <div {...{ [key]: 'x' }}>{...items}</div>;",
