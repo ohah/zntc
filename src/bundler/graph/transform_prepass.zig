@@ -4664,9 +4664,10 @@ fn isSafeConstructorVarDeclaration(
 /// A direct constructor `let`/`const` already belongs to its emitted function
 /// scope. Keep simple bindings with exact source rows, safe initializers (or an
 /// uninitialized `let`), and no reads before the complete declaration
-/// statement. Base constructors may use this at the body root; derived
-/// constructors may use it only in the linear sequence after a proven leading
-/// `super()` call. Nested blocks keep their separate scope contract.
+/// statement. A direct static `this.property` read is also safe once `this` is
+/// initialized: at the body root for base constructors or after a proven
+/// leading `super()` call for derived constructors. Nested blocks keep their
+/// separate scope contract.
 fn isSafeConstructorDirectLexicalDeclaration(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -4696,6 +4697,7 @@ fn isSafeConstructorDirectLexicalDeclaration(
             declaration_kind == .let
         else
             isSafeConstructorValue(ast, semantic, initializer) or
+                isSafeConstructorThisPropertyTarget(ast, initializer) or
                 (allow_direct_super_property_initializer and
                     isSafePostSuperPropertyRead(ast, semantic, initializer));
         if (!type_annotation.isNone() or !safe_initializer or
@@ -4717,9 +4719,11 @@ fn isSafeConstructorDirectLexicalDeclaration(
 }
 
 /// A derived constructor lexical declaration may use one direct, non-computed
-/// `super.property` initializer after the leading `super()` call. Keep this
-/// separate from ordinary safe values because the class lowerer records the
-/// generated home-object read in the retained semantic graph.
+/// `super.property` initializer after the leading `super()` call. Direct
+/// `this.property` initializers are handled by the shared declaration gate,
+/// which this function reaches only after the same leading-super check. Keep
+/// `super.property` separate from ordinary safe values because the class
+/// lowerer records the generated home-object read in the retained graph.
 fn isSafePostSuperDirectLexicalDeclaration(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -23016,6 +23020,8 @@ test "ES5 uninitialized constructor lets retain the production semantic graph" {
     const sources = [_][]const u8{
         "class Read { constructor() { let local; local = 1; this.value = local; } } console.log(new Read().value);",
         "function Base() {} class Read extends Base { constructor() { super(); let local; this.value = local; } } console.log(new Read().value);",
+        "class Read { get current() { return 4; } constructor() { let local = this.current; this.value = local; } } console.log(new Read().value);",
+        "class Base { get current() { return 5; } } class Read extends Base { constructor() { super(); const local = this.current; this.value = local; } } console.log(new Read().value);",
     };
     for (sources) |source| {
         var tmp = std.testing.tmpDir(.{});

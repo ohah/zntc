@@ -36,6 +36,22 @@ const cases = {
     }
     console.log(JSON.stringify([new Box().value, new Box(3).value]));
   `,
+  'base constructor lexical this-property read': `
+    var reads = 0;
+    class Box {
+      get current() { reads++; return this instanceof Box ? 4 : -1; }
+      constructor() { let local = this.current; this.value = local; }
+    }
+    console.log(new Box().value, reads);
+  `,
+  'derived constructor post-super lexical this-property read': `
+    var reads = 0;
+    class Base { get current() { reads++; return this instanceof Box ? 5 : -1; } }
+    class Box extends Base {
+      constructor() { super(); const local = this.current; this.value = local; }
+    }
+    console.log(new Box().value, reads);
+  `,
   'nested closures in computed method': `
     const key = 'make';
     class Box {
