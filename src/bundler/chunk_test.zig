@@ -1401,6 +1401,53 @@ const linker_mod = @import("linker.zig");
 const Linker = linker_mod.Linker;
 const test_helpers = @import("test_helpers.zig");
 
+test "bare CJS imports retain the actual shared wrapper edge" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try test_helpers.writeFile(tmp.dir, "shared.cjs", "console.log(7);module.exports=7;");
+    try test_helpers.writeFile(tmp.dir, "a.mjs", "import './shared.cjs';");
+    try test_helpers.writeFile(tmp.dir, "b.mjs", "import './shared.cjs';");
+    const a = try test_helpers.absPath(&tmp, "a.mjs");
+    defer alloc.free(a);
+    const b = try test_helpers.absPath(&tmp, "b.mjs");
+    defer alloc.free(b);
+    var cache = resolve_cache_mod.ResolveCache.init(alloc, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(alloc, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{ a, b });
+    var linker = Linker.init(alloc, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    var chunks = try chunk_mod.generateChunks(alloc, &graph, &.{ a, b }, .{});
+    defer chunks.deinit();
+    var provider: ?*const Module = null;
+    var modules = graph.modulesIterator();
+    while (modules.next()) |m| {
+        if (std.mem.endsWith(u8, m.path, "shared.cjs")) provider = m;
+    }
+    const owner = provider orelse return error.MissingCjsControl;
+    try std.testing.expect(owner.wrap_kind == .cjs and owner.require_symbol != null);
+    const provider_chunk = chunks.getModuleChunk(owner.index);
+    try chunk_mod.computeCrossChunkLinks(&chunks, &graph, alloc, &linker);
+    for (0..graph.moduleCount()) |i| {
+        const m = graph.getModule(ModuleIndex.fromUsize(i)).?;
+        if (!std.mem.eql(u8, m.path, a) and !std.mem.eql(u8, m.path, b)) continue;
+        try std.testing.expectEqual(@as(usize, 0), m.import_bindings.len);
+        try std.testing.expect(m.import_records[0].kind == .side_effect);
+        const consumer_chunk = chunks.getModuleChunk(m.index);
+        try std.testing.expect(consumer_chunk != provider_chunk);
+        const consumer = chunks.getChunk(consumer_chunk);
+        const imported = consumer.wrapper_cross_imports.get(@backingInt(provider_chunk));
+        try std.testing.expect(imported != null);
+        try std.testing.expectEqualSlices(u32, &.{owner.index.toU32()}, imported.?.items);
+    }
+    try std.testing.expect(chunks.getChunk(provider_chunk).wrapper_cross_exports.contains(owner.index.toU32()));
+    try chunk_mod.computeCrossChunkLinks(&chunks, &graph, alloc, &linker);
+    try std.testing.expectEqual(@as(usize, 1), chunks.getChunk(provider_chunk).wrapper_cross_exports.count());
+}
+
 // 다른 청크의 CJS 모듈을 **직접** import(`import d from './lib.cjs'`)하면 cross-chunk
 // 심볼로 등록돼야 한다. CJS 는 정적 export 가 없어 `resolveExportChain` 이 null →
 // resolved binding 이 없고, 예전엔 그대로 skip 돼 심볼이 등록되지 않았다. 그 결과
