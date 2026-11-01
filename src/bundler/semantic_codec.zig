@@ -40,7 +40,7 @@ pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
 // v27: source-owned typed retirement graph state survives cache round trips.
 // v39: exact producer-owned static capture aliases retain their retirement proof.
 // v43: extracted await-loop source witnesses and function-name environment retirements.
-pub const FORMAT_VERSION: u32 = 46;
+pub const FORMAT_VERSION: u32 = 48;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -707,6 +707,52 @@ fn readLoweredWorkletClass(r: *Reader, scope_count: usize, node_count: usize) Er
     return witness;
 }
 
+fn putEnumMemberLeaf(buf: *std.ArrayList(u8), a: std.mem.Allocator, node: @import("../parser/ast.zig").Node) !void {
+    switch (node.tag) {
+        .binding_identifier, .identifier_reference, .assignment_target_identifier, .string_literal => {},
+        else => return error.InvalidSourceOwnedRetirement,
+    }
+    try putU32(buf, a, @backingInt(node.tag));
+    try putU32(buf, a, node.span.start);
+    try putU32(buf, a, node.span.end);
+    try putU32(buf, a, node.data.string_ref.start);
+    try putU32(buf, a, node.data.string_ref.end);
+}
+
+fn readEnumMemberLeaf(r: *Reader) Error!@import("../parser/ast.zig").Node {
+    const N = @import("../parser/ast.zig").Node;
+    const tag = std.enums.fromInt(N.Tag, try r.u32v()) orelse return error.Truncated;
+    switch (tag) {
+        .binding_identifier, .identifier_reference, .assignment_target_identifier, .string_literal => {},
+        else => return error.Truncated,
+    }
+    return .{ .tag = tag, .span = .{ .start = try r.u32v(), .end = try r.u32v() }, .data = .{ .string_ref = .{ .start = try r.u32v(), .end = try r.u32v() } } };
+}
+
+fn putEnumMember(buf: *std.ArrayList(u8), a: std.mem.Allocator, member: @import("../semantic/enum_environment_retirement.zig").Member) !void {
+    if (member.declaration_node.tag != .ts_enum_member) return error.InvalidSourceOwnedRetirement;
+    try putU32(buf, a, @backingInt(member.declaration));
+    try putU32(buf, a, member.declaration_node.span.start);
+    try putU32(buf, a, member.declaration_node.span.end);
+    try putU32(buf, a, @backingInt(member.declaration_node.data.binary.left));
+    try putU32(buf, a, @backingInt(member.declaration_node.data.binary.right));
+    try putU32(buf, a, member.declaration_node.data.binary.flags);
+    try putU32(buf, a, @backingInt(member.key));
+    try putEnumMemberLeaf(buf, a, member.key_node);
+    try putEnumMemberLeaf(buf, a, member.read_node);
+}
+
+fn readEnumMember(r: *Reader) Error!@import("../semantic/enum_environment_retirement.zig").Member {
+    const declaration: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(try r.u32v());
+    const span: @import("../lexer/token.zig").Span = .{ .start = try r.u32v(), .end = try r.u32v() };
+    const left: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(try r.u32v());
+    const right: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(try r.u32v());
+    const flags = try r.u32v();
+    if (flags > std.math.maxInt(u16)) return error.Truncated;
+    const node: @import("../parser/ast.zig").Node = .{ .tag = .ts_enum_member, .span = span, .data = .{ .binary = .{ .left = left, .right = right, .flags = @intCast(flags) } } };
+    return .{ .declaration = declaration, .declaration_node = node, .key = @fromBackingInt(try r.u32v()), .key_node = try readEnumMemberLeaf(r), .read_node = try readEnumMemberLeaf(r) };
+}
+
 fn putFrameHistory(buf: *std.ArrayList(u8), a: std.mem.Allocator, history: @import("../semantic/scope_frame_history.zig").History) !void {
     try putU32(buf, a, @intCast(history.source_scopes.len));
     for (history.source_scopes) |scope| try putScope(buf, a, scope);
@@ -1082,6 +1128,8 @@ pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc:
             try putU32(&payload, alloc, @backingInt(environment.parameter_symbol));
             try putReference(&payload, alloc, environment.binding_declaration);
             try putRetirementNode(&payload, alloc, environment.binding_node);
+            try putU32(&payload, alloc, @intFromBool(environment.member != null));
+            if (environment.member) |member| try putEnumMember(&payload, alloc, member);
         }
     }
 
@@ -1492,11 +1540,15 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
         if ((reason == .elided_function_name) != (name_elision != null)) return error.Truncated;
         const has_enum_environment = try r.u32v();
         if (has_enum_environment > 1) return error.Truncated;
-        const enum_environment: ?@import("../semantic/enum_environment_retirement.zig").Witness = if (has_enum_environment == 1) .{
-            .owner = try readFrameOwner(&r),
-            .parameter_symbol = @fromBackingInt(try r.u32v()),
-            .binding_declaration = try readReference(&r),
-            .binding_node = try readRetirementNode(&r, true),
+        const enum_environment: ?@import("../semantic/enum_environment_retirement.zig").Witness = if (has_enum_environment == 1) environment: {
+            const owner_entry = try readFrameOwner(&r);
+            const parameter: symbol_mod.SymbolId = @fromBackingInt(try r.u32v());
+            const binding_declaration = try readReference(&r);
+            const binding_node = try readRetirementNode(&r, true);
+            const has_member = try r.u32v();
+            if (has_member > 1) return error.Truncated;
+            const member = if (has_member == 1) try readEnumMember(&r) else null;
+            break :environment .{ .owner = owner_entry, .parameter_symbol = parameter, .binding_declaration = binding_declaration, .binding_node = binding_node, .member = member };
         } else null;
         if ((reason == .erased_const_enum_environment) != (enum_environment != null)) return error.Truncated;
         if (enum_environment) |environment| if (@backingInt(environment.parameter_symbol) >= symbols_len) return error.Truncated;

@@ -8771,7 +8771,7 @@ test "#4819 detached erased local const enum reads fail closed without exact ori
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(".unknown");
-    _ = try parser.parse();
+    const source_root = try parser.parse();
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
     try std.testing.expect(parser.source_mode == .js_lenient);
     try std.testing.expect(needsLocalConstEnumExternalNodeProof(minify, &parser));
@@ -8804,7 +8804,11 @@ test "#4819 detached erased local const enum reads fail closed without exact ori
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
 
-    const output_root = try transformer.transform();
+    // This independent raw-slot diagnostic fixture intentionally preserves the
+    // old binding witness. Production driver-owned retirement is exercised by
+    // the standalone/Graph const-enum regressions, not this legacy oracle.
+    const output_root = try transformer.visitNode(source_root);
+    transformer.ast.transformed_root = output_root;
     const edited = (try transformer.finishSemanticEdit()) orelse return error.MissingSemanticEdit;
     analyzer.applyEdit(edited);
     transformer.symbols = analyzer.symbols.items;
