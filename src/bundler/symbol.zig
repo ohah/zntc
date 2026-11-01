@@ -149,7 +149,7 @@ pub const SymbolID = packed struct {
 /// 유일 출처.
 ///
 /// **carry-over**: AST mutation 후 semantic resync (`graph/transform_prepass.zig`) 가 symbol idx
-/// 를 재배정하면 `module.pending_renames` 에 모았다가 `Linker.applyPendingRenames` 가 반영한다.
+/// 대응 비교는 독립 native oracle에만 남는다. 제품의 source-to-output 편집은 같은 SID를 보존한다.
 ///
 /// **값 string 은 borrow**: `Linker.canonical_strings` 가 value 를 소유하고 RenameTable 은 같은
 /// slice 를 가리키기만 한다 (free 안 함).

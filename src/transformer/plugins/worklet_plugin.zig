@@ -446,6 +446,50 @@ fn buildFactoryBody(
 }
 
 /// function_expression worklet을 IIFE factory로 감싼다.
+/// The wrapper evaluates outside the original function. Its named-expression
+/// frame and separate parameter environment move with that exact function.
+fn workletFunctionBoundary(t: *Transformer, function: NodeIndex) @import("../../semantic/scope.zig").ScopeId {
+    const scope = t.outputOwnedScope(function) orelse @panic("worklet function has no published source owner");
+    const scopes = if (t.semantic_editor) |*editor| editor.scopes.items else t.scopes;
+    const symbols = if (t.semantic_editor) |*editor| editor.symbols.items else t.symbols;
+    const maps = if (t.semantic_editor) |*editor| editor.scope_maps.items else t.scope_maps;
+    if (scope.isNone() or scope.toIndex() >= scopes.len or scopes[scope.toIndex()].kind != .function)
+        @panic("worklet function has an invalid source frame");
+    const node = t.ast.getNode(function);
+    const params = t.ast.readExtraNode(node.data.extra, if (node.tag == .arrow_function_expression) 0 else ast_mod.FunctionExtra.params);
+    var boundary = scope;
+    if (t.outputOwnedScope(params)) |parameters| {
+        if (parameters != scope) {
+            if (parameters.isNone() or parameters.toIndex() >= scopes.len or
+                scopes[parameters.toIndex()].kind != .function or scopes[scope.toIndex()].parent != parameters)
+                @panic("worklet parameters lost their actual function frame");
+            boundary = parameters;
+        }
+    }
+    if (node.tag != .arrow_function_expression) {
+        const name = t.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name);
+        if (!name.isNone()) {
+            const sid = t.getSymbolIdAt(name) orelse @panic("worklet function name lost its attached SID");
+            if (sid >= symbols.len) @panic("worklet function name has an invalid SID");
+            const name_scope = symbols[sid].scope_id;
+            if (name_scope != boundary) {
+                if (name_scope.isNone() or name_scope.toIndex() >= scopes.len or
+                    scopes[boundary.toIndex()].parent != name_scope or
+                    symbols[sid].origin_scope != name_scope or
+                    scopes[name_scope.toIndex()].kind != .block or
+                    scopes[name_scope.toIndex()].symbol_count != 1)
+                    @panic("worklet name lost its source self frame");
+                const map = &maps[name_scope.toIndex()];
+                if (map.count() == 0) @panic("worklet name frame has no source binding");
+                var names = map.valueIterator();
+                while (names.next()) |known| if (known.* != sid) @panic("worklet name frame contains a foreign binding");
+                boundary = name_scope;
+            }
+        }
+    }
+    return boundary;
+}
+
 fn buildWorkletIIFE(
     api: *AstTransformCtx,
     func_node: NodeIndex,
@@ -469,10 +513,13 @@ fn buildWorkletIIFE(
         0, // flags
         none, // return type
     });
+    const source_boundary = if (t.semantic_edit_enabled) workletFunctionBoundary(t, func_node) else .none;
+    const evaluation_scope = if (t.semantic_edit_enabled) t.outputScopeParent(source_boundary) else t.current_scope;
     const wrapper_scope = if (t.semantic_edit_enabled)
-        try t.addGeneratedFunctionScope(t.current_scope, wrapper_func)
+        try t.addGeneratedFunctionScope(evaluation_scope, wrapper_func)
     else
         .none;
+    if (t.semantic_edit_enabled) try t.reparentGeneratedScope(source_boundary, wrapper_scope);
     const prop_stmts = try worklet_mod.buildWorkletPropertyAssignments(
         t,
         func_name,
@@ -1079,6 +1126,8 @@ fn buildClassFactoryBody(
         mappings,
     );
     defer cloned.deinit(t.allocator);
+    const class_body = cloned.roots[0];
+    t.ast.extra_data.items[t.ast.getNode(class_expr).data.extra + ast_mod.ClassExtra.body] = @backingInt(class_body);
     if (t.semantic_edit_enabled) try @import("../worklet_class_clone.zig").register(t, .{
         .ast_owner = t.ast,
         .function = factory_function,
@@ -1093,8 +1142,6 @@ fn buildClassFactoryBody(
         .target_scope = class_scope,
         .target_self = mappings[0].target,
     }, &cloned, class_self_binding);
-    const class_body = cloned.roots[0];
-    t.ast.extra_data.items[t.ast.getNode(class_expr).data.extra + ast_mod.ClassExtra.body] = @backingInt(class_body);
 
     const factory_symbol = try t.declareSyntheticInScope(class_binding, zero_span, .variable_var, factory_scope);
     // var <Class> = class_expr;

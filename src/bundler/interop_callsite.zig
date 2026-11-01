@@ -420,7 +420,7 @@ test "single output import callsites preserve real clone creation origins" {
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     const cloned = try @import("../transformer/es_helpers.zig").cloneNode(&transformer, original);
     try std.testing.expect(cloned != original);
-    try std.testing.expectEqualDeep(provenance, transformer.transformed_node_scope_provenance.get(cloned).?);
+    try @import("../semantic/test_node_equality.zig").expectEqualDeep(provenance, transformer.transformed_node_scope_provenance.get(cloned).?);
     const ast = transformer.ast;
     const statement = try ast.addNode(.{ .tag = .expression_statement, .span = ast.getNode(original).span, .data = .{ .unary = .{ .operand = cloned, .flags = 0 } } });
     const root = try ast.addNode(.{ .tag = .program, .span = ast.getNode(original_root).span, .data = .{ .list = try ast.addNodeList(&.{statement}) } });
@@ -428,7 +428,7 @@ test "single output import callsites preserve real clone creation origins" {
     ast.transformed_root = root;
     try transformer.bindOutputScopesAndReferences(root, provenance.scope);
     const edited = (try transformer.finishSemanticEdit()).?;
-    try std.testing.expectEqualDeep(provenance, edited.node_scope_provenance.get(cloned).?);
+    try @import("../semantic/test_node_equality.zig").expectEqualDeep(provenance, edited.node_scope_provenance.get(cloned).?);
     try std.testing.expect(!edited.node_scope_provenance.contains(original));
     try std.testing.expect(edited.symbol_ids[@backingInt(cloned)] == null);
     var fresh = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, ast);

@@ -178,8 +178,14 @@ pub const SemanticAnalyzer = struct {
     /// Property symbols shared by multiple declarations of one namespace.
     /// They are not inserted into scope_maps: source locals keep lexical priority.
     namespace_member_groups: std.ArrayList(NamespaceMemberGroup) = .empty,
+    /// Exact generated bindings that are local lowering temps, not exported
+    /// namespace properties. The transform producer supplies this node set
+    /// when reanalyzing its output; names and spans never select exclusions.
+    namespace_non_member_bindings: ?*const std.AutoHashMapUnmanaged(u32, void) = null,
     namespace_scope_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// Proxy SymbolId -> namespace object SymbolId, consumed by codegen.
+    source_owned_retirements: @import("source_owned_retirement.zig").Map = .empty,
+    scope_history: @import("scope_frame_history.zig").History = .{},
     namespace_member_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// Source nested namespace binding SID -> shared merged member SID.
     namespace_declaration_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
@@ -294,6 +300,9 @@ pub const SemanticAnalyzer = struct {
     /// Exact SymbolId coverage audit can retain declaration-node anchors
     /// without enabling statement indexing or changing optimizer inputs.
     enable_exact_declaration_anchors: bool = false,
+    /// Capture actual initial unresolved lookups for post-edit normal form.
+    /// It is distinct from a compiler-created explicit global marker.
+    enable_source_external_origins: bool = false,
     /// `var` 선언 노드는 문자열 테이블에서 같은 이름의 Span을 공유할 수 있다.
     /// 그런 AST에서는 Span 시작점으로 첫 선언과 재선언을 구분할 수 없으므로,
     /// 방문한 첫 binding NodeIndex를 SymbolId별로 보관한다.
@@ -411,7 +420,9 @@ pub const SemanticAnalyzer = struct {
             self.helper_scope_map,
         );
         errdefer editor.deinit();
+        try editor.importScopeHistory(self.scope_history);
         try editor.importNodeScopeProvenance(self.node_scope_provenance);
+        try editor.importSourceOwnedRetirements(self.source_owned_retirements);
         return editor;
     }
 
@@ -419,6 +430,8 @@ pub const SemanticAnalyzer = struct {
     /// 개별 deinit은 하지 않고 arena가 변환 종료 시 일괄 해제한다.
     pub fn applyEdit(self: *SemanticAnalyzer, result: @import("editor.zig").SemanticEditor.Result) void {
         self.symbols = result.symbols;
+        self.source_owned_retirements = result.source_owned_retirements;
+        self.scope_history = result.scope_history;
         self.scopes = std.ArrayList(Scope).fromOwnedSlice(result.scopes);
         self.scope_maps = std.ArrayList(std.StringHashMapUnmanaged(usize)).fromOwnedSlice(result.scope_maps);
         self.scope_owner_map = result.scope_owner_map;
@@ -440,6 +453,14 @@ pub const SemanticAnalyzer = struct {
         for (self.scope_maps.items) |*m| m.deinit(self.allocator);
         self.scope_maps.deinit(self.allocator);
         self.scope_owner_map.deinit(self.allocator);
+        self.allocator.free(self.scope_history.source_scopes);
+        self.allocator.free(self.scope_history.source_owners);
+        self.allocator.free(self.scope_history.source_initializers);
+        self.allocator.free(self.scope_history.source_computed_awaits);
+        self.allocator.free(self.scope_history.source_class_keys);
+        self.allocator.free(self.scope_history.worklet_class_creators);
+        self.allocator.free(self.scope_history.lowered_worklet_classes);
+        self.allocator.free(self.scope_history.events);
         self.implicit_arguments_owners.deinit(self.allocator);
         self.annex_b_variable_targets.deinit(self.allocator);
         self.parameter_environments.deinit(self.allocator);
@@ -453,6 +474,7 @@ pub const SemanticAnalyzer = struct {
         self.namespace_member_groups.deinit(self.allocator);
         self.namespace_scope_owners.deinit(self.allocator);
         self.namespace_member_owners.deinit(self.allocator);
+        self.source_owned_retirements.deinit(self.allocator);
         self.namespace_declaration_owners.deinit(self.allocator);
         self.namespace_iife_param_names.deinit(self.allocator);
         self.enum_iife_param_names.deinit(self.allocator);
@@ -520,6 +542,30 @@ pub const SemanticAnalyzer = struct {
         // void visitor 내부에서 삼킨 allocation 실패를 여기서 표면화 — symbol/reference 가
         // 누락된 분석 결과가 transform/codegen 으로 흘러가 silent miscompile 되는 것 방지.
         if (self.alloc_failed) return error.OutOfMemory;
+        if (self.enable_source_external_origins) {
+            var origins = self.node_scope_provenance.valueIterator();
+            while (origins.next()) |entry| {
+                if (entry.source_external) |*origin| {
+                    if (origin.source_scope.isNone() or origin.source_scope.toIndex() >= self.scopes.items.len) std.debug.panic("initial external lookup lost its birth scope", .{});
+                    origin.source_frame = self.scopes.items[origin.source_scope.toIndex()];
+                    const execution = @import("scope.zig").enclosingExecUnit(self.scopes.items, origin.source_scope) orelse
+                        std.debug.panic("initial external lookup has no execution scope", .{});
+                    origin.execution_scope = @fromBackingInt(execution);
+                    origin.execution_frame = self.scopes.items[execution];
+                }
+            }
+            // Seal the baseline at initial-analysis completion, before any
+            // lowerer can create a frame or retag an existing owner node.
+            var history = @import("scope_frame_history.zig").Recorder.init(self.allocator, self.ast, self.scopes.items, &self.scope_owner_map) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                std.debug.panic("invalid initial scope history: {s}", .{@errorName(err)});
+            };
+            errdefer history.deinit(self.allocator);
+            self.scope_history = history.finish(self.allocator) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                std.debug.panic("invalid initial scope history publication: {s}", .{@errorName(err)});
+            };
+        }
     }
 
     // ================================================================
@@ -1018,7 +1064,7 @@ pub const SemanticAnalyzer = struct {
     /// adjacency 검사용 — 둘 다 저장한다.
     fn recordDeclareRef(self: *SemanticAnalyzer, sym_index: u32, scope_id: ScopeId, declaration_node_index: ?u32) void {
         if (!self.enable_stmt_info and !self.enable_exact_declaration_anchors) return;
-        if (self.enable_stmt_info and self.current_stmt_idx == symbol_mod.Reference.NO_STMT) return;
+        if (!self.enable_exact_declaration_anchors and self.enable_stmt_info and self.current_stmt_idx == symbol_mod.Reference.NO_STMT) return;
         self.references.append(self.allocator, .{
             .node_index = .none,
             .declaration_node_index = if (declaration_node_index) |raw| @fromBackingInt(@intCast(raw)) else .none,
@@ -1462,6 +1508,33 @@ pub const SemanticAnalyzer = struct {
         node_idx: NodeIndex,
         flags: symbol_mod.ReferenceFlags,
     ) void {
+        if (self.enable_source_external_origins and !flags.type_context and !flags.value_as_type and
+            !node_idx.isNone() and @backingInt(node_idx) < self.ast.nodes.items.len and !self.current_scope.isNone())
+        {
+            const node = self.ast.getNode(node_idx);
+            switch (node.tag) {
+                .identifier_reference, .assignment_target_identifier, .jsx_identifier => {
+                    self.node_scope_provenance.put(self.allocator, node_idx, .{
+                        .scope = self.current_scope,
+                        .source_node = node_idx,
+                        .with_environment = self.with_environment_depth != 0,
+                        .source_external = .{
+                            .tag = node.tag,
+                            .name = node.data.string_ref,
+                            .span = node.span,
+                            .flags = flags,
+                            .source_scope = self.current_scope,
+                            .source_frame = self.scopes.items[self.current_scope.toIndex()],
+                            .execution_scope = .none,
+                            .execution_frame = self.scopes.items[self.current_scope.toIndex()],
+                        },
+                    }) catch {
+                        self.alloc_failed = true;
+                    };
+                },
+                else => {},
+            }
+        }
         // 번들러 linker가 이 이름들을 예약하여 scope hoisting 시 shadowing을 방지.
         // #4221: 이름이 string_table 슬라이스(합성 노드)일 수 있다 — emitter 소비
         // 시점까지 string_table 이 realloc 되면 dangling (#3100 클래스). declare
@@ -1548,12 +1621,18 @@ pub const SemanticAnalyzer = struct {
         if (role == .variable_redeclaration and self.symbols.items[sym_idx].kind.isFunctionLike()) return;
         for (self.references.items) |*reference| {
             if (reference.flags.declare and @backingInt(reference.symbol_id) == sym_idx and
+                reference.declaration_node_index == @as(NodeIndex, @fromBackingInt(@intCast(node_idx)))) return;
+            if (reference.flags.declare and @backingInt(reference.symbol_id) == sym_idx and
                 reference.declaration_node_index.isNone())
             {
                 reference.declaration_node_index = @fromBackingInt(@intCast(node_idx));
-                break;
+                return;
             }
         }
+        // A var-scope predeclaration merges the binding, not the source
+        // declaration occurrences. Each visited function owns its exact row.
+        if (role == .declaration and self.symbols.items[sym_idx].kind.isFunctionLike())
+            self.recordDeclareRef(@intCast(sym_idx), self.symbols.items[sym_idx].scope_id, node_idx);
     }
 
     /// variable_declaration의 predeclared 바인딩에 대해 symbol_ids를 설정한다.
@@ -2989,6 +3068,9 @@ pub const SemanticAnalyzer = struct {
 
     fn addNamespaceMemberBinding(self: *SemanticAnalyzer, owner_sid: u32, binding_idx: NodeIndex) AllocError!void {
         if (binding_idx.isNone() or @backingInt(binding_idx) >= self.ast.nodes.items.len) return;
+        if (self.namespace_non_member_bindings) |non_members| {
+            if (non_members.contains(@backingInt(binding_idx))) return;
+        }
         const binding = self.ast.getNode(binding_idx);
         switch (binding.tag) {
             .array_pattern, .object_pattern => {

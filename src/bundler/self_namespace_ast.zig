@@ -904,7 +904,7 @@ fn assemble(graph: *Graph, module: *Module, input: Source, foreign: ?ForeignInpu
         reference.scope_stmt_idx = context.scope_stmt_idx;
     }
     candidate.references = references;
-    const infos = (try @import("stmt_info.zig").buildFromSemantic(a, ast, candidate.symbols.items, candidate.scopes, references, &candidate.unresolved_references, false, false)) orelse return error.InvalidSelfNamespaceStatements;
+    const infos = (try @import("stmt_info.zig").buildFromSemantic(a, ast, candidate.symbols.items, candidate.scopes, candidate.symbol_ids, references, &candidate.unresolved_references, false, false)) orelse return error.InvalidSelfNamespaceStatements;
     const empty: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     const exact = try @import("../transformer/symbol_coverage.zig").checkExactWithCompleteSourceScopeOwners(a, ast, root, parser_count, candidate.symbol_ids, candidate.symbols.items, candidate.scopes, candidate.scope_maps, &candidate.scope_owner_map, references, &.{}, &candidate.helper_scope_map, &externals, &empty, &origins);

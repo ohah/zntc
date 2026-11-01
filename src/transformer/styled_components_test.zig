@@ -1769,6 +1769,9 @@ test "#4819 styled cssProp generated component keeps its exact symbol" {
     _ = try parser.parse();
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
     try analyzer.analyze();
 
     const options: TransformOptions = .{
@@ -1789,6 +1792,11 @@ test "#4819 styled cssProp generated component keeps its exact symbol" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.scope_history = analyzer.scope_history;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -1865,6 +1873,7 @@ const StyledCssPropHostileCase = struct {
     late_name: bool = true,
     classic_jsx: bool = false,
     must_avoid_name: ?[]const u8 = null,
+    expected_import_kept: ?bool = null,
 };
 
 fn expectStyledCssPropHostileCase(backing_allocator: std.mem.Allocator, hostile_case: StyledCssPropHostileCase) !void {
@@ -1890,6 +1899,9 @@ fn expectStyledCssPropHostileCase(backing_allocator: std.mem.Allocator, hostile_
     analyzer.is_module = parser.is_module;
     analyzer.is_ts = parser.source_mode == .ts;
     analyzer.is_flow = parser.is_flow;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
     try analyzer.analyze();
     try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
 
@@ -1910,6 +1922,11 @@ fn expectStyledCssPropHostileCase(backing_allocator: std.mem.Allocator, hostile_
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.scope_history = analyzer.scope_history;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -1928,7 +1945,19 @@ fn expectStyledCssPropHostileCase(backing_allocator: std.mem.Allocator, hostile_
     }
     try std.testing.expectEqual(hostile_case.component_count, components.items.len);
 
+    const source_default = transformer.plugins.styled_components.default_binding_node;
+    const source_default_sid = if (source_default) |binding| transformer.getSymbolIdAt(binding) else null;
     const edited = (try transformer.finishSemanticEdit()) orelse return error.MissingStyledComponentSemanticEdit;
+    if (hostile_case.expected_import_kept) |expected| {
+        try std.testing.expectEqual(expected, transformer.plugins.styled_components.css_prop_import_required);
+        const sid = source_default_sid orelse return error.MissingSourceStyledImport;
+        var kept = false;
+        for (reachable) |raw| {
+            if (transformer.ast.nodes.items[raw].tag == .import_default_specifier and
+                raw < edited.symbol_ids.len and edited.symbol_ids[raw] == sid) kept = true;
+        }
+        try std.testing.expectEqual(expected, kept);
+    }
     const program_scope = transformer.programScope();
     for (components.items, 0..) |component, index| {
         for (components.items[0..index]) |earlier| {
@@ -2063,6 +2092,9 @@ test "#4819 styled cssProp generated callbacks keep exact parameter identity" {
     _ = try parser.parse();
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
     try analyzer.analyze();
 
     const options: TransformOptions = .{
@@ -2082,6 +2114,11 @@ test "#4819 styled cssProp generated callbacks keep exact parameter identity" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.scope_history = analyzer.scope_history;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -3116,4 +3153,69 @@ test "styled (topLevelImportPaths): 다중 패턴 list" {
     );
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") != null);
+}
+
+test "styled cssProp preserves only its actual future import binding" {
+    const cases = [_]struct { source: []const u8, keep: bool }{
+        .{ .source = "import s from 'styled-components'; function App(s){return <div css={`color:red`}/>}", .keep = true },
+        .{ .source = "import s from 'styled-components'; import {css as cx} from 'styled-components'; function App(){return <div css={cx`color:red`}/>}", .keep = true },
+        .{ .source = "import s from 'styled-components'; function App(){return <div css={{color:'red'}}/>}", .keep = true },
+        .{ .source = "import s from 'styled-components'; function App(){return <div/>}", .keep = false },
+        .{ .source = "import s from 'styled-components'; function App(value){return <div css={value}/>}", .keep = false },
+    };
+    for (cases) |case| try expectStyledCssPropHostileCase(std.testing.allocator, .{
+        .source = case.source,
+        .component_count = if (case.keep) 1 else 0,
+        .expected_import_kept = case.keep,
+    });
+}
+
+test "styled cssProp real bundle executes the source import despite a same-name parameter" {
+    const io_helpers = @import("../bundler/test_helpers.zig");
+    const Bundler = @import("../bundler/bundler.zig").Bundler;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try io_helpers.writeFile(tmp.dir, "node_modules/styled-components/package.json", "{\"type\":\"module\",\"exports\":\"./index.js\"}");
+    try io_helpers.writeFile(tmp.dir, "node_modules/styled-components/index.js",
+        \\export default new Proxy({}, {get(_, tag) {
+        \\  function styled() { return {tag}; }
+        \\  styled.withConfig = () => styled;
+        \\  return styled;
+        \\}});
+    );
+    try io_helpers.writeFile(tmp.dir, "entry.tsx",
+        \\import s from 'styled-components';
+        \\const React = {createElement(type) {return {type};}};
+        \\function App(s) {return <div css={`color:red`}/>;}
+        \\console.log(App(0).type.tag);
+    );
+    const entry = try io_helpers.absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+    for ([_]bool{ false, true }) |minify| {
+        var bundler = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .platform = .node,
+            .format = .cjs,
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_runtime = .classic,
+            .minify_identifiers = minify,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        if (result.hasErrors()) for (result.getDiagnostics()) |diag| std.debug.print("styled runtime diagnostic: {s}\n", .{diag.message});
+        try std.testing.expect(!result.hasErrors());
+        const actual = try std.process.run(std.testing.allocator, std.testing.io, .{
+            .argv = &.{ "node", "-e", result.output },
+            .stdout_limit = std.Io.Limit.limited(16 * 1024),
+            .stderr_limit = std.Io.Limit.limited(16 * 1024),
+        });
+        defer std.testing.allocator.free(actual.stdout);
+        defer std.testing.allocator.free(actual.stderr);
+        if (actual.term != .exited or actual.term.exited != 0) std.debug.print("styled runtime stderr: {s}\n{s}\n", .{ actual.stderr, result.output });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("div\n", actual.stdout);
+        try std.testing.expectEqualStrings("", actual.stderr);
+    }
 }

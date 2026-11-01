@@ -75,11 +75,8 @@ pub const ModuleGraph = struct {
     pub const modulesIterator = graph_accessors.modulesIterator;
     pub const shouldRunTransformerPrePass = graph_transform_prepass.shouldRun;
     pub const runTransformerPrePass = graph_transform_prepass.run;
-    pub const resyncModuleMetadataAfterConstMaterialization = graph_transform_prepass.resyncAfterConstMaterialization;
     pub const resyncModuleMetadataAfterConstMaterializationRetainingGraph = graph_transform_prepass.resyncAfterConstMaterializationRetainingGraph;
     pub const resyncModuleMetadataAfterConstMaterializationRetainingMinifiedGraph = graph_transform_prepass.resyncAfterConstMaterializationRetainingMinifiedGraph;
-    pub const resyncModuleMetadataAfterNodeBufferCapabilityFoldRetainingGraph = graph_transform_prepass.resyncAfterNodeBufferCapabilityFoldRetainingGraph;
-    pub const resyncModuleMetadataAfterAstMutation = graph_transform_prepass.resyncAfterAstMutation;
     pub const materializeFromCachedAst = graph_transform_prepass.materializeFromCachedAst;
     const graph_package_info = @import("graph/package_info.zig");
     pub const lookupPkgInfo = graph_package_info.lookupPkgInfo;
@@ -87,6 +84,9 @@ pub const ModuleGraph = struct {
     const isPackageTypeModule = graph_package_info.isPackageTypeModule;
 
     allocator: std.mem.Allocator,
+    /// Actual installed runtime/source domains; refreshed only at graph
+    /// handoff or prepared same-graph publication, never by witness capture.
+    output_runtime_registry: @import("../semantic/output_runtime_registration.zig").Registry = .{},
     /// PR-Z4: Module path/resolve_dir 전용 arena. M8 측정에서 add_module alloc 의
     /// 69% (3.1ms) 가 path/dir dupe. arena 로 alloc 비용 cheap + graph deinit 시 일괄
     /// 해제 (path_to_module key free loop 회피).

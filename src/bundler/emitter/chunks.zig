@@ -55,8 +55,11 @@ const RunBeforeMainCrossImport = struct {
 const RunBeforeMainExport = struct { owner: *const Module, symbol: SymbolID };
 
 fn checkedEdgeProvider(l: *const Linker, sym: chunk_mod.CrossChunkSym) !cross_export.Provider {
-    const hint: cross_export.Hint = if (l.isSharedNamespaceVar(sym.canonical_module, sym.name)) .shared_namespace else .ordinary_export;
-    const provider = sym.provider orelse try cross_export.Provider.capture(l, sym.canonical_module, sym.name, hint);
+    const provider = sym.provider orelse return error.MissingCrossChunkProvider;
+    if (sym.namespace_output) |expected| {
+        const actual = (try provider.namespaceOutputRef(l)) orelse return error.InvalidCrossChunkExport;
+        if (!std.meta.eql(actual, expected)) return error.InvalidCrossChunkExport;
+    }
     if (provider.owner.index.toU32() != sym.canonical_module or !std.mem.eql(u8, provider.public_name, sym.name)) return error.InvalidCrossChunkExport;
     try provider.validate(l);
     return provider;
@@ -169,7 +172,9 @@ fn appendCssLinkPrologue(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), 
 /// cross-chunk 가 발생하지 않으므로 export 명 그대로.
 fn crossChunkBindingName(linker: ?*Linker, sym: chunk_mod.CrossChunkSym) ![]const u8 {
     if (linker) |l| {
-        _ = try checkedEdgeProvider(l, sym);
+        const provider = try checkedEdgeProvider(l, sym);
+        if (try provider.namespaceOutputRef(l)) |reference|
+            return l.sharedNamespaceEmittedName(reference) orelse error.SharedNamespaceOwnerMissing;
         // #4101 전역 일관 네이밍: cross-chunk 심볼은 provider/consumer 가 같은 전역 이름을
         // 써야 한다. 전역 맵에 있으면 그걸 우선(같은 이름 다른 모듈 `v`/`v$1` 구분).
         if (l.getCrossChunkGlobalName(sym.canonical_module, sym.name)) |g| return g;
@@ -4192,9 +4197,8 @@ fn emitLazyEntryExportAll(
             if (chunk_mod.nsReExportTarget(graph, mod_idx, eb.exported_name)) |target| {
                 const target_index = target.toU32();
                 _ = try l.ensureSharedNsVar(target);
-                const shared = l.ns_shared_inline_cache.get(target_index) orelse return error.SharedNamespaceOwnerMissing;
-                const ns_local = shared.var_name;
-                if (l.getSharedNamespaceGlobalName(target_index, ns_local)) |global_name| {
+                const output_ref = l.sharedNamespaceOutputRef(target) orelse return error.SharedNamespaceOwnerMissing;
+                if (l.getSharedNamespaceGlobalName(output_ref)) |global_name| {
                     const owner_seen = try seen_namespace_owners.getOrPut(allocator, target_index);
                     if (owner_seen.found_existing) continue;
                     const key_seen = try seen.getOrPut(allocator, global_name);
@@ -5267,7 +5271,7 @@ test "PM plain import alias actual source SID selector metadata and body tuple" 
     }
     try std.testing.expect(!callee.isNone());
     const resolved = linker.getResolvedBinding(module.index.toU32(), binding.local_span) orelse return error.MissingAliasResolved;
-    const sym = chunk_mod.CrossChunkSym{ .canonical_module = resolved.canonical.module_index.toU32(), .name = resolved.canonical.export_name };
+    const sym = chunk_mod.CrossChunkSym{ .canonical_module = resolved.canonical.module_index.toU32(), .name = resolved.canonical.export_name, .provider = try @import("../cross_chunk_export.zig").Provider.capture(&linker, resolved.canonical.module_index.toU32(), resolved.canonical.export_name, .ordinary_export) };
     const actual_binding = try crossChunkBindingName(&linker, sym);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -5444,7 +5448,7 @@ test "PM barrel import target actual source canonical selected export tuple" {
     const provider = graph.getModule(canonical.module_index) orelse return error.MissingBarrelProvider;
     const eb = provider.findExportBinding(canonical.export_name) orelse return error.MissingBarrelProviderBinding;
     const provider_sid = provider.exportBindingSemanticIndex(eb.*) orelse return error.MissingBarrelProviderSID;
-    const sym = chunk_mod.CrossChunkSym{ .canonical_module = canonical.module_index.toU32(), .name = canonical.export_name };
+    const sym = chunk_mod.CrossChunkSym{ .canonical_module = canonical.module_index.toU32(), .name = canonical.export_name, .provider = try @import("../cross_chunk_export.zig").Provider.capture(&linker, canonical.module_index.toU32(), canonical.export_name, .ordinary_export) };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -5665,7 +5669,7 @@ test "quoted ordinary consumer preserves no rename and rejects invalid override 
     const binding = module.export_bindings[0];
     var linker = Linker.init(std.testing.allocator, &graph, .cjs);
     defer linker.deinit();
-    const symbol = chunk_mod.CrossChunkSym{ .canonical_module = module.index.toU32(), .name = binding.exported_name };
+    const symbol = chunk_mod.CrossChunkSym{ .canonical_module = module.index.toU32(), .name = binding.exported_name, .provider = try @import("../cross_chunk_export.zig").Provider.capture(&linker, module.index.toU32(), binding.exported_name, .ordinary_export) };
     try std.testing.expectEqualStrings("value", try crossChunkBindingName(&linker, symbol));
     const known = SymbolID.make(module.index, module.exportBindingSemanticIndex(binding).?);
     try linker.rename_table.put(std.testing.allocator, known, "\"not a binding\"");
@@ -5890,4 +5894,34 @@ test "cross chunk default snapshots cannot claim a lowered named declaration ref
     binding.local_symbol_node = operand;
     binding.has_default_export_facade = false;
     try std.testing.expectError(error.InvalidCrossChunkExport, cross_export.Provider.capture(&linker, module.index.toU32(), "default", .ordinary_export));
+}
+test "shared namespace output consumer selects final alias by known output reference" {
+    const a = std.testing.allocator;
+    const helpers = @import("../test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "provider.mjs", "export const a=3;export const b=7;");
+    const path = try helpers.absPath(&tmp, "provider.mjs");
+    defer a.free(path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{path});
+    var linker = Linker.init(a, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    const module = graph.getModule(graph.path_to_module.get(path).?).?;
+    const initial = try linker.ensureSharedNsVar(module.index);
+    const reference = linker.sharedNamespaceOutputRef(module.index).?;
+    const provider = try @import("../cross_chunk_export.zig").Provider.capture(&linker, module.index.toU32(), initial, .{ .shared_namespace = reference });
+    const edge: chunk_mod.CrossChunkSym = .{ .canonical_module = module.index.toU32(), .name = initial, .provider = provider, .namespace_output = reference };
+    try std.testing.expect(try linker.assignSharedNamespaceGlobalName(reference, "chosen_namespace_alias"));
+    try std.testing.expect(linker.getCrossChunkGlobalName(module.index.toU32(), initial) == null);
+    try std.testing.expectEqualStrings("chosen_namespace_alias", try crossChunkBindingName(&linker, edge));
+    linker.clearCrossChunkGlobalNames();
+    try std.testing.expectEqualStrings(initial, try crossChunkBindingName(&linker, edge));
+    var missing = edge;
+    missing.provider = null;
+    try std.testing.expectError(error.MissingCrossChunkProvider, crossChunkBindingName(&linker, missing));
 }

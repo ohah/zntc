@@ -738,6 +738,8 @@ pub fn ES2017(comptime Transformer: type) type {
         /// await_expression은 es2015_generator의 collectOperations에서 yield처럼 처리됨.
         pub fn lowerAsyncToStateMachine(self: *Transformer, source_owner: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const GenMod = es2015_generator.ES2015Generator(Transformer);
+            const source_boundary = try GenMod.captureGeneratorSource(self, source_owner);
+            defer if (source_boundary) |captured| self.allocator.free(captured.heritages);
             const e = node.data.extra;
             const span = node.span;
 
@@ -821,7 +823,7 @@ pub fn ES2017(comptime Transformer: type) type {
             // __async는 fn.apply()로 함수를 호출하므로 iterator를 직접 전달 불가.
             // function() { return __generator(cb); } 로 감싸야 함.
             const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen.call, span);
-            try GenMod.bindWrappedStateMachine(self, source_owner, gen_wrapper_func, gen, &saved_sm_temps, sm_result.hoisted_temps.items, span);
+            try GenMod.bindWrappedStateMachine(self, source_owner, gen_wrapper_func, gen, &saved_sm_temps, sm_result.hoisted_temps.items, span, source_boundary);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper_func, span);
 
             const return_stmt = try self.ast.addNode(.{
@@ -888,6 +890,8 @@ pub fn ES2017(comptime Transformer: type) type {
         /// params lowering은 Pass 2에서 자동 적용된다.
         pub fn lowerAsyncArrowToStateMachine(self: *Transformer, source_owner: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const GenMod = es2015_generator.ES2015Generator(Transformer);
+            const source_boundary = try GenMod.captureGeneratorSource(self, source_owner);
+            defer if (source_boundary) |captured| self.allocator.free(captured.heritages);
             const e = node.data.extra;
             const span = node.span;
 
@@ -964,7 +968,7 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const gen = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
             const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen.call, span);
-            try GenMod.bindWrappedStateMachine(self, source_owner, gen_wrapper_func, gen, &saved_sm_temps, sm_result.hoisted_temps.items, span);
+            try GenMod.bindWrappedStateMachine(self, source_owner, gen_wrapper_func, gen, &saved_sm_temps, sm_result.hoisted_temps.items, span, source_boundary);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper_func, span);
 
             // function body 구성: return __async(...)
@@ -1366,6 +1370,7 @@ test "async generator kept parameter engines survive private initializer clones"
     try std.testing.expect(native.term == .exited and native.term.exited == 0);
     for ([_]@import("compat.zig").ESTarget{ .es5, .es2015, .es2017 }) |target| {
         for ([_]bool{ false, true }) |minify| {
+            errdefer std.debug.print("private initializer cell target={s} minify={}\n", .{ @tagName(target), minify });
             const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
                 .unsupported = @import("compat.zig").fromESTarget(target),
                 .minify_identifiers = minify,

@@ -11,6 +11,10 @@ const Scope = @import("../../semantic/scope.zig").Scope;
 const prefix = "var buffer=require('buffer');var B=buffer.Buffer;";
 const condition = "B.from&&B.alloc&&B.allocUnsafe&&B.allocUnsafeSlow";
 
+test {
+    _ = @import("../graph/finalize.zig");
+}
+
 const Fixture = struct {
     module: Module,
     function: NodeIndex,
@@ -58,6 +62,14 @@ const Fixture = struct {
         module.semantic = .{ .symbols = analyzer.symbols, .scopes = analyzer.scopes.items, .scope_maps = analyzer.scope_maps.items, .scope_owner_map = analyzer.scope_owner_map, .symbol_ids = analyzer.symbol_ids.items, .exported_names = analyzer.exported_names, .unresolved_references = analyzer.unresolved_references, .references = analyzer.references.items };
         module.cjs_wrapper_exports_parameter_symbol = exports_id;
         module.cjs_wrapper_module_parameter_symbol = module_id;
+        // This fixture is explicitly the Node host realm with no resolver
+        // overrides. Capture literal anchors through the real AST scanner.
+        const imports = try @import("../import_scanner.zig").extractImportsWithCjsDetectionAndDefines(a, &module.ast.?, &.{});
+        module.import_records = imports.records;
+        for (module.import_records) |*record| {
+            if (record.kind == .require and
+                (std.mem.eql(u8, record.specifier, "buffer") or std.mem.eql(u8, record.specifier, "node:buffer"))) record.is_external = true;
+        }
         var function: NodeIndex = .none;
         var binding: NodeIndex = .none;
         for (parser.ast.nodes.items, 0..) |node, raw| {
@@ -178,7 +190,7 @@ test "Buffer direct var alternate keeps the hoisted binding and removes one exac
         .wrap_kinds_finalized = true,
         .transform_options_base = .{ .minify_syntax = false },
     };
-    try std.testing.expect(try prepass.resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+    try std.testing.expect(try prepass.resyncLegacyBufferGraphForTest(
         &context,
         &f.module,
         a,
@@ -209,11 +221,16 @@ test "Buffer fallback functions retain exact declaration identity at ten actual 
         const old_function_scope = f.function_scope;
         const old_count = f.module.semantic.?.symbols.items[f.sid].reference_count;
         var removed: std.ArrayListUnmanaged(NodeIndex) = .empty;
-        const folded = try f.fold(a, &removed);
-        if (!folded) std.debug.print("Buffer fallback case={d} failed its pre-write proof\n", .{index});
-        try std.testing.expect(folded);
+        const plan = (try patterns.prepareLegacyNodeBufferCapabilityPlanForTest(a, &f.module)) orelse {
+            std.debug.print("Buffer fallback case={d} failed its pre-write proof\n", .{index});
+            return error.MissingBufferPlan;
+        };
+        const folded = (try plan.cloneLegacyFoldForTest(&f.module, a)).?;
+        try removed.appendSlice(a, folded.removed_nodes);
         const context = .{ .allocator = a, .defines = &[_]@import("../../parser/scan_results.zig").DefineEntry{}, .wrapper_symbols_registered = false, .wrap_kinds_finalized = true, .transform_options_base = .{ .minify_syntax = false } };
-        try std.testing.expect(try prepass.resyncAfterNodeBufferCapabilityFoldRetainingGraph(&context, &f.module, a, removed.items));
+        var prepared = (try prepass.prepareLegacyBufferFoldForTest(&context, &f.module, a, &plan)) orelse return error.MissingBufferPreparation;
+        defer prepared.discard();
+        try std.testing.expect(prepared.publish(&f.module));
         const sem = &f.module.semantic.?;
         try std.testing.expectEqual(@as(?u32, f.sid), sem.symbol_ids[@backingInt(f.binding)]);
         try std.testing.expectEqual(old_scope, sem.symbols.items[f.sid].scope_id);
@@ -249,7 +266,7 @@ test "async Buffer fallback declaration also stays on the retained graph" {
         .wrap_kinds_finalized = true,
         .transform_options_base = .{ .minify_syntax = false },
     };
-    try std.testing.expect(try prepass.resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+    try std.testing.expect(try prepass.resyncLegacyBufferGraphForTest(
         &context,
         &f.module,
         a,
@@ -660,7 +677,7 @@ test "Buffer named constructor export prunes the actual dead fallback declaratio
 
 test "Buffer export fact preflight validates kept and constructor dependency read tuples atomically" {
     for ([_]bool{ false, true }) |dependency_read| {
-        for (0..6) |mutation| {
+        for (0..10) |mutation| {
             var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
             defer arena.deinit();
             const a = arena.allocator();
@@ -706,6 +723,16 @@ test "Buffer export fact preflight validates kept and constructor dependency rea
                     duplicate[rows.len] = rows[index];
                     sem.references = duplicate;
                 },
+                // Four additional guards from peer ff9bb5c11. These are
+                // eight new poison inputs across two actual read classes;
+                // the original six cases remain the original cohort.
+                6 => rows[index].flags.read = false,
+                7 => {
+                    rows[index].flags.read = false;
+                    rows[index].flags.write = true;
+                },
+                8 => rows[index].declaration_node_index = target,
+                9 => rows[index].flags.value_as_type = true,
                 else => unreachable,
             }
             const malformed = try a.dupe(Reference, sem.references);
@@ -859,9 +886,8 @@ test "Buffer dynamic local aliases keep both runtime branches and their original
             const result = try bundler.bundle(std.testing.io);
             defer result.deinit(std.testing.allocator);
             try std.testing.expect(!result.hasErrors());
-            // `with` remains on its existing unsafe prepass boundary when
-            // syntax/identifier minify runs. The capability veto adds no resync.
-            const expected_resyncs: u32 = if (case.with_boundary and minify) 1 else 0;
+            // Dynamic lookup keeps its veto without replacing the source graph.
+            const expected_resyncs: u32 = 0;
             if (expected_resyncs != profile.count(.graph_resync_semantic))
                 std.debug.print("Buffer dynamic profile case={d} min={any} expected={d} actual={d}\n", .{ index, minify, expected_resyncs, profile.count(.graph_resync_semantic) });
             try std.testing.expectEqual(expected_resyncs, profile.count(.graph_resync_semantic));
@@ -925,4 +951,559 @@ test "Buffer nested eval marks the program while its outer alias has zero static
     const id = sem.symbol_ids[@backingInt(binding)].?;
     try std.testing.expectEqual(@as(u32, 0), sem.symbols.items[id].write_count);
     try std.testing.expect(!patterns.nodeBufferCapabilityValuesAreStable(&f.module));
+}
+
+test "Buffer transaction failed preparation preserves original semantic publication" {
+    var failures: usize = 0;
+    for (0..128) |fail_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var f = try Fixture.init(a, sources[0]);
+        var removed: std.ArrayListUnmanaged(NodeIndex) = .empty;
+        try std.testing.expect(try f.fold(a, &removed));
+        const before = f.module.semantic.?;
+        var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = fail_index });
+        const context = .{ .allocator = a, .defines = &[_]@import("../../parser/scan_results.zig").DefineEntry{}, .wrapper_symbols_registered = false, .wrap_kinds_finalized = true, .transform_options_base = .{ .minify_syntax = false } };
+        _ = prepass.resyncLegacyBufferGraphForTest(&context, &f.module, failing.allocator(), removed.items) catch {
+            failures += 1;
+            try std.testing.expectEqual(@intFromPtr(before.symbol_ids.ptr), @intFromPtr(f.module.semantic.?.symbol_ids.ptr));
+            try std.testing.expectEqual(@intFromPtr(before.references.ptr), @intFromPtr(f.module.semantic.?.references.ptr));
+            continue;
+        };
+    }
+    try std.testing.expect(failures > 0);
+}
+
+test "Buffer statement info preparation cleans only initialized rows on OOM" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f = try Fixture.init(a, sources[0]);
+    const sem = f.module.semantic.?;
+    var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = 1 });
+    try std.testing.expectError(error.OutOfMemory, @import("../stmt_info.zig").buildFromSemantic(failing.allocator(), &f.module.ast.?, sem.symbols.items, sem.scopes, sem.symbol_ids, sem.references, &sem.unresolved_references, false, false));
+}
+
+test "Buffer transaction actual owner plan stages AST graph metadata before commit" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const helpers = @import("../test_helpers.zig");
+    try helpers.writeFile(tmp.dir, "entry.cjs", sources[0]);
+    const entry = try helpers.absPath(&tmp, "entry.cjs");
+    defer std.testing.allocator.free(entry);
+    try helpers.writeFile(tmp.dir, "sibling.mjs", "export const sibling=1;");
+    const sibling_path = try helpers.absPath(&tmp, "sibling.mjs");
+    defer std.testing.allocator.free(sibling_path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+    defer cache.deinit();
+    var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{ entry, sibling_path });
+    try graph.registerWrapperSymbols();
+    var modules = graph.modulesIterator();
+    var actual: ?*Module = null;
+    var sibling: ?*const Module = null;
+    while (modules.next()) |module| {
+        if (std.mem.eql(u8, module.path, entry)) actual = @constCast(module);
+        if (std.mem.eql(u8, module.path, sibling_path)) sibling = module;
+    }
+    const module = actual orelse return error.MissingEntry;
+    const sibling_module = sibling orelse return error.MissingSibling;
+    const runtime_source = (try @import("../../semantic/output_runtime_witness.zig").capture(a, &graph, module)) orelse return error.MissingRuntimeSource;
+    try std.testing.expect(runtime_source.validateTarget(module));
+    const coverage_mod = @import("../../semantic/output_runtime_coverage.zig");
+    const coverage_proof = coverage_mod.forTarget(.{ .source = &runtime_source, .module = module }) orelse return error.MissingRuntimeCoverageProof;
+    for (runtime_source.entries) |runtime_entry| try std.testing.expect(coverage_proof.hasOutputBinding(@backingInt(runtime_entry.symbol)));
+    try std.testing.expect(!coverage_proof.hasOutputBinding(@intCast(module.semantic.?.symbols.items.len)));
+    try std.testing.expectEqual(module.index, coverage_proof.moduleIndex().?);
+    try std.testing.expectEqual(runtime_source.wrapper.?.scope, coverage_proof.wrapper().?.scope);
+    const wrapper_ids = [_]@import("../../semantic/symbol.zig").SymbolId{ module.cjs_wrapper_exports_parameter_symbol.?, module.cjs_wrapper_module_parameter_symbol.? };
+    for (wrapper_ids) |sid| {
+        var reads: u32 = 0;
+        var writes: u32 = 0;
+        for (module.semantic.?.references) |reference| {
+            if (reference.symbol_id != sid or reference.flags.declare) continue;
+            try std.testing.expectEqual(@as(?u32, @backingInt(sid)), module.semantic.?.symbol_ids[@backingInt(reference.node_index)]);
+            reads += @intFromBool(reference.flags.read);
+            writes += @intFromBool(reference.flags.write);
+        }
+        try std.testing.expectEqual(module.semantic.?.symbols.items[@backingInt(sid)].reference_count, reads);
+        try std.testing.expectEqual(module.semantic.?.symbols.items[@backingInt(sid)].write_count, writes);
+    }
+    // A projection is a target only. Its unregistered owner, scope or known
+    // role cannot manufacture the authority captured from the installed graph.
+    var foreign_module = module.*;
+    const foreign_semantic = module.semantic.?;
+    foreign_module.semantic = foreign_semantic;
+    foreign_module.semantic.?.owner_token = .unassigned;
+    try std.testing.expect(!runtime_source.validateTarget(&foreign_module));
+    foreign_module = module.*;
+    foreign_module.semantic.?.scopes = sibling_module.semantic.?.scopes;
+    try std.testing.expect(!runtime_source.validateTarget(&foreign_module));
+    foreign_module = module.*;
+    var forged_domain_source = runtime_source;
+    forged_domain_source.module = &foreign_module;
+    forged_domain_source.ast = &foreign_module.ast.?;
+    try std.testing.expect(!forged_domain_source.validateTarget(&foreign_module));
+    const actual_owner = module.semantic.?.owner_token;
+    module.semantic.?.owner_token = sibling_module.semantic.?.owner_token;
+    var forged_owner_source = runtime_source;
+    forged_owner_source.owner = module.semantic.?.owner_token;
+    try std.testing.expect(!forged_owner_source.validateTarget(module));
+    module.semantic.?.owner_token = actual_owner;
+    try std.testing.expect(runtime_source.validateTarget(module));
+    const witness_mod = @import("../../semantic/output_runtime_witness.zig");
+    const poisoned_entries = try a.dupe(witness_mod.Entry, runtime_source.entries);
+    var poisoned_source = runtime_source;
+    poisoned_source.entries = poisoned_entries;
+    const original_entry = poisoned_entries[0];
+    poisoned_entries[0].before.kind = .variable_let;
+    try std.testing.expect(!poisoned_source.validateTarget(module));
+    poisoned_entries[0] = original_entry;
+    poisoned_entries[0].role = @fromBackingInt(@as(u32, 999));
+    try std.testing.expect(!poisoned_source.validateTarget(module));
+    poisoned_entries[0] = original_entry;
+    for (poisoned_entries, 0..) |entry_witness, entry_index| {
+        if (entry_witness.role != .module_require) continue;
+        const raw = @backingInt(entry_witness.symbol);
+        const before = module.semantic.?.symbols.items[raw];
+        module.semantic.?.symbols.items[raw].synthetic_kind = .esm_init;
+        poisoned_entries[entry_index].before = module.semantic.?.symbols.items[raw];
+        try std.testing.expect(!poisoned_source.validateTarget(module));
+        module.semantic.?.symbols.items[raw] = before;
+        poisoned_entries[entry_index] = runtime_source.entries[entry_index];
+    }
+    if (poisoned_entries.len > 1) {
+        poisoned_entries[1] = original_entry;
+        try std.testing.expect(!poisoned_source.validateTarget(module));
+        poisoned_entries[1] = runtime_source.entries[1];
+    }
+    poisoned_source.owner = .unassigned;
+    try std.testing.expect(!poisoned_source.validateTarget(module));
+    const wrapper_scope = runtime_source.wrapper.?.scope;
+    const scopes = @constCast(module.semantic.?.scopes);
+    const original_parent = scopes[0].parent;
+    scopes[0].parent = .none;
+    try std.testing.expect(!runtime_source.validateTarget(module));
+    scopes[0].parent = original_parent;
+    const map = @constCast(&module.semantic.?.scope_maps[wrapper_scope.toIndex()]);
+    const exports_map = map.get("exports").?;
+    map.putAssumeCapacity("exports", @backingInt(wrapper_ids[1]));
+    try std.testing.expect(!runtime_source.validateTarget(module));
+    map.putAssumeCapacity("exports", exports_map);
+    try std.testing.expect(runtime_source.validateTarget(module));
+
+    const before_nodes = try a.dupe(ast_mod.Node, module.ast.?.nodes.items);
+    const before_ids = module.semantic.?.symbol_ids;
+    const plan = (try patterns.prepareNodeBufferCapabilityPlan(a, module)) orelse return error.MissingBufferPlan;
+    try std.testing.expect(plan.isCurrent(module));
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(before_nodes), std.mem.sliceAsBytes(module.ast.?.nodes.items));
+    // A removed-node claim cannot consume an actual retained reference.
+    const staged_ast = (try plan.cloneForPublication(module, a)).?;
+    const staged_live = try @import("../../parser/ast_walk.zig").collectReachableNodeIndices(a, &staged_ast);
+    var retained_read: ?NodeIndex = null;
+    for (module.semantic.?.references) |reference| {
+        if (!reference.flags.read or reference.flags.declare) continue;
+        const raw = @backingInt(reference.node_index);
+        if (staged_ast.nodes.items[raw].tag != .identifier_reference) continue;
+        if (std.mem.indexOfScalar(u32, staged_live, raw) == null) continue;
+        retained_read = reference.node_index;
+        break;
+    }
+    const forged_removed = try a.alloc(NodeIndex, plan.removed_nodes.len + 1);
+    @memcpy(forged_removed[0..plan.removed_nodes.len], plan.removed_nodes);
+    forged_removed[plan.removed_nodes.len] = retained_read orelse return error.MissingRetainedRead;
+    var forged_plan = plan;
+    forged_plan.removed_nodes = forged_removed;
+    try std.testing.expect((try prepass.prepareNodeBufferCapabilityFold(&graph, module, a, &forged_plan)) == null);
+    try std.testing.expect(plan.isCurrent(module));
+
+    // An ordinary removed row does not grant dynamic lookup authority.
+    var retired_function_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (plan.retirements) |function| {
+        const nodes = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, &module.ast.?, function.owner);
+        for (nodes) |raw| try retired_function_nodes.put(a, raw, {});
+    }
+    var ordinary_removed: ?NodeIndex = null;
+    for (module.semantic.?.references) |reference| {
+        if (reference.flags.declare or retired_function_nodes.contains(@backingInt(reference.node_index))) continue;
+        if (std.mem.indexOfScalar(NodeIndex, plan.removed_nodes, reference.node_index) == null) continue;
+        const context = module.semantic.?.node_scope_provenance.get(reference.node_index) orelse continue;
+        if (context.source_external != null or context.external_import != null or context.with_environment) continue;
+        ordinary_removed = reference.node_index;
+        break;
+    }
+    const ordinary_node = ordinary_removed orelse return error.MissingOrdinaryRemovedRead;
+    const provenance = &module.semantic.?.node_scope_provenance;
+    const original_context = provenance.get(ordinary_node).?;
+    var forged_context = original_context;
+    forged_context.with_environment = true;
+    provenance.getPtr(ordinary_node).?.* = forged_context;
+    try std.testing.expect((try prepass.prepareNodeBufferCapabilityFold(&graph, module, a, &plan)) == null);
+    provenance.getPtr(ordinary_node).?.* = original_context;
+    var allocation_failures: usize = 0;
+    var allocation_success = false;
+    for (0..1024) |fail_index| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        var scratch = std.heap.ArenaAllocator.init(failing.allocator());
+        defer scratch.deinit();
+        var retry = prepass.prepareNodeBufferCapabilityFold(&graph, module, scratch.allocator(), &plan) catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            allocation_failures += 1;
+            try std.testing.expect(plan.isCurrent(module));
+            try std.testing.expectEqual(@intFromPtr(before_ids.ptr), @intFromPtr(module.semantic.?.symbol_ids.ptr));
+            continue;
+        };
+        if (retry) |*candidate| candidate.discard() else return error.MissingBufferRetry;
+        allocation_success = true;
+        break;
+    }
+    try std.testing.expect(allocation_failures > 0);
+    try std.testing.expect(allocation_success);
+    try std.testing.expect(plan.isCurrent(module));
+    try std.testing.expectEqual(@intFromPtr(before_ids.ptr), @intFromPtr(module.semantic.?.symbol_ids.ptr));
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(before_nodes), std.mem.sliceAsBytes(module.ast.?.nodes.items));
+    var prepared = (try prepass.prepareNodeBufferCapabilityFold(&graph, module, a, &plan)) orelse return error.MissingBufferPreparation;
+    defer prepared.discard();
+    try std.testing.expect(plan.isCurrent(module));
+    try std.testing.expectEqual(@intFromPtr(before_ids.ptr), @intFromPtr(module.semantic.?.symbol_ids.ptr));
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(before_nodes), std.mem.sliceAsBytes(module.ast.?.nodes.items));
+    var foreign = module.*;
+    try std.testing.expect(!plan.isCurrent(&foreign));
+    try std.testing.expect((try plan.cloneForPublication(&foreign, a)) == null);
+    try std.testing.expect(prepared.publish(module));
+    try std.testing.expect(!plan.isCurrent(module));
+    try std.testing.expect(module.prebuilt_stmt_info != null);
+    try std.testing.expectEqual(@as(usize, 1), plan.exports.len);
+    try std.testing.expect(patterns.foldedNodeBufferExportIsCurrent(module, &module.ast.?, plan.exports[0].statement, plan.exports[0]));
+}
+
+test "Buffer actual dependency origin records distinguish host aliases and local require" {
+    for (0..5) |variant| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const helpers = @import("../test_helpers.zig");
+        const source = if (variant == 3)
+            "function require(){return {Buffer:{from:null}}}var buffer=require('buffer');var B=buffer.Buffer;if(B.from&&B.alloc&&B.allocUnsafe&&B.allocUnsafeSlow){module.exports=buffer}else{exports.Buffer=SafeBuffer}function SafeBuffer(){}"
+        else if (variant == 4)
+            "var buffer=require('node:buffer');var B=buffer.Buffer;if(B.from&&B.alloc&&B.allocUnsafe&&B.allocUnsafeSlow){module.exports=buffer}else{exports.Buffer=SafeBuffer}function SafeBuffer(){}"
+        else
+            "var buffer=require('buffer');var B=buffer.Buffer;if(B.from&&B.alloc&&B.allocUnsafe&&B.allocUnsafeSlow){module.exports=buffer}else{exports.Buffer=SafeBuffer}function SafeBuffer(){}";
+        try helpers.writeFile(tmp.dir, "entry.cjs", source);
+        try helpers.writeFile(tmp.dir, "fake.cjs", "function fake(){return fake}fake.Buffer={from:null};module.exports=fake;");
+        const entry = try helpers.absPath(&tmp, "entry.cjs");
+        defer std.testing.allocator.free(entry);
+        const fake = try helpers.absPath(&tmp, "fake.cjs");
+        defer std.testing.allocator.free(fake);
+        const alias = [_]@import("../types.zig").AliasEntry{.{ .from = "buffer", .to = fake }};
+        var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{
+            .platform = .node,
+            .alias = if (variant == 1) &alias else &.{},
+            .external_alias = if (variant == 2) &alias else &.{},
+        });
+        defer cache.deinit();
+        var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        try graph.build(std.testing.io, &.{entry});
+        var modules = graph.modulesIterator();
+        var entry_count: usize = 0;
+        while (modules.next()) |module| {
+            if (!std.mem.eql(u8, module.path, entry)) continue;
+            entry_count += 1;
+            std.debug.print("BUFFER_DEPENDENCY variant={d} records={d}\n", .{ variant, module.import_records.len });
+            for (module.import_records) |record| {
+                const target = graph.getModule(record.resolved);
+                std.debug.print("BUFFER_DEPENDENCY_RECORD variant={d} kind={s} literal={d} call={d} external={} resolved={d} emit={s} target={s} target_external={}\n", .{
+                    variant,                                  @tagName(record.kind),        @backingInt(record.source_node), @backingInt(record.call_node),
+                    record.is_external,                       @backingInt(record.resolved), record.externalName(),           if (target) |m| m.path else "none",
+                    if (target) |m| m.is_external else false,
+                });
+                try std.testing.expect(!record.source_node.isNone());
+                try std.testing.expect(record.call_node.isNone());
+            }
+            if (module.ast) |*ast| if (module.semantic) |sem| {
+                var object_count: usize = 0;
+                for (ast.nodes.items, 0..) |node, raw| {
+                    if (node.tag == .variable_declarator and ast.hasExtra(node.data.extra, 2)) {
+                        const initializer = ast.readExtraNode(node.data.extra, 2);
+                        const binding = ast.readExtraNode(node.data.extra, 0);
+                        if (!initializer.isNone() and ast.getNode(initializer).tag == .call_expression) {
+                            const sid = sem.symbol_ids[@backingInt(binding)].?;
+                            const builtin = patterns.nodeBufferObjectImportIsBuiltin(module, ast, sid);
+                            try std.testing.expectEqual(variant == 0 or variant == 1 or variant == 4, builtin);
+                            object_count += 1;
+                        }
+                    }
+                    if (node.tag != .call_expression or !ast.hasExtra(node.data.extra, 0)) continue;
+                    const callee = ast.readExtraNode(node.data.extra, 0);
+                    if (callee.isNone() or @backingInt(callee) >= ast.nodes.items.len or ast.getNode(callee).tag != .identifier_reference) continue;
+                    if (!std.mem.eql(u8, ast.identifierNameText(ast.getNode(callee)), "require")) continue;
+                    std.debug.print("BUFFER_DEPENDENCY_CALLEE variant={d} call={d} callee={d} sid={any} unresolved={}\n", .{ variant, raw, @backingInt(callee), sem.symbol_ids[@backingInt(callee)], sem.unresolved_references.contains("require") });
+                }
+                try std.testing.expectEqual(@as(usize, 1), object_count);
+                const rescanned = try @import("../import_scanner.zig").extractImportsWithCjsDetectionAndDefines(module.parse_arena.?.allocator(), ast, &.{});
+                try std.testing.expectEqual(module.import_records.len, rescanned.records.len);
+                for (module.import_records, rescanned.records) |initial, refreshed| {
+                    try std.testing.expectEqual(initial.source_node, refreshed.source_node);
+                    try std.testing.expect(refreshed.call_node.isNone());
+                }
+            };
+        }
+        try std.testing.expectEqual(@as(usize, 1), entry_count);
+    }
+}
+
+test "Buffer registered domain COW publication rejects foreign data and rolls back OOM" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const helpers = @import("../test_helpers.zig");
+    try helpers.writeFile(tmp.dir, "entry.cjs", sources[0]);
+    const entry = try helpers.absPath(&tmp, "entry.cjs");
+    defer std.testing.allocator.free(entry);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+    defer cache.deinit();
+    var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const module = @constCast(graph.getModule(@fromBackingInt(@as(u32, 0))).?);
+    const registration = @import("../../semantic/output_runtime_registration.zig");
+    var warmup_publications: usize = 0;
+    while (graph.output_runtime_registry.backings.available >= 8 and warmup_publications < 8) : (warmup_publications += 1) {
+        var warm_candidate = module.*;
+        warm_candidate.ast = try ast_mod.Ast.cloneForTransformer(&module.ast.?, a);
+        var warm_editor = try module.semantic.?.beginEdit(a, &warm_candidate.ast.?);
+        warm_candidate.semantic.?.applyEdit(try warm_editor.finish());
+        if (warm_candidate.transform_cache) |*cached| cached.symbol_ids = warm_candidate.semantic.?.symbol_ids;
+        const warm_prepared = (try registration.preparePublication(a, &graph, module, &warm_candidate)) orelse return error.MissingWarmDomain;
+        try std.testing.expect(warm_prepared.isCurrent());
+        module.* = warm_candidate;
+        warm_prepared.publishAssumePrepared();
+    }
+    try std.testing.expect(graph.output_runtime_registry.backings.available < 8);
+    const before = graph.output_runtime_registry.lookup(module) orelse return error.MissingRuntimeDomain;
+    const original_ids = module.semantic.?.symbol_ids;
+    const original_nodes = module.ast.?.nodes.items;
+    const original_owner = module.semantic.?.owner_token;
+    var candidate = module.*;
+    candidate.ast = try ast_mod.Ast.cloneForTransformer(&module.ast.?, a);
+    var editor = try module.semantic.?.beginEdit(a, &candidate.ast.?);
+    candidate.semantic.?.applyEdit(try editor.finish());
+    if (candidate.transform_cache) |*cached| cached.symbol_ids = candidate.semantic.?.symbol_ids;
+    var foreign = candidate;
+    foreign.semantic.?.owner_token = .unassigned;
+    try std.testing.expect((try registration.preparePublication(a, &graph, module, &foreign)) == null);
+    try std.testing.expect(std.meta.eql(before, graph.output_runtime_registry.lookup(module).?));
+
+    // Natural preceding COW publications use the existing spare capacity.
+    // Fault the next real growth, not an assumed allocation at the first call.
+    const old_backing_count = graph.output_runtime_registry.backings.count();
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const real_allocator = graph.allocator;
+    graph.allocator = failing.allocator();
+    const failed = registration.preparePublication(a, &graph, module, &candidate);
+    graph.allocator = real_allocator;
+    try std.testing.expectError(error.OutOfMemory, failed);
+    try std.testing.expect(failing.has_induced_failure);
+    try std.testing.expectEqual(old_backing_count, graph.output_runtime_registry.backings.count());
+    try std.testing.expect(std.meta.eql(before, graph.output_runtime_registry.lookup(module).?));
+    try std.testing.expectEqual(@intFromPtr(original_ids.ptr), @intFromPtr(module.semantic.?.symbol_ids.ptr));
+    try std.testing.expectEqual(@intFromPtr(original_nodes.ptr), @intFromPtr(module.ast.?.nodes.items.ptr));
+    try std.testing.expectEqual(original_owner, module.semantic.?.owner_token);
+
+    const prepared = (try registration.preparePublication(a, &graph, module, &candidate)) orelse return error.MissingPreparedDomain;
+    try std.testing.expect(prepared.isCurrent());
+    try std.testing.expect(std.meta.eql(before, graph.output_runtime_registry.lookup(module).?));
+    module.* = candidate;
+    prepared.publishAssumePrepared();
+    const after = graph.output_runtime_registry.lookup(module) orelse return error.MissingPublishedDomain;
+    try std.testing.expect(after.matches(module));
+    try std.testing.expect(!std.meta.eql(before, after));
+    try std.testing.expectEqual(original_owner, after.owner);
+    try std.testing.expect(!prepared.isCurrent());
+    std.debug.print("BUFFER_REGISTERED_DOMAIN warmup_publications={d} real_capacity_oom=1 source_unchanged=1 retry_publish=1\n", .{warmup_publications});
+}
+
+test "Buffer production source plan rejects missing scopes without editing installed data" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const helpers = @import("../test_helpers.zig");
+    try helpers.writeFile(tmp.dir, "entry.cjs", sources[0]);
+    const entry = try helpers.absPath(&tmp, "entry.cjs");
+    defer std.testing.allocator.free(entry);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+    defer cache.deinit();
+    var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const module = @constCast(graph.getModule(@fromBackingInt(@as(u32, 0))).?);
+    try std.testing.expect((try patterns.prepareNodeBufferCapabilityPlan(a, module)) != null);
+    const nodes = try a.dupe(ast_mod.Node, module.ast.?.nodes.items);
+    const extras = try a.dupe(u32, module.ast.?.extra_data.items);
+    const ids = try a.dupe(?u32, module.semantic.?.symbol_ids);
+    const rows = try a.dupe(Reference, module.semantic.?.references);
+    const scope_before = module.semantic.?.scopes;
+    module.semantic.?.scopes = &.{};
+    try std.testing.expect((try patterns.prepareNodeBufferCapabilityPlan(a, module)) == null);
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(nodes), std.mem.sliceAsBytes(module.ast.?.nodes.items));
+    try std.testing.expectEqualSlices(u32, extras, module.ast.?.extra_data.items);
+    try std.testing.expectEqualSlices(?u32, ids, module.semantic.?.symbol_ids);
+    try std.testing.expectEqualSlices(Reference, rows, module.semantic.?.references);
+    try std.testing.expectEqual(@as(usize, 0), module.semantic.?.scopes.len);
+    module.semantic.?.scopes = scope_before;
+    try std.testing.expect((try patterns.prepareNodeBufferCapabilityPlan(a, module)) != null);
+}
+
+test "Buffer runtime coverage proof consumes actual registered binding roles only" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const helpers = @import("../test_helpers.zig");
+    try helpers.writeFile(tmp.dir, "entry.cjs", sources[0]);
+    const entry = try helpers.absPath(&tmp, "entry.cjs");
+    defer std.testing.allocator.free(entry);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+    defer cache.deinit();
+    var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const module = @constCast(graph.getModule(@fromBackingInt(@as(u32, 0))).?);
+    const source = (try @import("../../semantic/output_runtime_witness.zig").capture(a, &graph, module)) orelse return error.MissingRuntimeSource;
+    const coverage = @import("../../semantic/output_runtime_coverage.zig");
+    const proof = coverage.forTarget(.{ .source = &source, .module = module }) orelse return error.MissingRuntimeCoverageProof;
+    for (source.entries) |item| try std.testing.expect(proof.hasOutputBinding(@backingInt(item.symbol)));
+    try std.testing.expect(!proof.hasOutputBinding(@intCast(module.semantic.?.symbols.items.len)));
+    try std.testing.expectEqual(module.index, proof.moduleIndex().?);
+    try std.testing.expectEqual(source.wrapper.?.scope, proof.wrapper().?.scope);
+    const frames = @import("../../semantic/scope_frame_history.zig");
+    const wrapper = proof.wrapper().?;
+    const frame_index = try frames.validateAndIndex(a, &module.ast.?, module.semantic.?.scopes, &module.semantic.?.scope_owner_map, &module.semantic.?.scope_history, .{
+        .module_index = @backingInt(proof.moduleIndex().?),
+        .wrapper_scope = wrapper.scope,
+        .program_scope = @fromBackingInt(@as(u32, 0)),
+    });
+    try std.testing.expect(frame_index.valid);
+    try std.testing.expect(module.semantic.?.scope_history.events.len >= 2);
+    const no_permission = try frames.validateAndIndex(a, &module.ast.?, module.semantic.?.scopes, &module.semantic.?.scope_owner_map, &module.semantic.?.scope_history, null);
+    try std.testing.expect(!no_permission.valid);
+    var foreign_context = proof.context;
+    foreign_context.references = try a.dupe(Reference, foreign_context.references);
+    try std.testing.expect(coverage.prepare(proof.target, foreign_context) == null);
+    var forged = proof;
+    forged.context = foreign_context;
+    try std.testing.expect(!forged.hasOutputBinding(@backingInt(source.entries[0].symbol)));
+    try std.testing.expect(forged.wrapper() == null);
+    const before = module.semantic.?.symbols.items[@backingInt(source.entries[0].symbol)];
+    module.semantic.?.symbols.items[@backingInt(source.entries[0].symbol)].synthetic_kind = null;
+    try std.testing.expect(!proof.hasOutputBinding(@backingInt(source.entries[0].symbol)));
+    module.semantic.?.symbols.items[@backingInt(source.entries[0].symbol)] = before;
+    try std.testing.expect(proof.hasOutputBinding(@backingInt(source.entries[0].symbol)));
+}
+
+test "Buffer CJS actual initial external origins become same leaf callback references" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const helpers = @import("../test_helpers.zig");
+    const source = "exports.answer=7;module.exports=exports;function f(){module.exports=9}exports++;module=exports;";
+    try helpers.writeFile(tmp.dir, "entry.cjs", source);
+    const path = try helpers.absPath(&tmp, "entry.cjs");
+    defer std.testing.allocator.free(path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+    defer cache.deinit();
+    var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    const index = try graph.addModule(std.testing.io, path);
+    const module = @constCast(graph.getModule(index).?);
+    module.parse_arena = @import("../module.zig").createParseArena(std.testing.allocator) orelse return error.OutOfMemory;
+    const a = module.parse_arena.?.allocator();
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(a, source);
+    var parser = @import("../../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = false;
+    analyzer.enable_source_external_origins = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    module.ast = parser.ast;
+    module.wrap_kind = .cjs;
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .references = analyzer.references.items,
+        .exported_names = analyzer.exported_names,
+        .unresolved_references = analyzer.unresolved_references,
+        .node_scope_provenance = analyzer.node_scope_provenance,
+        .source_owned_retirements = analyzer.source_owned_retirements,
+        .scope_history = analyzer.scope_history,
+    };
+    const before = module.semantic.?;
+    const contexts = (try @import("../../semantic/output_runtime_witness.zig").captureReferenceContexts(a, &module.ast.?, @fromBackingInt(@as(u32, @intCast(module.ast.?.nodes.items.len - 1))), before.scopes, &before.scope_owner_map)) orelse return error.MissingReferenceContexts;
+    var count: usize = 0;
+    var origins = before.node_scope_provenance.iterator();
+    while (origins.next()) |item| {
+        if (item.value_ptr.source_external == null) continue;
+        count += 1;
+        try std.testing.expectEqual(@as(?u32, null), before.symbol_ids[@backingInt(item.key_ptr.*)]);
+    }
+    try std.testing.expect(count > 1);
+    // The structural reference walk is independent of origin-map publication.
+    try std.testing.expectEqual(contexts.len, count);
+    try graph.registerWrapperSymbols();
+    const after = &module.semantic.?;
+    var consumed: usize = 0;
+    origins = before.node_scope_provenance.iterator();
+    while (origins.next()) |item| {
+        const origin = item.value_ptr.source_external orelse continue;
+        const node = item.key_ptr.*;
+        const name = module.ast.?.getText(origin.name);
+        const sid = if (std.mem.eql(u8, name, "module")) module.cjs_wrapper_module_parameter_symbol.? else if (std.mem.eql(u8, name, "exports")) module.cjs_wrapper_exports_parameter_symbol.? else return error.UnexpectedExternalName;
+        try std.testing.expectEqual(@as(?u32, @backingInt(sid)), after.symbol_ids[@backingInt(node)]);
+        try std.testing.expect(after.node_scope_provenance.get(node).?.source_external == null);
+        try std.testing.expect(before.node_scope_provenance.get(node).?.source_external != null);
+        var actual_rows: usize = 0;
+        for (after.references) |row| {
+            if (row.node_index != node) continue;
+            actual_rows += 1;
+            try std.testing.expectEqual(sid, row.symbol_id);
+            var actual_contexts: usize = 0;
+            for (contexts) |context| {
+                if (context.node != node) continue;
+                actual_contexts += 1;
+                try std.testing.expectEqual(context.scope, row.scope_id);
+                try std.testing.expectEqualDeep(context.flags, row.flags);
+                try std.testing.expectEqual(context.stmt_idx, row.stmt_idx);
+                try std.testing.expectEqual(context.scope_stmt_idx, row.scope_stmt_idx);
+            }
+            try std.testing.expectEqual(@as(usize, 1), actual_contexts);
+        }
+        try std.testing.expectEqual(@as(usize, 1), actual_rows);
+        consumed += 1;
+    }
+    try std.testing.expectEqual(count, consumed);
+    const runtime = (try @import("../../semantic/output_runtime_witness.zig").capture(a, &graph, module)) orelse return error.MissingRuntimeSource;
+    const proof = @import("../../semantic/output_runtime_coverage.zig").forTarget(.{ .source = &runtime, .module = module }) orelse return error.MissingRuntimeCoverageProof;
+    const wrapper = proof.wrapper().?;
+    const program_scope: ScopeId = @fromBackingInt(after.scope_owner_map.get(@backingInt(wrapper.program)).?);
+    const history = @import("../../semantic/scope_frame_history.zig");
+    const checked = try history.validateAndIndex(a, &module.ast.?, after.scopes, &after.scope_owner_map, &after.scope_history, .{ .module_index = @backingInt(index), .program_scope = program_scope, .wrapper_scope = wrapper.scope });
+    try std.testing.expect(checked.valid);
+    const rejected = try history.validateAndIndex(a, &module.ast.?, after.scopes, &after.scope_owner_map, &after.scope_history, .{ .module_index = @backingInt(index) + 1, .program_scope = program_scope, .wrapper_scope = wrapper.scope });
+    try std.testing.expect(!rejected.valid);
 }

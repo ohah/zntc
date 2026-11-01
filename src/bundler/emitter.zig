@@ -48,7 +48,7 @@ const CjsWrapperParamNames = struct {
     module: []const u8,
 };
 
-fn cjsWrapperParamOutputName(
+pub fn cjsWrapperParamOutputName(
     module: *const Module,
     maybe_id: ?@import("../semantic/symbol.zig").SymbolId,
     source_name: []const u8,
@@ -1401,6 +1401,25 @@ pub fn emitWithTreeShaking(
                 if (results[ei_idx].entry_chain) |chain| {
                     if (!rbm_calls_emitted) {
                         try output.appendSlice(allocator, chain);
+                    }
+                }
+                if (options.format == .cjs and em.wrap_kind == .cjs and options.output_exports != .none) {
+                    // This is the actual entry's registered require identity,
+                    // not its callback's lexical `module` parameter. The host
+                    // output ABI consumes the factory result exactly once.
+                    const id = em.require_symbol orelse return error.MissingWrapperSymbol;
+                    const semantic = em.semantic orelse return error.MissingWrapperSymbol;
+                    const raw = @backingInt(id);
+                    if (raw >= semantic.symbols.items.len) return error.InvalidCjsEntryRequireIdentity;
+                    const symbol = semantic.symbols.items[raw];
+                    if (symbol.kind != .function_decl or symbol.synthetic_kind != .cjs_require or
+                        !symbol.scope_id.isNone() or !symbol.origin_scope.isNone()) return error.InvalidCjsEntryRequireIdentity;
+                    if (options.output_exports == .named) {
+                        // A CJS factory's complete value is its default export;
+                        // named mode uses the existing public default protocol.
+                        try output.appendSlice(allocator, "Object.defineProperty(exports, \"__esModule\", {value: true});\nexports.default = ");
+                    } else {
+                        try output.appendSlice(allocator, "module.exports = ");
                     }
                 }
                 try appendGuardedModuleCall(&output, allocator, em, options, if (linker) |l| &l.rename_table else null);

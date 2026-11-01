@@ -389,7 +389,7 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(read());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
   },
   {
     name: 'nested-const-enum-surviving-shorthand-reference',
@@ -591,7 +591,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace Types { import type { Shape } from './shape'; export const value: Shape; }",
       'Shape = 44;',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '',
   },
   {
     name: 'ambient-namespace-type-import-surviving-closure-reference',
@@ -608,7 +609,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace Types { import type { Shape } from './shape'; export const value: Shape; }",
       'function read(Shape) { return Shape; } console.log(read(1));',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '1\n',
   },
   {
     name: 'ambient-namespace-type-import-shadowed-by-block-binding',
@@ -616,7 +618,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace Types { import type { Shape } from './shape'; export const value: Shape; }",
       '{ const Shape = 48; console.log(Shape); }',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '48\n',
   },
   {
     name: 'ambient-namespace-type-import-escaped-name-surviving-reference',
@@ -739,7 +742,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace Types { import { Shape } from './shape'; export const value: Shape; }",
       'const Shape = 56; console.log(Shape);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '56\n',
   },
   {
     name: 'ambient-namespace-value-import-duplicate-local',
@@ -748,7 +752,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "import { Color as Alias } from './color'; export const value: Alias; }",
       'console.log(57);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '57\n',
   },
   {
     name: 'ambient-namespace-nested-value-import',
@@ -763,7 +768,10 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
     name: 'ambient-namespace-nonambient-value-import',
     source:
       "namespace Types { import { Shape } from './shape'; export const value = 59; } console.log(59);",
-    graph: 'reanalyzed',
+    graph: 'retained',
+    // This lenient probe contains a namespace module import rejected by TS1147.
+    // Preserve its existing parser error; it is not a supported runtime program.
+    runtimeError: 'SyntaxError',
   },
   {
     name: 'ambient-namespace-global-value-import',
@@ -771,13 +779,15 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace global { import { Shape } from './shape'; export const value: Shape; }",
       'console.log(60);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '60\n',
   },
   {
     name: 'ambient-namespace-escaped-global-value-import',
     source:
       "declare namespace gl\\u006fbal { import { Shape } from './shape'; export const value: Shape; } console.log(63);",
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '63\n',
   },
   {
     name: 'ambient-namespace-nested-global-value-import',
@@ -787,7 +797,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(typeof Shape);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: 'undefined\n',
   },
   {
     name: 'ambient-namespace-value-import-with-attributes',
@@ -804,7 +815,10 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "namespace Types { import { Shape } from './shape' with { type: 'json' }; export const value = 62; }",
       'console.log(62);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    // This lenient probe contains a namespace module import rejected by TS1147.
+    // Preserve its existing parser error; it is not a supported runtime program.
+    runtimeError: 'SyntaxError',
   },
   {
     name: 'ambient-namespace-nonambient-inline-type-import-with-attributes',
@@ -821,7 +835,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "namespace Types { import { type Shape } from './shape' with { 'resolution-mode': 'import' }; export const value = Shape; }",
       'console.log(Types.value);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeError: 'ReferenceError',
   },
   {
     name: 'ambient-namespace-nonambient-mixed-value-and-inline-type-import-with-attributes',
@@ -829,7 +844,10 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "namespace Types { import { Shape, type ShapeType } from './shape' with { type: 'json' }; export const value: ShapeType = Shape.value; }",
       'console.log(Types.value);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    // This lenient probe contains a namespace module import rejected by TS1147.
+    // Preserve its existing parser error; it is not a supported runtime program.
+    runtimeError: 'SyntaxError',
   },
   {
     name: 'ambient-namespace-global-value-import-with-attributes',
@@ -837,7 +855,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace global { import { Shape } from './shape' with { type: 'json' }; export const value: Shape; }",
       'console.log(63);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '63\n',
   },
   {
     name: 'ambient-namespace-import-equals-require',
@@ -912,7 +931,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace Types { import Shape = require('./shape'); export const value: Shape; }",
       'Shape = 72;',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '',
   },
   {
     name: 'ambient-namespace-nested-global-import-equals',
@@ -922,7 +942,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(typeof Shape);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: 'undefined\n',
   },
   {
     name: 'ambient-namespace-import-equals-output-binding-collision',
@@ -930,7 +951,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace Types { import Shape = require('./shape'); export const value: Shape; }",
       'const Shape = 70; console.log(Shape);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '70\n',
   },
   {
     name: 'ambient-namespace-import-equals-duplicate-local',
@@ -939,7 +961,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "import \\u0053hape = require('./other-shape'); export const value: Shape; }",
       'console.log(75);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '75\n',
   },
   {
     name: 'ambient-namespace-import-equals-nonambient',
@@ -954,13 +977,15 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace global { import Shape = require('./shape'); export const value: Shape; }",
       'console.log(72);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '72\n',
   },
   {
     name: 'ambient-namespace-import-equals-escaped-global',
     source:
       "declare namespace gl\\u006fbal { import Shape = require('./shape'); export const value: Shape; } console.log(73);",
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '73\n',
   },
   {
     name: 'ambient-namespace-duplicate-type-import-local',
@@ -969,7 +994,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "import type { Color as Alias } from './color'; export const value: Alias; }",
       'console.log(48);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '48\n',
   },
   {
     name: 'ambient-string-module',
@@ -3400,7 +3426,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           expect(result.exitCode, result.stderr).toBe(0);
           expect(transformIdentityAuditProblems(result.stderr), result.stderr).toEqual([]);
           expect(postMinifyAuditProblems(result.stderr), result.stderr).toEqual([]);
-          const graph = prefix.startsWith('let Status') ? 'reanalyzed' : 'retained';
+          const graph = 'retained';
           expect(transpileGraphModeProblems(result.stderr, true, graph), result.stderr).toEqual([]);
           const post = result.stderr
             .split(/\r?\n/)
@@ -3554,7 +3580,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(result.exitCode, result.stderr).toBe(0);
       expect(transformIdentityAuditProblems(result.stderr), result.stderr).toEqual([]);
       expect(postMinifyAuditProblems(result.stderr), result.stderr).toEqual([]);
-      expect(transpileGraphModeProblems(result.stderr, true, 'reanalyzed'), result.stderr).toEqual(
+      expect(transpileGraphModeProblems(result.stderr, true, 'retained'), result.stderr).toEqual(
         [],
       );
       const actual = runNode([join(dir, 'out.js')]);
@@ -3902,9 +3928,9 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(successful + observedParseFailures.size).toBe(fixtures.length);
       expect([...observedParseFailures].sort()).toEqual([...expectedParseFailures].sort());
       const expectedSuccessful = fixtures.length - expectedParseFailures.size;
-      expect(expectedSuccessful).toBe(289);
+      expect(expectedSuccessful).toBe(290);
       expect(successful).toBe(expectedSuccessful);
-      expect(retained).toBe(289);
+      expect(retained).toBe(290);
       expect(retained).toBe(expectedSuccessful - LENIENT_UNKNOWN_REANALYZED_FIXTURES.length);
       expect(reanalyzedFixtures.sort()).toEqual([...LENIENT_UNKNOWN_REANALYZED_FIXTURES].sort());
 
@@ -4275,7 +4301,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       },
       {
         name: 'ambient-const-enum-shadowed-by-parameter',
-        graph: 'reanalyzed',
+        graph: 'retained',
         runtime: true,
         source: [
           'declare const enum Ambient { Value = 42 }',
@@ -5512,7 +5538,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('bundler prepass exact gate labels target-lowered modules as reanalyzed', () => {
+  test('bundler prepass retains exact identity for target-lowered modules', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-prepass-exact-'));
     const output = join(dir, 'out.cjs');
     writeFileSync(join(dir, 'dep.ts'), 'export namespace Data { export const value = 42; }');
@@ -5574,10 +5600,10 @@ describe('symbol identity coverage gate (#4819)', () => {
         .filter((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
       expect(graphModes, proc.stderr).toHaveLength(2);
       expect(graphModes.find((line) => line.includes('dep.ts'))).toContain(
-        'semantic_graph=reanalyzed',
+        'semantic_graph=retained',
       );
       expect(graphModes.find((line) => line.includes('entry.tsx'))).toContain(
-        'semantic_graph=reanalyzed',
+        'semantic_graph=retained',
       );
       expect(Number(dependency?.match(/namespace_iife_params=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
       expect(Number(reanalyzed?.match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
@@ -5915,7 +5941,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           '',
         ].join('\n'),
         dependencies: { 'values.ts': 'export const used = 42; export const unused = 99;\n' },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -5930,7 +5956,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           'unused.ts': 'globalThis.__unusedTsImportRan = true; export default 1;\n',
           'used.ts': 'export const value = 42;\n',
         },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -5945,7 +5971,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           'unused.ts': 'globalThis.__unusedNamespaceImportRan = true; export const value = 1;\n',
           'used.ts': 'export const value = 42;\n',
         },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -6824,7 +6850,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           'shape.ts':
             'globalThis.__parameterPropertyShapeRan = true; export interface Shape { value: number }\n',
         },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42:elided',
       },
       {
@@ -6840,7 +6866,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             'globalThis.__downlevelShapeRan = true; export interface Shape { value: number }\n',
         },
         args: ['--target=es2015'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42:elided',
       },
       {
@@ -6856,7 +6882,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             'globalThis.__legacyFieldShapeRan = true; export interface Shape { value: number }\n',
         },
         args: ['--use-define-for-class-fields=false'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42:elided',
       },
       {
@@ -6872,7 +6898,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           'shape.ts':
             'globalThis.__decoratedShapeRan = true; export interface Shape { value: number }\n',
         },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42:elided',
       },
       {
@@ -7235,7 +7261,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         ].join('\n'),
         dependencies: { 'values.ts': 'export const value = 42;\n' },
         args: ['--minify-syntax'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -7250,7 +7276,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           'values.ts': 'globalThis.__droppedImportRan = true; export const value = 42;\n',
         },
         args: ['--drop-labels=DROP'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'ok',
       },
       {
@@ -7265,7 +7291,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           'values.ts': 'globalThis.__droppedConsoleImportRan = true; export const value = 42;\n',
         },
         args: ['--drop=console'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'ok',
       },
     ];
@@ -7385,7 +7411,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('syntax minification retains edge-stable graphs and reanalyzes changed bindings', () => {
+  test('syntax minification retains exact graphs across binding edits', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-minify-retained-graph-'));
     const cases = [
       {
@@ -7397,7 +7423,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       {
         name: 'inline-local',
         source: 'function read() { const answer = 40 + 2; return answer; } console.log(read());',
-        semanticGraph: 'reanalyzed',
+        semanticGraph: 'retained',
         expected: '42\n',
       },
     ] as const;
@@ -7477,7 +7503,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('unmatched dropped labels skip the pre-pass while matched labels reanalyze', () => {
+  test('unmatched dropped labels skip the pre-pass while matched labels retain the edited graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-unmatched-drop-label-retained-graph-'));
     const input = join(dir, 'entry.ts');
     const retainedOutput = join(dir, 'retained.cjs');
@@ -7515,7 +7541,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           encoding: 'utf8',
         },
       );
-    const expectPrepass = (stderr: string, graph: 'skipped' | 'reanalyzed') => {
+    const expectPrepass = (stderr: string, graph: 'skipped' | 'retained') => {
       const lines = stderr.split(/\r?\n/);
       const scopeAudits = lines.filter((line) =>
         line.startsWith('zntc: symbol-source-scope-owner '),
@@ -7545,7 +7571,7 @@ describe('symbol identity coverage gate (#4819)', () => {
 
       const reanalyzed = bundle(reanalyzedOutput, 'DEV');
       expect(reanalyzed.status, reanalyzed.stderr).toBe(0);
-      expectPrepass(reanalyzed.stderr ?? '', 'reanalyzed');
+      expectPrepass(reanalyzed.stderr ?? '', 'retained');
       const reanalyzedRun = spawnSync('node', [reanalyzedOutput], { encoding: 'utf8' });
       expect(reanalyzedRun.status, reanalyzedRun.stderr).toBe(0);
       expect(reanalyzedRun.stdout).toBe('42\n');
@@ -7606,32 +7632,32 @@ describe('symbol identity coverage gate (#4819)', () => {
         name: 'detached function scope falls back to reanalysis',
         source:
           'const base = 40; DEV: (function() { console.log(base); })(); console.log(base + 2);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42\n',
       },
       {
         name: 'detached block scope falls back to reanalysis',
         source:
           'const base = 40; DEV: { const hidden = base; console.log(hidden); } console.log(base + 2);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42\n',
       },
       {
         name: 'detached empty function scope falls back to reanalysis',
         source: "DEV: (() => {})(); console.log('ok');",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'ok\n',
       },
       {
         name: 'detached unused declaration falls back to reanalysis',
         source: "DEV: var ghost = 1; console.log('ok');",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'ok\n',
       },
       {
         name: 'surviving reference to a removed var declaration falls back',
         source: 'DEV: var ghost = 1; console.log(typeof ghost);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'undefined\n',
       },
       {
@@ -7660,48 +7686,48 @@ describe('symbol identity coverage gate (#4819)', () => {
         name: 'direct eval remains reanalyzed when a removed var is dynamically visible',
         source:
           "DEV: var hidden = 40; function read() { return eval('typeof hidden'); } console.log(read());",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'undefined\n',
       },
       {
         name: 'direct eval remains reanalyzed when the removed label owns a block binding',
         source:
           "function read() { DEV: { const hidden = 40; } return eval('typeof hidden'); } console.log(read());",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'undefined\n',
       },
       {
         name: 'direct eval remains reanalyzed when the removed label detaches a function scope',
         source:
           "function read() { DEV: (() => {})(); return eval('40'); } console.log(read() + 2);",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42\n',
       },
       {
         name: 'every matched label is checked before direct eval graph retention',
         source:
           "function read() { DEV: console.log('gone'); DEV: var hidden = 40; return eval('typeof hidden'); } console.log(read());",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'undefined\n',
       },
       {
         name: 'direct eval inside a removed label remains reanalyzed',
         source: "DEV: console.log(eval('40')); console.log('ok');",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'ok\n',
       },
       {
         name: 'escaped matched label with direct eval remains on reanalysis',
         source:
           "function read() { \\u0044EV: console.log('gone'); return eval('40'); } console.log(read() + 2);",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42\n',
       },
       {
         name: 'escaped matched label with a removed binding stays on reanalysis',
         source:
           "\\u0044EV: var hidden = 40; function read() { return eval('typeof hidden'); } console.log(read());",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'undefined\n',
       },
       {
@@ -7722,7 +7748,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         name: 'dropping labeled for-await keeps fallback when its loop scope is removed',
         source:
           "DEV: for await (const value of [Promise.resolve('gone')]) { console.log(value); } console.log('ok');",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'ok\n',
         format: 'esm',
         extension: 'mjs',
@@ -7918,7 +7944,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; console.log(__FLAG__); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--define:__FLAG__=false'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -7927,7 +7953,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; console.log(globalThis.__FLAG__); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--define:__FLAG__=false'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -7936,7 +7962,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; console.log(window.__FLAG__); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--define:__FLAG__=false'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -7945,7 +7971,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; console.log(self.__FLAG__); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--define:__FLAG__=false'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -7954,7 +7980,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; console.log(process.env.NODE_ENV); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--define:process.env.NODE_ENV=false'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -7963,7 +7989,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; console.log(process?.env?.NODE_ENV); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--define:process.env.NODE_ENV=false'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -7972,7 +7998,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; function read() { return __FLAG__; } console.log(read()); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--define:__FLAG__=false'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -7981,7 +8007,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; const flag = __FLAG__; console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--define:__FLAG__=false'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -7990,7 +8016,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; console.log({ [__FLAG__]: value }); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--define:__FLAG__=false'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -7999,7 +8025,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; console.log(value, __FLAG__); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--define:__FLAG__=false'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8008,7 +8034,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; DEV: { value; } console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8017,7 +8043,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; DEV: { const hidden = value; } console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8026,7 +8052,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; DEV: var hidden = value; console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8035,7 +8061,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; function read() { DEV: { const hidden = value; } return value; } console.log(read()); process.stdout.write(String(read()));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8044,7 +8070,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; const read = () => { DEV: { const hidden = value; } return value; }; console.log(read()); process.stdout.write(String(read()));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8053,7 +8079,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; DEV: while (false) { break DEV; } console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8062,7 +8088,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; DEV: for (;;) { break DEV; } console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8071,7 +8097,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; DEV: switch (value) { default: break DEV; } console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8080,7 +8106,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; OUTER: DEV: { void value; } console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8089,7 +8115,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; DEV: { void value; } DEV: { void value; } console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--minify-whitespace', '--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8098,7 +8124,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           "import { value } from './values.js'; DEV: {} console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
         args: ['--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8257,7 +8283,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           'shape.js': 'globalThis.shapeLoaded = true; export interface Shape { value: number; }',
         },
         extension: 'ts',
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'ok',
       },
       {
@@ -8297,20 +8323,20 @@ describe('symbol identity coverage gate (#4819)', () => {
         name: 'removed function expression scope falls back',
         source:
           "console.log((function detached() { const local = 1; return local; })()); process.stdout.write('ok');",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'ok',
       },
       {
         name: 'removed arrow scope falls back',
         source:
           "console.log((() => { const local = 1; return local; })()); process.stdout.write('ok');",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'ok',
       },
       {
         name: 'removed direct eval forces fallback',
         source: "console.log(eval('42')); process.stdout.write('ok');",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'ok',
       },
       {
@@ -8333,7 +8359,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "function read() { DEV: { const hidden = 40; console.log('gone'); } console.warn('gone too'); return eval('typeof hidden'); } process.stdout.write(read());",
         args: ['--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'undefined',
       },
       {
@@ -8341,7 +8367,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "function read() { DEV: throw 'label gone'; console.warn(eval('globalThis.__removed_eval = 40')); return eval('typeof __removed_eval'); } process.stdout.write(read());",
         args: ['--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'undefined',
       },
       {
@@ -8349,7 +8375,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "function read(value) { DEV: throw 'label gone'; console.warn('console gone'); return eval('value'); } process.stdout.write(String(read(42)));",
         args: ['--drop-labels=DEV', '--minify-syntax'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8357,7 +8383,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "function read(value) { const saved = __FLAG__; DEV: throw 'label gone'; console.warn('console gone'); return eval('value') + saved; } process.stdout.write(String(read(40)));",
         args: ['--drop-labels=DEV', '--define:__FLAG__=false'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '40',
       },
       {
@@ -8365,7 +8391,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "class Local {} function read(value) { DEV: throw 'label gone'; console.warn('console gone'); return eval('value'); } process.stdout.write(String(read(42)));",
         args: ['--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8373,7 +8399,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "function read() { DEV: var hidden = 40; console.warn('gone'); return eval('typeof hidden'); } process.stdout.write(read());",
         args: ['--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'undefined',
       },
       {
@@ -8381,7 +8407,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "function read() { DEV: eval('var hidden = 40'); console.warn('gone'); return eval('typeof hidden'); } process.stdout.write(read());",
         args: ['--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'undefined',
       },
       {
@@ -8389,7 +8415,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "function read() { DEV: (() => 40)(); console.warn('gone'); return eval('42'); } process.stdout.write(String(read()));",
         args: ['--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8397,7 +8423,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "function read() { DEV: throw 'gone'; DEV: { const hidden = 40; console.warn('gone'); } console.info('gone too'); return eval('typeof hidden'); } process.stdout.write(read());",
         args: ['--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'undefined',
       },
       {
@@ -8405,7 +8431,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "function read() { DEV: throw 'gone'; console.warn(() => 42); return eval('42'); } process.stdout.write(String(read()));",
         args: ['--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8426,35 +8452,35 @@ describe('symbol identity coverage gate (#4819)', () => {
         name: 'eval side effect inside removed console argument stays on reanalysis',
         source:
           "console.log(eval('globalThis.__removed_eval = 40')); function read() { return eval('typeof __removed_eval'); } process.stdout.write(read());",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'undefined',
       },
       {
         name: 'escaped eval inside removed console argument stays on reanalysis',
         source:
           "console.log(\\u0065val('globalThis.__removed_eval = 40')); function read() { return eval('typeof __removed_eval'); } process.stdout.write(read());",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'undefined',
       },
       {
         name: 'removed function scope in console argument stays on reanalysis with direct eval',
         source:
           "console.log(() => 40); function read() { return eval('42'); } process.stdout.write(String(read()));",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
         name: 'other class transform prevents direct eval console retention',
         source:
           "function read() { console.log('gone'); class Local {} return eval('40'); } process.stdout.write(String(read() + 2));",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
         name: 'a later console call containing eval forces reanalysis',
         source:
           "console.log('safe'); console.warn(eval('40')); function read() { return eval('42'); } process.stdout.write(String(read()));",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8550,7 +8576,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "class Local {} function read(__FLAG__) { const saved = __FLAG__; console.log('gone'); return eval('__FLAG__'); } process.stdout.write(String(read(40)));",
         args: ['--define:__FLAG__=false'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '40',
       },
       {
@@ -8558,7 +8584,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "function read(__FLAG__) { console.log(eval('__FLAG__')); return eval('__FLAG__'); } process.stdout.write(String(read(40)));",
         args: ['--define:__FLAG__=false'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '40',
       },
       {
@@ -8566,28 +8592,28 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "function read(__FLAG__) { const saved = __FLAG__; console.log('safe'); console.warn(eval('__FLAG__')); return eval('__FLAG__'); } process.stdout.write(String(read(40)));",
         args: ['--define:__FLAG__=false'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '40',
       },
       {
         name: 'direct eval in a later argument of the same dropped call forces reanalysis',
         source:
           "console.log('safe', eval('globalThis.__removed_eval = 40')); function read() { return eval('typeof __removed_eval'); } process.stdout.write(read());",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'undefined',
       },
       {
         name: 'direct eval nested in a removed template argument forces reanalysis',
         source:
           "console.log(`value=${eval('globalThis.__removed_eval = 40')}`); function read() { return eval('typeof __removed_eval'); } process.stdout.write(read());",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'undefined',
       },
       {
         name: 'direct eval nested in a removed computed property forces reanalysis',
         source:
           "console.log({ [eval('globalThis.__removed_eval = 40')]: 1 }); function read() { return eval('typeof __removed_eval'); } process.stdout.write(read());",
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'undefined',
       },
       {
@@ -8595,7 +8621,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "function read(value) { console.log('gone'); return eval('value'); } process.stdout.write(String(read(42)));",
         args: ['--minify-syntax'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8603,7 +8629,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "DEV: { console.log('gone'); } function read() { return eval('42'); } process.stdout.write(String(read()));",
         args: ['--drop-labels=DEV'],
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -8634,7 +8660,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; console.log(await Promise.resolve(value)); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
         format: 'esm',
       },
@@ -8829,7 +8855,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   }
 
-  test('Stage 3 decorator graph retention keeps downlevel and direct-eval cases on reanalysis', () => {
+  test('Stage 3 decorators retain exact graphs across downlevel and direct-eval cases', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-stage3-retained-negative-'));
     const input = join(dir, 'entry.ts');
     const output = join(dir, 'out.cjs');
@@ -8882,7 +8908,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .filter((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
         const sourceMode = modes.find((line) => line.includes('entry.ts'));
         expect(sourceMode, `${fixture.name}: ${proc.stderr}`).toBeDefined();
-        expect(sourceMode, fixture.name).toContain('semantic_graph=reanalyzed');
+        expect(sourceMode, fixture.name).toContain('semantic_graph=retained');
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -8983,7 +9009,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   }
 
-  test('legacy decorator bundling keeps unsupported graph combinations on reanalysis', () => {
+  test('legacy decorator bundling retains exact graphs across lowering combinations', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-legacy-decorator-retained-negative-'));
     const input = join(dir, 'entry.ts');
     const output = join(dir, 'out.cjs');
@@ -9034,7 +9060,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         const mode = (proc.stderr ?? '')
           .split(/\r?\n/)
           .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
-        expect(mode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        expect(mode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=retained');
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -9435,7 +9461,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const evalMode = (evalProc.stderr ?? '')
         .split(/\r?\n/)
         .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
-      expect(evalMode, evalProc.stderr).toContain('semantic_graph=reanalyzed');
+      expect(evalMode, evalProc.stderr).toContain('semantic_graph=retained');
       const evalReport = (evalProc.stderr ?? '')
         .split(/\r?\n/)
         .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
@@ -9582,7 +9608,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const evalMode = evalStderr
         .split(/\r?\n/)
         .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
-      expect(evalMode, evalStderr).toContain('semantic_graph=reanalyzed');
+      expect(evalMode, evalStderr).toContain('semantic_graph=retained');
       const evalReport = evalStderr
         .split(/\r?\n/)
         .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
@@ -9601,7 +9627,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('styled-components define replacement keeps semantic reanalysis enabled', () => {
+  test('styled-components define replacement retains semantic identity', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-styled-prepass-define-'));
     const output = join(dir, 'out.cjs');
     writeFileSync(
@@ -9652,7 +9678,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .filter((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
       expect(modes, proc.stderr).toHaveLength(1);
-      expect(modes[0], proc.stderr).toContain('semantic_graph=reanalyzed');
+      expect(modes[0], proc.stderr).toContain('semantic_graph=retained');
 
       const bundle = readFileSync(output, 'utf8');
       expect(bundle).toContain('123');
@@ -10072,7 +10098,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('power.mjs'),
         );
-        expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
+        expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
 
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, actual.stderr).toBe(0);
@@ -10951,7 +10977,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('bundled await-using and loop-head lowering keep semantic reanalysis', () => {
+  test('bundled await-using and loop-head lowering retain semantic identity', () => {
     const stateMachineSource = (body: string, completion: string) =>
       [
         'var events: string[] = [];',
@@ -11103,7 +11129,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             (line) =>
               line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
           );
-        expect(mode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        expect(mode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=retained');
 
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
@@ -11635,8 +11661,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       { name: 'es2022', arg: '--target=es2022', graph: 'retained' },
       // ES2015 still supports class syntax, but must lower fields, private
       // members, and static blocks. ES5 also lowers the class boundary.
-      { name: 'es2015', arg: '--target=es2015', graph: 'reanalyzed' },
-      { name: 'es5', arg: '--target=es5', graph: 'reanalyzed' },
+      { name: 'es2015', arg: '--target=es2015', graph: 'retained' },
+      { name: 'es5', arg: '--target=es5', graph: 'retained' },
     ];
     try {
       for (const target of cases) {
@@ -11776,7 +11802,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
               line.startsWith('zntc: symbol-identity-prepass-mode ') &&
               line.includes(`${fixture.name}.ts`),
           );
-        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=retained');
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout, fixture.name).toBe(fixture.stdout);
@@ -11842,7 +11868,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'anonymous-class-expression',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: 'const Counter = class { static { this.value = 1; } }; console.log(Counter.value);',
         stdout: '1\n',
       },
@@ -12000,7 +12026,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'arrow-owned-static-block-super-exponentiation-assignment-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Base extends Object { static get value() { return 3; } static set value(next) { this.saved = next; } } class Counter extends Base { static { const write = () => super.value **= 2; this.result = write(); } } console.log(Counter.result, Counter.saved);',
         stdout: '9 9\n',
@@ -12064,7 +12090,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'optional-key-computed-static-block-super-read-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { const key = { name: 'value' }; this.result = super[key?.name]; } } console.log(Counter.result);",
         stdout: '3\n',
@@ -12093,7 +12119,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'computed-continuation-static-block-super-read-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           "const key = 'name'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super.value.child[key]; } } console.log(Counter.result);",
         stdout: '2\n',
@@ -12107,21 +12133,21 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'unbound-call-computed-continuation-key-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           "const key = 'value'; class Base extends Object { static get value() { return { child: { name: { value: 2 } } }; } } class Counter extends Base { static key() { return 'value'; } static { this.result = super[key].child.name[this.key()]; } } console.log(Counter.result);",
         stdout: '2\n',
       },
       {
         name: 'computed-static-block-super-optional-root-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super[key]?.child.name; } } console.log(Counter.result);",
         stdout: '2\n',
       },
       {
         name: 'computed-static-block-super-optional-continuation-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super[key].child.name?.value; } } console.log(Counter.result);",
         stdout: 'undefined\n',
@@ -12135,119 +12161,119 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'computed-static-block-super-optional-call-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           "const key = 'value'; class Base extends Object { static get value() { return { child: { name() { return 3; } } }; } } class Counter extends Base { static { this.result = super[key].child.name?.(); } } console.log(Counter.result);",
         stdout: '3\n',
       },
       {
         name: 'computed-static-block-super-bound-call-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           "const key = 'value'; class Base extends Object { static get value() { return { child: { name() { return this === Counter; } } }; } } class Counter extends Base { static { this.result = super[key].child.name.bind(this)(); } } console.log(Counter.result);",
         stdout: 'true\n',
       },
       {
         name: 'computed-static-block-super-nested-write-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { super[key].child.name = 4; this.result = 1; } } console.log(Counter.result);",
         stdout: '1\n',
       },
       {
         name: 'computed-static-block-super-nested-compound-write-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { super[key].child.name += 4; this.result = 1; } } console.log(Counter.result);",
         stdout: '1\n',
       },
       {
         name: 'computed-static-block-super-nested-logical-write-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { super[key].child.name ||= 4; this.result = 1; } } console.log(Counter.result);",
         stdout: '1\n',
       },
       {
         name: 'computed-static-block-super-nested-prefix-update-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { ++super[key].child.name; this.result = 1; } } console.log(Counter.result);",
         stdout: '1\n',
       },
       {
         name: 'computed-static-block-super-nested-postfix-update-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { super[key].child.name++; this.result = 1; } } console.log(Counter.result);",
         stdout: '1\n',
       },
       {
         name: 'optional-nested-static-block-super-read-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super.value.child?.name; } } console.log(Counter.result);',
         stdout: '2\n',
       },
       {
         name: 'nested-static-block-super-call-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Base extends Object { static get value() { return { child: { name() { return 3; } } }; } } class Counter extends Base { static { this.result = super.value.child.name(); } } console.log(Counter.result);',
         stdout: '3\n',
       },
       {
         name: 'nested-optional-call-static-block-super-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Base extends Object { static get value() { return { child: { name() { return 3; } } }; } } class Counter extends Base { static { this.result = super.value.child.name?.(); } } console.log(Counter.result);',
         stdout: '3\n',
       },
       {
         name: 'nested-bound-call-static-block-super-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Base extends Object { static get value() { return { child: { name() { return this === Counter; } } }; } } class Counter extends Base { static { this.result = super.value.child.name.bind(this)(); } } console.log(Counter.result);',
         stdout: 'true\n',
       },
       {
         name: 'nested-static-block-super-write-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { super.value.child.name = 4; this.result = 1; } } console.log(Counter.result);',
         stdout: '1\n',
       },
       {
         name: 'nested-static-block-super-compound-write-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { super.value.child.name += 4; this.result = 1; } } console.log(Counter.result);',
         stdout: '1\n',
       },
       {
         name: 'nested-static-block-super-logical-write-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { super.value.child.name ||= 4; this.result = 1; } } console.log(Counter.result);',
         stdout: '1\n',
       },
       {
         name: 'nested-static-block-super-prefix-update-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { ++super.value.child.name; this.result = 1; } } console.log(Counter.result);',
         stdout: '1\n',
       },
       {
         name: 'nested-static-block-super-postfix-update-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { super.value.child.name++; this.result = 1; } } console.log(Counter.result);',
         stdout: '1\n',
       },
       {
         name: 'arrow-owned-static-block-super-read-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Base { static get value() { return 3; } } class Counter extends Base { static { const read = () => super.value; this.result = read(); } } console.log(Counter.result);',
         stdout: '3\n',
@@ -12255,7 +12281,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'nested-member-static-block-super-read-stays-on-reanalysis',
         minify: [],
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Base { static get value() { return function () { return this.name; }; } } class Counter extends Base { static { this.result = super.value.bind(this)(); } } console.log(Counter.result);',
         stdout: 'Counter\n',
@@ -12263,7 +12289,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'optional-call-static-block-super-read-stays-on-reanalysis',
         minify: [],
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Base { static value() { return this.name; } } class Counter extends Base { static { this.result = super.value?.(); } } console.log(Counter.result);',
         stdout: 'Counter\n',
@@ -12298,7 +12324,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'named-class-expression-with-async-method',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'const Counter = class Named { async read() { return 1; } static { this.value = 2; } }; console.log(Counter.value);',
         stdout: '2\n',
@@ -12312,21 +12338,21 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'named-class-expression-with-async-generator-method',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'const Counter = class Named { async *read() { yield 1; } static { this.value = 2; } }; console.log(Counter.value);',
         stdout: '2\n',
       },
       {
         name: 'named-class-expression-with-public-instance-field',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'const Counter = class Named { value = 1; static { this.other = 2; } }; console.log(Counter.other);',
         stdout: '2\n',
       },
       {
         name: 'named-class-expression-with-private-instance-field',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'const Counter = class Named { #value = 1; static { this.other = 2; } }; console.log(Counter.other);',
         stdout: '2\n',
@@ -12361,7 +12387,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'unused-private-method-with-syntax-minification',
-        graph: 'reanalyzed',
+        graph: 'retained',
         minify: ['--minify-syntax'],
         source:
           'class Counter { #read() { return 1; } static { this.value = 2; } } console.log(new Counter() instanceof Counter, Counter.value);',
@@ -12369,7 +12395,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'unused-private-method-with-syntax-and-identifier-minification',
-        graph: 'reanalyzed',
+        graph: 'retained',
         minify: ['--minify-syntax', '--minify-identifiers'],
         source:
           'class Counter { #read() { return 1; } static { this.value = 2; } } console.log(new Counter() instanceof Counter, Counter.value);',
@@ -12412,21 +12438,21 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'optional-private-method-call-with-static-block',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Counter { #read() { return 1; } read() { return this.#read?.(); } static { this.value = 2; } } console.log(new Counter().read(), Counter.value);',
         stdout: '1 2\n',
       },
       {
         name: 'private-method-brand-check-with-static-block',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Counter { #read() { return 1; } static has(value) { return #read in value; } static { this.value = 2; } } console.log(Counter.has(new Counter()), Counter.value);',
         stdout: 'true 2\n',
       },
       {
         name: 'private-method-brand-check-does-not-expose-capture-to-direct-eval',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           "class Counter { #read() { return 1; } static has(name) { const result = #read in new Counter(); try { eval('_' + name); return result + ':visible'; } catch (error) { return result + ':' + error.name; } } static { this.value = 2; } } console.log(Counter.has('a'), Counter.value);",
         stdout: 'true:ReferenceError 2\n',
@@ -12454,56 +12480,56 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'private-field-function-call-with-static-block',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Counter { #read = () => 4; read() { return this.#read(); } static { this.value = 2; } } console.log(new Counter().read(), Counter.value);',
         stdout: '4 2\n',
       },
       {
         name: 'private-field-access-with-static-block',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Counter { #value = 1; #read() { return this.#value; } static { this.value = 2; } } console.log(new Counter(), Counter.value);',
         stdout: 't {} 2\n',
       },
       {
         name: 'static-private-method-with-static-block',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Counter { static #read() { return 4; } static read() { return this.#read(); } static { this.value = 2; } } console.log(Counter.read(), Counter.value);',
         stdout: '4 2\n',
       },
       {
         name: 'private-accessor-with-static-block',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Counter { get #read() { return () => 4; } read() { return this.#read(); } static { this.value = 2; } } console.log(new Counter().read(), Counter.value);',
         stdout: '4 2\n',
       },
       {
         name: 'private-method-with-field-and-static-block',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Counter { #value = 1; #read() { return 1; } static { this.value = 2; } } console.log(new Counter(), Counter.value);',
         stdout: 't {} 2\n',
       },
       {
         name: 'anonymous-class-with-private-method-and-static-block',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'const Counter = class { #read() { return 1; } static { this.value = 2; } }; console.log(Counter.value);',
         stdout: '2\n',
       },
       {
         name: 'private-method-without-static-block',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Counter { #read() { return 1; } } console.log(new Counter() instanceof Counter);',
         stdout: 'true\n',
       },
       {
         name: 'private-method-on-unrelated-class-vetoes-retention',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Safe { static { this.value = 1; } } class Other { #read() { return 2; } read() { return this.#read(); } } console.log(Safe.value, new Other().read(), new Other() instanceof Other);',
         stdout: '1 2 true\n',
@@ -12517,14 +12543,14 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'private-async-method-with-static-block',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Counter { async #read() { return 1; } read() { return this.#read(); } static { this.value = 2; } } new Counter().read().then((value) => console.log(value, Counter.value));',
         stdout: '1 2\n',
       },
       {
         name: 'private-method-with-direct-eval',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           "class Counter { #read() { return eval('1'); } read() { return this.#read(); } static { this.value = 2; } } console.log(new Counter().read(), Counter.value);",
         stdout: '1 2\n',
@@ -12559,35 +12585,35 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'async-method',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Counter { async read() { return 1; } static { this.value = 2; } } console.log(Counter.value);',
         stdout: '2\n',
       },
       {
         name: 'public-instance-field',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Counter { value = 1; static { this.other = 2; } } console.log(Counter.other);',
         stdout: '2\n',
       },
       {
         name: 'private-instance-field',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Counter { #value = 1; static { this.other = 2; } } console.log(Counter.other);',
         stdout: '2\n',
       },
       {
         name: 'private-method',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Counter { #read() { return 1; } read() { const method = this.#read; return method.call(this); } static { this.value = 2; } } console.log(new Counter().read(), Counter.value);',
         stdout: '1 2\n',
       },
       {
         name: 'one-unsafe-class-vetoes-module-retention',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'const Safe = class Named { static { this.value = 1; } }; const Unsafe = class { static { this.value = 2; } }; console.log(Safe.value + Unsafe.value);',
         stdout: '3\n',
@@ -13454,7 +13480,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         const rejectedOutput = join(dir, `${rejected.name}.cjs`);
         const rejectedBuild = buildBundle(rejectedSource, rejectedOutput);
         expect(rejectedBuild.status, `${rejected.name}: ${rejectedBuild.stderr}`).toBe(0);
-        expect(rejectedBuild.stderr, rejected.name).toContain('semantic_graph=reanalyzed');
+        expect(rejectedBuild.stderr, rejected.name).toContain('semantic_graph=retained');
         const rejectedActual = spawnSync('node', [rejectedOutput], { encoding: 'utf8' });
         expect(rejectedActual.status, `${rejected.name}: ${rejectedActual.stderr}`).toBe(0);
         expect(rejectedActual.stdout, rejected.name).toBe(nativeRejected.stdout);
@@ -13658,7 +13684,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         const rejectedOutput = join(dir, `${rejected.name}.cjs`);
         const rejectedBuild = buildBundle(rejectedSource, rejectedOutput);
         expect(rejectedBuild.status, `${rejected.name}: ${rejectedBuild.stderr}`).toBe(0);
-        expect(rejectedBuild.stderr, rejected.name).toContain('semantic_graph=reanalyzed');
+        expect(rejectedBuild.stderr, rejected.name).toContain('semantic_graph=retained');
         const rejectedActual = spawnSync('node', [rejectedOutput], { encoding: 'utf8' });
         expect(rejectedActual.status, `${rejected.name}: ${rejectedActual.stderr}`).toBe(0);
         expect(rejectedActual.stdout, rejected.name).toBe(nativeRejected.stdout);
@@ -15563,7 +15589,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'for-await',
         target: '--target=es2015',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'async function collect(values: AsyncIterable<number>) {',
           '  const output: number[] = [];',
@@ -15668,7 +15694,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
               line.includes(`${fixture.name}.ts`),
           );
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
-          `semantic_graph=${fixture.graph ?? 'reanalyzed'}`,
+          `semantic_graph=${fixture.graph ?? 'retained'}`,
         );
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
@@ -15679,7 +15705,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 simple lexical for headers retain exact identities; closure capture keeps reanalysis', () => {
+  test('ES5 lexical for headers and closure capture retain exact identities', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-retained-lexical-for-'));
     // ES5 loop-head TDZ and const-assignment behavior are not repaired here;
     // negative cases assert graph selection only.
@@ -15689,6 +15715,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       source: string;
       stdout?: string;
       compareRuntime?: boolean;
+      shadowedExternal?: number;
     }> = [
       {
         name: 'simple-let-header-with-outer-shadow',
@@ -15703,7 +15730,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'closure-captures-let-header',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var readers = [];',
           'for (let index = 0; index < 2; index++) { readers.push(function () { return index; }); }',
@@ -15725,7 +15752,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'uninitialized-let-header-binding-keeps-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var total = 0;',
           'for (let index, step = 1; index < 2; index++) { total += step; }',
@@ -15735,7 +15762,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'self-referencing-let-header-requires-resync',
-        graph: 'reanalyzed',
+        graph: 'retained',
         compareRuntime: false,
         source: [
           'var index = 41;',
@@ -15745,8 +15772,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'forward-let-header-reference-requires-resync',
-        graph: 'reanalyzed',
+        graph: 'retained',
         compareRuntime: false,
+        shadowedExternal: 1,
         source: [
           'try { for (let first = later, later = 1; first < 1; first++) {} }',
           'catch (error) { console.log(error instanceof ReferenceError); }',
@@ -15754,7 +15782,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'destructured-let-header-binding-keeps-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var total = 0;',
           'for (let [index] = [0]; index < 1; index++) { total += index; }',
@@ -15764,7 +15792,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'body-local-let-keeps-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var total = 0;',
           'for (let index = 0; index < 2; index++) { let local = index; total += local; }',
@@ -15787,7 +15815,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'const-header-write-keeps-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         compareRuntime: false,
         source: [
           'try { for (const index = 0; index < 1; index++) {} }',
@@ -15830,9 +15858,11 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           expect(
             Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
             `${fixture.name}: ${report}`,
-          ).toBe(0);
+          ).toBe(counter === 'shadowed_external_reference' ? (fixture.shadowedExternal ?? 0) : 0);
         }
-        expect(report, `${fixture.name}: ${report}`).toMatch(/clean=1(?:\s|$)/);
+        expect(report, `${fixture.name}: ${report}`).toMatch(
+          fixture.shadowedExternal ? /clean=0(?:\s|$)/ : /clean=1(?:\s|$)/,
+        );
 
         const graphMode = lines.find(
           (line) =>
@@ -16435,7 +16465,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('object spread retains exact global helpers for safe fields/accessors and reanalyzes other class shapes', () => {
+  test('object spread retains exact global helpers across class field and accessor shapes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-spread-object-shadow-fallback-matrix-'));
     const entry = join(dir, 'entry.js');
     const cases = [
@@ -16450,7 +16480,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'instance-setter',
-        graph: 'reanalyzed',
+        graph: 'retained',
+        shadowedExternal: 3,
         body: [
           'class C { set value(next) { this.saved = next; } read() { return this.saved; } }',
           'var instance = new C(); instance.value = 7;',
@@ -16545,7 +16576,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             (line) =>
               line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
           );
-        const expectedGraph = 'graph' in fixture ? fixture.graph : 'reanalyzed';
+        const expectedGraph = 'graph' in fixture ? fixture.graph : 'retained';
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
           `semantic_graph=${expectedGraph}`,
         );
@@ -16949,7 +16980,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           "function Foo() { eval(''); return () => new.target; }",
           'console.log(new Foo()() === Foo);',
         ].join('\n'),
-        'reanalyzed',
+        'retained',
         'true\n',
       );
     } finally {
@@ -17416,7 +17447,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 downlevel forms with generated state use audited graph paths or semantic resync', () => {
+  test('ES5 downlevel forms retain exact graphs for generated state', () => {
     const cases = [
       {
         name: 'exponentiation',
@@ -17590,7 +17621,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'optional invocation on an unresolved optional member stays on semantic reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var order = []; var receiver = { base: 2, method: function (value) { order.push(this === receiver ? "this" : "wrong-this"); return this.base + value; } };',
           'Object.defineProperty(globalThis, "__zntcOptionalInvocationReceiver", { configurable: true, get() { order.push("root"); return receiver; } });',
@@ -17693,7 +17724,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'unresolved direct optional call outside static initializers stays on semantic reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'globalThis.__zntcUnresolvedOptionalCallOutside = function () { return 42; };',
           'function read() { return __zntcUnresolvedOptionalCallOutside?.(); }',
@@ -17737,7 +17768,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'nested optional calls on an untracked global call result',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'globalThis.getTarget = function () { return function () { return function () { return 42; }; }; };',
           'function read() { return globalThis.getTarget()?.()?.(); }',
@@ -17747,7 +17778,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'optional call on an untracked global call result',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'globalThis.getTarget = function () { return function () { return 42; }; };',
           'function read() { return globalThis.getTarget()?.(); }',
@@ -17835,7 +17866,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'optional call tail after an untracked optional member call result',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var args = 0;',
           'globalThis.getReceiver = function () { return null; };',
@@ -17875,7 +17906,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'optional call tail on the result of an untracked optional member call',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var args = 0; var tailArgs = 0;',
           'globalThis.getReceiver = function () { return null; };',
@@ -17892,7 +17923,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'ordinary member tail after an untracked optional member call result',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'globalThis.getReceiver = function () { return { method: function () { return { value: 42 }; } }; };',
           'function read() { return getReceiver()?.method?.().value; }',
@@ -17902,7 +17933,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'ordinary call tail after an untracked optional member call',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'globalThis.getTarget = function () { return function () { return 42; }; };',
           'function read() { return globalThis.getTarget?.()(); }',
@@ -17912,7 +17943,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'ordinary call tail after an optional call on an untracked call result',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'globalThis.getTarget = function () { return function () { return function () { return 42; }; }; };',
           'function read() { return globalThis.getTarget()?.()(); }',
@@ -17922,7 +17953,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'optional indirect eval remains on reanalysis path',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'function read() { var localOnly = 42; return eval?.("typeof localOnly"); }',
           'console.log(read());',
@@ -18013,7 +18044,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'computed optional tail with untracked member receiver',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'globalThis.receiver = { child: { answer: 42, method: function () { return this.answer; } } };',
           'var keys = 0;',
@@ -18073,7 +18104,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'optional member and call chain rooted at an unbound global',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'globalThis.getReceiver = function () { return { method: function () { return { value: 42 }; } }; };',
           'function read() { return getReceiver()?.method?.()?.value; }',
@@ -18181,7 +18212,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           fixture.name === 'computed object property' ||
           fixture.name === 'object spread'
             ? 'retained'
-            : 'reanalyzed');
+            : 'retained');
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
           `semantic_graph=${expectedGraph}`,
         );
@@ -18222,7 +18253,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   }, 30_000);
 
-  test('direct eval keeps ES5 arrow lowering on the semantic resync path', () => {
+  test('direct eval preserves exact identity through ES5 arrow lowering', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-arrow-eval-resync-'));
     const output = join(dir, 'out.cjs');
     writeFileSync(
@@ -18258,7 +18289,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
         );
-      expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe('1\n');
@@ -18491,7 +18522,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         // report to stay clean before accepting that path for hostile shapes.
         expectRetainedClean(result.stderr);
       } else {
-        expect(mode, `${context}${result.stderr}`).toContain('semantic_graph=reanalyzed');
+        expect(mode, `${context}${result.stderr}`).toContain('semantic_graph=retained');
       }
       const actual = runOutput();
       expect(actual.status, `${context}${actual.stderr}`).toBe(0);
@@ -18557,7 +18588,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(directEvalMode, directEval.stderr).toContain('semantic_graph=reanalyzed');
+      expect(directEvalMode, directEval.stderr).toContain('semantic_graph=retained');
       const directEvalOutput = runOutput();
       expect(directEvalOutput.status, directEvalOutput.stderr).toBe(0);
       expect(directEvalOutput.stdout).toBe('42\n');
@@ -21617,7 +21648,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(directEvalMode, directEval.stderr).toContain('semantic_graph=reanalyzed');
+      expect(directEvalMode, directEval.stderr).toContain('semantic_graph=retained');
       const directEvalOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(directEvalOutput.status, directEvalOutput.stderr).toBe(0);
       expect(directEvalOutput.stdout).toBe('42\n');
@@ -21845,7 +21876,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(deepArrowMode, deepArrow.stderr).toContain('semantic_graph=reanalyzed');
+      expect(deepArrowMode, deepArrow.stderr).toContain('semantic_graph=retained');
       const deepArrowOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(deepArrowOutput.status, deepArrowOutput.stderr).toBe(0);
       expect(deepArrowOutput.stdout).toBe('84\n');
@@ -22343,9 +22374,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             (line) =>
               line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
           );
-        expect(mode, `${methodKey}: ${bundled.stderr}`).toContain(
-          retainsGraph ? 'semantic_graph=retained' : 'semantic_graph=reanalyzed',
-        );
+        expect(mode, `${methodKey}: ${bundled.stderr}`).toContain('semantic_graph=retained');
         if (retainsGraph) {
           const report = (bundled.stderr ?? '')
             .split(/\r?\n/)
@@ -22374,7 +22403,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   }, 60_000);
 
-  test('ES5 async object super keeps unary plus BigInt chains on reanalysis and preserves TypeError', () => {
+  test('ES5 async object super retains unary plus BigInt chains and preserves TypeError', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-bigint-plus-super-key-'));
     const input = join(dir, 'entry.ts');
     const nativeInput = join(dir, 'oracle.mjs');
@@ -22423,7 +22452,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             (line) =>
               line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
           );
-        expect(mode, `${key}: ${bundled.stderr}`).toContain('semantic_graph=reanalyzed');
+        expect(mode, `${key}: ${bundled.stderr}`).toContain('semantic_graph=retained');
 
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${key}: ${actual.stderr}`).toBe(0);
@@ -22579,7 +22608,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 async object super keeps unary plus BigInt template keys on reanalysis', () => {
+  test('ES5 async object super retains exact identity for unary plus BigInt template keys', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-bigint-template-super-key-'));
     const input = join(dir, 'entry.ts');
     const nativeInput = join(dir, 'oracle.mjs');
@@ -22627,7 +22656,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(mode, bundled.stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode, bundled.stderr).toContain('semantic_graph=retained');
 
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
@@ -22637,7 +22666,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 async object super keeps unresolved template reads on reanalysis', () => {
+  test('ES5 async object super retains exact unresolved template reads', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-unresolved-template-super-key-'));
     const input = join(dir, 'entry.ts');
     const nativeInput = join(dir, 'oracle.mjs');
@@ -22685,7 +22714,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(mode, bundled.stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode, bundled.stderr).toContain('semantic_graph=retained');
 
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
@@ -22813,9 +22842,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             (line) =>
               line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
           );
-        expect(mode, `${declaration}: ${bundled.stderr}`).toContain(
-          declaration === 'var' ? 'semantic_graph=retained' : 'semantic_graph=reanalyzed',
-        );
+        expect(mode, `${declaration}: ${bundled.stderr}`).toContain('semantic_graph=retained');
         if (declaration === 'var') {
           const report = (bundled.stderr ?? '')
             .split(/\r?\n/)
@@ -22891,9 +22918,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             (line) =>
               line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
           );
-        expect(mode, `${declaration}: ${bundled.stderr}`).toContain(
-          declaration === 'var' ? 'semantic_graph=retained' : 'semantic_graph=reanalyzed',
-        );
+        expect(mode, `${declaration}: ${bundled.stderr}`).toContain('semantic_graph=retained');
         if (declaration === 'var') {
           const report = (bundled.stderr ?? '')
             .split(/\r?\n/)
@@ -23085,7 +23110,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'Object.setPrototypeOf(service, prototype);',
           'service.function().then(value => console.log(Object.keys(service).join(","), value, calls));',
         ].join('\n'),
-        'reanalyzed',
+        'retained',
         'value,function 42 0\n',
       );
       run(
@@ -23099,7 +23124,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'Object.setPrototypeOf(service, prototype);',
           'service.function().then(value => console.log(Object.keys(service).join(","), value, calls));',
         ].join('\n'),
-        'reanalyzed',
+        'retained',
         'value,function 42 0\n',
       );
     } finally {
@@ -23206,7 +23231,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(synchronousSuperMode, synchronousSuper.stderr).toContain('semantic_graph=reanalyzed');
+      expect(synchronousSuperMode, synchronousSuper.stderr).toContain('semantic_graph=retained');
       const synchronousSuperOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(synchronousSuperOutput.status, synchronousSuperOutput.stderr).toBe(0);
       expect(synchronousSuperOutput.stdout).toBe('42 7\n');
@@ -23467,7 +23492,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(untrackedOptionalObjectSuperExponentiationKeyMode).toContain(
-        'semantic_graph=reanalyzed',
+        'semantic_graph=retained',
       );
       const untrackedOptionalObjectSuperExponentiationKeyOutput = spawnSync('node', [output], {
         encoding: 'utf8',
@@ -23580,7 +23605,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(untrackedMethodDepthOptionalObjectSuperKeyMode).toContain('semantic_graph=reanalyzed');
+      expect(untrackedMethodDepthOptionalObjectSuperKeyMode).toContain('semantic_graph=retained');
       const untrackedMethodDepthOptionalObjectSuperKeyOutput = spawnSync('node', [output], {
         encoding: 'utf8',
       });
@@ -23666,7 +23691,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(synchronousSuperWriteMode, synchronousSuperWrite.stderr).toContain(
-        'semantic_graph=reanalyzed',
+        'semantic_graph=retained',
       );
       const synchronousSuperWriteOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(synchronousSuperWriteOutput.status, synchronousSuperWriteOutput.stderr).toBe(0);
@@ -23847,7 +23872,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(directEvalMode, directEval.stderr).toContain('semantic_graph=reanalyzed');
+      expect(directEvalMode, directEval.stderr).toContain('semantic_graph=retained');
       const directEvalOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(directEvalOutput.status, directEvalOutput.stderr).toBe(0);
       expect(directEvalOutput.stdout).toBe('42\n');
@@ -24017,7 +24042,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           source: "import { value } from './dep.ts'; await Promise.resolve(); console.log(value);",
           dependency: 'export const value = 42;',
           expected: '42\n',
-          expectedMode: 'reanalyzed',
+          expectedMode: 'retained',
         },
         {
           name: 'syntax minification with no graph edit keeps wrapper scope',
@@ -24038,7 +24063,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             'console.log(value);',
           args: ['--minify-syntax'],
           expected: '42\n',
-          expectedMode: 'reanalyzed',
+          expectedMode: 'retained',
         },
       ];
 
@@ -24093,7 +24118,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(directEvalTlaMode, directEvalTla.stderr).toContain('semantic_graph=reanalyzed');
+      expect(directEvalTlaMode, directEvalTla.stderr).toContain('semantic_graph=retained');
       const directEvalTlaOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(directEvalTlaOutput.status, directEvalTlaOutput.stderr).toBe(0);
       expect(directEvalTlaOutput.stdout).toBe('42\n');
@@ -24207,9 +24232,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       );
       const directEval = run('--target=es5');
       expect(directEval.status, directEval.stderr).toBe(0);
-      expect(graphMode(directEval.stderr), directEval.stderr).toContain(
-        'semantic_graph=reanalyzed',
-      );
+      expect(graphMode(directEval.stderr), directEval.stderr).toContain('semantic_graph=retained');
       const directEvalOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(directEvalOutput.status, directEvalOutput.stderr).toBe(0);
       expect(directEvalOutput.stdout).toBe('42\n41\n');
@@ -24225,7 +24248,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const generatorMethod = run('--target=es5');
       expect(generatorMethod.status, generatorMethod.stderr).toBe(0);
       expect(graphMode(generatorMethod.stderr), generatorMethod.stderr).toContain(
-        'semantic_graph=reanalyzed',
+        'semantic_graph=retained',
       );
       const generatorMethodOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(generatorMethodOutput.status, generatorMethodOutput.stderr).toBe(0);
@@ -24366,7 +24389,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const es2017AsyncGenerator = run('--target=es2017');
       expect(es2017AsyncGenerator.status, es2017AsyncGenerator.stderr).toBe(0);
       expect(graphMode(es2017AsyncGenerator.stderr), es2017AsyncGenerator.stderr).toContain(
-        'semantic_graph=reanalyzed',
+        'semantic_graph=retained',
       );
       const es2017AsyncOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(es2017AsyncOutput.status, es2017AsyncOutput.stderr).toBe(0);
@@ -24389,7 +24412,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         const downlevelMethod = run('--target=es2017');
         expect(downlevelMethod.status, downlevelMethod.stderr).toBe(0);
         expect(graphMode(downlevelMethod.stderr), downlevelMethod.stderr).toContain(
-          'semantic_graph=reanalyzed',
+          'semantic_graph=retained',
         );
         const methodOutput = spawnSync('node', [output], { encoding: 'utf8' });
         expect(methodOutput.status, methodOutput.stderr).toBe(0);
@@ -24406,7 +24429,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const downlevelAsyncGenerator = run('--target=es5');
       expect(downlevelAsyncGenerator.status, downlevelAsyncGenerator.stderr).toBe(0);
       expect(graphMode(downlevelAsyncGenerator.stderr), downlevelAsyncGenerator.stderr).toContain(
-        'semantic_graph=reanalyzed',
+        'semantic_graph=retained',
       );
       const downlevelAsyncOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(downlevelAsyncOutput.status, downlevelAsyncOutput.stderr).toBe(0);
@@ -24490,7 +24513,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES2015 async-arrow and ES5 async-function graphs retain while unsupported cases reanalyze', () => {
+  test('ES2015 async-arrow and ES5 async-function graphs retain across lowering combinations', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es2015-async-fallback-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
@@ -24513,7 +24536,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(mode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode, proc.stderr).toContain('semantic_graph=retained');
       const execution = spawnSync('node', [output], { encoding: 'utf8' });
       expect(execution.status, execution.stderr).toBe(0);
       expect(execution.stdout).toBe(expectedOutput);
@@ -24782,7 +24805,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(loweredAsyncMode, loweredAsync.stderr).toContain('semantic_graph=reanalyzed');
+      expect(loweredAsyncMode, loweredAsync.stderr).toContain('semantic_graph=retained');
       const loweredAsyncOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(loweredAsyncOutput.status, loweredAsyncOutput.stderr).toBe(0);
       expect(loweredAsyncOutput.stdout).toBe('closed\n3\n');
@@ -24877,7 +24900,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('native destructuring retains binding and assignment identities while ES5 reanalyzes', () => {
+  test('native and ES5 destructuring retain binding and assignment identities', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-destructuring-retained-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
@@ -24963,7 +24986,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(downlevelMode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      expect(downlevelMode, downlevel.stderr).toContain('semantic_graph=retained');
       const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
       expect(downlevelOutput.stdout).toBe('42 42 20 20 22 42\n');
@@ -25304,7 +25327,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         const proc = run(fixture.source);
         expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
         expect(mode(proc.stderr ?? ''), `${fixture.name}: ${proc.stderr}`).toContain(
-          'semantic_graph=reanalyzed',
+          'semantic_graph=retained',
         );
         assertOutput(fixture.expected);
       }
@@ -25465,7 +25488,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         const proc = run(source);
         expect(proc.status, `${name}: ${proc.stderr}`).toBe(0);
         expect(mode(proc.stderr ?? ''), `${name}: ${proc.stderr}`).toContain(
-          'semantic_graph=reanalyzed',
+          'semantic_graph=retained',
         );
         const report = (proc.stderr ?? '')
           .split(/\r?\n/)
@@ -25681,7 +25704,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         const proc = run(fixture.source);
         expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
         expect(mode(proc.stderr ?? ''), `${fixture.name}: ${proc.stderr}`).toContain(
-          'semantic_graph=reanalyzed',
+          'semantic_graph=retained',
         );
         assertOutput(fixture.expected);
       }
@@ -25690,7 +25713,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('native default and rest parameters retain identities while ES5 reanalyzes', () => {
+  test('native and ES5 default and rest parameters retain identities', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-parameter-defaults-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
@@ -25756,7 +25779,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
 
       const downlevel = run('--target=es5');
       expect(downlevel.status, downlevel.stderr).toBe(0);
-      expect(mode(downlevel.stderr ?? ''), downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode(downlevel.stderr ?? ''), downlevel.stderr).toContain('semantic_graph=retained');
       const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
       expect(downlevelOutput.stdout).toBe('7\n');
@@ -27170,7 +27193,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         (line) =>
           line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
       );
-      expect(reanalyzedMode, reanalyzed.stderr).toContain('semantic_graph=reanalyzed');
+      expect(reanalyzedMode, reanalyzed.stderr).toContain('semantic_graph=retained');
       const reanalyzedReport = reanalyzedLines.find(
         (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
       );
@@ -27368,7 +27391,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
         );
-        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=retained');
         const report = lines.find(
           (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
         );
@@ -27666,7 +27689,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
         );
-        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=retained');
         const report = lines.find(
           (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
         );
@@ -28385,7 +28408,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 async generator object unsupported graph shapes stay on reanalysis', () => {
+  test('ES5 async generator object lowering retains exact graphs across source shapes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-object-async-generator-super-owner-reanalysis-'));
     const input = join(dir, 'entry.js');
     const output = join(dir, 'output.cjs');
@@ -28430,7 +28453,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
         );
-        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=retained');
         const report = lines.find(
           (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
         );
@@ -28763,9 +28786,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             (line) =>
               line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
           );
-        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
-          fixture.retained ? 'semantic_graph=retained' : 'semantic_graph=reanalyzed',
-        );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=retained');
         if (fixture.retained) {
           const report = (proc.stderr ?? '')
             .split(/\r?\n/)
@@ -29001,7 +29022,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('async-generator for-await retains audited owners and reanalyzes unsupported owners', () => {
+  test('async-generator for-await retains exact identities across source owners', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-async-generator-for-await-fallbacks-'));
     const input = join(dir, 'entry.js');
     const drain = [
@@ -29012,7 +29033,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     const fixtures = [
       {
         name: 'direct-eval',
-        graph: 'reanalyzed',
+        graph: 'retained',
         target: 'es5',
         source:
           'class Box { async *items() { eval("0"); for await (const value of ["eval"]) yield value; } } readFirst(new Box().items(), function (value) { console.log(value); });',
@@ -29020,7 +29041,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'derived-class',
-        graph: 'reanalyzed',
+        graph: 'retained',
         target: 'es5',
         source:
           'class Base {} class Box extends Base { async *items() { for await (const value of ["derived"]) yield value; } } readFirst(new Box().items(), function (value) { console.log(value); });',
@@ -29028,7 +29049,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'computed-method',
-        graph: 'reanalyzed',
+        graph: 'retained',
         target: 'es5',
         source:
           'var key = "items"; class Box { async *[key]() { for await (const value of ["computed"]) yield value; } } readFirst(new Box().items(), function (value) { console.log(value); });',
@@ -29036,7 +29057,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'nested-async-arrow-owner',
-        graph: 'reanalyzed',
+        graph: 'retained',
         target: 'es5',
         source:
           'class Box { async *items() { var nested = async () => { for await (const value of ["nested"]) return value; }; yield "outer"; } } readFirst(new Box().items(), function (value) { console.log(value); });',
@@ -29052,7 +29073,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'partial-async-generator-downlevel',
-        graph: 'reanalyzed',
+        graph: 'retained',
         target: 'es2017',
         source:
           'class Box { async *items() { for await (const value of ["partial"]) yield value; } } readFirst(new Box().items(), function (value) { console.log(value); });',
@@ -29060,7 +29081,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'partial-async-generator-downlevel-es2015',
-        graph: 'reanalyzed',
+        graph: 'retained',
         target: 'es2015',
         source:
           'class Box { async *items() { for await (const value of ["partial-es2015"]) yield value; } } readFirst(new Box().items(), function (value) { console.log(value); });',
@@ -29200,7 +29221,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES2015 and ES2017 async generator class downlevel keep semantic reanalysis', () => {
+  test('ES2015 and ES2017 async generator class downlevel retain semantic identity', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-partial-async-generator-class-downlevel-'));
     const input = join(dir, 'entry.ts');
     const source =
@@ -29239,7 +29260,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             (line) =>
               line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
           );
-        expect(graphMode, `${target}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        expect(graphMode, `${target}: ${proc.stderr}`).toContain('semantic_graph=retained');
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${target}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout, target).toBe(native.stdout);
@@ -29321,7 +29342,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 generator class Object shadows retain supported await and reanalyze unsafe shapes', () => {
+  test('ES5 generator class Object shadows retain exact identity across await shapes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-generator-class-object-shadow-fallback-'));
     const input = join(dir, 'entry.ts');
     const output = join(dir, 'output.cjs');
@@ -29393,9 +29414,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
               line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
           );
         const retained = fixture.name === 'async-generator-await';
-        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
-          retained ? 'semantic_graph=retained' : 'semantic_graph=reanalyzed',
-        );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=retained');
         if (retained) {
           const report = (proc.stderr ?? '')
             .split(/\r?\n/)
@@ -29888,7 +29907,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 class member preflight retains simple accessors and reanalyzes unsupported forms', () => {
+  test('ES5 class members retain exact identity across accessor and method forms', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-class-accessor-object-shadow-fallback-'));
     const input = join(dir, 'entry.js');
     const output = join(dir, 'out.cjs');
@@ -29902,7 +29921,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'instance-field',
-        graph: 'reanalyzed',
+        graph: 'retained',
         declaration: 'class Handler { value = 42; }',
         read: 'new Handler().value',
         expected: '42\n',
@@ -29916,28 +29935,28 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'this-dependent-static-field',
-        graph: 'reanalyzed',
+        graph: 'retained',
         declaration: 'class Handler { static value = this; }',
         read: 'Handler.value === Handler',
         expected: 'true\n',
       },
       {
         name: 'derived-static-field',
-        graph: 'reanalyzed',
+        graph: 'retained',
         declaration: 'class Base {} class Handler extends Base { static value = 42; }',
         read: 'Handler.value',
         expected: '42\n',
       },
       {
         name: 'computed-accessor',
-        graph: 'reanalyzed',
+        graph: 'retained',
         declaration: 'class Handler { get [Object.key]() { return 42; } }',
         read: 'new Handler().value',
         expected: '42\n',
       },
       {
         name: 'duplicate-getter-key',
-        graph: 'reanalyzed',
+        graph: 'retained',
         declaration:
           'class Handler { static get value() { return 41; } static get value() { return 42; } }',
         read: 'Handler.value',
@@ -29945,7 +29964,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'accessor-method-key-collision',
-        graph: 'reanalyzed',
+        graph: 'retained',
         declaration:
           'class Handler { static value() { return 42; } static get value() { return 41; } }',
         read: 'typeof Handler.value',
@@ -29953,7 +29972,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'escaped-accessor-key',
-        graph: 'reanalyzed',
+        graph: 'retained',
         declaration:
           'class Handler { static get value() { return 41; } static set val\\u0075e(next) {} }',
         read: 'Handler.value',
@@ -29961,7 +29980,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'static-block',
-        graph: 'reanalyzed',
+        graph: 'retained',
         declaration: 'class Handler { static { this.value = 42; } }',
         read: 'Handler.value',
         expected: '42\n',
@@ -30542,9 +30561,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       );
       const directEval = run('--target=es5');
       expect(directEval.status, directEval.stderr).toBe(0);
-      expect(graphMode(directEval.stderr), directEval.stderr).toContain(
-        'semantic_graph=reanalyzed',
-      );
+      expect(graphMode(directEval.stderr), directEval.stderr).toContain('semantic_graph=retained');
       const directEvalOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(directEvalOutput.status, directEvalOutput.stderr).toBe(0);
       expect(directEvalOutput.stdout).toBe('answer:42\n');
@@ -31475,7 +31492,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 computed object methods with shadowed Object keep reanalysis for unsafe key owners', () => {
+  test('ES5 computed object methods with shadowed Object retain exact key-owner identity', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-object-method-shadowed-global-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
@@ -31520,7 +31537,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(mode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe('42 shadow 1\n');
@@ -31779,7 +31796,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('runtime TypeScript enums keep mixed ES5 arrow modules on semantic resync', () => {
+  test('runtime TypeScript enums retain exact identity in mixed ES5 arrow modules', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-enum-arrow-resync-'));
     const output = join(dir, 'out.cjs');
     writeFileSync(
@@ -31817,7 +31834,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe('42\n');
@@ -31951,7 +31968,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         mode: 'classic-optional-chain-fallback',
-        graph: 'reanalyzed',
+        graph: 'retained',
         args: ['--jsx=classic', '--jsx-factory=h'],
         source: [
           'function h(tag, _props, child) { return [tag, child]; }',
@@ -31997,7 +32014,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         mode: 'classic-spread-child-fallback',
-        graph: 'reanalyzed',
+        graph: 'retained',
         args: ['--jsx=classic', '--jsx-factory=h'],
         source: [
           'function h(tag, _props, ...children) { return [tag, children]; }',
@@ -32102,7 +32119,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           name: 'eliding',
           importLine: "import { Header, unused } from './dep';",
           flag: '--verbatim-module-syntax=false',
-          expectedMode: 'reanalyzed',
+          expectedMode: 'retained',
         },
         {
           name: 'inline-type',
@@ -32539,7 +32556,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('JSX runtime helpers stay bound through ES5 semantic reanalysis', () => {
+  test('JSX runtime helpers stay bound through retained ES5 semantic graphs', () => {
     const cases = [
       { mode: 'automatic', helper: '_jsx', runtimeFile: 'jsx-runtime.js', exportName: 'jsx' },
       {
@@ -32613,7 +32630,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             (line) =>
               line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('view.tsx'),
           );
-        expect(graphMode, `${mode}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        expect(graphMode, `${mode}: ${proc.stderr}`).toContain('semantic_graph=retained');
 
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${mode}: ${actual.stderr}`).toBe(0);
@@ -32624,7 +32641,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('downlevel runtime helpers stay bound through semantic reanalysis', () => {
+  test('downlevel runtime helpers stay bound through retained semantic graphs', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-runtime-helper-es5-resync-'));
     const output = join(dir, 'out.cjs');
     writeFileSync(
@@ -32674,7 +32691,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
 
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
@@ -32711,7 +32728,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('bundler namespace·enum IIFE 이름은 reanalysis 뒤 exact SID를 유지한다', () => {
+  test('bundler namespace·enum IIFE 이름은 변환 뒤 exact SID를 유지한다', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-4819-iife-linker-'));
     const entry = join(dir, 'entry.ts');
     const output = join(dir, 'out.js');
@@ -32797,7 +32814,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expect(identityFor('dynamic.ts')).toMatch(/namespace_iife_params=1(?:\s|$)/);
         expect(identityFor('dynamic.ts')).toMatch(/enum_iife_params=1(?:\s|$)/);
         expect(identityFor('namespace.ts')).toMatch(/namespace_iife_params=2(?:\s|$)/);
-        expect(modeFor('dynamic.ts')).toContain('semantic_graph=reanalyzed');
+        expect(modeFor('dynamic.ts')).toContain('semantic_graph=retained');
 
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, actual.stderr).toBe(0);
@@ -33104,7 +33121,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('non-static TypeScript import-equals stays on semantic reanalysis', () => {
+  test('non-static TypeScript import-equals retains semantic identity', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-import-equals-dynamic-require-'));
     const entry = join(dir, 'entry.ts');
     const output = join(dir, 'out.cjs');
@@ -33134,7 +33151,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(graphMode, proc.stderr).toBeDefined();
-      expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -33256,7 +33273,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         source:
           "export { value as 'public-value' } from './dep.ts';\ninterface Marker { value: number }",
         readExpression: "api['public-value']",
-        graph: 'reanalyzed',
+        graph: 'retained',
         expected: '42\n',
         format: 'esm',
       },
@@ -33265,7 +33282,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         source:
           "export { value as publicValue } from './dep.ts' with { mode: 'custom' };\ninterface Marker { value: number }",
         readExpression: 'api.publicValue',
-        graph: 'reanalyzed',
+        graph: 'retained',
         expected: '42\n',
         execute: false,
       },
@@ -33886,7 +33903,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           '}',
           "console.log(word('abc-42'));",
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'abc\n',
       },
     ];
@@ -33992,7 +34009,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           "function read(JSON) { var match = /(?<__pro\\u0074o__>abc)/.exec('abc'); return match.groups.__proto__; }",
           "console.log(read({ parse: function () { throw new Error('source JSON captured'); } }));",
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         minify: true,
         minifyIdentifiers: false,
         output: 'abc\n',
@@ -34013,7 +34030,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           "function read(JSON) { eval('var injected = 1'); var match = /(?<__proto__>abc)/.exec('abc'); return match.groups.__proto__; }",
           "console.log(read({ parse: function () { throw new Error('source JSON captured'); } }));",
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'abc\n',
       },
       {
@@ -34022,7 +34039,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           "function read(input) { eval('var injected = 1'); return /(?<word>[a-z]+)/.exec(input).groups.word; }",
           "console.log(read('abc'));",
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'abc\n',
       },
       {
@@ -34331,7 +34348,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'unbound direct call dynamic spread stays on reanalysis on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'globalThis.remoteAdd = function (left, right) { return left + right; };',
           'function total(values) { return remoteAdd(...values); }',
@@ -34371,7 +34388,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'unbound member receiver spread stays on reanalysis on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'globalThis.operations = { add: function (left, right) { return left + right; } };',
           'function total(values) { return operations.add(...values); }',
@@ -34405,7 +34422,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'computed member call spread with an unbound key stays on reanalysis on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'globalThis.methodName = "add";',
           'var operations = { add: function (left, right) { return left + right; } };',
@@ -34417,7 +34434,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'computed member call spread with an effectful key stays on reanalysis on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var operations = { add: function (left, right) { return left + right; } };',
           'function getMethodName() { return "add"; }',
@@ -34429,7 +34446,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'optional member receiver spread stays on reanalysis on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var operations = { add: function (left, right) { return left + right; } };',
           'function total(values) { return operations?.add(...values); }',
@@ -34440,7 +34457,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'optional computed member spread stays on reanalysis on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var methodName = "add";',
           'var operations = { add: function (left, right) { return left + right; } };',
@@ -34452,7 +34469,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'optional member call spread stays on reanalysis on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var operations = { add: function (left, right) { return left + right; } };',
           'function total(values) { return operations.add?.(...values); }',
@@ -34463,7 +34480,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'effectful member receiver dynamic spread is evaluated once on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var receiverCalls = 0;',
           'var operations = { add: function (left, right) { return left + right; } };',
@@ -34476,7 +34493,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'optional direct call dynamic spread stays on reanalysis on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'function add(left, right) { return left + right; }',
           'function total(values) { return add?.(...values); }',
@@ -34487,7 +34504,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'optional direct call literal spread stays on reanalysis on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'function add(left, right) { return left + right; }',
           'function total() { return add?.(...[4, 7]); }',
@@ -34509,7 +34526,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'unbound direct constructor callee stays on reanalysis on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'globalThis.RemotePair = function (left, right) { this.total = left + right; };',
           'function pair(values) { return new RemotePair(...values); }',
@@ -34520,7 +34537,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'member constructor callee stays on reanalysis on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var constructors = { Pair: function (left, right) { this.total = left + right; } };',
           'function pair(values) { return new constructors.Pair(...values); }',
@@ -34531,7 +34548,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'complex constructor callee stays on reanalysis on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var constructorCalls = 0;',
           'function Pair(left, right) { this.total = left + right; }',
@@ -34545,7 +34562,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'unbound constructor spread operand stays on reanalysis on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'globalThis.remoteValues = [4, 7];',
           'function Pair(left, right) { this.total = left + right; }',
@@ -34557,7 +34574,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'call spread literal lowering on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'function max() { return (() => Math.max(...[4, 7]))(); }',
           'console.log(max());',
@@ -34596,7 +34613,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'unbound member array spread operand on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'globalThis.values = [1, 2];',
           'function list() { return [...globalThis.values, 3]; }',
@@ -34607,7 +34624,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'unbound identifier array spread operand on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'globalThis.remoteValues = [1, 2];',
           'function list() { return [...remoteValues, 3]; }',
@@ -34618,7 +34635,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'direct eval beside helper array spread on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'function list(values) { eval("var observed = 1"); return [...values, 3]; }',
           "console.log(list([1, 2]).join(','));",
@@ -34628,7 +34645,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'array spread with a hole on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: ['function list() { return [...[, 2]]; }', 'console.log(list().length);'].join(
           '\n',
         ),
@@ -34637,7 +34654,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'direct eval array spread on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           "function run() { return (() => eval(...['1 + 2']))(); }",
           'console.log(run());',
@@ -34935,7 +34952,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'generator object method without yield lowers on node5',
         target: 'node5',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var methods = {',
           '  *values() { return 41; },',
@@ -36355,11 +36372,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
                 // fields and counters must still pass the common checker.
                 const prepass = report.startsWith('zntc: symbol-identity-prepass ');
                 const shadowCounts = [1, 1, 1, 1, 1, 1, 1, 1, 2, 0];
-                const shadow = prepass
-                  ? mode === 'full' && sourceIndex === 3
-                    ? 0
-                    : shadowCounts[sourceIndex]
-                  : 0;
+                const shadow = prepass ? shadowCounts[sourceIndex] : 0;
                 const expectedProblems =
                   shadow > 0
                     ? [`shadowed_external_reference=${shadow}, expected 0`, 'clean=0, expected 1']
@@ -37009,7 +37022,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
-  test('Reanimated worklet nested in another function stays on semantic reanalysis', () => {
+  test('Reanimated worklet nested in another function retains semantic identity', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-nested-reanalysis-'));
     const entry = join(dir, 'entry.js');
     const output = join(dir, 'out.cjs');
@@ -37058,7 +37071,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
         );
-      expect(mode, stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode, stderr).toContain('semantic_graph=retained');
 
       const outputs = JSON.parse(proc.stdout) as string[];
       expect(outputs).toHaveLength(1);
@@ -37137,7 +37150,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
-  test('Reanimated worklet with downlevel syntax stays on semantic reanalysis', () => {
+  test('Reanimated worklet with downlevel syntax retains semantic identity', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-downlevel-reanalysis-'));
     const entry = join(dir, 'entry.js');
     const output = join(dir, 'out.cjs');
@@ -37182,7 +37195,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
         );
-      expect(mode, stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode, stderr).toContain('semantic_graph=retained');
 
       const outputs = JSON.parse(proc.stdout) as string[];
       expect(outputs).toHaveLength(1);
@@ -37257,7 +37270,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
-  test('Reanimated worklet with direct eval stays on semantic reanalysis', () => {
+  test('Reanimated worklet with direct eval retains semantic identity', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-eval-reanalysis-'));
     const entry = join(dir, 'entry.js');
     const output = join(dir, 'out.cjs');
@@ -37301,7 +37314,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
         );
-      expect(mode, stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode, stderr).toContain('semantic_graph=retained');
 
       const outputs = JSON.parse(proc.stdout) as string[];
       expect(outputs).toHaveLength(1);
@@ -37314,7 +37327,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
-  test('Reanimated worklet with a user AST plugin stays on semantic reanalysis', () => {
+  test('Reanimated worklet with a user AST plugin retains semantic identity', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-plugin-reanalysis-'));
     const entry = join(dir, 'entry.js');
     const output = join(dir, 'out.cjs');
@@ -37359,7 +37372,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
         );
-      expect(mode, stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode, stderr).toContain('semantic_graph=retained');
 
       const outputs = JSON.parse(proc.stdout) as string[];
       expect(outputs).toHaveLength(1);
@@ -37592,7 +37605,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         .find(
           (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
         );
-      expect(mode, stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode, stderr).toContain('semantic_graph=retained');
       const identity = stderr
         .split(/\r?\n/)
         .find((line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry));
@@ -37840,7 +37853,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         if (target.name === 'esnext') {
           expect(mode, `${target.name}: ${stderr}`).toContain('semantic_graph=retained');
         } else if (target.name === 'es2022') {
-          expect(mode, `${target.name}: ${stderr}`).toContain('semantic_graph=reanalyzed');
+          expect(mode, `${target.name}: ${stderr}`).toContain('semantic_graph=retained');
         }
         expect(
           Number(identity.match(/generated_bindings=(\d+)/)?.[1] ?? 0),
@@ -37888,7 +37901,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('/index.tsx:'),
         );
-      expect(noVerbatimMode, noVerbatimStderr).toContain('semantic_graph=reanalyzed');
+      expect(noVerbatimMode, noVerbatimStderr).toContain('semantic_graph=retained');
       const noVerbatimIdentity = noVerbatimStderr
         .split(/\r?\n/)
         .find(
@@ -37954,7 +37967,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   });
 
-  test('bundler Emotion keeps direct eval on semantic reanalysis', () => {
+  test('bundler Emotion retains semantic identity with direct eval', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-emotion-eval-reanalysis-'));
     const output = join(dir, 'out.cjs');
     writeFileSync(join(dir, 'zntc.config.json'), JSON.stringify({ compiler: { emotion: true } }));
@@ -37996,7 +38009,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('/entry.tsx:'),
         );
-      expect(mode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode, proc.stderr).toContain('semantic_graph=retained');
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
@@ -38421,7 +38434,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           },
         );
         expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
-        const expectedGraph = fixture.graph ?? 'reanalyzed';
+        const expectedGraph = fixture.graph ?? 'retained';
         const mode = (proc.stderr ?? '')
           .split(/\r?\n/)
           .find(
@@ -38565,7 +38578,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           },
         );
         expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
-        const expectedGraph = fixture.graph ?? 'reanalyzed';
+        const expectedGraph = fixture.graph ?? 'retained';
         const mode = (proc.stderr ?? '')
           .split(/\r?\n/)
           .find(
@@ -38721,7 +38734,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           },
         );
         expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
-        const expectedGraph = fixture.graph ?? 'reanalyzed';
+        const expectedGraph = fixture.graph ?? 'retained';
         const mode = (proc.stderr ?? '')
           .split(/\r?\n/)
           .find(
@@ -38756,7 +38769,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   });
 
-  test('ES5 empty classes, safe static fields, plain methods and compatible accessors retain their graph; other forms resync', () => {
+  test('ES5 classes, static fields, methods and accessors retain exact semantic graphs', () => {
     let deeplyNestedComputedKey = 'makeKey()';
     for (let depth = 0; depth < 64; depth += 1) {
       deeplyNestedComputedKey = `wrap(holder[${deeplyNestedComputedKey}]())`;
@@ -38828,7 +38841,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'syntax minification still uses semantic reanalysis',
         source:
           'var seed = 41; class SyntaxMinified { static value = seed + 1; } console.log(SyntaxMinified.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '42\n',
         minifyWhitespace: true,
         minifySyntax: true,
@@ -38857,14 +38870,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       {
         name: 'instance fields stay on semantic reanalysis',
         source: 'class InstanceField { value = 9; } console.log(new InstanceField().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'static __proto__ field stays on semantic reanalysis',
         source:
           'class ProtoStaticField { static __proto__ = 9; } console.log(Object.hasOwn(ProtoStaticField, "__proto__"), ProtoStaticField.__proto__);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true 9\n',
       },
       {
@@ -38947,7 +38960,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'optional computed member receiver key calls stay on semantic reanalysis',
         source:
           'var key = () => "outer"; var holder = { outer: { value: 9 } }; class OptionalComputedMemberReceiverCallField { static value = holder[key?.()].value; } console.log(OptionalComputedMemberReceiverCallField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -38982,7 +38995,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'optional computed static member call key function stays on semantic reanalysis',
         source:
           'var key = () => "value"; var holder = { value() { return 9; } }; class OptionalComputedStaticMemberCallKeyFunctionField { static value = holder[key?.()](); } console.log(OptionalComputedStaticMemberCallKeyFunctionField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -39012,14 +39025,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'optional computed static member invocation with optional key call stays on semantic reanalysis',
         source:
           'var key = () => "value"; var holder = { value() { return 9; } }; class OptionalComputedStaticMemberInvocationField { static value = holder[key?.()]?.(); } console.log(OptionalComputedStaticMemberInvocationField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'optional computed static member invocation with effectful assignment key stays on semantic reanalysis',
         source:
           'var key = "other"; var holder = { value() { return 9; } }; class EffectfulComputedOptionalMemberInvocationField { static value = holder[(key = "value")]?.(); } console.log(EffectfulComputedOptionalMemberInvocationField.value, key);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 value\n',
       },
       {
@@ -39049,7 +39062,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'computed optional member invocation with unresolved member-expression receiver stays on semantic reanalysis',
         source:
           'var key = "value"; globalThis.__zntcUnresolvedOptionalInvocationReceiver = { value() { return 9; } }; class UnresolvedComputedOptionalMemberInvocationField { static value = globalThis.__zntcUnresolvedOptionalInvocationReceiver[key]?.(); } console.log(UnresolvedComputedOptionalMemberInvocationField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -39101,7 +39114,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'optional computed static member key call stays on semantic reanalysis',
         source:
           'var key = () => "value"; var holder = { value: 9 }; class OptionalComputedStaticMemberKeyCallField { static value = holder[key?.()]; } console.log(OptionalComputedStaticMemberKeyCallField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -39122,7 +39135,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'unbound optional computed static-member key stays on semantic reanalysis',
         source:
           'globalThis.__zntcOptionalComputedStaticKey = "value"; var holder = { value: 9 }; class UnboundOptionalComputedStaticMemberKey { static value = holder?.[__zntcOptionalComputedStaticKey]; } console.log(UnboundOptionalComputedStaticMemberKey.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -39143,7 +39156,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'optional-call key stays on semantic reanalysis inside optional computed access',
         source:
           'var key = function() { return "value"; }; var holder = { value: 9 }; class OptionalCallComputedStaticMemberKey { static value = holder?.[key?.()]; } console.log(OptionalCallComputedStaticMemberKey.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -39247,7 +39260,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'optional computed static field name call stays on semantic reanalysis',
         source:
           'var fieldKey = () => "value"; class OptionalComputedStaticFieldNameCall { static [fieldKey?.()] = 9; } console.log(OptionalComputedStaticFieldNameCall.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -39268,14 +39281,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'explicit optional invocation in computed static field name stays on semantic reanalysis',
         source:
           'globalThis.__zntcOptionalInvocationStaticFieldKeyReceiver = { fieldKey() { return "value"; } }; class OptionalInvocationStaticFieldName { static [__zntcOptionalInvocationStaticFieldKeyReceiver?.fieldKey?.()] = 9; } console.log(OptionalInvocationStaticFieldName.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'class-self references in computed static field keys stay on semantic reanalysis',
         source:
           'var SelfKey = class SelfKey { static [false && SelfKey] = 1; }; console.log(SelfKey.false);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
@@ -39310,14 +39323,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'unresolved optional member call roots keep identity on reanalysis',
         source:
           'var order = []; var receiver = { key: "called", get method() { order.push("method"); return function () { order.push(this === receiver ? "this" : "wrong-this"); return this.key; }; } }; Object.defineProperty(globalThis, "_callRoot", { configurable: true, get() { order.push("root"); return receiver; } }); globalThis._nullRoot = null; function argument() { order.push("argument"); return 1; } class UnresolvedOptionalMemberCallStaticFieldKey { static [_callRoot?.method?.(argument())] = 11; static [_nullRoot?.method?.(argument())] = 12; } console.log(UnresolvedOptionalMemberCallStaticFieldKey.called, UnresolvedOptionalMemberCallStaticFieldKey.undefined, order.join(","));',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '11 12 root,method,argument,this\n',
       },
       {
         name: 'call-result receiver in computed static field member-read key stays on semantic reanalysis',
         source:
           'function makeHolder() { return { key: "value" }; } class CallResultComputedStaticFieldMemberKey { static [makeHolder().key] = 9; } console.log(CallResultComputedStaticFieldMemberKey.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -39405,7 +39418,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'unresolved require member invocation stays on semantic reanalysis',
         source:
           'class UnresolvedRequireMemberInvocationField { static value = require.resolve?.("node:path"); } console.log(typeof UnresolvedRequireMemberInvocationField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'string\n',
       },
       {
@@ -39449,21 +39462,21 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'unresolved call-result optional member invocation stays on semantic reanalysis',
         source:
           'globalThis.__zntcUnresolvedOptionalReceiverFactory = function () { return { fieldValue(input) { return input + 1; } }; }; class UnresolvedCallResultOptionalMemberInvocationField { static value = __zntcUnresolvedOptionalReceiverFactory().fieldValue?.(8); } console.log(UnresolvedCallResultOptionalMemberInvocationField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'unresolved call-result optional receiver member call stays on semantic reanalysis',
         source:
           'globalThis.__zntcUnresolvedOptionalReceiverCallFactory = function () { return { fieldValue(input) { return input + 1; } }; }; class UnresolvedCallResultOptionalReceiverMemberCallField { static value = __zntcUnresolvedOptionalReceiverCallFactory()?.fieldValue(8); } console.log(UnresolvedCallResultOptionalReceiverMemberCallField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'unresolved call-result ordinary member invocation stays on semantic reanalysis',
         source:
           'globalThis.__zntcUnresolvedMemberReceiverFactory = function () { return { fieldValue(input) { return input + 1; } }; }; class UnresolvedCallResultMemberInvocationField { static value = __zntcUnresolvedMemberReceiverFactory().fieldValue(8); } console.log(UnresolvedCallResultMemberInvocationField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -39485,49 +39498,49 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'optional nested call-result member receivers stay on semantic reanalysis',
         source:
           'var receiver = { fieldValue(input) { return input + 1; } }; function makeReceiverFactory() { return function () { return receiver; }; } class OptionalNestedCallResultMemberInvocationField { static value = makeReceiverFactory()?.().fieldValue(8); } console.log(OptionalNestedCallResultMemberInvocationField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'unresolved nested call-result member receivers stay on semantic reanalysis',
         source:
           'var receiver = { fieldValue(input) { return input + 1; } }; globalThis.__zntcUnresolvedNestedReceiverFactory = function () { return function () { return receiver; }; }; class UnresolvedNestedCallResultMemberInvocationField { static value = __zntcUnresolvedNestedReceiverFactory()().fieldValue(8); } console.log(UnresolvedNestedCallResultMemberInvocationField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'nested call-result member receiver with effectful call argument stays on semantic reanalysis',
         source:
           'var order = []; var receiver = { fieldValue(input) { return input + 1; } }; function makeReceiverFactory(input) { return function () { return receiver; }; } class EffectfulNestedCallResultMemberInvocationField { static value = makeReceiverFactory((order.push("argument-effect"), 1))().fieldValue(8); } console.log(EffectfulNestedCallResultMemberInvocationField.value, order.join(","));',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 argument-effect\n',
       },
       {
         name: 'nested call-result member access in computed class key stays on semantic reanalysis',
         source:
           'function makeReceiverFactory() { return function () { return { fieldKey: "value" }; }; } class NestedCallResultComputedKey { static [makeReceiverFactory()().fieldKey] = 9; } console.log(NestedCallResultComputedKey.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'call-result optional member invocation with effectful receiver argument stays on semantic reanalysis',
         source:
           'var order = []; function makeReceiver(input) { return { fieldValue(value) { return input + value; } }; } class EffectfulCallResultOptionalMemberInvocationField { static value = makeReceiver((order.push("receiver-argument"), 1)).fieldValue?.(8); } console.log(EffectfulCallResultOptionalMemberInvocationField.value, order.join(","));',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 receiver-argument\n',
       },
       {
         name: 'call-result optional receiver member call with effectful receiver argument stays on semantic reanalysis',
         source:
           'var order = []; function makeReceiver(input) { return { fieldValue(value) { return input + value; } }; } class EffectfulCallResultOptionalReceiverMemberCallField { static value = makeReceiver((order.push("receiver-argument"), 1))?.fieldValue(8); } console.log(EffectfulCallResultOptionalReceiverMemberCallField.value, order.join(","));',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 receiver-argument\n',
       },
       {
         name: 'call-result ordinary member invocation with effectful receiver argument stays on semantic reanalysis',
         source:
           'var order = []; function makeReceiver(input) { return { fieldValue(value) { return input + value; } }; } class EffectfulCallResultMemberInvocationField { static value = makeReceiver((order.push("receiver-argument"), 1)).fieldValue(8); } console.log(EffectfulCallResultMemberInvocationField.value, order.join(","));',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 receiver-argument\n',
       },
       {
@@ -39682,7 +39695,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnresolvedEffectfulUpdateKeyField { static value = __zntcUnresolvedEffectfulUpdateKeyHolder.outer?.[events.push("key"), keyIndex++].fieldValue(8); }',
           'console.log(UnresolvedEffectfulUpdateKeyField.value, keyIndex, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 1 key\n',
       },
       {
@@ -39712,7 +39725,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class BoundRootUnboundSequenceKeyField { static value = holder.outer?.[__zntcBoundRootUnboundSequenceKey(), "receiver"].fieldValue(8); }',
           'console.log(BoundRootUnboundSequenceKeyField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 key\n',
       },
       {
@@ -39724,7 +39737,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class OptionalEffectfulSequenceKeyField { static value = holder.outer?.[optionalKeyCall?.(), "receiver"].fieldValue(8); }',
           'console.log(OptionalEffectfulSequenceKeyField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 key\n',
       },
       {
@@ -39736,7 +39749,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundEffectfulDeepOptionalMemberReceiverField { static value = __zntcUnboundEffectfulSequenceKeyHolder.outer?.[__zntcExternalEffectfulSequenceKey(), "receiver"].fieldValue(8); }',
           'console.log(UnboundEffectfulDeepOptionalMemberReceiverField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 key\n',
       },
       {
@@ -39775,7 +39788,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundEffectfulArgumentSequenceField { static value = __zntcUnboundEffectfulArgumentSequenceHolder.outer?.receiver.fieldValue((__zntcUnboundArgumentSequenceEffect(), 8)); }',
           'console.log(UnboundEffectfulArgumentSequenceField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 argument\n',
       },
       {
@@ -39787,7 +39800,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UpdateEffectfulArgumentSequenceField { static value = __zntcUpdateEffectfulArgumentSequenceHolder.outer?.receiver.fieldValue((events.push("before-argument"), argumentValue++)); }',
           'console.log(UpdateEffectfulArgumentSequenceField.value, argumentValue, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 9 before-argument\n',
       },
       {
@@ -39872,7 +39885,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundComputedFinalCallKeyCallField { static value = __zntcUnboundComputedFinalCallKeyCallHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[__zntcUnboundComputedFinalCallKeyFactory()](1))); }',
           'console.log(UnboundComputedFinalCallKeyCallField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,key\n',
       },
       {
@@ -39905,7 +39918,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundOptionalComputedFinalCallKeyField { static value = __zntcUnboundOptionalComputedFinalCallKeyHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[__zntcUnboundOptionalComputedFinalCallKeyFactory?.()](1))); }',
           'console.log(UnboundOptionalComputedFinalCallKeyField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,key\n',
       },
       {
@@ -39919,7 +39932,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundOptionalComputedFinalCallKeyArgumentField { static value = __zntcUnboundOptionalComputedFinalCallKeyArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[argumentKey?.(__zntcUnboundOptionalComputedFinalCallKeyArgument())](1))); }',
           'console.log(UnboundOptionalComputedFinalCallKeyArgumentField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,unbound-key-argument,key:value\n',
       },
       {
@@ -39960,7 +39973,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundComputedMemberArgumentKeyField { static value = __zntcUnboundComputedMemberArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[argumentKey(argumentSource.receiver[__zntcUnboundComputedMemberArgumentMethodKey]())](1))); }',
           'console.log(UnboundComputedMemberArgumentKeyField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,nested-call,key:value,value-call\n',
       },
       {
@@ -39989,7 +40002,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundComputedMemberCallKeyField { static value = __zntcUnboundComputedMemberCallKeyHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[argumentKey(argumentSource.receiver[__zntcUnboundNestedMethodKey()]())](1))); }',
           'console.log(UnboundComputedMemberCallKeyField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,unbound-nested-key,nested-call,key:value,value-call\n',
       },
       {
@@ -40003,7 +40016,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class OptionalComputedMemberCallKeyField { static value = __zntcOptionalComputedMemberCallKeyHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[argumentKey(argumentSource.receiver[nestedMethodKey?.()]())](1))); }',
           'console.log(OptionalComputedMemberCallKeyField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,nested-key,nested-call,key:value,value-call\n',
       },
       {
@@ -40018,7 +40031,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class NestedComputedMemberCallKeyField { static value = __zntcNestedComputedMemberCallKeyHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[argumentKey(argumentSource.receiver[nestedMethodKey(deepMethodKey())]())](1))); }',
           'console.log(NestedComputedMemberCallKeyField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,deep-key,nested-key:nestedKey,nested-call,key:value,value-call\n',
       },
       {
@@ -40031,7 +40044,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class OptionalComputedMemberArgumentKeyField { static value = __zntcOptionalComputedMemberArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[argumentKey(argumentSource.receiver?.["nestedKey"]())](1))); }',
           'console.log(OptionalComputedMemberArgumentKeyField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,nested-call,key:value,value-call\n',
       },
       {
@@ -40045,7 +40058,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundNestedComputedFinalCallKeyArgumentField { static value = __zntcUnboundComputedFinalCallKeyArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[argumentKey(__zntcUnboundComputedFinalCallKeyArgument())](1))); }',
           'console.log(UnboundNestedComputedFinalCallKeyArgumentField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,unbound-key-argument,key:value\n',
       },
       {
@@ -40060,7 +40073,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class DeepComputedFinalCallKeyArgumentField { static value = __zntcDeepComputedFinalCallKeyArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[argumentKey(nestedKeyArgument(deepKeyArgument()))](1))); }',
           'console.log(DeepComputedFinalCallKeyArgumentField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,deep,nested:value,key:value\n',
       },
       {
@@ -40086,7 +40099,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundComputedFinalCallKeyField { static value = __zntcUnboundComputedFinalCallKeyHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[__zntcUnboundComputedFinalCallKey](1))); }',
           'console.log(UnboundComputedFinalCallKeyField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before\n',
       },
       {
@@ -40112,7 +40125,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class OptionalComputedFinalCallKeyField { static value = __zntcOptionalComputedFinalCallKeyHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver?.[argumentKey](1))); }',
           'console.log(OptionalComputedFinalCallKeyField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before\n',
       },
       {
@@ -40141,7 +40154,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class BoundRootUnboundSequenceCallField { static value = holder.outer?.receiver.fieldValue((events.push("before"), __zntcBoundRootUnboundSequenceCall())); }',
           'console.log(BoundRootUnboundSequenceCallField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,unbound\n',
       },
       {
@@ -40153,7 +40166,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class BoundRootUnboundSequencePrefixField { static value = holder.outer?.receiver.fieldValue((events.push("before"), __zntcBoundRootUnboundSequencePrefix(), 8)); }',
           'console.log(BoundRootUnboundSequencePrefixField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,unbound-prefix\n',
       },
       {
@@ -40165,7 +40178,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class BoundRootOptionalSequencePrefixField { static value = holder.outer?.receiver.fieldValue((events.push("before"), argumentSource.optionalCall?.(), 8)); }',
           'console.log(BoundRootOptionalSequencePrefixField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,optional-prefix\n',
       },
       {
@@ -40177,7 +40190,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class BoundRootUpdateSequenceField { static value = holder.outer?.receiver.fieldValue((events.push("before"), argumentValue++, 8)); }',
           'console.log(BoundRootUpdateSequenceField.value, argumentValue, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 8 before\n',
       },
       {
@@ -40189,7 +40202,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class BoundRootOptionalSequenceCallField { static value = holder.outer?.receiver.fieldValue((events.push("before"), argumentSource.valueCall?.())); }',
           'console.log(BoundRootOptionalSequenceCallField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,optional\n',
       },
       {
@@ -40201,7 +40214,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundFinalSequenceCallField { static value = __zntcUnboundFinalSequenceCallHolder.outer?.receiver.fieldValue((events.push("before"), __zntcUnboundFinalSequenceCall())); }',
           'console.log(UnboundFinalSequenceCallField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 before,argument\n',
       },
       {
@@ -40213,7 +40226,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class OptionalFinalSequenceCallField { static value = __zntcOptionalFinalSequenceCallHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.valueCall?.())); }',
           'console.log(OptionalFinalSequenceCallField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 before,argument\n',
       },
       {
@@ -40256,7 +40269,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundNestedSequenceArgumentField { static value = __zntcUnboundNestedSequenceArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.valueCall(__zntcUnboundNestedSequenceArgument()))); }',
           'console.log(UnboundNestedSequenceArgumentField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,unbound-argument,argument-this\n',
       },
       {
@@ -40281,7 +40294,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundOptionalNestedSequenceArgumentField { static value = __zntcUnboundOptionalNestedSequenceArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.valueCall(__zntcUnboundOptionalNestedSequenceArgument?.()))); }',
           'console.log(UnboundOptionalNestedSequenceArgumentField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,unbound-optional,argument-this\n',
       },
       {
@@ -40294,7 +40307,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class EffectfulOptionalNestedSequenceArgumentField { static value = __zntcEffectfulOptionalNestedSequenceArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.valueCall(argumentSource.optionalValue?.(effectfulNestedArgument())))); }',
           'console.log(EffectfulOptionalNestedSequenceArgumentField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,nested-argument,optional-this\n',
       },
       {
@@ -40306,7 +40319,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class DeepNestedSequenceArgumentField { static value = __zntcDeepNestedSequenceArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.valueCall(argumentSource.outer(argumentSource.inner())))); }',
           'console.log(DeepNestedSequenceArgumentField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '10 before,inner,outer,argument-this\n',
       },
       {
@@ -40330,7 +40343,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundMemberSequenceField { static value = __zntcUnboundMemberSequenceHolder.outer?.receiver.fieldValue((events.push("before-argument"), __zntcUnboundMemberSequenceSource.value)); }',
           'console.log(UnboundMemberSequenceField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before-argument,value\n',
       },
       {
@@ -40342,7 +40355,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class OptionalMemberSequenceField { static value = __zntcOptionalMemberSequenceHolder.outer?.receiver.fieldValue((events.push("before-argument"), argumentSource?.value)); }',
           'console.log(OptionalMemberSequenceField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before-argument,value\n',
       },
       {
@@ -40368,7 +40381,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundComputedMemberSequenceField { static value = __zntcUnboundComputedMemberSequenceHolder.outer?.receiver.fieldValue((events.push("before-argument"), argumentSource[__zntcUnboundComputedMemberSequenceKey()])); }',
           'console.log(UnboundComputedMemberSequenceField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before-argument,key,value\n',
       },
       {
@@ -40396,7 +40409,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundOptionalMemberReadKeyField { static value = __zntcUnboundOptionalMemberReadSequenceHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource[__zntcUnboundOptionalMemberReadKey?.()])); }',
           'console.log(UnboundOptionalMemberReadKeyField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,unbound-key,value\n',
       },
       {
@@ -40425,7 +40438,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundOptionalMemberReadKeyArgumentField { static value = __zntcUnboundOptionalMemberReadKeyArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource[argumentKey?.(__zntcUnboundOptionalMemberReadKeyArgument())])); }',
           'console.log(UnboundOptionalMemberReadKeyArgumentField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,unbound-argument,key:1,value\n',
       },
       {
@@ -40500,7 +40513,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundOrdinaryOptionalKeyArgumentField { static value = __zntcUnboundOrdinaryOptionalKeyHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource[argumentKey(__zntcUnboundOrdinaryOptionalKeyArgument?.())])); }',
           'console.log(UnboundOrdinaryOptionalKeyArgumentField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,unbound,key:value,value\n',
       },
       {
@@ -40514,7 +40527,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundOptionalNestedMemberReadKeyArgumentField { static value = __zntcUnboundOptionalNestedMemberReadKeyArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource[argumentKey?.(__zntcUnboundOptionalNestedMemberReadKeyArgument?.())])); }',
           'console.log(UnboundOptionalNestedMemberReadKeyArgumentField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,unbound-nested,key:value,value\n',
       },
       {
@@ -40560,7 +40573,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnboundNestedComputedMemberSequenceField { static value = __zntcUnboundNestedComputedMemberSequenceHolder.outer?.receiver.fieldValue((events.push("before-argument"), argumentSource[argumentKey(__zntcUnboundNestedComputedMemberKeyArgument())])); }',
           'console.log(UnboundNestedComputedMemberSequenceField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before-argument,key-argument,key:inner,value\n',
       },
       {
@@ -40606,7 +40619,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class ThirdNestedComputedMemberSequenceField { static value = __zntcThirdNestedComputedMemberSequenceHolder.outer?.receiver.fieldValue((events.push("before-argument"), argumentSource[argumentKey(outerKeyArgument?.(middleKeyArgument?.(innerKeyArgument?.())))])); }',
           'console.log(ThirdNestedComputedMemberSequenceField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before-argument,inner-key,middle-key:deep,outer-key:deep,key:deep,value\n',
       },
       {
@@ -40622,7 +40635,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class ThirdOptionalNestedComputedMemberSequenceField { static value = __zntcThirdOptionalNestedComputedMemberSequenceHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource[argumentKey?.(outerKeyArgument?.(middleKeyArgument?.(innerKeyArgument?.())))])); }',
           'console.log(ThirdOptionalNestedComputedMemberSequenceField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,inner-key,middle-key:1,outer-key:1,key:1,value\n',
       },
       {
@@ -40671,7 +40684,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'unresolved call-result static member reads stay on semantic reanalysis',
         source:
           'globalThis.__zntcUnresolvedMemberReadFactory = function () { return { value: 9 }; }; class UnresolvedCallResultStaticMemberReadField { static value = __zntcUnresolvedMemberReadFactory().value; } console.log(UnresolvedCallResultStaticMemberReadField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -40691,21 +40704,21 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'unresolved call-result optional member reads stay on semantic reanalysis',
         source:
           'globalThis.__zntcUnresolvedOptionalMemberReadFactory = function () { return { value: 9 }; }; class UnresolvedCallResultOptionalMemberReadField { static value = __zntcUnresolvedOptionalMemberReadFactory()?.value; } console.log(UnresolvedCallResultOptionalMemberReadField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'optional call-result member read with effectful receiver argument stays on semantic reanalysis',
         source:
           'var order = []; var holder = { value: 9 }; function makeHolder(input) { return holder; } class EffectfulOptionalCallResultMemberReadField { static value = makeHolder((order.push("receiver-argument"), 1))?.value; } console.log(EffectfulOptionalCallResultMemberReadField.value, order.join(","));',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 receiver-argument\n',
       },
       {
         name: 'call-result static member read with effectful receiver argument stays on semantic reanalysis',
         source:
           'var order = []; var holder = { value: 9 }; function makeHolder(input) { return holder; } class EffectfulCallResultStaticMemberReadField { static value = makeHolder((order.push("receiver-argument"), 1)).value; } console.log(EffectfulCallResultStaticMemberReadField.value, order.join(","));',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 receiver-argument\n',
       },
       {
@@ -40741,14 +40754,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'unresolved require calls keep import scanning on semantic reanalysis',
         source:
           'class UnresolvedRequireCallField { static value = require("node:path"); } console.log(typeof UnresolvedRequireCallField.value.join);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'function\n',
       },
       {
         name: 'unresolved optional require calls keep import scanning on semantic reanalysis',
         source:
           'class OptionalUnresolvedRequireCallField { static value = require?.("node:path"); } console.log(typeof OptionalUnresolvedRequireCallField.value.join);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'function\n',
       },
       {
@@ -40834,21 +40847,21 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'effectful non-call static initializer arguments stay on semantic reanalysis',
         source:
           'var order = []; function fieldValue(input) { return input + 1; } class EffectfulArgumentField { static value = fieldValue((order.push("argument"), 8)); } console.log(EffectfulArgumentField.value, order.join(","));',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 argument\n',
       },
       {
         name: 'escaped direct eval in a static initializer stays on semantic reanalysis',
         source:
           'class DirectEvalField { static value = e\\u0076al("1 + 2"); } console.log(DirectEvalField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3\n',
       },
       {
         name: 'static field this initializers stay on semantic reanalysis',
         source:
           'class StaticThisField { static value = this; } console.log(StaticThisField.value === StaticThisField);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
@@ -40977,42 +40990,42 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'method after an accessor keeps source order on reanalysis',
         source:
           'class Reordered { get value() { return 7; } method() { return 9; } } var reordered = new Reordered(); console.log(reordered.value, reordered.method());',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '7 9\n',
       },
       {
         name: 'method and accessor with the same key keep duplicate order on reanalysis',
         source:
           'class DuplicateKey { value() { return 7; } get value() { return 9; } } console.log(new DuplicateKey().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'duplicate getter methods',
         source:
           'class Duplicate { get value() { return 7; } get value() { return 9; } } console.log(new Duplicate().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'more than one accessor pair member of a kind keeps reanalysis',
         source:
           'class Triple { get value() { return 1; } set value(n) { this.stored = n; } set value(n) { this.stored = n + 1; } } var triple = new Triple(); triple.value = 4; console.log(triple.value, triple.stored);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 5\n',
       },
       {
         name: 'getter/setter keys differ',
         source:
           'class Different { get value() { return 7; } set other(n) {} } console.log(new Different().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '7\n',
       },
       {
         name: 'getter/setter staticness differs',
         source:
           'class MixedAccessor { get value() { return 7; } static set value(n) {} } console.log(new MixedAccessor().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '7\n',
       },
       {
@@ -41047,35 +41060,35 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'constructor parameter TDZ default stays on reanalysis',
         source:
           'class TdzDefaulted { constructor(first, value = later, later = 4) { this.value = value; } } try { new TdzDefaulted(); } catch (error) { console.log(error instanceof ReferenceError); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
         name: 'constructor self-referencing parameter default stays on reanalysis',
         source:
           'class SelfTdzDefaulted { constructor(first, value = value + 1) { this.value = value; } } try { new SelfTdzDefaulted(); } catch (error) { console.log(error instanceof ReferenceError); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
         name: 'constructor default bound outside the parameter list stays on reanalysis',
         source:
           'var outside = 4; class OutsideDefault { constructor(first, value = outside) { this.value = value; } } console.log(new OutsideDefault().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '4\n',
       },
       {
         name: 'constructor call default stays on reanalysis',
         source:
           'function getDefault() { return 4; } class CalledDefault { constructor(value = getDefault()) { this.value = value; } } console.log(new CalledDefault().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '4\n',
       },
       {
         name: 'constructor destructured literal default stays on reanalysis',
         source:
           'class DestructuredDefaulted { constructor({ value } = { value: 4 }) { this.value = value; } } console.log(new DestructuredDefaulted().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '4\n',
       },
       {
@@ -41327,21 +41340,21 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'constructor nested block lexical local stays on reanalysis',
         source:
           'class NestedLexicalLocal { constructor() { { let value = 6; this.value = value; } } } console.log(new NestedLexicalLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '6\n',
       },
       {
         name: 'constructor lexical destructuring local stays on reanalysis',
         source:
           'class PatternLexicalLocal { constructor() { const { value } = { value: 6 }; this.value = value; } } console.log(new PatternLexicalLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '6\n',
       },
       {
         name: 'derived constructor direct lexical local before super stays on reanalysis',
         source:
           'class Base {} class DerivedLocal extends Base { constructor() { let value = 6; super(); this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '6\n',
       },
       {
@@ -41418,91 +41431,91 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'derived constructor computed this-property call key stays on reanalysis',
         source:
           'function getKey() { return "current"; } class Base {} Base.prototype.current = 14; class DerivedLocal extends Base { constructor() { super(); const value = this[getKey()]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '14\n',
       },
       {
         name: 'derived constructor computed this-property composite key stays on reanalysis',
         source:
           'class Base {} Base.prototype.current = 15; class DerivedLocal extends Base { constructor(key) { super(); const value = this[key + ""]; this.value = value; } } console.log(new DerivedLocal("current").value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '15\n',
       },
       {
         name: 'derived constructor computed this-property optional access stays on reanalysis',
         source:
           'class Base {} Base.prototype.current = 16; class DerivedLocal extends Base { constructor(key) { super(); const value = this?.[key]; this.value = value; } } console.log(new DerivedLocal("current").value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '16\n',
       },
       {
         name: 'derived constructor computed this-property bigint key stays on reanalysis',
         source:
           'class Base {} Base.prototype[1] = 17; class DerivedLocal extends Base { constructor() { super(); const value = this[1n]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '17\n',
       },
       {
         name: 'derived constructor computed this-property unary key stays on reanalysis',
         source:
           'class Base {} Base.prototype[1] = 18; class DerivedLocal extends Base { constructor() { super(); const value = this[-1]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'undefined\n',
       },
       {
         name: 'derived constructor computed this-property template key stays on reanalysis',
         source:
           'class Base {} Base.prototype.current = 19; class DerivedLocal extends Base { constructor() { super(); const value = this[`current`]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '19\n',
       },
       {
         name: 'derived constructor computed this-property regexp key stays on reanalysis',
         source:
           'class Base {} Base.prototype["/current/"] = 20; class DerivedLocal extends Base { constructor() { super(); const value = this[/current/]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '20\n',
       },
       {
         name: 'derived constructor computed this-property array key stays on reanalysis',
         source:
           'class Base {} Base.prototype.current = 21; class DerivedLocal extends Base { constructor() { super(); const value = this[["current"]]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '21\n',
       },
       {
         name: 'derived constructor computed this-property object key stays on reanalysis',
         source:
           'class Base {} Base.prototype.current = 22; class DerivedLocal extends Base { constructor() { super(); const value = this[({ toString() { return "current"; } })]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '22\n',
       },
       {
         name: 'derived constructor computed this-property escaped identifier key stays on reanalysis',
         source:
           'class Base {} Base.prototype.current = 23; class DerivedLocal extends Base { constructor(key) { super(); const value = this[ke\\u0079]; this.value = value; } } console.log(new DerivedLocal("current").value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '23\n',
       },
       {
         name: 'derived constructor computed this-property chain stays on reanalysis',
         source:
           'class Base {} Base.prototype.current = { value: 24 }; class DerivedLocal extends Base { constructor() { super(); const value = this.current.value; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '24\n',
       },
       {
         name: 'derived constructor optional lexical this-property initializer stays on reanalysis',
         source:
           'class Base { get current() { return { value: 9 }; } } class DerivedLocal extends Base { constructor() { super(); const value = this.current?.value; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'derived constructor lexical this-property call initializer stays on reanalysis',
         source:
           'class Base { current() { return 9; } } class DerivedLocal extends Base { constructor() { super(); const value = this.current(); this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -41551,42 +41564,42 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'derived constructor lexical conditional call branch stays on reanalysis',
         source:
           'class Base { current() { return 1; } } class DerivedLocal extends Base { constructor(flag) { super(); const value = flag ? this.current() : 0; this.value = value; } } console.log(new DerivedLocal(true).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
         name: 'derived constructor computed this-property lexical compound key stays on reanalysis',
         source:
           'class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor(key) { super(); const value = this[key + ""] + 1; this.value = value; } } console.log(new DerivedLocal("current").value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
         name: 'derived constructor computed this-property lexical call stays on reanalysis',
         source:
           'class Base { current() { return 1; } } class DerivedLocal extends Base { constructor() { super(); const value = this.current() + 1; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
         name: 'derived constructor computed this-property lexical optional chain stays on reanalysis',
         source:
           'class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor() { super(); const value = this?.["current"] + 1; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
         name: 'derived constructor computed this-property lexical member chain stays on reanalysis',
         source:
           'class Base { get current() { return { value: 1 }; } } class DerivedLocal extends Base { constructor() { super(); const value = this["current"].value + 1; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
         name: 'derived constructor computed this-property lexical assignment stays on reanalysis',
         source:
           'class Base { constructor() { this.current = 1; } } class DerivedLocal extends Base { constructor() { super(); const value = (this.current = 2); this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
@@ -41649,70 +41662,70 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'derived constructor lexical super optional member chain stays on reanalysis',
         source:
           'class Base { get current() { return { value: 1 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current?.value; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
         name: 'derived constructor lexical super computed string member stays on reanalysis',
         source:
           'class Base { get current() { return { value: 2 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current["value"]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
         name: 'derived constructor lexical super computed binding member stays on reanalysis',
         source:
           'const key = "value"; class Base { get current() { return { value: 3 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current[key]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3\n',
       },
       {
         name: 'derived constructor lexical super optional member tail stays on reanalysis',
         source:
           'class Base { get current() { return { value: { nested: 4 } }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current.value?.nested; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '4\n',
       },
       {
         name: 'derived constructor lexical super member call stays on reanalysis',
         source:
           'class Base { get current() { return { value() { return 5; } }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current.value(); this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '5\n',
       },
       {
         name: 'derived constructor lexical super optional member call stays on reanalysis',
         source:
           'class Base { get current() { return { value() { return 6; } }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current.value?.(); this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '6\n',
       },
       {
         name: 'derived constructor lexical super member assignment stays on reanalysis',
         source:
           'class Base { get current() { return { value: 0 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current.value = 7; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '7\n',
       },
       {
         name: 'derived constructor lexical super member compound assignment stays on reanalysis',
         source:
           'class Base { get current() { return { value: 0 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current.value += 8; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '8\n',
       },
       {
         name: 'derived constructor lexical super member update stays on reanalysis',
         source:
           'class Base { get current() { return { value: 9 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current.value++; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'derived constructor lexical super effectful computed member key stays on reanalysis',
         source:
           'var events = []; function getKey() { events.push("key"); return "value"; } class Base { get current() { return { value: 10 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current[getKey()]; this.value = value; } } console.log(new DerivedLocal().value, events.join(","));',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '10 key\n',
       },
       {
@@ -41727,14 +41740,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'derived constructor lexical super bitwise effectful RHS stays on reanalysis',
         source:
           'var calls = 0; class Base { get current() { return 1; } } class DerivedLocal extends Base { key() { calls++; return 3; } constructor() { super(); const value = super.current & this.key(); this.value = value; } } console.log(new DerivedLocal().value, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 1\n',
       },
       {
         name: 'derived constructor lexical super in object RHS stays on reanalysis',
         source:
           'class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current in { 1: true }; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
@@ -41748,84 +41761,84 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'derived constructor nullish lexical initializer with unresolved RHS stays on reanalysis',
         source:
           'globalThis.lexicalFallback = 11; class Base { get current() { return null; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current ?? lexicalFallback; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '11\n',
       },
       {
         name: 'derived constructor nullish lexical initializer with call RHS stays on reanalysis',
         source:
           'var calls = 0; function getFallback() { calls++; return 12; } class Base { get current() { return null; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current ?? getFallback(); this.value = value; } } console.log(new DerivedLocal().value, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '12 1\n',
       },
       {
         name: 'derived constructor nullish lexical initializer with object RHS stays on reanalysis',
         source:
           'class Base { get current() { return null; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current ?? { value: 13 }; this.value = value; } } console.log(new DerivedLocal().value.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '13\n',
       },
       {
         name: 'derived constructor nullish lexical initializer with array RHS stays on reanalysis',
         source:
           'class Base { get current() { return null; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current ?? [14]; this.value = value[0]; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '14\n',
       },
       {
         name: 'derived constructor nullish lexical initializer with member RHS stays on reanalysis',
         source:
           'const holder = { value: 15 }; class Base { get current() { return null; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current ?? holder.value; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '15\n',
       },
       {
         name: 'derived constructor nullish lexical initializer with optional member RHS stays on reanalysis',
         source:
           'const holder = { value: 16 }; class Base { get current() { return null; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current ?? holder?.value; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '16\n',
       },
       {
         name: 'derived constructor nullish lexical initializer with assignment RHS stays on reanalysis',
         source:
           'let fallback = 0; class Base { get current() { return null; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current ?? (fallback = 17); this.value = value; } } console.log(new DerivedLocal().value, fallback);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '17 17\n',
       },
       {
         name: 'derived constructor nullish lexical initializer with update RHS stays on reanalysis',
         source:
           'let fallback = 18; class Base { get current() { return null; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current ?? fallback++; this.value = value; } } console.log(new DerivedLocal().value, fallback);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '18 19\n',
       },
       {
         name: 'derived constructor nullish lexical initializer with sequence RHS stays on reanalysis',
         source:
           'var events = []; class Base { get current() { return null; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current ?? (events.push("rhs"), 20); this.value = value; } } console.log(new DerivedLocal().value, events.join(","));',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '20 rhs\n',
       },
       {
         name: 'derived constructor nullish lexical initializer with new RHS stays on reanalysis',
         source:
           'class Fallback { constructor() { this.value = 21; } } class Base { get current() { return null; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current ?? new Fallback(); this.value = value.value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '21\n',
       },
       {
         name: 'derived constructor mixed super read and literal lexical declaration stays on reanalysis',
         source:
           'class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = 2; this.value = first + second; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3\n',
       },
       {
         name: 'derived constructor uninitialized lexical declarator with super read stays on reanalysis',
         source:
           'class Base { get current() { return 3; } } class DerivedLocal extends Base { constructor() { super(); let first = super.current, second; this.value = first; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3\n',
       },
       {
@@ -41839,70 +41852,70 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'derived constructor optional super lexical read stays on reanalysis',
         source:
           'class Base { get current() { return { value: 2 }; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current?.value; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
         name: 'derived constructor assignment in super lexical initializer stays on reanalysis',
         source:
           'class Base { get current() { return 3; } } class DerivedLocal extends Base { constructor() { super(); const first = (this.local = super.current), second = super.current; this.value = first + second; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '6\n',
       },
       {
         name: 'derived constructor update in super lexical initializer stays on reanalysis',
         source:
           'class Base { constructor() { this.cursor = 0; } get current() { return this.cursor; } set current(value) { this.cursor = value; } } class DerivedLocal extends Base { constructor() { super(); const first = super.current++, second = super.current; this.value = first + second; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
         name: 'derived constructor effectful super computed key stays on reanalysis',
         source:
           'class Base { get current() { return 3; } key() { return "current"; } } class DerivedLocal extends Base { constructor() { super(); const first = super[this.key()], second = super.current; this.value = first + second; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '6\n',
       },
       {
         name: 'derived constructor sequence in super lexical initializer stays on reanalysis',
         source:
           'class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class DerivedLocal extends Base { constructor() { super(); const first = (super.current, super.current), second = super.current; this.value = first + second; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '5\n',
       },
       {
         name: 'derived constructor template super lexical initializer stays on reanalysis',
         source:
           'class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class DerivedLocal extends Base { constructor() { super(); const first = `${super.current}`, second = super.current; this.value = first + ":" + second; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1:2\n',
       },
       {
         name: 'derived constructor object super lexical initializer stays on reanalysis',
         source:
           'class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class DerivedLocal extends Base { constructor() { super(); const first = { value: super.current }, second = super.current; this.value = first.value + second; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3\n',
       },
       {
         name: 'derived constructor escaped lexical this-property initializer stays on reanalysis',
         source:
           'class Base { get current() { return 9; } } class DerivedLocal extends Base { constructor() { super(); const value = this.cur\\u0072ent; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'derived constructor this-property lexical initializer before super stays on reanalysis',
         source:
           'class Base {} class DerivedLocal extends Base { get current() { return 9; } constructor() { const value = this.current; super(); this.value = value; } } try { new DerivedLocal(); } catch (error) { console.log(error instanceof ReferenceError); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
         name: 'derived constructor TDZ read before direct this-property initializer stays on reanalysis',
         source:
           'function deferred() { class Base { get current() { return 9; } } class DerivedLocal extends Base { constructor() { super(); this.value = value; const value = this.current; } } } globalThis.deferred = deferred; console.log("ok");',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'ok\n',
       },
       {
@@ -41944,105 +41957,105 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'derived constructor arithmetic numeric super-property key stays on reanalysis',
         source:
           'class Base {} Base.prototype[1] = 13; class DerivedLocal extends Base { constructor() { super(); const value = super[1 + 0]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '13\n',
       },
       {
         name: 'derived constructor unary numeric super-property key stays on reanalysis',
         source:
           'class Base {} Base.prototype[1] = 14; class DerivedLocal extends Base { constructor() { super(); const value = super[-1]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'undefined\n',
       },
       {
         name: 'derived constructor bigint super-property key stays on reanalysis',
         source:
           'class Base {} Base.prototype[1] = 15; class DerivedLocal extends Base { constructor() { super(); const value = super[1n]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '15\n',
       },
       {
         name: 'derived constructor regexp super-property key stays on reanalysis',
         source:
           'class Base {} Base.prototype["/1/"] = 16; class DerivedLocal extends Base { constructor() { super(); const value = super[/1/]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '16\n',
       },
       {
         name: 'derived constructor template super-property key stays on reanalysis',
         source:
           'class Base {} Base.prototype[1] = 17; class DerivedLocal extends Base { constructor() { super(); const value = super[`1`]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '17\n',
       },
       {
         name: 'derived constructor call super-property key stays on reanalysis',
         source:
           'class Base {} Base.prototype[1] = 18; class DerivedLocal extends Base { constructor() { super(); const value = super[Number(1)]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '18\n',
       },
       {
         name: 'derived constructor array super-property key stays on reanalysis',
         source:
           'class Base {} Base.prototype[1] = 19; class DerivedLocal extends Base { constructor() { super(); const value = super[[1]]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '19\n',
       },
       {
         name: 'derived constructor object super-property key stays on reanalysis',
         source:
           'class Base {} Base.prototype[1] = 20; class DerivedLocal extends Base { constructor() { super(); const value = super[({ toString() { return "1"; } })]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '20\n',
       },
       {
         name: 'derived constructor function super-property key stays on reanalysis',
         source:
           'function key() { return 1; } class Base {} Base.prototype[1] = 21; class DerivedLocal extends Base { constructor() { super(); const value = super[key()]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '21\n',
       },
       {
         name: 'derived constructor nested super-property key stays on reanalysis',
         source:
           'class Base { get key() { return 1; } } Base.prototype[1] = 22; class DerivedLocal extends Base { constructor() { super(); const value = super[super.key]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '22\n',
       },
       {
         name: 'derived constructor composite null super-property key stays on reanalysis',
         source:
           'class Base {} Base.prototype["null"] = 23; class DerivedLocal extends Base { constructor() { super(); const value = super[null + ""]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '23\n',
       },
       {
         name: 'derived constructor composite boolean super-property key stays on reanalysis',
         source:
           'class Base {} Base.prototype["true"] = 24; class DerivedLocal extends Base { constructor() { super(); const value = super[!false]; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '24\n',
       },
       {
         name: 'derived constructor lexical super-property call key stays on reanalysis',
         source:
           'var calls = 0; function key() { calls++; return "current"; } class Base { get current() { return 9; } } class DerivedLocal extends Base { constructor() { super(); const value = super[key()]; this.value = value; } } console.log(new DerivedLocal().value, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 1\n',
       },
       {
         name: 'derived constructor lexical super-property composite key stays on reanalysis',
         source:
           'class Base { get current() { return 9; } } class DerivedLocal extends Base { constructor(key) { super(); const value = super[key + ""]; this.value = value; } } console.log(new DerivedLocal("current").value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'derived constructor escaped lexical super-property key reference stays on reanalysis',
         source:
           'class Base { get current() { return 9; } } class DerivedLocal extends Base { constructor(key) { super(); const value = super[ke\\u0079]; this.value = value; } } console.log(new DerivedLocal("current").value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -42056,84 +42069,84 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'derived constructor multi-declarator super call stays on reanalysis',
         source:
           'class Base {} Base.prototype.current = function() { return 2; }; class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = super.current(); this.value = second; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
         name: 'derived constructor multi-declarator composite key stays on reanalysis',
         source:
           'class Base {} Base.prototype.current = 9; class DerivedLocal extends Base { constructor(key) { super(); const first = super.current, second = super[key + ""]; this.value = first + second; } } console.log(new DerivedLocal("current").value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '18\n',
       },
       {
         name: 'derived constructor multi-declarator optional read stays on reanalysis',
         source:
           'class Base {} Base.prototype.current = 9; class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = super.missing?.value; this.value = String(first) + ":" + String(second); } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9:undefined\n',
       },
       {
         name: 'derived constructor multi-declarator bigint key stays on reanalysis',
         source:
           'class Base {} Base.prototype.current = 9; Base.prototype[1] = 5; class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = super[1n]; this.value = first + ":" + second; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9:5\n',
       },
       {
         name: 'derived constructor multi-declarator unary key stays on reanalysis',
         source:
           'class Base {} Base.prototype.current = 9; class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = super[-1]; this.value = String(first) + ":" + String(second); } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9:undefined\n',
       },
       {
         name: 'derived constructor multi-declarator template key stays on reanalysis',
         source:
           'class Base {} Base.prototype.current = 9; class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = super[`current`]; this.value = first + second; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '18\n',
       },
       {
         name: 'derived constructor multi-declarator object key stays on reanalysis',
         source:
           'class Base {} Base.prototype.current = 9; class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = super[({ toString() { return "current"; } })]; this.value = first + second; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '18\n',
       },
       {
         name: 'derived constructor multi-declarator nested super key stays on reanalysis',
         source:
           'class Base {} Base.prototype.current = 9; Base.prototype.key = "current"; class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = super[super.key]; this.value = first + second; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '18\n',
       },
       {
         name: 'derived constructor multi-declarator later binding TDZ stays on reanalysis',
         source:
           'function deferred() { class Base {} Base.prototype.current = 9; class DerivedLocal extends Base { constructor() { super(); const first = super[key], key = "current"; this.value = first; } } } globalThis.deferred = deferred; console.log("ok");',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'ok\n',
       },
       {
         name: 'derived constructor multi-declarator destructuring stays on reanalysis',
         source:
           'class Base {} Base.prototype.current = 7; class DerivedLocal extends Base { constructor() { super(); const first = super.current, { second } = { second: 4 }; this.value = first + second; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '11\n',
       },
       {
         name: 'derived constructor lexical super-call initializer stays on reanalysis',
         source:
           'class Base { constructor(value) { this.slot = value; } current() { return this.slot; } } class DerivedLocal extends Base { constructor(input) { super(input); const value = super.current(); this.value = value; } } console.log(new DerivedLocal(9).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'derived constructor nested post-super lexical local stays on reanalysis',
         source:
           'class Base {} class DerivedLocal extends Base { constructor() { super(); { let value = 6; this.value = value; } } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '6\n',
       },
       {
@@ -42147,98 +42160,98 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'derived constructor destructured post-super lexical local stays on reanalysis',
         source:
           'class Base {} class DerivedLocal extends Base { constructor() { super(); const { value } = { value: 6 }; this.value = value; } } console.log(new DerivedLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '6\n',
       },
       {
         name: 'constructor destructuring var local stays on reanalysis',
         source:
           'var sourceValue = { value: 6 }; class DestructuredLocal { constructor() { var { value } = sourceValue; this.value = value; } } console.log(new DestructuredLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '6\n',
       },
       {
         name: 'constructor var call initializer stays on reanalysis',
         source:
           'function readValue() { return 6; } class CalledLocal { constructor() { var value = readValue(); this.value = value; } } console.log(new CalledLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '6\n',
       },
       {
         name: 'constructor var call inside binary initializer stays on reanalysis',
         source:
           'function readValue() { return 6; } class CalledBinaryLocal { constructor() { var value = readValue() + 1; this.value = value; } } console.log(new CalledBinaryLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '7\n',
       },
       {
         name: 'constructor var exponentiation initializer stays on reanalysis',
         source:
           'class ExponentLocal { constructor(input) { var value = input ** 2; this.value = value; } } console.log(new ExponentLocal(3).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'unresolved constructor binary reference stays on reanalysis',
         source:
           'class UnresolvedBinaryLocal { constructor() { var value = unboundBinaryValue + 1; this.value = value; } } console.log(typeof UnresolvedBinaryLocal);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'function\n',
       },
       {
         name: 'unresolved constructor unary reference stays on reanalysis',
         source:
           'class UnresolvedUnaryLocal { constructor() { var value = -unboundUnaryValue; this.value = value; } } console.log(typeof UnresolvedUnaryLocal);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'function\n',
       },
       {
         name: 'constructor typeof initializer stays on reanalysis',
         source:
           'class TypeofLocal { constructor(input) { var value = typeof input; this.value = value; } } console.log(new TypeofLocal(3).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'number\n',
       },
       {
         name: 'constructor delete initializer stays on reanalysis',
         source:
           'class DeleteLocal { constructor() { var removed = delete this.value; this.removed = removed; } } console.log(new DeleteLocal().removed);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
         name: 'constructor call inside conditional initializer stays on reanalysis',
         source:
           'function readCondition() { return 1; } class CalledConditionalLocal { constructor() { var value = readCondition() > 0 ? 1 : 0; this.value = value; } } console.log(new CalledConditionalLocal().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
         name: 'constructor unresolved if condition stays on reanalysis',
         source:
           'class UnresolvedIfCondition { constructor() { if (missingConstructorCondition) this.value = 1; } } try { new UnresolvedIfCondition(); } catch (error) { console.log(error instanceof ReferenceError); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
         name: 'constructor call in if condition stays on reanalysis',
         source:
           'function shouldWrite() { return true; } class CalledIfCondition { constructor() { if (shouldWrite()) this.value = 1; } } console.log(new CalledIfCondition().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
         name: 'constructor call in while condition stays on reanalysis',
         source:
           'function shouldContinue() { return false; } class CalledWhileCondition { constructor() { while (shouldContinue()) this.value = 1; } } console.log(typeof new CalledWhileCondition().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'undefined\n',
       },
       {
         name: 'constructor unresolved do-while condition stays on reanalysis',
         source:
           'class UnresolvedDoWhileCondition { constructor() { do { this.value = 1; } while (missingDoWhileCondition); } } try { new UnresolvedDoWhileCondition(); } catch (error) { console.log(error instanceof ReferenceError); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
@@ -42252,21 +42265,21 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'constructor call in for condition stays on reanalysis',
         source:
           'function shouldContinueFor() { return false; } class CalledForCondition { constructor() { for (; shouldContinueFor();) this.value = 1; } } console.log(typeof new CalledForCondition().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'undefined\n',
       },
       {
         name: 'constructor call in for initializer stays on reanalysis',
         source:
           'function startForIndex() { return 0; } class CalledForInitializer { constructor() { for (var index = startForIndex(); index < 1; index++) this.value = index; } } console.log(new CalledForInitializer().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '0\n',
       },
       {
         name: 'constructor call in for update stays on reanalysis',
         source:
           'var forUpdateCount = 0; function advanceForIndex() { forUpdateCount++; } class CalledForUpdate { constructor() { for (; forUpdateCount < 1; advanceForIndex()) this.value = forUpdateCount; } } console.log(new CalledForUpdate().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '0\n',
       },
       {
@@ -42329,28 +42342,28 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'constructor destructuring for-of head stays on reanalysis',
         source:
           'class DestructuredConstructorForOf { constructor(values) { for (var { value } of values) this.value = value; } } console.log(new DestructuredConstructorForOf([{ value: 8 }]).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '8\n',
       },
       {
         name: 'constructor call in for-of iterable stays on reanalysis',
         source:
           'function getConstructorValues() { return [8]; } class CalledConstructorForOfIterable { constructor() { for (var value of getConstructorValues()) this.value = value; } } console.log(new CalledConstructorForOfIterable().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '8\n',
       },
       {
         name: 'constructor call in for-of body stays on reanalysis',
         source:
           'function readConstructorLoopValue(value) { return value; } class CalledConstructorForOfBody { constructor(values) { for (var value of values) this.value = readConstructorLoopValue(value); } } console.log(new CalledConstructorForOfBody([8]).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '8\n',
       },
       {
         name: 'unresolved constructor for-of head stays on reanalysis',
         source:
           'class UnresolvedConstructorForOfHead { constructor(values) { for (missingConstructorLoopTarget of values) this.value = 1; } } try { new UnresolvedConstructorForOfHead([8]); } catch (error) { console.log(error instanceof ReferenceError); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
@@ -42364,168 +42377,168 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'constructor escaped label spelling stays on reanalysis',
         source:
           'class EscapedConstructorLabel { constructor() { \\u0074arget: while (true) { break target; } this.value = 1; } } console.log(new EscapedConstructorLabel().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
         name: 'constructor escaped label control spelling stays on reanalysis',
         source:
           'class EscapedConstructorLabelControl { constructor() { target: while (true) { break \\u0074arget; } this.value = 1; } } console.log(new EscapedConstructorLabelControl().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
         name: 'constructor call in labeled body stays on reanalysis',
         source:
           'function readLabeledBody() { return 1; } class CalledLabeledBody { constructor() { target: { this.value = readLabeledBody(); } } } console.log(new CalledLabeledBody().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
         name: 'constructor call in switch discriminant stays on reanalysis',
         source:
           'function readSwitchDiscriminant() { return 1; } class CalledSwitchDiscriminant { constructor() { switch (readSwitchDiscriminant()) { case 1: this.value = 1; break; default: this.value = 2; } } } console.log(new CalledSwitchDiscriminant().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
         name: 'constructor call in switch case test stays on reanalysis',
         source:
           'function readSwitchCase() { return 1; } class CalledSwitchCase { constructor(input) { switch (input) { case readSwitchCase(): this.value = 1; break; default: this.value = 2; } } } console.log(new CalledSwitchCase(1).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
         name: 'constructor call in switch case body stays on reanalysis',
         source:
           'function readSwitchBody() { return 3; } class CalledSwitchBody { constructor() { switch (1) { case 1: this.value = readSwitchBody(); break; default: this.value = 0; } } } console.log(new CalledSwitchBody().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3\n',
       },
       {
         name: 'constructor lexical switch case stays on reanalysis',
         source:
           'class LexicalSwitchCase { constructor(input) { switch (input) { case 1: let value = 3; this.value = value; break; default: this.value = 0; } } } console.log(new LexicalSwitchCase(1).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3\n',
       },
       {
         name: 'constructor call in catch body stays on reanalysis',
         source:
           'function readCaughtValue(value) { return value + 1; } class CalledCatchBody { constructor(input) { try { throw input; } catch (error) { this.value = readCaughtValue(error); } } } console.log(new CalledCatchBody(7).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '8\n',
       },
       {
         name: 'constructor call in finally body stays on reanalysis',
         source:
           'function finishConstructor() { return 1; } class CalledFinallyBody { constructor() { try { this.value = 1; } finally { this.finalized = finishConstructor(); } } } console.log(new CalledFinallyBody().finalized);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
         name: 'constructor call in if branch stays on reanalysis',
         source:
           'function readIfValue() { return 1; } class CalledIfBranch { constructor(flag) { if (flag) this.value = readIfValue(); } } console.log(new CalledIfBranch(true).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
         name: 'constructor lexical local in if block stays on reanalysis',
         source:
           'class LexicalIfBranch { constructor(input, flag) { if (flag) { let value = input; this.value = value; } } } console.log(new LexicalIfBranch(3, true).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3\n',
       },
       {
         name: 'constructor unresolved return value stays on reanalysis',
         source:
           'class UnresolvedConstructorReturn { constructor() { return missingConstructorReturn; } } try { new UnresolvedConstructorReturn(); } catch (error) { console.log(error instanceof ReferenceError); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
         name: 'constructor call return value stays on reanalysis',
         source:
           'function makeConstructorReturn() { return {}; } class CalledConstructorReturn { constructor() { return makeConstructorReturn(); } } console.log(new CalledConstructorReturn() !== CalledConstructorReturn.prototype);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
         name: 'constructor object literal return stays on reanalysis',
         source:
           'class LiteralConstructorReturn { constructor(input) { return { value: input }; } } console.log(new LiteralConstructorReturn(3).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3\n',
       },
       {
         name: 'constructor unresolved throw value stays on reanalysis',
         source:
           'class UnresolvedConstructorThrow { constructor() { throw missingConstructorThrow; } } try { new UnresolvedConstructorThrow(); } catch (error) { console.log(error instanceof ReferenceError); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
         name: 'constructor call throw value stays on reanalysis',
         source:
           'function makeConstructorThrow() { return {}; } class CalledConstructorThrow { constructor() { throw makeConstructorThrow(); } } try { new CalledConstructorThrow(); } catch (error) { console.log(typeof error); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'object\n',
       },
       {
         name: 'constructor nullish initializer stays on reanalysis',
         source:
           'class NullishLocal { constructor(input) { var value = input ?? 7; this.value = value; } } console.log(new NullishLocal(undefined).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '7\n',
       },
       {
         name: 'unresolved constructor local assignment stays on reanalysis',
         source:
           'class UnresolvedMutation { constructor() { unboundMutationTarget = 2; } } console.log(typeof UnresolvedMutation);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'function\n',
       },
       {
         name: 'constructor exponentiation compound assignment stays on reanalysis',
         source:
           'class ExponentMutation { constructor(input) { var value = input; value **= 2; this.value = value; } } console.log(new ExponentMutation(3).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'constructor logical compound assignment stays on reanalysis',
         source:
           'class LogicalMutation { constructor(input) { var value = input; value ||= 4; this.value = value; } } console.log(new LogicalMutation(0).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '4\n',
       },
       {
         name: 'constructor this-property exponentiation assignment stays on reanalysis',
         source:
           'class ExponentPropertyMutation { constructor(input) { this.value = input; this.value **= 2; } } console.log(new ExponentPropertyMutation(3).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'constructor this-property logical assignment stays on reanalysis',
         source:
           'class LogicalPropertyMutation { constructor(input) { this.value = input; this.value ||= 4; } } console.log(new LogicalPropertyMutation(0).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '4\n',
       },
       {
         name: 'destructured constructor parameter stays on reanalysis',
         source:
           'class DestructuredParameter { constructor({ value }) { this.value = value; } } console.log(new DestructuredParameter({ value: 4 }).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '4\n',
       },
       {
         name: 'rest constructor parameter stays on reanalysis',
         source:
           'class RestParameter { constructor(...values) { this.value = values; } } console.log(new RestParameter(4).value[0]);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '4\n',
       },
       {
@@ -42560,7 +42573,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'constructor initializer with unresolved global stays on reanalysis',
         source:
           'class UnresolvedInitializer { constructor() { this.value = missingInitialValue; } } try { new UnresolvedInitializer(); } catch (error) { console.log(error instanceof ReferenceError); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
@@ -42581,56 +42594,56 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'constructor computed compound property stays on reanalysis',
         source:
           'class ComputedCompound { constructor(key, input) { this[key] += input; } } console.log(Number.isNaN(new ComputedCompound("value", 2).value));',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
         name: 'constructor computed string compound property stays on reanalysis',
         source:
           'class ComputedStringCompound { constructor(input) { this["value"] += input; } } console.log(Number.isNaN(new ComputedStringCompound(2).value));',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
         name: 'constructor escaped static compound property stays on reanalysis',
         source:
           'class EscapedCompound { constructor() { this.v\\u0061lue = 3; this.v\\u0061lue += 2; } } console.log(new EscapedCompound().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '5\n',
       },
       {
         name: 'constructor non-this compound property stays on reanalysis',
         source:
           'var compoundReceiver = { value: 3 }; class ExternalCompound { constructor(input) { compoundReceiver.value += input; } } new ExternalCompound(2); console.log(compoundReceiver.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '5\n',
       },
       {
         name: 'constructor this-property compound with unresolved RHS stays on reanalysis',
         source:
           'class UnresolvedPropertyCompound { constructor() { this.value += missingCompoundValue; } } try { new UnresolvedPropertyCompound(); } catch (error) { console.log(error instanceof ReferenceError); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
         name: 'constructor computed initializer stays on reanalysis',
         source:
           'var fieldName = "value"; class ComputedInitializer { constructor() { this[fieldName] = 2; } } console.log(new ComputedInitializer().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
         name: 'constructor computed string key stays on reanalysis',
         source:
           'class ComputedStringInitializer { constructor() { this["value"] = 2; } } console.log(new ComputedStringInitializer().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
         name: 'constructor initializer call stays on reanalysis',
         source:
           'function makeValue() { return 2; } class CalledInitializer { constructor() { this.value = makeValue(); } } console.log(new CalledInitializer().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
@@ -42672,42 +42685,42 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'ordinary method after constructor accessor group stays on reanalysis',
         source:
           'class AccessorThenMethod { constructor() {} get value() { return 8; } method() { return 9; } } var accessorThenMethod = new AccessorThenMethod(); console.log(accessorThenMethod.value, accessorThenMethod.method());',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '8 9\n',
       },
       {
         name: 'empty constructor mixed with a field stays on reanalysis',
         source:
           'class ConstructorAndField { constructor() {} value = 8; } console.log(new ConstructorAndField().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '8\n',
       },
       {
         name: 'static method named constructor stays on reanalysis',
         source:
           'class StaticConstructor { static constructor() {} } console.log(typeof StaticConstructor.constructor);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'function\n',
       },
       {
         name: 'computed method key',
         source:
           "var key = 'value';\nclass Computed { [key]() { return 9; } }\nconsole.log(new Computed().value());\n",
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'method with super and no base class',
         source:
           'class WithSuper { value() { return super.toString(); } }\nconsole.log(new WithSuper().value());\n',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '[object Object]\n',
       },
       {
         name: 'block scoped empty class',
         source:
           'if (false) { class Hidden {} }\ntry { console.log(Hidden); } catch (error) { console.log(error.name); }\n',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'ReferenceError\n',
       },
       {
@@ -42735,21 +42748,21 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'class expression with an effectful base stays on reanalysis and evaluates the base once',
         source:
           'var calls = 0; function getBase() { calls += 1; return function Base() {}; } var Child = class extends getBase() {}; new Child(); console.log(calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
         name: 'class declaration extending its own TDZ binding stays on reanalysis',
         source:
           'function make(ReferenceError) { class Child extends Child {} return new Child(); } try { make(0); } catch (error) { console.log(error.name); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'ReferenceError\n',
       },
       {
         name: 'named class expression extending its own TDZ binding stays on reanalysis',
         source:
           'function make(ReferenceError) { var Holder = class Inner extends Inner {}; return Holder; } try { make(0); } catch (error) { console.log(error.name); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'ReferenceError\n',
       },
       {
@@ -42833,70 +42846,70 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super multi-var property and literal initializer mixture stays on reanalysis',
         source:
           'class Base { get current() { return 1; } } class Child extends Base { constructor() { super(); var first = super.current, second = 2; this.value = first + second; } } console.log(new Child().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3\n',
       },
       {
         name: 'post-super multi-var compound property key stays on reanalysis',
         source:
           'class Base { get current() { return 1; } } class Child extends Base { constructor(key) { super(); var first = super[key + ""] + 1, second = super.current + 2; this.value = first + second; } } console.log(new Child("current").value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '5\n',
       },
       {
         name: 'post-super multi-var call initializer stays on reanalysis',
         source:
           'var calls = 0; function current() { calls++; return 2; } class Base { get current() { return 1; } } class Child extends Base { constructor() { super(); var first = super.current, second = current(); this.value = first + second; } } console.log(new Child().value, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3 1\n',
       },
       {
         name: 'post-super multi-var uninitialized declarator stays on reanalysis',
         source:
           'class Base { get current() { return 3; } } class Child extends Base { constructor() { super(); var first = super.current, second; this.value = first; } } console.log(new Child().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3\n',
       },
       {
         name: 'post-super multi-var chained property read stays on reanalysis',
         source:
           'class Base { get current() { return { value: 2 }; } } class Child extends Base { constructor() { super(); var first = super.current.value, second = super.current.value; this.value = first + second; } } console.log(new Child().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '4\n',
       },
       {
         name: 'post-super multi-var optional property chain stays on reanalysis',
         source:
           'class Base { get current() { return { value: 2 }; } } class Child extends Base { constructor() { super(); var first = super.current?.value, second = super.current?.value; this.value = first + second; } } console.log(new Child().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '4\n',
       },
       {
         name: 'post-super multi-var assignment initializer stays on reanalysis',
         source:
           'class Base { get current() { return 3; } } class Child extends Base { constructor() { super(); var first = (this.local = super.current), second = super.current; this.value = first + second; } } console.log(new Child().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '6\n',
       },
       {
         name: 'post-super multi-var update initializer stays on reanalysis',
         source:
           'class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Child extends Base { constructor() { super(); var first = ++this.cursor, second = super.current; this.value = first + second; } } console.log(new Child().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3\n',
       },
       {
         name: 'post-super multi-var effectful computed key stays on reanalysis',
         source:
           'class Base { get current() { return 3; } key() { return "current"; } } class Child extends Base { constructor() { super(); var first = super[this.key()], second = super.current; this.value = first + second; } } console.log(new Child().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '6\n',
       },
       {
         name: 'post-super multi-var sequence initializer stays on reanalysis',
         source:
           'class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Child extends Base { constructor() { super(); var first = (super.current, super.current), second = super.current; this.value = first + second; } } console.log(new Child().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '5\n',
       },
       {
@@ -43057,14 +43070,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super final throw with a call value stays on reanalysis',
         source:
           'var calls = 0, sentinel = {}; function makeError() { calls += 1; return sentinel; } function Base() {} class Child extends Base { constructor() { super(); throw makeError(); } } var same = false; try { new Child(); } catch (error) { same = error === sentinel; } console.log(same, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true 1\n',
       },
       {
         name: 'post-super throw with following unreachable statement stays on reanalysis',
         source:
           'var sentinel = {}; function Base() {} class Child extends Base { constructor() { super(); throw sentinel; this.value = 1; } } var same = false; try { new Child(); } catch (error) { same = error === sentinel; } console.log(same);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
@@ -43085,70 +43098,70 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'explicit derived constructor super argument with side effect stays on reanalysis',
         source:
           'var evaluations = 0; function value() { evaluations += 1; return 2; } function Base(argument) { this.argument = argument; } class Child extends Base { constructor() { super(value()); } } console.log(new Child().argument, evaluations);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 1\n',
       },
       {
         name: 'explicit derived constructor super property getter stays on reanalysis',
         source:
           'var reads = 0; var argument = { get value() { reads += 1; return 2; } }; function Base(value) { this.value = value; } class Child extends Base { constructor() { super(argument.value); } } console.log(new Child().value, reads);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 1\n',
       },
       {
         name: 'explicit derived constructor super spread stays on reanalysis',
         source:
           'var values = [2]; function Base(value) { this.value = value; } class Child extends Base { constructor() { super(...values); } } console.log(new Child().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
         name: 'explicit derived constructor conditional super stays on reanalysis',
         source:
           'function Base(value) { this.value = value; } class Child extends Base { constructor(flag) { if (flag) super(1); else super(2); this.seen = this.value; } } console.log(new Child(true).seen, new Child(false).seen);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 2\n',
       },
       {
         name: 'post-super this assignment with a call initializer stays on reanalysis',
         source:
           'var calls = 0; function value() { calls += 1; return 3; } function Base() {} class Child extends Base { constructor() { super(); this.value = value(); } } console.log(new Child().value, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3 1\n',
       },
       {
         name: 'post-super return call stays on reanalysis',
         source:
           'var calls = 0; function replacement() { calls += 1; return { value: 8 }; } function Base() {} class Child extends Base { constructor() { super(); return replacement(); } } var child = new Child(); console.log(child.value, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '8 1\n',
       },
       {
         name: 'post-super branch return call stays on reanalysis',
         source:
           'var calls = 0; function replacement() { calls += 1; return { value: 8 }; } function Base() {} class Child extends Base { constructor() { super(); if (true) return replacement(); else this.value = 2; } } var child = new Child(); console.log(child.value, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '8 1\n',
       },
       {
         name: 'post-super branch block with non-final return stays on reanalysis',
         source:
           'var replacement = { value: 8 }; function Base() {} class Child extends Base { constructor() { super(); if (true) { return replacement; this.value = 5; } else { this.value = 2; } } } var child = new Child(); console.log(child === replacement, child.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true 8\n',
       },
       {
         name: 'post-super branch throw call stays on reanalysis',
         source:
           'var calls = 0, sentinel = {}; function failure() { calls += 1; return sentinel; } function Base() {} class Child extends Base { constructor() { super(); if (true) throw failure(); else this.value = 2; } } try { new Child(); } catch (error) { console.log(error === sentinel, calls); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true 1\n',
       },
       {
         name: 'post-super branch block with non-final throw stays on reanalysis',
         source:
           'var sentinel = {}; function Base() {} class Child extends Base { constructor() { super(); if (true) { throw sentinel; this.value = 5; } else { this.value = 2; } } } try { new Child(); } catch (error) { console.log(error === sentinel); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
@@ -43162,42 +43175,42 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super var call initializer stays on reanalysis',
         source:
           'var calls = 0; function value() { calls += 1; return 3; } function Base() {} class Child extends Base { constructor() { super(); var local = value(); this.value = local; } } console.log(new Child().value, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3 1\n',
       },
       {
         name: 'post-super if with a call condition stays on reanalysis',
         source:
           'var calls = 0; function selected() { calls += 1; return true; } function Base() {} class Child extends Base { constructor() { super(); if (selected()) this.value = 1; else this.value = 2; } } console.log(new Child().value, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 1\n',
       },
       {
         name: 'post-super direct eval expression stays on reanalysis',
         source:
           'var calls = 0; function Base() {} class Child extends Base { constructor() { super(); eval("calls += 1"); this.value = calls; } } var child = new Child(); console.log(child.value, calls, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 1 true\n',
       },
       {
         name: 'post-super receiver call with spread arguments stays on reanalysis',
         source:
           'var reads = 0, calls = 0, values = [4]; function Base() { return new Proxy({}, { get(target, key, receiver) { if (key === "setValue") { reads += 1; return function(value) { calls += 1; this.value = value; }; } return Reflect.get(target, key, receiver); } }); } class Child extends Base { constructor() { super(); this.setValue(...values); } } var child = new Child(); console.log(child.value, reads, calls, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '4 1 1 false\n',
       },
       {
         name: 'post-super computed receiver call stays on reanalysis',
         source:
           'var reads = 0, calls = 0, key = "setValue"; function Base() { return new Proxy({}, { get(target, property, receiver) { if (property === "setValue") { reads += 1; return function(value) { calls += 1; this.value = value; }; } return Reflect.get(target, property, receiver); } }); } class Child extends Base { constructor() { super(); this[key](4); } } var child = new Child(); console.log(child.value, reads, calls, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '4 1 1 false\n',
       },
       {
         name: 'post-super method call through this in the condition stays on reanalysis',
         source:
           'var calls = 0; function Base() { this.selected = function() { calls += 1; return true; }; } class Child extends Base { constructor() { super(); if (this.selected()) this.value = 1; else this.value = 2; } } console.log(new Child().value, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 1\n',
       },
       {
@@ -43211,42 +43224,42 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super nested this-property condition stays on reanalysis',
         source:
           'var reads = 0; function Base() { return new Proxy({ nested: { selected: true } }, { get(target, key, receiver) { if (key === "nested") reads += 1; return Reflect.get(target, key, receiver); } }); } class Child extends Base { constructor() { super(); if (this.nested.selected) this.value = 1; else this.value = 2; } } var child = new Child(); console.log(child.value, reads);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 1\n',
       },
       {
         name: 'post-super block branch with a lexical declaration stays on reanalysis',
         source:
           'var selected = true; function Base() {} class Child extends Base { constructor() { super(); if (selected) { let local = 1; this.value = local; } else { this.value = 2; } } } console.log(new Child().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
         name: 'post-super block branch with a call initializer stays on reanalysis',
         source:
           'var calls = 0; function value() { calls += 1; return 3; } function Base() {} class Child extends Base { constructor() { super(); if (true) { var local = value(); this.value = local; } else { this.value = 2; } } } console.log(new Child().value, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3 1\n',
       },
       {
         name: 'post-super branch receiver call with spread arguments stays on reanalysis',
         source:
           'var reads = 0, calls = 0, values = [4]; function Base() { return new Proxy({}, { get(target, key, receiver) { if (key === "setValue") { reads += 1; return function(value) { calls += 1; this.value = value; }; } return Reflect.get(target, key, receiver); } }); } class Child extends Base { constructor() { super(); if (true) { this.setValue(...values); } else { this.value = 2; } } } var child = new Child(); console.log(child.value, reads, calls, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '4 1 1 false\n',
       },
       {
         name: 'post-super branch optional receiver call stays on reanalysis',
         source:
           'var reads = 0, calls = 0; function Base() { return new Proxy({}, { get(target, key, receiver) { if (key === "setValue") { reads += 1; return function(value) { calls += 1; this.value = value; }; } return Reflect.get(target, key, receiver); } }); } class Child extends Base { constructor() { super(); if (true) { this.setValue?.(4); } else { this.value = 2; } } } var child = new Child(); console.log(child.value, reads, calls, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '4 1 1 false\n',
       },
       {
         name: 'post-super branch computed receiver call stays on reanalysis',
         source:
           'var reads = 0, calls = 0, key = "setValue"; function Base() { return new Proxy({}, { get(target, property, receiver) { if (property === "setValue") { reads += 1; return function(value) { calls += 1; this.value = value; }; } return Reflect.get(target, property, receiver); } }); } class Child extends Base { constructor() { super(); if (true) { this[key](4); } else { this.value = 2; } } } var child = new Child(); console.log(child.value, reads, calls, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '4 1 1 false\n',
       },
       {
@@ -43310,49 +43323,49 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super switch this-property discriminant stays on reanalysis',
         source:
           'function Base() { this.mode = 1; } class Child extends Base { constructor() { super(); switch (this.mode) { case 1: this.value = 1; break; default: this.value = 2; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 true\n',
       },
       {
         name: 'post-super switch this-property case test stays on reanalysis',
         source:
           'function Base() { this.first = 1; } class Child extends Base { constructor() { super(); switch (1) { case this.first: this.value = 1; break; default: this.value = 2; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 true\n',
       },
       {
         name: 'post-super switch this-property case body stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); switch (1) { case 1: this.value = 1; break; default: this.value = 2; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 true\n',
       },
       {
         name: 'post-super switch with call discriminant stays on reanalysis',
         source:
           'var calls = 0; function readMode() { calls += 1; return 1; } function Base() {} class Child extends Base { constructor() { super(); switch (readMode()) { case 1: this.value = 1; break; default: this.value = 2; } } } console.log(new Child().value, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 1\n',
       },
       {
         name: 'post-super switch with call case test stays on reanalysis',
         source:
           'var calls = 0; function readCase() { calls += 1; return 1; } function Base() {} class Child extends Base { constructor() { super(); switch (1) { case readCase(): this.value = 1; break; default: this.value = 2; } } } console.log(new Child().value, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 1\n',
       },
       {
         name: 'post-super switch with lexical case binding stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); switch (1) { case 1: let value = 3; this.value = value; break; default: this.value = 0; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3 true\n',
       },
       {
         name: 'post-super switch var call initializer stays on reanalysis',
         source:
           'var calls = 0; function readValue() { calls += 1; return 3; } function Base() {} class Child extends Base { constructor() { super(); switch (1) { case 1: var value = readValue(); this.value = value; break; default: this.value = 0; } } } console.log(new Child().value, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3 1\n',
       },
       {
@@ -43366,14 +43379,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super try this access in catch stays on reanalysis',
         source:
           'var sentinel = {}; function Base() {} class Child extends Base { constructor() { super(); try { throw sentinel; } catch (error) { this.value = error; } } } var child = new Child(); console.log(child.value === sentinel, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true true\n',
       },
       {
         name: 'post-super try call initializer stays on reanalysis',
         source:
           'var calls = 0; function readValue() { calls += 1; return 3; } function Base() {} class Child extends Base { constructor() { super(); var value; try { value = readValue(); } catch (error) { value = 0; } this.value = value; } } console.log(new Child().value, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3 1\n',
       },
       {
@@ -43443,21 +43456,21 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super while this condition stays on reanalysis',
         source:
           'function Base() { this.count = 0; } class Child extends Base { constructor() { super(); while (this.count < 2) { this.count++; } } } var child = new Child(); console.log(child.count, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 true\n',
       },
       {
         name: 'post-super for of call iterable stays on reanalysis',
         source:
           'var calls = 0; function values() { calls++; return [1, 2]; } function Base() {} class Child extends Base { constructor() { super(); var sum = 0; for (var value of values()) sum += value; this.total = sum; } } console.log(new Child().total, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3 1\n',
       },
       {
         name: 'post-super loop nested switch with this stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); var i = 0; while (i < 1) { switch (i) { case 0: this.value = 1; break; } i++; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 true\n',
       },
       {
@@ -43500,28 +43513,28 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super top-level block with a lexical binding stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); { let local = 2; this.value = local; } } } console.log(new Child().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
         name: 'post-super top-level block with a nested switch this access stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); { switch (1) { case 1: this.value = 2; break; } } } } console.log(new Child().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
         name: 'post-super top-level block with a nested try this access stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); { try { throw 2; } catch (error) { this.value = error; } } } } console.log(new Child().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
       },
       {
         name: 'post-super top-level label with a this loop condition stays on reanalysis',
         source:
           'function Base() { this.keepGoing = false; } class Child extends Base { constructor() { super(); outer: while (this.keepGoing) { this.value++; } } } var child = new Child(); console.log(child.keepGoing, child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'false undefined true\n',
       },
       {
@@ -43556,7 +43569,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super conditional branch nested if call condition stays on reanalysis',
         source:
           'var calls = 0; function choose() { calls++; return true; } function Base() {} class Child extends Base { constructor() { super(); if (true) { if (choose()) this.value = 1; else this.value = 2; } } } var child = new Child(); console.log(child.value, calls, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 1 true\n',
       },
       {
@@ -43584,28 +43597,28 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super conditional branch switch this access stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); if (true) { switch (1) { case 1: this.value = 2; break; } } } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 true\n',
       },
       {
         name: 'post-super conditional branch switch call discriminant stays on reanalysis',
         source:
           'var calls = 0; function select() { calls++; return 1; } function Base() {} class Child extends Base { constructor() { super(); var result = 0; if (true) { switch (select()) { case 1: result = 3; break; default: result = 0; } } this.value = result; } } var child = new Child(); console.log(child.value, calls, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3 1 true\n',
       },
       {
         name: 'post-super conditional branch switch call case test stays on reanalysis',
         source:
           'var calls = 0; function select() { calls++; return 1; } function Base() {} class Child extends Base { constructor() { super(); var result = 0; if (true) { switch (0) { case select(): result = 3; break; default: result = 0; } } this.value = result; } } var child = new Child(); console.log(child.value, calls, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '0 1 true\n',
       },
       {
         name: 'post-super conditional branch switch lexical case binding stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); var result = 0; if (true) { switch (1) { case 1: let local = 2; result = local; break; default: result = 0; } } this.value = result; } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 true\n',
       },
       {
@@ -43619,21 +43632,21 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super switch case function declaration with direct eval stays on reanalysis',
         source:
           'var result = 0; function Base() {} class Child extends Base { constructor() { super(); if (true) { switch (1) { case 1: read(); function read() { result = eval("2"); } break; } } this.value = result; } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 true\n',
       },
       {
         name: 'post-super switch case async function declaration stays on reanalysis',
         source:
           'var result = 0; function Base() {} class Child extends Base { constructor() { super(); if (true) { switch (1) { case 1: read(); break; case 2: async function read() { result = 2; } } } this.value = result; } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 true\n',
       },
       {
         name: 'post-super switch case generator declaration stays on reanalysis',
         source:
           'var result = 0; function Base() {} class Child extends Base { constructor() { super(); if (true) { switch (1) { case 1: read(); break; case 2: function* read() { result = 2; } } } this.value = result; } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '0 true\n',
       },
       {
@@ -43647,14 +43660,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super conditional branch try this access stays on reanalysis',
         source:
           'var sentinel = {}; function Base() {} class Child extends Base { constructor() { super(); if (true) { try { throw sentinel; } catch (error) { this.value = error; } } } } var child = new Child(); console.log(child.value === sentinel, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true true\n',
       },
       {
         name: 'post-super conditional branch try call initializer stays on reanalysis',
         source:
           'var calls = 0; function readValue() { calls++; return 3; } function Base() {} class Child extends Base { constructor() { super(); var value; if (true) { try { value = readValue(); } catch (error) { value = 0; } } this.value = value; } } var child = new Child(); console.log(child.value, calls, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3 1 true\n',
       },
       {
@@ -43668,7 +43681,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super conditional branch no-ops do not admit call initializers',
         source:
           'function value() { return 2; } function Base() {} class Child extends Base { constructor() { super(); if (true) { ; debugger; this.value = value(); } } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 true\n',
       },
       {
@@ -43682,42 +43695,42 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super direct function declaration stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); function read() { return 2; } this.value = read(); } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 true\n',
       },
       {
         name: 'post-super branch function declaration with direct eval stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); if (true) { function read() { return eval("2"); } this.value = read(); } } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 true\n',
       },
       {
         name: 'post-super conditional branch while this condition stays on reanalysis',
         source:
           'function Base() { this.keepGoing = false; } class Child extends Base { constructor() { super(); if (true) { while (this.keepGoing) this.value++; } } } var child = new Child(); console.log(child.keepGoing, child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'false undefined true\n',
       },
       {
         name: 'post-super conditional branch for of call iterable stays on reanalysis',
         source:
           'var calls = 0; function values() { calls++; return [1, 2]; } function Base() {} class Child extends Base { constructor() { super(); if (true) { for (var value of values()) this.value = value; } } } var child = new Child(); console.log(child.value, calls, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 1 true\n',
       },
       {
         name: 'post-super conditional branch loop nested switch this stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); if (true) { for (var i = 0; i < 1; i++) { switch (i) { case 0: this.value = 1; break; } } } } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 true\n',
       },
       {
         name: 'post-super conditional branch lexical for of closure capture stays on reanalysis',
         source:
           'var values = [1, 2], readers = []; function Base() {} class Child extends Base { constructor() { super(); if (true) { for (let value of values) readers.push(function() { return value; }); } this.total = readers[0]() + readers[1](); } } var child = new Child(); console.log(child.total, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3 true\n',
       },
       {
@@ -43731,105 +43744,105 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super conditional branch nested lexical block stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); if (true) { { let local = 2; this.value = local; } } } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 true\n',
       },
       {
         name: 'post-super conditional branch nested switch this access stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); if (true) { { switch (1) { case 1: this.value = 2; break; } } } } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 true\n',
       },
       {
         name: 'post-super conditional branch nested try this access stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); if (true) { { try { throw 2; } catch (error) { this.value = error; } } } } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 true\n',
       },
       {
         name: 'post-super conditional branch label with a this condition stays on reanalysis',
         source:
           'function Base() { this.keepGoing = false; } class Child extends Base { constructor() { super(); if (true) { outer: while (this.keepGoing) { this.value++; } } } } var child = new Child(); console.log(child.keepGoing, child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'false undefined true\n',
       },
       {
         name: 'post-super conditional branch nested return stays on reanalysis',
         source:
           'var resultObject = {}; function Base() {} class Child extends Base { constructor() { super(); if (true) { { return resultObject; this.value = 1; } } } } var child = new Child(); console.log(child === resultObject, child.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true undefined\n',
       },
       {
         name: 'post-super conditional branch nested throw stays on reanalysis',
         source:
           'var sentinel = {}; function Base() {} class Child extends Base { constructor() { super(); if (true) { { throw sentinel; this.value = 1; } } } } try { new Child(); } catch (error) { console.log(error === sentinel); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
         name: 'post-super nested loop with this condition stays on reanalysis',
         source:
           'function Base() { this.keepGoing = false; } class Child extends Base { constructor() { super(); var i = 0; while (i < 1) { while (this.keepGoing) {} i++; this.value = i; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 true\n',
       },
       {
         name: 'post-super lexical for of with closure capture stays on reanalysis',
         source:
           'var values = [1, 2], readers = []; function Base() {} class Child extends Base { constructor() { super(); for (let value of values) readers.push(function() { return value; }); this.total = readers[0]() + readers[1](); } } var child = new Child(); console.log(child.total, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3 true\n',
       },
       {
         name: 'post-super destructuring for of head stays on reanalysis',
         source:
           'var values = [{ value: 1 }, { value: 2 }]; function Base() {} class Child extends Base { constructor() { super(); var total = 0; for (let { value } of values) total += value; this.total = total; } } var child = new Child(); console.log(child.total, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3 true\n',
       },
       {
         name: 'post-super destructuring for in head stays on reanalysis',
         source:
           'var values = { a: 1 }; function Base() {} class Child extends Base { constructor() { super(); for (let { length } in values) this.value = length; } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 true\n',
       },
       {
         name: 'post-super else-if call condition stays on reanalysis',
         source:
           'var calls = 0; function selected() { calls += 1; return true; } function Base() {} class Child extends Base { constructor() { super(); if (false) this.value = 1; else if (selected()) this.value = 2; else this.value = 3; } } console.log(new Child().value, calls);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2 1\n',
       },
       {
         name: 'post-super computed property branch stays on reanalysis',
         source:
           'var key = "value"; function Base() {} class Child extends Base { constructor() { super(); if (true) this[key] = 1; else this[key] = 2; } } console.log(new Child().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
         name: 'post-super destructured var stays on reanalysis',
         source:
           'var source = { value: 3 }; function Base() {} class Child extends Base { constructor() { super(); var { value } = source; this.value = value; } } console.log(new Child().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3\n',
       },
       {
         name: 'explicit derived constructor this before super stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { this.value = 1; super(); } } try { new Child(); } catch (error) { console.log(error.name); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'ReferenceError\n',
       },
       {
         name: 'explicit derived constructor duplicate super stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); super(); } } try { new Child(); } catch (error) { console.log(error.name); }',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'ReferenceError\n',
       },
       {
@@ -43848,20 +43861,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       {
         name: 'anonymous class expression assigned outside a var initializer stays on reanalysis',
         source: 'var Holder; Holder = class {}; console.log(new Holder() instanceof Holder);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
         name: 'anonymous class expression in a let initializer stays on reanalysis',
         source: 'let Holder = class {}; console.log(new Holder() instanceof Holder);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
         name: 'anonymous class expression in a nested const initializer stays on reanalysis',
         source:
           'function make() { const Holder = class {}; return new Holder() instanceof Holder; } console.log(make());',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
@@ -43896,14 +43909,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'class declaration inside a nested block stays on reanalysis',
         source:
           'function make(Local) { if (true) { class Local { self() { return Local; } } return new Local().self() === Local && Local.name === "Local"; } return Local === 9; } console.log(make(9));',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
         name: 'named class expression assigned outside a variable initializer stays on reanalysis',
         source:
           'var Holder; Holder = class Inner {}; console.log(new Holder() instanceof Holder && Holder.name === "Inner");',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
     ];
@@ -44029,9 +44042,8 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe('2\n');
 
-      // Syntax minification edits the AST, so the same source must take the
-      // explicit reanalysis path even though identifier-only minification can
-      // retain its unchanged graph.
+      // Syntax minification edits the AST while the producer retains and
+      // updates the same semantic graph, including its exact output identities.
       const syntaxOutput = join(dir, 'out-syntax.cjs');
       const syntaxProc = spawnSync(
         ZNTC_BIN,
@@ -44059,7 +44071,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         (line) =>
           line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
       );
-      expect(syntaxMode, syntaxProc.stderr).toContain('semantic_graph=reanalyzed');
+      expect(syntaxMode, syntaxProc.stderr).toContain('semantic_graph=retained');
       const syntaxActual = spawnSync('node', [syntaxOutput], { encoding: 'utf8' });
       expect(syntaxActual.status, syntaxActual.stderr).toBe(0);
       expect(syntaxActual.stdout).toBe('2\n');
@@ -45217,7 +45229,7 @@ console.log(new DerivedReader().values);`;
     }
   }, 60_000);
 
-  test('same-scope constructor locals retain while nested and unsupported method scopes reanalyze', () => {
+  test('constructor locals retain exact identities across nested and method scopes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-var-scope-lexical-reanalysis-'));
     const input = join(dir, 'entry.mjs');
     const output = join(dir, 'output.cjs');
@@ -45349,7 +45361,7 @@ console.log(new DerivedReader().values);`;
         const mode = (bundled.stderr ?? '')
           .split(/\r?\n/)
           .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
-        const expectedGraph = fixture.graph ?? 'reanalyzed';
+        const expectedGraph = fixture.graph ?? 'retained';
         expect(mode, `${fixture.name}: ${bundled.stderr}`).toContain(
           `semantic_graph=${expectedGraph}`,
         );

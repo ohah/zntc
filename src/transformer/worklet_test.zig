@@ -2422,3 +2422,47 @@ test "worklet class clone name environment rejects foreign SID kind and parent" 
 test "worklet class clone native wrapper storage preserves exact creator tuple" {
     try checkWorkletSourceBirth("class Clazz{__workletClass=true;static{globalThis.workletClassSelf=Clazz}static self(){\"worklet\";return Clazz}}const observed=Clazz;Clazz=null;", false, compat.fromESTarget(.es2015));
 }
+
+test "worklet public class factory source witnesses preserve collision and long-name inputs" {
+    const io_helpers = @import("../bundler/test_helpers.zig");
+    const Bundler = @import("../bundler/bundler.zig").Bundler;
+    const cases = [_]struct { source: []const u8, probe: []const u8, expected: []const u8 }{
+        .{ .source = "const __zntcWorkletClass\\u0046actory = 75;\nconst Clazz__classFactory = 73;\nconst Other__classFactory = 74;\nclass Clazz { __workletClass = true; static capturedFactoryName() { return Clazz__classFactory; } static capturedStagingName() { return __zntcWorkletClass\\u0046actory; } value() { return 1; } }\nclass Other { __workletClass = true; value() { return 2; } }\nconst __zntcWorkletClosure0 = 88;\nexport function capturedName() {\n  \"worklet\";\n  const other = new Other();\n  const instance = new Clazz();\n  return [other.value(), instance.value(), Clazz__classFactory, Other__classFactory, __zntcWorkletClosure0];\n}\nexport function plainName() {\n  \"worklet\";\n  return Clazz__classFactory;\n}\nexport function localName() {\n  \"worklet\";\n  const Clazz__classFactory = 19;\n  const instance = new Clazz();\n  return [instance.value(), Clazz__classFactory];\n}\nglobalThis.__zntcWorkletClassFactoryResult = () => ({ closureMatchesSource: Clazz.Clazz__classFactory.__closure.Clazz__classFactory === 73, stagingCaptureValue: Clazz.Clazz__classFactory().capturedStagingName(), name: Clazz.Clazz__classFactory.name });", .probe = "(() => { const r = globalThis.__zntcWorkletClassFactoryResult(); if (process.argv[1] !== 'true' && r.name !== 'Clazz__classFactory$1') throw Error('unexpected plain factory name: ' + r.name); if (r.name.includes('__zntcWorkletClassFactory')) throw Error('staging name exposed'); console.log(JSON.stringify({closureMatchesSource:r.closureMatchesSource, stagingCaptureValue:r.stagingCaptureValue})); })();", .expected = "{\"closureMatchesSource\":true,\"stagingCaptureValue\":75}\n" },
+        .{ .source = "class LongAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA { __workletClass = true; value() { return 42; } }\nconst Recreated = LongAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.LongAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA__classFactory();\nglobalThis.__zntcLongWorkletClassFactory = new Recreated().value();", .probe = "console.log(globalThis.__zntcLongWorkletClassFactory);", .expected = "42\n" },
+    };
+    var failures: usize = 0;
+    for (cases, 0..) |case, index| for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try io_helpers.writeFile(tmp.dir, "entry.js", case.source);
+        const entry = try io_helpers.absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(entry);
+        var bundler = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .platform = .react_native,
+            .format = .cjs,
+            .unsupported = .{},
+            .worklet_transform = true,
+            .minify_identifiers = minify,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        if (result.hasErrors()) {
+            std.debug.print("worklet public input case={d} minify={any} BUILD_REJECT\n", .{ index, minify });
+            for (result.getDiagnostics()) |diag| std.debug.print("{s}\n", .{diag.message});
+            failures += 1;
+            continue;
+        }
+        const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n", .{ result.output, case.probe });
+        defer std.testing.allocator.free(source);
+        const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source, if (minify) "true" else "false" } });
+        defer std.testing.allocator.free(actual.stdout);
+        defer std.testing.allocator.free(actual.stderr);
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, case.expected, actual.stdout)) {
+            std.debug.print("worklet public input case={d} minify={any} expected={s}actual={s}stderr={s}\n", .{ index, minify, case.expected, actual.stdout, actual.stderr });
+            failures += 1;
+        }
+    };
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}

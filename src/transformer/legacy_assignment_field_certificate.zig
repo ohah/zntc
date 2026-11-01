@@ -299,9 +299,8 @@ test "legacy scalar assignment fields retain completed native owners and runtime
                 const result = try bundler.bundle(std.testing.io);
                 defer result.deinit(std.testing.allocator);
                 try std.testing.expect(!result.hasErrors());
-                // The virtual decorator provider retains its pre-existing
-                // identifier-only ES2022 fallback; source completion is separate.
-                const provider_resyncs: u32 = if (target == .es2022 and minify) 1 else 0;
+                // Both source and virtual provider retain their producer graph.
+                const provider_resyncs: u32 = 0;
                 if (profile.count(.graph_resync_semantic) != provider_resyncs) std.debug.print("legacy field certificate rejected case={d} target={s} min={any} resync={d}\n", .{ index, @tagName(target), minify, profile.count(.graph_resync_semantic) });
                 try std.testing.expectEqual(provider_resyncs, profile.count(.graph_resync_semantic));
                 try helpers.writeFile(tmp.dir, "output.cjs", result.output);

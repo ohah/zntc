@@ -24,8 +24,10 @@ pub fn collect(
 ) ![]?Context {
     if (root.isNone() or @backingInt(root) >= ast.nodes.items.len) return error.InvalidRoot;
     const contexts = try allocator.alloc(?Context, ast.nodes.items.len);
+    errdefer allocator.free(contexts);
     @memset(contexts, null);
     var stack: std.ArrayListUnmanaged(MinifiedStatementFrame) = .empty;
+    defer stack.deinit(allocator);
     try stack.append(allocator, .{ .node = root, .context = .{} });
 
     while (stack.pop()) |frame| {
@@ -84,4 +86,32 @@ pub fn collect(
         }
     }
     return contexts;
+}
+
+test "statement coordinate heap collection releases every OOM preparation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, "let value=7;function read(input){if(input){return value}return 0}console.log(read(1));");
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".js");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var failures: usize = 0;
+    var success = false;
+    for (0..32) |offset| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = offset });
+        const contexts = collect(failing.allocator(), &parser.ast, root) catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            failures += 1;
+            continue;
+        };
+        defer failing.allocator().free(contexts);
+        try std.testing.expectEqual(parser.ast.nodes.items.len, contexts.len);
+        try std.testing.expect(contexts[@backingInt(root)] != null);
+        success = true;
+        break;
+    }
+    try std.testing.expect(failures > 0 and success);
+    std.debug.print("STATEMENT_COORDINATE_HEAP_OOM failures={d} success={}\n", .{ failures, success });
 }

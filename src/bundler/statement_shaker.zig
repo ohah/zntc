@@ -34,6 +34,23 @@ pub fn markUnusedStatements(
     skip_nodes: *std.DynamicBitSet,
     unresolved_globals: ?*const purity.GlobalRefSet,
 ) !void {
+    return markUnusedStatementsWithIdentity(allocator, ast, root, used_export_names, skip_nodes, unresolved_globals, null);
+}
+
+pub fn markUnusedStatementsWithIdentity(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    used_export_names: []const []const u8,
+    skip_nodes: *std.DynamicBitSet,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+    identity: ?@import("heritage_authority.zig").Identity,
+) !void {
+    var authority = if (identity) |view|
+        try @import("heritage_authority.zig").prepare(allocator, ast, root, view)
+    else
+        @import("heritage_authority.zig").Plan{ .ast = ast };
+    defer authority.deinit(allocator);
     const root_ni = @backingInt(root);
     if (root_ni >= ast.nodes.items.len) return;
     const root_node = ast.nodes.items[root_ni];
@@ -69,7 +86,7 @@ pub fn markUnusedStatements(
 
         // 선언 이름 추출 + side effects 판정
         try extractDeclaredNames(ast, node, @intCast(i), &name_to_stmt, allocator);
-        stmts[i].has_side_effects = hasSideEffects(ast, node, unresolved_globals);
+        stmts[i].has_side_effects = purity.stmtHasSideEffectsWithHeritage(ast, node, unresolved_globals, &authority);
         if (!stmts[i].has_side_effects) removable_count += 1;
     }
 
@@ -341,12 +358,6 @@ fn extractArrayPatternNames(
 
 /// statement가 side effects를 가지는지 보수적으로 판정한다.
 /// import/export 문은 linker skip_nodes와 충돌 방지를 위해 항상 side-effectful로 처리.
-fn hasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*const purity.GlobalRefSet) bool {
-    // import는 linker가 skip_nodes로 관리하므로 side-effectful 유지
-    if (node.tag == .import_declaration) return true;
-    return purity.stmtHasSideEffects(ast, node, unresolved_globals);
-}
-
 /// 모든 AST 노드를 순회하면서 identifier_reference를 찾고,
 /// span containment로 소속 top-level statement을 결정하여 참조 기록.
 fn collectReferences(

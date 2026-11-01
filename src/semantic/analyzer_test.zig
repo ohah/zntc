@@ -12,6 +12,46 @@ const NodeIndex = ast_mod.NodeIndex;
 const Parser = @import("../parser/parser.zig").Parser;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 
+test "predeclared function occurrences retain both exact source anchors without statement buckets" {
+    for ([_]bool{ false, true }) |module_mode| for ([_]bool{ false, true }) |stmt_info| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const source = "function* run(){function read(){return 1}function read(){return 42}yield read()}";
+        var scanner = try Scanner.init(a, source);
+        var parser = Parser.init(a, &scanner);
+        _ = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.is_module = module_mode;
+        analyzer.is_strict_mode = module_mode;
+        analyzer.enable_stmt_info = stmt_info;
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        var anchors: [2]NodeIndex = undefined;
+        var count: usize = 0;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .binding_identifier or !std.mem.eql(u8, parser.ast.getText(node.span), "read")) continue;
+            try std.testing.expect(count < anchors.len);
+            anchors[count] = @fromBackingInt(@intCast(raw));
+            count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 2), count);
+        const sid = analyzer.symbol_ids.items[@backingInt(anchors[0])].?;
+        try std.testing.expectEqual(sid, analyzer.symbol_ids.items[@backingInt(anchors[1])].?);
+        for (anchors) |anchor| {
+            var rows: usize = 0;
+            for (analyzer.references.items) |reference| {
+                if (!reference.flags.declare or reference.declaration_node_index != anchor) continue;
+                try std.testing.expectEqual(sid, @backingInt(reference.symbol_id));
+                try std.testing.expectEqual(analyzer.symbols.items[sid].scope_id, reference.scope_id);
+                try std.testing.expect(reference.node_index.isNone());
+                rows += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), rows);
+        }
+    };
+}
+
 test "escaped and canonical identifier spellings resolve to one binding while nested shadowing stays local" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -153,6 +193,57 @@ test "#4819 merged namespace export has shared owner but separate lexical bindin
     }
     try std.testing.expectEqual(@as(usize, 1), proxy_reads);
     try std.testing.expectEqual(@as(usize, 2), local_reads);
+}
+
+test "#4819 namespace non-member evidence excludes only the exact generated binding node" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const source = "namespace N { export const _a = 1; } namespace N { export const _a = 2; }";
+    var scanner = try Scanner.init(alloc, source);
+    var parser = Parser.init(alloc, &scanner);
+    parser.configureFromExtension(".ts");
+    const root = try parser.parse();
+
+    var bindings: [2]NodeIndex = .{ .none, .none };
+    var binding_count: usize = 0;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, parser.ast.getText(node.span), "_a")) continue;
+        if (binding_count == bindings.len) return error.TooManyNamespaceBindings;
+        bindings[binding_count] = @fromBackingInt(@intCast(raw));
+        binding_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), binding_count);
+
+    // Model an exact transform receipt for the first same-spelled binding.
+    // The second namespace still owns a real `_a` export and must keep the
+    // shared namespace property alive.
+    var excluded: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    try excluded.put(alloc, @backingInt(bindings[0]), {});
+    var analyzer = SemanticAnalyzer.init(alloc, &parser.ast);
+    analyzer.is_ts = true;
+    analyzer.namespace_non_member_bindings = &excluded;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    const program = parser.ast.getNode(root);
+    var owner_sid: ?u32 = null;
+    for (parser.ast.extra_data.items[program.data.list.start .. program.data.list.start + program.data.list.len]) |raw| {
+        const declaration = parser.ast.nodes.items[raw];
+        if (declaration.tag != .ts_module_declaration or declaration.data.binary.flags == 1) continue;
+        const name = declaration.data.binary.left;
+        owner_sid = analyzer.symbol_ids.items[@backingInt(name)] orelse return error.MissingNamespaceBindingIdentity;
+        break;
+    }
+    const owner = owner_sid orelse return error.MissingNamespaceOwner;
+    var retained_proxy: ?u32 = null;
+    for (analyzer.namespace_member_groups.items) |group| {
+        if (group.owner_symbol != owner) continue;
+        retained_proxy = group.members.get("_a");
+    }
+    const proxy = retained_proxy orelse return error.MissingRetainedNamespaceMember;
+    try std.testing.expectEqual(parser.ast.getNode(bindings[1]).span, analyzer.symbols.items[proxy].name);
+    try std.testing.expectEqual(@as(?u32, owner), analyzer.namespace_member_owners.get(proxy));
 }
 
 test "#4819 enum initializer self-reference resolves to the generated IIFE parameter" {
@@ -4589,7 +4680,7 @@ test "namespace member actual destructuring producer key has a teardown owner" {
     try graph.build(std.testing.io, &.{entry});
     try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
     try std.testing.expectEqual(@as(u32, 1), counters.count(.graph_discover_pm_semantic));
-    try std.testing.expectEqual(@as(u32, 1), counters.count(.graph_resync_semantic));
+    try std.testing.expectEqual(@as(u32, 0), counters.count(.graph_resync_semantic));
     const found = graph.findModuleByPath(entry) orelse return error.MissingActualNamespaceEntry;
     const actual = graph.moduleAtMut(found.index) orelse return error.MissingActualNamespaceEntry;
     const tree = &(actual.ast orelse return error.MissingActualNamespaceAst);

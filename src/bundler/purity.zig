@@ -655,6 +655,26 @@ pub fn isVarDeclPure(ast: *const Ast, node: Node, unresolved_globals: ?*const Gl
 
 /// top-level statement가 side effects를 가지는지 판정.
 /// tree_shaker, statement_shaker, stmt_info에서 공유.
+pub fn stmtHasSideEffectsWithHeritage(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet, authority: ?*const @import("heritage_authority.zig").Plan) bool {
+    switch (node.tag) {
+        .class_declaration => return classHasSideEffectsWithHeritage(ast, node, unresolved_globals, authority),
+        .export_default_declaration => {
+            const inner = node.data.unary.operand;
+            if (!inner.isNone() and @backingInt(inner) < ast.nodes.items.len and ast.getNode(inner).tag == .class_declaration)
+                return classHasSideEffectsWithHeritage(ast, ast.getNode(inner), unresolved_globals, authority);
+        },
+        .export_named_declaration => {
+            if (ast.hasExtra(node.data.extra, 3)) {
+                const inner = ast.readExtraNode(node.data.extra, 0);
+                if (!inner.isNone() and @backingInt(inner) < ast.nodes.items.len)
+                    return stmtHasSideEffectsWithHeritage(ast, ast.getNode(inner), unresolved_globals, authority);
+            }
+        },
+        else => {},
+    }
+    return stmtHasSideEffects(ast, node, unresolved_globals);
+}
+
 pub fn stmtHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet) bool {
     return switch (node.tag) {
         .function_declaration => false,
@@ -750,13 +770,36 @@ fn childStmtHasSideEffects(ast: *const Ast, idx: NodeIndex, unresolved_globals: 
 /// class declaration/expression의 side effect 판정.
 /// esbuild ClassCanBeRemovedIfUnused 동일: extends + body 멤버 전체 검사.
 /// 미사용 class는 순수하면 제거 가능 — 실제 사용 시 referenced_symbols로 포함됨.
+// A pure value expression is not enough: ClassDefinitionEvaluation also
+// validates constructibility and reads the base's prototype. An identifier may
+// name a proxy, an invalid base, a TDZ binding, or an accessor-backed global.
+fn classHeritageIsSafe(ast: *const Ast, index: NodeIndex, globals: ?*const GlobalRefSet, depth: u32, authority: ?*const @import("heritage_authority.zig").Plan) bool {
+    if (index.isNone()) return true;
+    if (depth >= max_depth or @backingInt(index) >= ast.nodes.items.len) return false;
+    const base = ast.getNode(index);
+    return switch (base.tag) {
+        .null_literal => true,
+        .parenthesized_expression => classHeritageIsSafe(ast, base.data.unary.operand, globals, depth + 1, authority),
+        .function_expression => ast.hasExtra(base.data.extra, ast_mod.FunctionExtra.flags) and
+            (ast.readExtra(base.data.extra, ast_mod.FunctionExtra.flags) &
+                (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator)) == 0,
+        .class_expression => !classHasSideEffectsWithHeritage(ast, base, globals, authority),
+        .identifier_reference => if (authority) |proof| proof.contains(ast, index) else false,
+        else => false,
+    };
+}
+
 pub fn classHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet) bool {
+    return classHasSideEffectsWithHeritage(ast, node, unresolved_globals, null);
+}
+
+fn classHasSideEffectsWithHeritage(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet, authority: ?*const @import("heritage_authority.zig").Plan) bool {
     const e = node.data.extra;
     if (e + 7 >= ast.extra_data.items.len) return true;
 
-    // extends 절이 불순이면 side-effect
+    // Preserve heritage lookup, validation, and prototype access effects.
     const super_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e + 1]));
-    if (!isExprPureDepth(ast, super_idx, unresolved_globals, 0)) return true;
+    if (!classHeritageIsSafe(ast, super_idx, unresolved_globals, 0, authority)) return true;
 
     // decorator가 있으면 side-effect
     const deco_len = ast.extra_data.items[e + 7];

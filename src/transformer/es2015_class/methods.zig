@@ -187,6 +187,8 @@ pub fn Methods(comptime Transformer: type) type {
                 self.current_super_static_receiver = saved_receiver;
             }
 
+            const generator_source = if (self.semantic_edit_enabled and self.options.unsupported.async_await and self.options.unsupported.generator and self.readU32(self.ast.getNode(info.member_idx).data.extra, MethodExtra.flags) & ast_mod.MethodFlags.is_async != 0) try @import("../es2015_generator.zig").ES2015Generator(@TypeOf(self.*)).captureGeneratorSource(self, info.source_member_idx) else null;
+            defer if (generator_source) |captured| self.allocator.free(captured.heritages);
             var member = self.ast.getNode(info.member_idx);
             var already_lowered = false;
             // class 낮추기가 보기 **전에** async/generator 메서드를 평범한 메서드로 바꾼다.
@@ -266,7 +268,7 @@ pub fn Methods(comptime Transformer: type) type {
                         sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span, &saved_sm_temps.callback_temps);
                         const gen = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
                         const gen_wrapper = try es_helpers.wrapInFunction(self, gen.call, span);
-                        try GenMod.bindWrappedStateMachine(self, info.source_member_idx, gen_wrapper, gen, &saved_sm_temps, sm_result.hoisted_temps.items, span);
+                        try GenMod.bindWrappedStateMachine(self, info.source_member_idx, gen_wrapper, gen, &saved_sm_temps, sm_result.hoisted_temps.items, span, generator_source);
                         const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper, span);
                         const func_expr = try buildWrappedFunc(
                             self,

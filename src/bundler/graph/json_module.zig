@@ -42,6 +42,8 @@ pub fn parse(self: *ModuleGraph, io: std.Io, module: *Module) void {
     var analyzer = SemanticAnalyzer.init(arena_alloc, &(module.ast.?));
     analyzer.is_module = true;
     analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
     if (analyzer.analyze()) |_| {
         module.semantic = .{
             .symbols = analyzer.symbols,
@@ -49,6 +51,8 @@ pub fn parse(self: *ModuleGraph, io: std.Io, module: *Module) void {
             .scope_maps = analyzer.scope_maps.items,
             .scope_owner_map = analyzer.scope_owner_map,
             .node_scope_provenance = analyzer.node_scope_provenance,
+            .source_owned_retirements = analyzer.source_owned_retirements,
+            .scope_history = analyzer.scope_history,
             .class_self_symbol_map = analyzer.class_self_symbol_map,
             .exported_names = analyzer.exported_names,
             .symbol_ids = analyzer.symbol_ids.items,
@@ -62,6 +66,7 @@ pub fn parse(self: *ModuleGraph, io: std.Io, module: *Module) void {
                 &(module.ast.?),
                 analyzer.symbols.items,
                 analyzer.scopes.items,
+                analyzer.symbol_ids.items,
                 analyzer.references.items,
                 if (module.semantic) |*s| &s.unresolved_references else null,
                 false,

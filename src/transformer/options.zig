@@ -796,6 +796,12 @@ pub const TransformOptions = struct {
     /// syntax inside `with` without changing dynamic identifier lookup. Its
     /// containing class or object literal may also need to remain native to
     /// retain lexical `super`.
+    pub const object_accessor_eval_msg =
+        "object literal with a computed accessor is emitted unchanged because opaque direct eval can intercept generated builtin/helper bindings; the configured target may not support syntax retained inside it.";
+
+    pub const object_accessor_with_msg =
+        "object literal with a computed accessor is emitted unchanged inside with because dynamic lookup can intercept generated builtin/helper bindings; the configured target may not support syntax retained inside it.";
+
     pub const arrow_dynamic_scope_msg =
         "a lexical-capturing arrow or its containing class/object literal inside a with statement is emitted unchanged because dynamic lookup can intercept generated capture bindings or erase lexical super context; the configured target may not support syntax retained inside it.";
 

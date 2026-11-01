@@ -1951,6 +1951,16 @@ pub fn resolveScopedSyntheticOutputName(self: anytype, name: []const u8, scope_i
     return .{ .name = resolved, .late = late };
 }
 
+/// Allocate a distinct birth spelling without losing an eligible binding's
+/// exact late-name role or its readable output base.
+pub fn resolveDistinctScopedSyntheticOutputName(self: anytype, name: []const u8, scope_id: ScopeId) !ScopedSyntheticOutputName {
+    var counter: u32 = 0;
+    const staging = try uniqueSyntheticNameAvoidingDynamicEval(self, name, &counter, scope_id);
+    const late = canUseLateStandaloneOutputName(self, scope_id);
+    if (late) try recordLateOutputNameBase(self, staging, name);
+    return .{ .name = staging, .late = late };
+}
+
 /// Resolve a capture spelling that may be assigned by either the standalone
 /// final-name pass or the bundler's post-graph linker pass.
 pub fn resolveScopedSyntheticOutputNameWithGraph(self: anytype, name: []const u8, scope_id: ScopeId) !ScopedSyntheticOutputName {

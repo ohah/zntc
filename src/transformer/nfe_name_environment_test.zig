@@ -380,6 +380,37 @@ fn checkAncestorGraph(source: []const u8, expected_bindings: usize, dynamic: boo
     }
     try std.testing.expectEqual(expected_bindings, observed);
     try std.testing.expectEqual(dynamic, sem.scopes[0].blocksMangling());
+    if (dynamic) {
+        // Dynamic accessors no longer mint a global Object read: a registered
+        // provider or the native object owns that operation. The source NFE
+        // name must nevertheless remain attached and pinned by direct eval/with.
+        var source_names: usize = 0;
+        for (tree.nodes.items, 0..) |node, raw| {
+            if (node.tag != .function_expression or !parents.contains(@fromBackingInt(@as(u32, @intCast(raw))))) continue;
+            const name_node = tree.readExtraNode(node.data.extra, ast.FunctionExtra.name);
+            if (name_node.isNone()) continue;
+            const binding_node = tree.getNode(name_node);
+            if (binding_node.tag != .binding_identifier) continue;
+            const sid = sem.symbol_ids[@backingInt(name_node)] orelse return error.MissingDynamicNameSid;
+            const symbol = sem.symbols.items[sid];
+            if (symbol.synthetic_kind != null) continue;
+            try std.testing.expectEqualStrings("Object", tree.getText(binding_node.span));
+            const mapped_sid = sem.scope_maps[symbol.scope_id.toIndex()].get(tree.getText(binding_node.span)) orelse return error.MissingDynamicNameMap;
+            try std.testing.expectEqual(@as(usize, sid), @as(usize, mapped_sid));
+            try std.testing.expect(sem.scopes[symbol.scope_id.toIndex()].kind == .block);
+            const selected = linker.rename_table.get(SymbolID.make(index, sid)) orelse tree.getText(binding_node.span);
+            try std.testing.expectEqualStrings(tree.getText(binding_node.span), selected);
+            var declarations: usize = 0;
+            for (sem.references) |row| if (row.declaration_node_index == name_node and row.flags.declare) {
+                try std.testing.expectEqual(sid, @backingInt(row.symbol_id));
+                try std.testing.expectEqual(symbol.scope_id, row.scope_id);
+                declarations += 1;
+            };
+            try std.testing.expectEqual(@as(usize, 1), declarations);
+            source_names += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), source_names);
+    }
     if (sibling_control) {
         var sibling_parameters: usize = 0;
         for (tree.nodes.items, 0..) |node, raw| {
@@ -403,5 +434,189 @@ test "NFE name environment actual generated global ancestor SID trace" {
     try checkAncestorGraph(ancestor_cases[2], 2, false, false);
     try checkAncestorGraph(ancestor_cases[3], 2, false, true);
     try checkAncestorGraph(ancestor_cases[4], 0, false, false);
-    for (dynamic_cases) |source| try checkAncestorGraph(source, 2, true, false);
+    try checkObjectAccessorDescriptorProvider();
+    try checkNativeAccessorBoundary(dynamic_cases[1], .object_accessor_with_scope);
+    for (dynamic_cases) |source| {
+        try checkAncestorGraph(source, 0, true, false);
+        for ([_]bool{ false, true }) |minify| try runtimeComparison(source, minify, false);
+    }
+}
+
+test "object accessor pinned eval uses actual descriptor provider and preserves native runtime" {
+    for ([_]bool{ false, true }) |minify| try runtimeComparison(dynamic_cases[0], minify, false);
+}
+
+fn checkObjectAccessorDescriptorProvider() !void {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const Bundler = @import("../bundler/bundler.zig").Bundler;
+    const Graph = @import("../bundler/graph.zig").ModuleGraph;
+    const Linker = @import("../bundler/linker.zig").Linker;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.cjs", dynamic_cases[0]);
+    const entry = try helpers.absPath(&tmp, "entry.cjs");
+    defer a.free(entry);
+    var cache = Bundler.initResolveCacheFromOptions(a, .{ .entry_points = &.{entry}, .platform = .node, .format = .cjs });
+    defer cache.deinit();
+    var graph = Graph.init(a, &cache);
+    defer graph.deinit();
+    graph.transform_options_base = .{ .unsupported = compat.fromESTarget(.es5), .keep_names = true };
+    try graph.build(std.testing.io, &.{entry});
+    const index = graph.path_to_module.get(entry) orelse return error.MissingEntry;
+    const module = graph.getModule(index) orelse return error.MissingModule;
+    const tree = &module.ast.?;
+    const sem = &module.semantic.?;
+    try std.testing.expect(sem.owner_token != .unassigned);
+    var descriptor: ?u32 = null;
+    var imports: usize = 0;
+    for (module.import_bindings) |binding| {
+        if (!binding.is_helper) continue;
+        try std.testing.expect(!std.mem.eql(u8, binding.imported_name, "__classCallCheck"));
+        if (!std.mem.eql(u8, binding.imported_name, "__classDefineProperty")) continue;
+        imports += 1;
+        const local = binding.local_symbol_node orelse return error.MissingDescriptorAnchor;
+        const sid = sem.symbol_ids[@backingInt(local)] orelse return error.MissingDescriptorSid;
+        try std.testing.expectEqual(binding.local_symbol.semanticIndex().?, sid);
+        try std.testing.expectEqual(@as(?usize, sid), sem.helper_scope_map.get("__classDefineProperty"));
+        try std.testing.expect(binding.import_record_index < module.import_records.len);
+        const provider = graph.getModule(module.import_records[binding.import_record_index].resolved) orelse return error.MissingProvider;
+        try std.testing.expectEqualStrings(@import("../runtime_helper_modules.zig").ID_PREFIX ++ "class-define-property", provider.path);
+        try std.testing.expect(provider.semantic.?.owner_token != .unassigned);
+        const exported = provider.findExportBinding("__classDefineProperty") orelse return error.MissingExport;
+        const export_node = exported.local_symbol_node orelse return error.MissingExportAnchor;
+        const export_sid = provider.semantic.?.symbol_ids[@backingInt(export_node)] orelse return error.MissingExportSid;
+        try std.testing.expectEqual(exported.symbol.semanticIndex().?, export_sid);
+        try std.testing.expectEqual(@as(?u32, export_sid), provider.findLocalExportSemanticIndex("__classDefineProperty"));
+        descriptor = sid;
+    }
+    try std.testing.expectEqual(@as(usize, 1), imports);
+    const sid = descriptor orelse return error.MissingDescriptor;
+    const root = tree.transformed_root orelse return error.MissingRoot;
+    const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, tree, root);
+    defer a.free(reachable);
+    var traces = try @import("symbol_coverage.zig").collectScopeTraces(a, tree, root, sem.scopes, &sem.scope_owner_map);
+    defer traces.deinit(a);
+    var calls: usize = 0;
+    for (reachable) |raw| {
+        const call = tree.nodes.items[raw];
+        if (call.tag != .call_expression or tree.extra_data.items[call.data.extra + 2] != 3) continue;
+        const callee = tree.extra_data.items[call.data.extra];
+        if (callee >= sem.symbol_ids.len or sem.symbol_ids[callee] != @as(?u32, sid)) continue;
+        const trace = traces.get(callee) orelse return error.MissingUseScope;
+        try std.testing.expect(trace.valid and !trace.ambiguous and trace.scope_id != null);
+        var reads: usize = 0;
+        for (sem.references) |reference| if (@backingInt(reference.node_index) == callee) {
+            try std.testing.expectEqual(sid, @backingInt(reference.symbol_id));
+            try std.testing.expectEqual(trace.scope_id.?, @backingInt(reference.scope_id));
+            try std.testing.expect(reference.flags.read and !reference.flags.write and !reference.flags.declare);
+            reads += 1;
+        };
+        try std.testing.expectEqual(@as(usize, 1), reads);
+        calls += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), calls);
+    var linker = Linker.init(a, &graph, .cjs);
+    defer linker.deinit();
+    linker.keep_names = true;
+    try linker.link();
+    try linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+}
+
+test "object accessor pinned eval publishes exact helper import provider and use scope" {
+    try checkObjectAccessorDescriptorProvider();
+}
+
+fn checkNativeAccessorBoundary(source: []const u8, code: @FieldType(@import("../bundler/types.zig").BundlerDiagnostic, "code")) !void {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const Bundler = @import("../bundler/bundler.zig").Bundler;
+    const Graph = @import("../bundler/graph.zig").ModuleGraph;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.cjs", source);
+    const entry = try helpers.absPath(&tmp, "entry.cjs");
+    defer a.free(entry);
+    var cache = Bundler.initResolveCacheFromOptions(a, .{ .entry_points = &.{entry}, .platform = .node, .format = .cjs });
+    defer cache.deinit();
+    var graph = Graph.init(a, &cache);
+    defer graph.deinit();
+    graph.transform_options_base = .{ .unsupported = compat.fromESTarget(.es5), .keep_names = true };
+    try graph.build(std.testing.io, &.{entry});
+    const module = graph.getModule(graph.path_to_module.get(entry).?).?;
+    const tree = &module.ast.?;
+    const sem = &module.semantic.?;
+    const root = tree.transformed_root orelse return error.MissingRoot;
+    const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, tree, root);
+    defer a.free(reachable);
+    var retained: usize = 0;
+    for (reachable) |raw| {
+        const member = tree.nodes.items[raw];
+        if (member.tag != .method_definition) continue;
+        const flags = tree.readExtra(member.data.extra, ast.MethodExtra.flags);
+        if (flags & (ast.MethodFlags.is_getter | ast.MethodFlags.is_setter) == 0) continue;
+        const key = tree.readExtraNode(member.data.extra, ast.MethodExtra.key);
+        if (tree.getNode(key).tag != .computed_property_key) continue;
+        const owner = sem.scope_owner_map.get(raw) orelse return error.MissingNativeOwner;
+        var source_owner: ?u32 = null;
+        for (sem.scope_history.source_owners) |original| if (@backingInt(original.owner.node) == raw) {
+            try std.testing.expect(source_owner == null);
+            source_owner = @backingInt(original.scope);
+        };
+        try std.testing.expectEqual(owner, source_owner orelse return error.MissingSourceOwner);
+        try std.testing.expectEqual(sem.scope_history.source_scopes[owner].parent, sem.scopes[owner].parent);
+        try std.testing.expectEqual(sem.scope_history.source_scopes[owner].is_strict, sem.scopes[owner].is_strict);
+        const read = tree.getNode(key).data.unary.operand;
+        const sid = sem.symbol_ids[@backingInt(read)] orelse return error.MissingNativeKeySid;
+        var declarations: usize = 0;
+        for (sem.references) |reference| if (@backingInt(reference.symbol_id) == sid and reference.flags.declare) {
+            try std.testing.expect(!reference.declaration_node_index.isNone());
+            try std.testing.expectEqual(@as(?u32, sid), sem.symbol_ids[@backingInt(reference.declaration_node_index)]);
+            declarations += 1;
+        };
+        try std.testing.expectEqual(@as(usize, 1), declarations);
+        retained += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), retained);
+    for (module.import_bindings) |binding| try std.testing.expect(!binding.is_helper);
+    var warnings: usize = 0;
+    for (graph.diagnostics.items) |diagnostic| {
+        try std.testing.expect(diagnostic.code != .arrow_dynamic_scope);
+        if (diagnostic.code == code) {
+            try std.testing.expect(diagnostic.severity == .warning);
+            warnings += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), warnings);
+}
+
+test "object accessor with preserves native runtime trap order and mutation controls" {
+    const with_controls = [_][]const u8{
+        dynamic_cases[1],
+        "var Object=function Object(){var k='x',o,events=[];var scope=new Proxy({},{has:function has(t,key){events.push(String(key));return false}});with(scope){o={get[k](){return 3}}}return[o.x,events]};console.log(JSON.stringify(Object()))",
+        "var saved=globalThis.Object.defineProperty;globalThis.Object.defineProperty=function badDefine(){throw Error('unexpected builtin')};var Object=function Object(){var k='x',o;with({}){o={get[k](){return 3}}}return o.x};console.log(Object.name,Object());globalThis.Object.defineProperty=saved",
+        "var saved=globalThis.Object.prototype.constructor;globalThis.Object.prototype.constructor=17;var Object=function Object(){var k='x',o;with({}){o={get[k](){return 3}}}return o.x};console.log(Object.name,Object());globalThis.Object.prototype.constructor=saved",
+        "var Object=function Object(){var k='x',o;with({Object:{defineProperty:function badObject(){throw Error('captured')}},__classDefineProperty:function badHelper(){throw Error('captured')},$cDp:function badShortHelper(){throw Error('captured')}}){o={get[k](){return 3}}}return o.x};console.log(Object.name,Object())",
+    };
+    for (with_controls) |source| for ([_]bool{ false, true }) |minify| try runtimeComparison(source, minify, false);
+}
+
+test "object accessor with retains native source owners and reports explicit target boundary" {
+    try checkNativeAccessorBoundary(dynamic_cases[1], .object_accessor_with_scope);
+}
+
+const opaque_eval_accessor = "var Object=function Object(code){var k='x';eval(code);var o={get[k](){return 3}};return o.x};console.log(Object.name,Object('var __classDefineProperty=function bad(){throw 17};var $cDp=function shortBad(){throw 19}'))";
+
+test "object accessor opaque eval retains native source owners and reports explicit target boundary" {
+    try checkNativeAccessorBoundary(opaque_eval_accessor, .object_accessor_eval_scope);
+}
+
+test "object accessor opaque eval cannot capture generated helper names" {
+    const eval_controls = [_][]const u8{
+        opaque_eval_accessor,
+        "var Object=function Object(){var k='x';eval('var __classDefineProperty=function bad(){throw 17};var $cDp=function shortBad(){throw 19}');var o={get[k](){return 3}};return o.x};console.log(Object.name,Object())",
+        "var Object=function Object(code){var k='x',o={get[k](){return 3}};eval(code);return o.x};console.log(Object.name,Object('var __classDefineProperty=17;var $cDp=19'))",
+        "var Object=function Object(code){var k='x';eval(code);var o={get[k](){return 3}};return [o.x,eval('Object')===Object]};console.log(Object.name,JSON.stringify(Object('var __classDefineProperty=17;var $cDp=19')))",
+    };
+    for (eval_controls) |source| for ([_]bool{ false, true }) |minify| try runtimeComparison(source, minify, false);
 }

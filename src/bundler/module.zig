@@ -332,6 +332,8 @@ pub const ModuleSemanticData = struct {
     /// Expression use scopes, independent of AST nodes that own scopes.
     node_scope_provenance: @import("../semantic/node_scope_provenance.zig").Map = .empty,
     class_self_symbol_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    source_owned_retirements: @import("../semantic/source_owned_retirement.zig").Map = .empty,
+    scope_history: @import("../semantic/scope_frame_history.zig").History = .{},
     namespace_member_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     namespace_declaration_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// export된 이름 목록. exported_names.get("x") → Span.
@@ -387,13 +389,17 @@ pub const ModuleSemanticData = struct {
             self.helper_scope_map,
         );
         errdefer editor.deinit();
+        try editor.importScopeHistory(self.scope_history);
         try editor.importNodeScopeProvenance(self.node_scope_provenance);
+        try editor.importSourceOwnedRetirements(self.source_owned_retirements);
         return editor;
     }
 
     /// 변환이 끝난 뒤 동일 SymbolId를 유지한 배열을 모듈에 돌려준다.
     pub fn applyEdit(self: *ModuleSemanticData, result: SemanticEditor.Result) void {
         self.symbols = result.symbols;
+        self.source_owned_retirements = result.source_owned_retirements;
+        self.scope_history = result.scope_history;
         self.scopes = result.scopes;
         self.scope_maps = result.scope_maps;
         self.scope_owner_map = result.scope_owner_map;
@@ -484,6 +490,7 @@ pub const TransformCache = struct {
     /// Generated references marked as explicit globals (sorted, ascending).
     /// Resync must keep them external even when a source scope declares the same name.
     explicit_global_ref_nodes: []const u32 = &.{},
+    cjs_export_assignment_references: []const @import("../transformer/cjs_export_assignment.zig").ModuleReference = &.{},
     /// Scope owner nodes whose name lookup was marked dynamic because opaque
     /// define text cannot represent its lexical references in the AST.
     /// Full semantic resync reapplies the dynamic-name flags by these owners.
@@ -574,6 +581,9 @@ pub const Module = struct {
     };
 
     index: ModuleIndex,
+    /// Registered code-generation identity; independent of source semantic data.
+    codegen_output_owner: @import("codegen_output_domain.zig").Owner = .unassigned,
+    codegen_output_domain: ?*@import("codegen_output_domain.zig").Domain = null,
     /// 절대 파일 경로. graph의 path_to_module 키와 동일한 메모리를 참조 (빌림).
     path: []const u8,
     /// dependency lookup 시작 디렉토리. null 이면 dirname(path)를 사용한다.
@@ -753,18 +763,12 @@ pub const Module = struct {
     /// AST scopes and is recovered by its typed synthetic kind after rebuilds.
     require_shim_local_symbol: ?SemanticSymbolId = null,
 
-    /// RFC #3940 L.5a — post-link tree-shake AST mutation 후 semantic resync 시 carry-over 된
-    /// rename (SymbolID→name). tree_shaker(const linker)가 resync 전 `rename_table` 에서 캡처해
-    /// new idx 로 채우고, bundler 의 post-shake finalize 가 `applyPendingRenames` 로 mutable
-    /// `rename_table` 에 반영 후 비운다. value 는 `Linker.canonical_strings` borrow (같은 build
-    /// finalize 내 소비). build-scope 라 store round-trip 전 반드시 clear (cross-build dangling 방지).
-    /// 맵 backing 은 `parse_arena` 소유 — 개별 `deinit` 금지 (`arena.deinit` 가 일괄 해제, #1287).
-    pending_renames: RenameTable = .{},
-    /// `pending_renames` 가 비어도 semantic resync 가 이미 수행됐는지 기록한다.
-    /// 첫 resync 뒤 carry 대상이 없으면 map count 로는 다음 pass 와 구분할 수 없어,
-    /// link 시점 rename_table 의 구 stale SymbolID 를 다시 fallback 으로 읽게 된다.
-    /// applyPendingRenames 는 성공/빈 결과 모두 소비한 뒤 이 값을 reset 한다.
-    pending_rename_capture_seen: bool = false,
+    /// Historical fresh-analysis comparison lives only in native test
+    /// oracles. Production has no pending rename/SID correspondence state.
+    legacy_rename_oracle: if (@import("builtin").is_test) struct {
+        renames: RenameTable = .{},
+        capture_seen: bool = false,
+    } else struct {} = .{},
 
     /// 내가 import하는 모듈들 (순방향)
     dependencies: std.ArrayList(ModuleIndex),
@@ -1556,6 +1560,7 @@ pub const Module = struct {
 
     pub fn init(index: ModuleIndex, path: []const u8) Module {
         return .{
+            .codegen_output_owner = @import("codegen_output_domain.zig").newOwner(),
             .index = index,
             .path = path,
             .source = "",
@@ -1594,6 +1599,8 @@ pub const Module = struct {
     }
 
     pub fn deinit(self: *Module, allocator: std.mem.Allocator) void {
+        if (self.codegen_output_domain) |domain| domain.destroy();
+        self.codegen_output_domain = null;
         self.self_namespace_source_receipt = null;
         self.dependencies.deinit(allocator);
         self.importers.deinit(allocator);

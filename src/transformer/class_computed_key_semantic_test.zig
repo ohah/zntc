@@ -115,7 +115,7 @@ test "computed class key write contributes its actual statement writer edge" {
         reference.stmt_idx = write.statement;
         reference.scope_stmt_idx = write.statement;
     };
-    const infos = (try @import("../bundler/stmt_info.zig").buildFromSemantic(alloc, t.ast, edited.symbols.items, edited.scopes, references, &analyzer.unresolved_references, false, false)) orelse return error.ComputedKeyStatementInfoMissing;
+    const infos = (try @import("../bundler/stmt_info.zig").buildFromSemantic(alloc, t.ast, edited.symbols.items, edited.scopes, edited.symbol_ids, references, &analyzer.unresolved_references, false, false)) orelse return error.ComputedKeyStatementInfoMissing;
     try std.testing.expect(std.mem.indexOfScalar(u32, infos.writerStmts(id), write.statement) != null);
     const ast_infos = (try @import("../bundler/stmt_info.zig").build(alloc, t.ast, edited.symbols.items, edited.scopes, edited.symbol_ids, &analyzer.unresolved_references, false, false)) orelse return error.ComputedKeyAstStatementInfoMissing;
     try std.testing.expect(std.mem.indexOfScalar(u32, ast_infos.writerStmts(id), write.statement) != null);

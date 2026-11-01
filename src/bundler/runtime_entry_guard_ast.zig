@@ -76,7 +76,7 @@ pub fn installCandidate(graph: anytype, io: std.Io) !void {
     module.source = source;
     module.ast = parser.ast;
     module.semantic = semantic;
-    module.prebuilt_stmt_info = try @import("stmt_info.zig").buildFromSemantic(a, &parser.ast, semantic.symbols.items, semantic.scopes, semantic.references, &semantic.unresolved_references, false, false);
+    module.prebuilt_stmt_info = try @import("stmt_info.zig").buildFromSemantic(a, &parser.ast, semantic.symbols.items, semantic.scopes, semantic.symbol_ids, semantic.references, &semantic.unresolved_references, false, false);
     module.export_bindings = try a.alloc(@import("binding_scanner.zig").ExportBinding, 1);
     module.export_bindings[0] = .{ .exported_name = public_name, .local_name = public_name, .local_span = semantic.symbols.items[@backingInt(sid)].declaration_span, .local_symbol_node = binding, .kind = .local, .symbol = symbol.SymbolRef.makeSemantic(index, @backingInt(sid)), .init_is_fn_or_class = true };
     module.exported_names = try a.dupe([]const u8, &.{public_name});

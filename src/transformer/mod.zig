@@ -119,6 +119,7 @@ test {
     _ = @import("class_scope_test.zig");
     _ = @import("block_rename_table_test.zig");
     _ = @import("minify_test.zig");
+    _ = @import("minify/semantic_journal_test.zig");
     _ = @import("worklet_test.zig");
     _ = @import("worklet_babel_parity_test.zig");
     _ = @import("styled_components_test.zig");
@@ -191,4 +192,8 @@ test {
 
 test {
     _ = @import("sideeffect_entry_graph_test.zig");
+}
+
+test {
+    _ = @import("erased_const_enum_handoff.zig");
 }

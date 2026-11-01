@@ -1077,6 +1077,7 @@ pub fn buildIncremental(
                 try cache_hit_modules.put(self.allocator, @intCast(i), {});
                 // parse_arena 소유권 이전: store → graph.
                 cached.module.parse_arena = null;
+                cached.module.codegen_output_domain = null;
                 cached.module.resolve_dir = null;
                 cached.module.import_records = &.{};
                 cached.module.resolved_deps = .empty;

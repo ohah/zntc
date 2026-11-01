@@ -903,6 +903,7 @@ fn tryExtractRequire(ast: *const Ast, node: Node) ?ImportRecord {
     const arg_node = ast.getNode(arg_idx);
 
     return .{
+        .source_node = arg_idx,
         .specifier = specifier,
         .kind = .require,
         .span = arg_node.span,

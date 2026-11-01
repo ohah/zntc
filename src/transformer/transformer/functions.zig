@@ -55,6 +55,7 @@ pub fn visitArrowFunction(self: *Transformer, source_owner: NodeIndex, node: Nod
             break :blk if (n.tag == .formal_parameters) n.data.list else .{ .start = 0, .len = 0 };
         };
 
+        if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_owner, result);
         if (try self.dispatchFunctionPlugins(result, .{
             .node_idx = result,
             .node_tag = .arrow_function_expression,

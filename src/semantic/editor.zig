@@ -33,6 +33,32 @@ pub const Error = std.mem.Allocator.Error || error{
     ReferenceNotFound,
 };
 
+/// Captured by a producer from its actual source graph before detaching AST.
+pub const KnownUnreachableFunction = struct {
+    owner: NodeIndex,
+    scope: ScopeId,
+    params: NodeIndex,
+    body: NodeIndex,
+    body_scope: ScopeId,
+};
+
+/// Arena-owned immutable source graph captured before an in-place producer.
+/// Its domain is the actual stable candidate header, never an equal clone.
+pub const SourceOwnedFunction = struct {
+    domain: *const Ast,
+    source_backing: []const u8,
+    source: *const Ast,
+    graph: *const SemanticEditor,
+    functions: []const KnownUnreachableFunction,
+    subtree: []const u32,
+};
+
+fn sameRetirementNodePayload(a: ast_mod.Node, b: ast_mod.Node) bool {
+    if (a.tag != b.tag or !std.meta.eql(a.span, b.span)) return false;
+    const width = a.tag.dataWidth();
+    return std.mem.eql(u8, std.mem.asBytes(&a.data)[0..width], std.mem.asBytes(&b.data)[0..width]);
+}
+
 /// 기존 analyzer 결과를 복사해 가변 상태로 보관한다. 원본 slice는 변경하지 않는다.
 /// allocator는 모듈 arena여야 한다. 생성한 이름은 최종 출력까지 살아 있어야 한다.
 pub const SemanticEditor = struct {
@@ -49,11 +75,15 @@ pub const SemanticEditor = struct {
     reference_index_built: bool = false,
     symbol_ids: std.ArrayList(?u32) = .empty,
     scope_reparented: bool = false,
+    source_owned_retirements: @import("source_owned_retirement.zig").Map = .empty,
+    scope_history: @import("scope_frame_history.zig").Recorder = .{},
 
     /// 편집 완료 후 번들러 모듈 또는 단일 파일 출력 경로에 넘길 소유 데이터.
     /// 모든 slice는 init에 전달한 모듈 arena가 소유한다.
     pub const Result = struct {
         symbols: std.ArrayList(Symbol),
+        source_owned_retirements: @import("source_owned_retirement.zig").Map = .empty,
+        scope_history: @import("scope_frame_history.zig").History = .{},
         scopes: []Scope,
         scope_maps: []std.StringHashMapUnmanaged(usize),
         scope_owner_map: std.AutoHashMapUnmanaged(u32, u32),
@@ -112,6 +142,8 @@ pub const SemanticEditor = struct {
         self.references.deinit(self.allocator);
         self.reference_index.deinit(self.allocator);
         self.symbol_ids.deinit(self.allocator);
+        self.source_owned_retirements.deinit(self.allocator);
+        self.scope_history.deinit(self.allocator);
     }
 
     pub fn finish(self: *SemanticEditor) Error!Result {
@@ -137,20 +169,30 @@ pub const SemanticEditor = struct {
                 if (!self.visibleFrom(ref.symbol_id, ref.scope_id)) return error.InvalidScope;
             }
         }
+        // Generated owner child carriers can follow the last identifier in
+        // the AST. Publish their actual domain as null slots too, so cached
+        // History edges share the same bound as this graph's dense ID table.
+        if (self.symbol_ids.items.len < self.ast.nodes.items.len)
+            try self.symbol_ids.appendNTimes(self.allocator, null, self.ast.nodes.items.len - self.symbol_ids.items.len);
+        const scope_history = self.scope_history.finish(self.allocator) catch |err| return historyError(err);
         const scopes = try self.scopes.toOwnedSlice(self.allocator);
         const scope_maps = try self.scope_maps.toOwnedSlice(self.allocator);
         const references = try self.references.toOwnedSlice(self.allocator);
         const symbol_ids = try self.symbol_ids.toOwnedSlice(self.allocator);
+        const retirements = self.source_owned_retirements;
         const symbols = self.symbols;
         const scope_owner_map = self.scope_owner_map;
         const node_scope_provenance = self.node_scope_provenance;
         const helper_scope_map = self.helper_scope_map;
         self.symbols = .empty;
+        self.source_owned_retirements = .empty;
         self.scope_owner_map = .empty;
         self.node_scope_provenance = .empty;
         self.helper_scope_map = .empty;
         return .{
             .symbols = symbols,
+            .source_owned_retirements = retirements,
+            .scope_history = scope_history,
             .scopes = scopes,
             .scope_maps = scope_maps,
             .scope_owner_map = scope_owner_map,
@@ -161,15 +203,49 @@ pub const SemanticEditor = struct {
         };
     }
 
+    pub fn importSourceOwnedRetirements(self: *SemanticEditor, source: @import("source_owned_retirement.zig").Map) Error!void {
+        var entries = source.iterator();
+        while (entries.next()) |entry| {
+            if (self.source_owned_retirements.contains(entry.key_ptr.*)) return error.InvalidSymbol;
+            try self.source_owned_retirements.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
+
+    pub fn scopeHistoryView(self: *const SemanticEditor) @import("scope_frame_history.zig").History {
+        return .{ .source_scopes = self.scope_history.source_scopes, .source_owners = self.scope_history.source_owners, .source_initializers = self.scope_history.source_initializers, .source_computed_awaits = self.scope_history.source_computed_awaits, .worklet_class_creators = self.scope_history.worklet_class_creators.items, .lowered_worklet_classes = self.scope_history.lowered_worklet_classes.items, .source_class_keys = self.scope_history.source_class_keys, .events = self.scope_history.events.items };
+    }
+
+    pub fn importScopeHistory(self: *SemanticEditor, source: @import("scope_frame_history.zig").History) Error!void {
+        if (self.scope_history.enabled) return error.InvalidScope;
+        self.scope_history = @import("scope_frame_history.zig").Recorder.fromHistory(self.allocator, source) catch |err| return historyError(err);
+    }
+
+    fn historyError(err: @import("scope_frame_history.zig").Error) Error {
+        return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.InvalidNode => error.InvalidNode,
+            else => error.InvalidScope,
+        };
+    }
+
     pub fn importNodeScopeProvenance(self: *SemanticEditor, source: @import("node_scope_provenance.zig").Map) Error!void {
         var entries = source.iterator();
-        while (entries.next()) |entry| try self.node_scope_provenance.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
+        while (entries.next()) |entry| {
+            if (!self.scope_history.enabled and entry.value_ptr.source_external != null) {
+                self.scope_history = @import("scope_frame_history.zig").Recorder.init(self.allocator, self.ast, self.scopes.items, &self.scope_owner_map) catch |err| return historyError(err);
+            }
+            try self.node_scope_provenance.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
+        }
     }
 
     pub fn recordNodeScopeProvenance(self: *SemanticEditor, node: NodeIndex, scope: ScopeId) Error!void {
         if (!self.validScope(scope)) return error.InvalidScope;
         if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len) return error.InvalidNode;
         var entry = self.node_scope_provenance.get(node) orelse @import("node_scope_provenance.zig").Entry{ .scope = scope, .source_node = node };
+        if (!self.validScope(entry.scope)) return error.InvalidScope;
+        if (entry.source_external) |origin| {
+            entry.source_external = try @import("source_external_origin.zig").moved(self.allocator, origin, node, entry.source_node, entry.scope, scope, self.scopes.items, self.scope_history.epoch());
+        }
         entry.scope = scope;
         try self.node_scope_provenance.put(self.allocator, node, entry);
     }
@@ -628,6 +704,84 @@ pub const SemanticEditor = struct {
         return self.references.items[index];
     }
 
+    pub const EmptyArrowScopeElision = struct {
+        owner: NodeIndex,
+        scope: ScopeId,
+        parent: ScopeId,
+        /// Exact arrow payload captured by the producer before its call is folded.
+        source: @import("../parser/ast.zig").Node,
+    };
+
+    /// Retire a proven empty arrow frame after an in-place IIFE fold. Existing
+    /// symbols keep their IDs/storage scopes; only uses and child owners cross
+    /// this exact now-absent lexical boundary. No name resolution happens here.
+    pub fn elideEmptyArrowScopeOwner(self: *SemanticEditor, plan: EmptyArrowScopeElision) Error!void {
+        if (plan.owner.isNone() or @backingInt(plan.owner) >= self.ast.nodes.items.len or
+            !self.validScope(plan.scope) or !self.validScope(plan.parent) or
+            self.scope_owner_map.get(@backingInt(plan.owner)) != @backingInt(plan.scope)) return error.InvalidScope;
+        const source = plan.source;
+        const actual_source = self.ast.getNode(plan.owner);
+        if (source.tag != actual_source.tag or source.tag != .arrow_function_expression or
+            !std.meta.eql(source.span, actual_source.span) or source.data.extra != actual_source.data.extra) return error.InvalidNode;
+        if (source.tag != .arrow_function_expression or self.ast.functionParams(source).len != 0 or
+            !self.ast.hasExtra(source.data.extra, @import("../parser/ast.zig").ArrowExtra.flags) or
+            self.ast.readExtra(source.data.extra, @import("../parser/ast.zig").ArrowExtra.flags) & @import("../parser/ast.zig").ArrowFlags.is_async != 0) return error.InvalidNode;
+        const frame = self.scopes.items[plan.scope.toIndex()];
+        if (frame.parent != plan.parent or frame.kind != .function or frame.blocksMangling() or
+            frame.symbol_count != 0 or self.scope_maps.items[plan.scope.toIndex()].count() != 0 or
+            frame.is_strict != self.scopes.items[plan.parent.toIndex()].is_strict) return error.InvalidScope;
+        for (self.symbols.items) |symbol| if (symbol.scope_id == plan.scope) return error.InvalidScope;
+        for (self.references.items) |reference| {
+            if (reference.scope_id == plan.scope and !self.visibleFrom(reference.symbol_id, plan.parent)) return error.InvalidScope;
+        }
+        var provenance = self.node_scope_provenance.valueIterator();
+        while (provenance.next()) |entry| if (entry.scope == plan.scope and entry.with_environment) return error.InvalidScope;
+        // Prepare immutable use-scope receipts before changing any graph row.
+        const PreparedOrigin = struct { node: NodeIndex, entry: @import("node_scope_provenance.zig").Entry };
+        var prepared_origins: std.ArrayList(PreparedOrigin) = .empty;
+        defer prepared_origins.deinit(self.allocator);
+        var origin_entries = self.node_scope_provenance.iterator();
+        while (origin_entries.next()) |entry| {
+            if (entry.value_ptr.scope != plan.scope) continue;
+            var next = entry.value_ptr.*;
+            if (next.source_external) |origin| next.source_external = try @import("source_external_origin.zig").elided(self.allocator, origin, entry.key_ptr.*, next.source_node, plan.scope, plan.parent, self.scopes.items, plan.owner, plan.source, self.scope_history.epoch());
+            next.scope = plan.parent;
+            try prepared_origins.append(self.allocator, .{ .node = entry.key_ptr.*, .entry = next });
+        }
+        // Each actual child reparent has its own trigger scope; propagated
+        // strict/dynamic rows are recorded by the same operation.
+        for (self.scopes.items, 0..) |child, raw| {
+            if (child.parent == plan.scope) try self.reparentScope(@fromBackingInt(@as(u32, @intCast(raw))), plan.parent);
+        }
+        for (self.references.items) |*reference| if (reference.scope_id == plan.scope) {
+            reference.scope_id = plan.parent;
+        };
+        for (prepared_origins.items) |prepared| self.node_scope_provenance.getPtr(prepared.node).?.* = prepared.entry;
+        _ = try self.removeScopeOwner(plan.owner);
+        self.scope_reparented = true;
+    }
+
+    /// Publish only the supplied actual scope-owner edge. Recording happens
+    /// before the map mutation; no final-map reconciliation creates history.
+    pub fn putScopeOwner(self: *SemanticEditor, owner: NodeIndex, scope: ScopeId) Error!void {
+        if (!self.validScope(scope) or owner.isNone() or @backingInt(owner) >= self.ast.nodes.items.len) return error.InvalidScope;
+        const raw = @backingInt(owner);
+        const before = self.scope_owner_map.get(raw);
+        if (before == @backingInt(scope)) return;
+        const epoch = self.scope_history.events.items.len;
+        errdefer self.scope_history.events.shrinkRetainingCapacity(epoch);
+        if (before) |old| self.scope_history.recordOwner(self.allocator, self.ast, @fromBackingInt(old), self.scopes.items[old], owner, .none, .{}) catch |err| return historyError(err);
+        self.scope_history.recordOwner(self.allocator, self.ast, scope, self.scopes.items[scope.toIndex()], .none, owner, .{}) catch |err| return historyError(err);
+        try self.scope_owner_map.put(self.allocator, raw, @backingInt(scope));
+    }
+
+    pub fn removeScopeOwner(self: *SemanticEditor, owner: NodeIndex) Error!bool {
+        const raw = @backingInt(owner);
+        const scope = self.scope_owner_map.get(raw) orelse return false;
+        self.scope_history.recordOwner(self.allocator, self.ast, @fromBackingInt(scope), self.scopes.items[scope], owner, .none, .{}) catch |err| return historyError(err);
+        return self.scope_owner_map.remove(raw);
+    }
+
     /// AST가 새 어휘 경계를 만들 때 호출한다. strict는 부모에서 자식으로 전파된다.
     pub fn addScope(self: *SemanticEditor, parent: ScopeId, owner: NodeIndex, kind: ScopeKind, is_strict: bool) Error!ScopeId {
         if (!parent.isNone() and !self.validScope(parent)) return error.InvalidScope;
@@ -637,7 +791,11 @@ pub const SemanticEditor = struct {
         const strict = is_strict or intrinsically_strict or
             (if (parent.isNone()) false else self.scopes.items[parent.toIndex()].is_strict);
         const id: ScopeId = @fromBackingInt(@intCast(@as(u32, @intCast(self.scopes.items.len))));
-        try self.scopes.append(self.allocator, .{ .parent = parent, .kind = kind, .is_strict = strict });
+        const frame: Scope = .{ .parent = parent, .kind = kind, .is_strict = strict };
+        const epoch = self.scope_history.events.items.len;
+        errdefer self.scope_history.events.shrinkRetainingCapacity(epoch);
+        self.scope_history.recordBirth(self.allocator, self.ast, id, frame, owner, .{}) catch |err| return historyError(err);
+        try self.scopes.append(self.allocator, frame);
         errdefer _ = self.scopes.pop();
         try self.scope_maps.append(self.allocator, .empty);
         if (!owner.isNone()) try self.scope_owner_map.put(self.allocator, @backingInt(owner), @backingInt(id));
@@ -666,12 +824,16 @@ pub const SemanticEditor = struct {
             return error.InvalidNode;
         const scope_id = self.scope_owner_map.get(old_key) orelse return error.InvalidScope;
         if (old_key == new_key) return;
+        if (scope_id >= self.scopes.items.len) return error.InvalidScope;
         if (self.scope_owner_map.get(new_key)) |existing| {
             if (existing != scope_id) return error.ScopeOwnerConflict;
-        } else {
-            try self.scope_owner_map.put(self.allocator, new_key, scope_id);
         }
+        // Preserve the actual copy edge as one ordered transition. A pair of
+        // independent insertion/removal events loses its source-owner lineage.
+        try self.scope_owner_map.ensureUnusedCapacity(self.allocator, 1);
+        self.scope_history.recordOwner(self.allocator, self.ast, @fromBackingInt(scope_id), self.scopes.items[scope_id], old_owner, new_owner, .{}) catch |err| return historyError(err);
         _ = self.scope_owner_map.remove(old_key);
+        self.scope_owner_map.putAssumeCapacity(new_key, scope_id);
     }
 
     /// Transfer an owner after a controlled in-place rewrite changed the old
@@ -689,9 +851,9 @@ pub const SemanticEditor = struct {
         if (self.scope_owner_map.get(new_key)) |existing| {
             if (existing != scope_id) return error.ScopeOwnerConflict;
         } else {
-            try self.scope_owner_map.put(self.allocator, new_key, scope_id);
+            try self.putScopeOwner(new_owner, @fromBackingInt(scope_id));
         }
-        _ = self.scope_owner_map.remove(old_key);
+        _ = try self.removeScopeOwner(old_owner);
     }
 
     /// Remove an empty generated block boundary after a lowering flattens its
@@ -720,14 +882,18 @@ pub const SemanticEditor = struct {
         }
 
         const parent = scope.parent;
-        self.scopes.items[parent.toIndex()].subtree_has_direct_eval =
-            self.scopes.items[parent.toIndex()].subtree_has_direct_eval or scope.subtree_has_direct_eval;
-        self.scopes.items[parent.toIndex()].subtree_has_with =
-            self.scopes.items[parent.toIndex()].subtree_has_with or scope.subtree_has_with;
+        const prepared_scopes = try self.allocator.dupe(Scope, self.scopes.items);
+        defer self.allocator.free(prepared_scopes);
+        prepared_scopes[parent.toIndex()].subtree_has_direct_eval =
+            prepared_scopes[parent.toIndex()].subtree_has_direct_eval or scope.subtree_has_direct_eval;
+        prepared_scopes[parent.toIndex()].subtree_has_with =
+            prepared_scopes[parent.toIndex()].subtree_has_with or scope.subtree_has_with;
+        self.scope_history.recordFrames(self.allocator, self.ast, self.scopes.items, prepared_scopes, &self.scope_owner_map, scope_id, parent, .{}) catch |err| return historyError(err);
+        @memcpy(self.scopes.items, prepared_scopes);
         for (self.scopes.items, 0..) |child, child_index| {
             if (child.parent == scope_id) try self.reparentScope(@fromBackingInt(@intCast(@as(u32, @intCast(child_index)))), parent);
         }
-        _ = self.scope_owner_map.remove(owner_raw);
+        _ = try self.removeScopeOwner(owner);
         return true;
     }
 
@@ -744,6 +910,29 @@ pub const SemanticEditor = struct {
         }
         if (self.scopes.items[scope.toIndex()].parent == new_parent) return;
 
+        if (self.scope_history.enabled) {
+            const before = try self.allocator.dupe(Scope, self.scopes.items);
+            defer self.allocator.free(before);
+            const epoch = self.scope_history.events.items.len;
+            const before_reparented = self.scope_reparented;
+            // This recorder is disabled only inside the existing deterministic
+            // operation; the original before array is restored on any error.
+            self.scope_history.enabled = false;
+            self.reparentScope(scope, new_parent) catch |err| {
+                @memcpy(self.scopes.items, before);
+                self.scope_reparented = before_reparented;
+                self.scope_history.enabled = true;
+                return err;
+            };
+            self.scope_history.enabled = true;
+            self.scope_history.recordFrames(self.allocator, self.ast, before, self.scopes.items, &self.scope_owner_map, scope, new_parent, .{}) catch |err| {
+                @memcpy(self.scopes.items, before);
+                self.scope_reparented = before_reparented;
+                self.scope_history.events.shrinkRetainingCapacity(epoch);
+                return historyError(err);
+            };
+            return;
+        }
         const was_strict = self.scopes.items[scope.toIndex()].is_strict;
         self.scopes.items[scope.toIndex()].parent = new_parent;
         self.scope_reparented = true;
@@ -1506,6 +1695,855 @@ pub const SemanticEditor = struct {
         // This operation removes only the declaration row. The producer owns
         // detaching its discarded AST binding, and any runtime mapping survives.
         return removed;
+    }
+
+    /// Retire a complete unreachable source function while preserving every
+    /// SymbolId/ScopeId slot. The AST producer must already have detached the
+    /// whole expression/declaration; reachability and ownership are recomputed
+    /// here rather than accepted from a caller-provided removed-node bitmap.
+    /// All validation/allocation precedes the first edit. Dead scope records
+    /// and orphan symbol rows keep their original provenance, never a fake
+    /// parent or a replacement scope zero.
+    pub fn captureFunctionRetirementSource(self: *const SemanticEditor, known: KnownUnreachableFunction) Error!*const SourceOwnedFunction {
+        if (known.owner.isNone() or @backingInt(known.owner) >= self.ast.nodes.items.len or
+            known.scope.isNone() or known.scope.toIndex() >= self.scopes.items.len or
+            self.scope_owner_map.get(@backingInt(known.owner)) != @backingInt(known.scope)) return error.InvalidScope;
+        const node = self.ast.getNode(known.owner);
+        if (node.tag != .function_declaration and node.tag != .function_expression and node.tag != .arrow_function_expression) return error.InvalidNode;
+        const slot: u32 = if (node.tag == .arrow_function_expression) 0 else ast_mod.FunctionExtra.params;
+        if (!self.ast.hasExtra(node.data.extra, slot + 1) or
+            self.ast.readExtraNode(node.data.extra, slot) != known.params or
+            self.ast.readExtraNode(node.data.extra, slot + 1) != known.body or
+            self.scope_owner_map.get(@backingInt(known.body)) != (if (known.body_scope.isNone()) @as(?u32, null) else @backingInt(known.body_scope))) return error.InvalidNode;
+        const source = try self.allocator.create(Ast);
+        source.* = try self.ast.cloneForTransformer(self.allocator);
+        // Snapshot bytes, rather than assuming equality from a borrowed pointer.
+        source.source = try self.allocator.dupe(u8, self.ast.source);
+        const graph = try self.allocator.create(SemanticEditor);
+        graph.* = try SemanticEditor.init(self.allocator, source, self.symbols.items, self.scopes.items, self.scope_maps.items, self.scope_owner_map, self.references.items, self.symbol_ids.items, self.helper_scope_map);
+        try graph.importScopeHistory(self.scopeHistoryView());
+        try graph.importSourceOwnedRetirements(self.source_owned_retirements);
+        graph.node_scope_provenance = try self.node_scope_provenance.clone(self.allocator);
+        const plan = try self.allocator.create(SourceOwnedFunction);
+        plan.* = .{
+            .domain = self.ast,
+            .source_backing = self.ast.source,
+            .source = source,
+            .graph = graph,
+            .functions = try self.allocator.dupe(KnownUnreachableFunction, &.{known}),
+            .subtree = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(self.allocator, source, known.owner),
+        };
+        return plan;
+    }
+
+    pub fn captureFunctionRetirementSources(self: *const SemanticEditor, functions: []const KnownUnreachableFunction) Error!*const SourceOwnedFunction {
+        if (functions.len == 0) return error.InvalidNode;
+        const first = try self.captureFunctionRetirementSource(functions[0]);
+        var union_nodes: std.ArrayList(u32) = .empty;
+        var membership = try std.DynamicBitSet.initEmpty(self.allocator, self.ast.nodes.items.len);
+        for (functions, 0..) |known, index| {
+            for (functions[0..index]) |previous| if (previous.owner == known.owner) return error.InvalidNode;
+            if (known.owner.isNone() or @backingInt(known.owner) >= self.ast.nodes.items.len or
+                known.scope.isNone() or known.scope.toIndex() >= self.scopes.items.len or
+                self.scope_owner_map.get(@backingInt(known.owner)) != @backingInt(known.scope)) return error.InvalidScope;
+            const node = self.ast.getNode(known.owner);
+            if (node.tag != .function_declaration and node.tag != .function_expression and node.tag != .arrow_function_expression) return error.InvalidNode;
+            const slot: u32 = if (node.tag == .arrow_function_expression) 0 else ast_mod.FunctionExtra.params;
+            if (!self.ast.hasExtra(node.data.extra, slot + 1) or
+                self.ast.readExtraNode(node.data.extra, slot) != known.params or self.ast.readExtraNode(node.data.extra, slot + 1) != known.body or
+                self.scope_owner_map.get(@backingInt(known.body)) != (if (known.body_scope.isNone()) @as(?u32, null) else @backingInt(known.body_scope))) return error.InvalidNode;
+            const nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(self.allocator, self.ast, known.owner);
+            for (nodes) |raw| {
+                // Capture may include nested functions. Selection, made from
+                // this immutable source after transformation, must be disjoint.
+                if (membership.isSet(raw)) continue;
+                membership.set(raw);
+                try union_nodes.append(self.allocator, raw);
+            }
+        }
+        const plan = try self.allocator.create(SourceOwnedFunction);
+        plan.* = first.*;
+        plan.functions = try self.allocator.dupe(KnownUnreachableFunction, functions);
+        plan.subtree = try union_nodes.toOwnedSlice(self.allocator);
+        return plan;
+    }
+
+    pub fn retireSelectedSourceOwnedFunctions(self: *SemanticEditor, source: *const SourceOwnedFunction, selected_owners: []const NodeIndex, receipt: @import("function_retirement_receipt.zig").ApplicationReceipt) Error!bool {
+        if (selected_owners.len == 0 or source.domain != self.ast or receipt.domain != source.domain) return false;
+        var selected: std.ArrayList(KnownUnreachableFunction) = .empty;
+        var union_nodes: std.ArrayList(u32) = .empty;
+        var membership = try std.DynamicBitSet.initEmpty(self.allocator, source.source.nodes.items.len);
+        for (selected_owners) |owner| {
+            var found: ?KnownUnreachableFunction = null;
+            for (source.functions) |known| if (known.owner == owner) {
+                if (found != null) return false;
+                found = known;
+            };
+            const known = found orelse return false;
+            const nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(self.allocator, source.source, known.owner);
+            for (nodes) |raw| {
+                if (membership.isSet(raw)) return false;
+                membership.set(raw);
+                try union_nodes.append(self.allocator, raw);
+            }
+            try selected.append(self.allocator, known);
+        }
+        var plan = source.*;
+        plan.functions = selected.items;
+        plan.subtree = union_nodes.items;
+        return self.retireSourceOwnedFunction(&plan, receipt);
+    }
+
+    /// Consume only after the domain-bound journal has applied references and
+    /// owners, and before it retires any generic declaration anchors.
+    pub fn retireSourceOwnedFunction(self: *SemanticEditor, plan: *const SourceOwnedFunction, receipt: @import("function_retirement_receipt.zig").ApplicationReceipt) Error!bool {
+        if (self.ast != plan.domain or receipt.domain != plan.domain or
+            self.ast.source.ptr != plan.source_backing.ptr or self.ast.source.len != plan.source_backing.len or
+            !std.mem.eql(u8, self.ast.source, plan.source.source) or
+            self.symbols.items.len != plan.graph.symbols.items.len or self.scopes.items.len != plan.graph.scopes.items.len or
+            self.scope_maps.items.len != plan.graph.scope_maps.items.len or self.symbol_ids.items.len != self.ast.nodes.items.len) return false;
+        const walk = @import("../parser/ast_walk.zig");
+        const live_nodes = try walk.collectReachableNodeIndices(self.allocator, self.ast);
+        var live = try std.DynamicBitSet.initEmpty(self.allocator, self.ast.nodes.items.len);
+        for (live_nodes) |raw| live.set(raw);
+        var lineage = try std.DynamicBitSet.initEmpty(self.allocator, self.ast.nodes.items.len);
+        for (plan.subtree) |raw| {
+            if (raw >= lineage.capacity() or live.isSet(raw)) return false;
+            lineage.set(raw);
+        }
+        const payloads = try self.allocator.dupe(ast_mod.Node, plan.source.nodes.items);
+        var copied_references: std.AutoHashMapUnmanaged(u32, Reference) = .empty;
+        var copied_owners = try plan.graph.scope_owner_map.clone(self.allocator);
+        for (plan.graph.references.items) |row| {
+            if (row.flags.declare or row.node_index.isNone()) continue;
+            const entry = try copied_references.getOrPut(self.allocator, @backingInt(row.node_index));
+            if (entry.found_existing) return false;
+            entry.value_ptr.* = row;
+        }
+        for (receipt.materialized_reads) |materialized| {
+            if (materialized.node.isNone()) return false;
+            const raw = @backingInt(materialized.node);
+            if (raw >= payloads.len or raw >= plan.graph.symbol_ids.items.len or
+                !sameRetirementNodePayload(payloads[raw], materialized.before_node) or
+                materialized.before_node.tag != .identifier_reference or
+                plan.graph.symbol_ids.items[raw] != @as(?u32, materialized.before_symbol_id) or
+                @backingInt(materialized.before_reference.symbol_id) != materialized.before_symbol_id or
+                materialized.before_reference.node_index != materialized.node or
+                !std.meta.eql(materialized.before_reference.flags, @as(ReferenceFlags, .{ .read = true })) or
+                !std.meta.eql(copied_references.get(raw), @as(?Reference, materialized.before_reference))) return false;
+            switch (materialized.after_node.tag) {
+                .numeric_literal, .string_literal, .boolean_literal, .null_literal, .bigint_literal => {},
+                else => return false,
+            }
+            var removal_count: usize = 0;
+            for (receipt.reference_changes) |change| {
+                if (change.after == null and std.meta.eql(change.before, @as(?Reference, materialized.before_reference))) removal_count += 1;
+            }
+            if (removal_count != 1) return false;
+            payloads[raw] = materialized.after_node;
+            _ = copied_references.remove(raw);
+        }
+        for (receipt.copies) |copy| {
+            if (copy.source.isNone() or copy.target.isNone()) return false;
+            const from = @backingInt(copy.source);
+            const to = @backingInt(copy.target);
+            if (from >= lineage.capacity() or to >= lineage.capacity() or from >= payloads.len or to >= payloads.len or
+                copy.source_reachable != live.isSet(from) or copy.target_reachable != live.isSet(to)) return false;
+            if (!sameRetirementNodePayload(payloads[from], copy.source_node) or !sameRetirementNodePayload(payloads[to], copy.target_node) or
+                copied_owners.get(from) != (if (copy.source_owner) |scope| @as(?u32, @backingInt(scope)) else null)) return false;
+            var source_reference = copied_references.get(from);
+            if (source_reference) |*row| {
+                // Empty-arrow scope elision is a separate exact producer. It
+                // may already have updated the journal's source row.
+                if (copy.source_reference) |actual| {
+                    for (receipt.owner_changes) |change| {
+                        if (change.effect == .empty_arrow_elide and row.scope_id == change.scope and actual.scope_id != row.scope_id)
+                            row.scope_id = change.parent orelse return false;
+                    }
+                }
+            }
+            if (!std.meta.eql(source_reference, copy.source_reference)) return false;
+            if (source_reference) |row| {
+                var next = row;
+                if (copied_references.get(to)) |previous| {
+                    next.scope_id = previous.scope_id;
+                    next.stmt_idx = previous.stmt_idx;
+                    next.scope_stmt_idx = previous.scope_stmt_idx;
+                }
+                next.node_index = copy.target;
+                try copied_references.put(self.allocator, to, next);
+            } else _ = copied_references.remove(to);
+            if (copy.source_owner) |scope| {
+                if (copied_owners.get(to)) |previous| if (previous != @backingInt(scope)) return false;
+                try copied_owners.put(self.allocator, to, @backingInt(scope));
+            } else _ = copied_owners.remove(to);
+            payloads[to] = copy.source_node;
+            // Keep original source membership even after an overwrite. This
+            // intentionally rejects ambiguous reuse instead of repairing it.
+            if (lineage.isSet(from)) lineage.set(to);
+        }
+        for (receipt.copies) |copy| {
+            const raw = @backingInt(copy.target);
+            if (!sameRetirementNodePayload(payloads[raw], self.ast.getNode(copy.target))) return false;
+        }
+        // The receipt cannot authorize an arbitrary new SID, access mode, or
+        // lexical use scope merely because its after row matches the editor.
+        const root = self.ast.transformed_root orelse @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(self.ast.nodes.items.len - 1))));
+        const positions = @import("statement_coordinates.zig").collect(self.allocator, self.ast, root) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return false,
+        };
+        for (self.references.items) |row| {
+            if (row.flags.declare) continue;
+            if (row.node_index.isNone()) return false;
+            const raw = @backingInt(row.node_index);
+            var original = copied_references.get(raw) orelse return false;
+            for (receipt.owner_changes) |change| {
+                if (change.effect == .empty_arrow_elide and original.scope_id == change.scope) original.scope_id = change.parent orelse return false;
+            }
+            if (row.symbol_id != original.symbol_id or row.scope_id != original.scope_id or !std.meta.eql(row.flags, original.flags) or
+                raw >= positions.len or positions[raw] == null or row.stmt_idx != positions[raw].?.stmt_idx or row.scope_stmt_idx != positions[raw].?.scope_stmt_idx) return false;
+        }
+        for (live_nodes) |raw| if (lineage.isSet(raw)) return false;
+        // Replay actual row deltas into scratch storage, not into the editor.
+        var expected = try SemanticEditor.init(self.allocator, self.ast, plan.graph.symbols.items, plan.graph.scopes.items, plan.graph.scope_maps.items, plan.graph.scope_owner_map, plan.graph.references.items, plan.graph.symbol_ids.items, plan.graph.helper_scope_map);
+        try expected.importScopeHistory(plan.graph.scopeHistoryView());
+        try expected.importSourceOwnedRetirements(plan.graph.source_owned_retirements);
+        expected.node_scope_provenance = try plan.graph.node_scope_provenance.clone(self.allocator);
+        try expected.symbol_ids.resize(self.allocator, self.symbol_ids.items.len);
+        @memset(expected.symbol_ids.items[plan.graph.symbol_ids.items.len..], null);
+        for (receipt.reference_changes) |change| {
+            if (change.before == null and change.after == null) return false;
+            if (change.before) |before| {
+                if (before.flags.declare) return false;
+                var found: ?usize = null;
+                for (expected.references.items, 0..) |row, i| if (std.meta.eql(row, before)) {
+                    if (found != null) return false;
+                    found = i;
+                };
+                _ = expected.references.orderedRemove(found orelse return false);
+                expected.removeCounts(before.symbol_id, before.flags);
+                if (before.node_index.isNone() or @backingInt(before.node_index) >= expected.symbol_ids.items.len or
+                    expected.symbol_ids.items[@backingInt(before.node_index)] != @as(?u32, @backingInt(before.symbol_id))) return false;
+                expected.symbol_ids.items[@backingInt(before.node_index)] = null;
+            }
+            if (change.after) |after| {
+                if (after.flags.declare or after.node_index.isNone() or
+                    @backingInt(after.node_index) >= self.symbol_ids.items.len or
+                    @backingInt(after.symbol_id) >= self.symbols.items.len or
+                    self.symbol_ids.items[@backingInt(after.node_index)] != @as(?u32, @backingInt(after.symbol_id))) return false;
+                // A copied live read from the retired source must have a
+                // recorded copy lineage, never merely the same spelling/SID.
+                for (plan.graph.references.items) |original| {
+                    if (!original.node_index.isNone() and @backingInt(original.node_index) < lineage.capacity() and
+                        lineage.isSet(@backingInt(original.node_index)) and original.symbol_id == after.symbol_id and
+                        (change.before == null or change.before.?.node_index != after.node_index)) return false;
+                }
+                try expected.references.append(self.allocator, after);
+                expected.addCounts(after.symbol_id, after.flags);
+                const previous = expected.symbol_ids.items[@backingInt(after.node_index)];
+                if (previous != null and previous != @as(?u32, @backingInt(after.symbol_id))) return false;
+                expected.symbol_ids.items[@backingInt(after.node_index)] = @backingInt(after.symbol_id);
+            }
+        }
+        if (expected.references.items.len != self.references.items.len) return false;
+        for (expected.references.items) |row| {
+            var count: usize = 0;
+            for (self.references.items) |actual| if (std.meta.eql(row, actual)) {
+                count += 1;
+            };
+            if (count != 1) return false;
+        }
+        for (expected.symbols.items, self.symbols.items) |before, actual| if (!std.meta.eql(before, actual)) return false;
+        if (!std.mem.eql(?u32, expected.symbol_ids.items, self.symbol_ids.items)) return false;
+        for (receipt.owner_changes) |change| {
+            if (change.source_owner.isNone() or change.scope.isNone() or change.scope.toIndex() >= expected.scopes.items.len or
+                expected.scope_owner_map.get(@backingInt(change.source_owner)) != @backingInt(change.scope)) return false;
+            // A source closure already consumed by an owner-elision producer
+            // is a different operation, not a second whole-function retire.
+            if (@backingInt(change.source_owner) >= lineage.capacity() or lineage.isSet(@backingInt(change.source_owner))) return false;
+            switch (change.effect) {
+                .move => {
+                    const target = change.target_owner orelse return false;
+                    if (target.isNone() or @backingInt(target) >= lineage.capacity() or lineage.isSet(@backingInt(target))) return false;
+                    if (expected.scope_owner_map.get(@backingInt(target))) |other| if (other != @backingInt(change.scope)) return false;
+                    try expected.scope_owner_map.put(self.allocator, @backingInt(target), @backingInt(change.scope));
+                },
+                .empty_arrow_elide => {
+                    const parent = change.parent orelse return false;
+                    if (change.target_owner != null or parent.isNone() or parent.toIndex() >= expected.scopes.items.len or
+                        expected.scopes.items[change.scope.toIndex()].parent != parent or
+                        expected.scopes.items[change.scope.toIndex()].symbol_count != 0 or
+                        expected.scope_maps.items[change.scope.toIndex()].count() != 0) return false;
+                    for (expected.scopes.items) |*scope| if (scope.parent == change.scope) {
+                        scope.parent = parent;
+                    };
+                },
+            }
+            _ = expected.scope_owner_map.remove(@backingInt(change.source_owner));
+        }
+        if (expected.scope_owner_map.count() != self.scope_owner_map.count()) return false;
+        var owners = expected.scope_owner_map.iterator();
+        while (owners.next()) |entry| if (self.scope_owner_map.get(entry.key_ptr.*) != entry.value_ptr.*) return false;
+        for (expected.scopes.items, self.scopes.items) |before, actual| if (!std.meta.eql(before, actual)) return false;
+        for (expected.scope_maps.items, self.scope_maps.items) |before, actual| {
+            if (before.count() != actual.count()) return false;
+            var entries = before.iterator();
+            while (entries.next()) |entry| if (actual.get(entry.key_ptr.*) != entry.value_ptr.*) return false;
+        }
+        if (expected.helper_scope_map.count() != self.helper_scope_map.count()) return false;
+        var helpers = expected.helper_scope_map.iterator();
+        while (helpers.next()) |entry| if (self.helper_scope_map.get(entry.key_ptr.*) != entry.value_ptr.*) return false;
+        for (receipt.provenance_changes) |change| {
+            if (!std.meta.eql(expected.node_scope_provenance.get(change.node), change.before)) return false;
+            if (change.after) |after| try expected.node_scope_provenance.put(self.allocator, change.node, after) else _ = expected.node_scope_provenance.remove(change.node);
+        }
+        if (expected.node_scope_provenance.count() != self.node_scope_provenance.count()) return false;
+        var provenance = expected.node_scope_provenance.iterator();
+        while (provenance.next()) |entry| if (!std.meta.eql(self.node_scope_provenance.get(entry.key_ptr.*), @as(?@import("node_scope_provenance.zig").Entry, entry.value_ptr.*))) return false;
+        // Prepare the whole batch in a separate editor. Even a later closure
+        // rejecting or running out of memory leaves the caller untouched.
+        var candidate = try SemanticEditor.init(self.allocator, self.ast, self.symbols.items, self.scopes.items, self.scope_maps.items, self.scope_owner_map, self.references.items, self.symbol_ids.items, self.helper_scope_map);
+        try candidate.importScopeHistory(self.scopeHistoryView());
+        try candidate.importSourceOwnedRetirements(self.source_owned_retirements);
+        candidate.node_scope_provenance = try self.node_scope_provenance.clone(self.allocator);
+        candidate.scope_reparented = self.scope_reparented;
+        for (plan.functions) |known| {
+            const subtree = try walk.collectReachableNodeIndicesFrom(self.allocator, plan.source, known.owner);
+            if (!try candidate.retireFunctionSourceClosure(known, plan.source, subtree, &live)) return false;
+        }
+        self.* = candidate;
+        return true;
+    }
+
+    pub fn retireUnreachableFunctionSubtree(self: *SemanticEditor, known: KnownUnreachableFunction) Error!bool {
+        const walk = @import("../parser/ast_walk.zig");
+        if (known.owner.isNone() or @backingInt(known.owner) >= self.ast.nodes.items.len) return false;
+        const live_nodes = try walk.collectReachableNodeIndices(self.allocator, self.ast);
+        defer self.allocator.free(live_nodes);
+        var live = try std.DynamicBitSet.initEmpty(self.allocator, self.ast.nodes.items.len);
+        defer live.deinit();
+        for (live_nodes) |raw| live.set(raw);
+        if (live.isSet(@backingInt(known.owner))) return false;
+        const subtree = try walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, known.owner);
+        defer self.allocator.free(subtree);
+        return self.retireFunctionSourceClosure(known, self.ast, subtree, &live);
+    }
+
+    fn retireFunctionSourceClosure(self: *SemanticEditor, known: KnownUnreachableFunction, source_ast: *const Ast, subtree: []const u32, live: *const std.DynamicBitSet) Error!bool {
+        const owner = known.owner;
+        if (self.scopes.items.len != self.scope_maps.items.len) return false;
+        if (owner.isNone() or @backingInt(owner) >= source_ast.nodes.items.len) return false;
+        const node = source_ast.getNode(owner);
+        if (node.tag != .function_expression and node.tag != .function_declaration and node.tag != .arrow_function_expression) return false;
+        const parameter_slot: u32 = if (node.tag == .arrow_function_expression) 0 else ast_mod.FunctionExtra.params;
+        if (!source_ast.hasExtra(node.data.extra, parameter_slot + 1)) return false;
+        const params = source_ast.readExtraNode(node.data.extra, parameter_slot);
+        const body = source_ast.readExtraNode(node.data.extra, parameter_slot + 1);
+        if (params != known.params or body != known.body) return false;
+        if (params.isNone() or body.isNone() or @backingInt(params) >= source_ast.nodes.items.len or @backingInt(body) >= source_ast.nodes.items.len or
+            source_ast.getNode(params).tag != .formal_parameters) return false;
+        const function_scope = self.scope_owner_map.get(@backingInt(owner)) orelse return false;
+        if (function_scope != @backingInt(known.scope)) return false;
+        if (function_scope >= self.scopes.items.len or self.scopes.items[function_scope].kind != .function or
+            self.scopes.items[function_scope].parent.isNone()) return false;
+        const actual_body_scope = self.scope_owner_map.get(@backingInt(body));
+        if (known.body_scope.isNone()) {
+            // Ordinary parser functions can visit their body directly in the
+            // known function scope without a second scope-owner map entry.
+            if (actual_body_scope != null) return false;
+        } else {
+            const raw = known.body_scope.toIndex();
+            if (actual_body_scope != raw or raw >= self.scopes.items.len) return false;
+            if (raw != function_scope and
+                ((self.scopes.items[raw].kind != .block and self.scopes.items[raw].kind != .function) or
+                    self.scopes.items[raw].parent != known.scope)) return false;
+        }
+        var removed = try std.DynamicBitSet.initEmpty(self.allocator, self.ast.nodes.items.len);
+        defer removed.deinit();
+        for (subtree) |raw| {
+            if (raw >= removed.capacity() or live.isSet(raw)) return false;
+            removed.set(raw);
+        }
+        // A named function expression owns a distinct self-name block frame
+        // outside its parameter/function frame. Select it only through the
+        // actual source name binding and known G.parent relation.
+        var source_name: NodeIndex = .none;
+        var source_name_symbol: SymbolId = .none;
+        if (node.tag != .arrow_function_expression and source_ast.hasExtra(node.data.extra, ast_mod.FunctionExtra.name)) {
+            source_name = source_ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name);
+            if (!source_name.isNone()) {
+                const raw = @backingInt(source_name);
+                if (raw >= self.symbol_ids.items.len) return false;
+                source_name_symbol = @fromBackingInt(self.symbol_ids.items[raw] orelse return false);
+            }
+        }
+        var closure_scope = function_scope;
+        if (node.tag == .function_expression and source_ast.hasExtra(node.data.extra, ast_mod.FunctionExtra.name)) {
+            const name = source_ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name);
+            if (!name.isNone()) {
+                const raw = @backingInt(name);
+                if (raw >= self.symbol_ids.items.len or raw >= source_ast.nodes.items.len or source_ast.nodes.items[raw].tag != .binding_identifier) return false;
+                const sid = self.symbol_ids.items[raw] orelse return false;
+                if (sid >= self.symbols.items.len) return false;
+                const symbol = self.symbols.items[sid];
+                const frame = self.scopes.items[function_scope].parent;
+                if (!self.validScope(frame) or frame.toIndex() == function_scope or symbol.scope_id != frame or symbol.origin_scope != frame or
+                    self.scopes.items[frame.toIndex()].kind != .block or self.scopes.items[frame.toIndex()].parent.isNone() or
+                    !self.validScope(self.scopes.items[frame.toIndex()].parent) or self.scopes.items[frame.toIndex()].symbol_count != 1 or
+                    self.scope_maps.items[frame.toIndex()].count() != 1 or !std.meta.eql(symbol.name, source_ast.nodes.items[raw].span) or
+                    !std.meta.eql(symbol.declaration_span, source_ast.nodes.items[raw].span)) return false;
+                switch (symbol.kind) {
+                    .function_decl, .generator_decl, .async_function_decl, .async_generator_decl => {},
+                    else => return false,
+                }
+                var entries = self.scope_maps.items[frame.toIndex()].valueIterator();
+                if (entries.next().?.* != sid) return false;
+                var frame_owners = self.scope_owner_map.valueIterator();
+                while (frame_owners.next()) |actual| if (actual.* == frame.toIndex()) return false;
+                closure_scope = frame.toIndex();
+            }
+        }
+        var scopes = try std.DynamicBitSet.initEmpty(self.allocator, self.scopes.items.len);
+        defer scopes.deinit();
+        for (self.scopes.items, 0..) |_, raw| {
+            var cursor: ScopeId = @fromBackingInt(@intCast(raw));
+            var fuel = self.scopes.items.len + 1;
+            while (!cursor.isNone() and fuel > 0) : (fuel -= 1) {
+                if (!self.validScope(cursor)) return false;
+                if (cursor.toIndex() == closure_scope) scopes.set(raw);
+                cursor = self.scopes.items[cursor.toIndex()].parent;
+            }
+            if (!cursor.isNone()) return false;
+            if (scopes.isSet(raw) and self.scopes.items[raw].blocksMangling()) return false;
+        }
+        var owners = self.scope_owner_map.iterator();
+        while (owners.next()) |entry| {
+            if (entry.value_ptr.* >= scopes.capacity() or entry.key_ptr.* >= removed.capacity()) return false;
+            if (scopes.isSet(entry.value_ptr.*) != removed.isSet(entry.key_ptr.*)) return false;
+        }
+        var retired = try std.DynamicBitSet.initEmpty(self.allocator, self.symbols.items.len);
+        defer retired.deinit();
+        for (self.symbols.items, 0..) |symbol, id| {
+            // Graph-owned output-only slots elsewhere in the module may be
+            // detached. They are not part of this lexical retirement.
+            if (self.validScope(symbol.scope_id) and scopes.isSet(symbol.scope_id.toIndex())) retired.set(id);
+        }
+        for (subtree) |raw| {
+            if (raw >= self.symbol_ids.items.len) return false;
+            if (self.symbol_ids.items[raw]) |id| {
+                if (id >= self.symbols.items.len or !self.validScope(self.symbols.items[id].scope_id) or
+                    !self.validScope(self.symbols.items[id].origin_scope)) return false;
+            }
+            if (source_ast.nodes.items[raw].tag == .binding_identifier) {
+                const id = self.symbol_ids.items[raw] orelse return false;
+                if (id >= retired.capacity()) return false;
+                retired.set(id);
+            }
+        }
+        const Alias = struct { scope: usize, key: []const u8 };
+        var aliases: std.ArrayListUnmanaged(Alias) = .empty;
+        defer aliases.deinit(self.allocator);
+        const retired_per_scope = try self.allocator.alloc(usize, self.scopes.items.len);
+        defer self.allocator.free(retired_per_scope);
+        @memset(retired_per_scope, 0);
+        var next_retirements = try self.source_owned_retirements.clone(self.allocator);
+        var retirement_published = false;
+        defer if (!retirement_published) next_retirements.deinit(self.allocator);
+        for (self.symbols.items, 0..) |symbol, id| {
+            if (!retired.isSet(id)) continue;
+            if (next_retirements.contains(@intCast(id))) return false;
+            if (!self.validScope(symbol.scope_id) or !self.validScope(symbol.origin_scope)) return false;
+            if (self.scopes.items[symbol.scope_id.toIndex()].blocksMangling() or
+                self.scopes.items[symbol.origin_scope.toIndex()].blocksMangling()) return false;
+            if (symbol.synthetic_name.len == 0 and (symbol.name.start > symbol.name.end or symbol.name.end > source_ast.source.len)) return false;
+            if (!std.meta.eql(symbol.decl_flags, symbol.kind.declFlags()) or symbol.isExported() or symbol.synthetic_owner_id != null or symbol.output_name_hint.len != 0 or
+                !symbol.annex_b_alias.variable.isNone() or symbol.annex_b_alias.state != .native or symbol.decl_flags.is_annex_b_function) return false;
+            // The analyzer's intrinsic arguments slot has no AST binding. Its
+            // exact function owner/span and unique pure declaration are the
+            // authority; arbitrary generated/runtime symbols remain rejected.
+            const intrinsic_arguments = symbol.synthetic_kind == .implicit_arguments and symbol.kind == .parameter and
+                std.mem.eql(u8, symbol.synthetic_name, "arguments") and symbol.scope_id == symbol.origin_scope;
+            if ((symbol.isSynthetic() or symbol.synthetic_name.len != 0) and !intrinsic_arguments) return false;
+            var declaration_witness: ?Reference = null;
+            var declarations: usize = 0;
+            var reads: u32 = 0;
+            var writes: u32 = 0;
+            for (self.references.items) |reference| {
+                if (@backingInt(reference.symbol_id) != id) continue;
+                if (reference.flags.declare) {
+                    if (!std.meta.eql(reference.flags, @as(ReferenceFlags, .{ .declare = true })) or !reference.node_index.isNone() or reference.scope_id != symbol.scope_id) return false;
+                    if (reference.declaration_node_index.isNone()) {
+                        if (!intrinsic_arguments) return false;
+                        var found_owner = false;
+                        var known_owners = self.scope_owner_map.iterator();
+                        while (known_owners.next()) |entry| {
+                            if (entry.value_ptr.* != symbol.scope_id.toIndex() or !removed.isSet(entry.key_ptr.*)) continue;
+                            const actual = source_ast.nodes.items[entry.key_ptr.*];
+                            if ((actual.tag == .function_expression or actual.tag == .function_declaration) and
+                                actual.span.start == symbol.declaration_span.start and actual.span.end == symbol.declaration_span.end) found_owner = true;
+                        }
+                        if (!found_owner) return false;
+                    } else {
+                        const raw = @backingInt(reference.declaration_node_index);
+                        if (raw >= removed.capacity() or !removed.isSet(raw) or source_ast.nodes.items[raw].tag != .binding_identifier or
+                            self.symbol_ids.items[raw] != @as(?u32, @intCast(id))) return false;
+                    }
+                    declarations += 1;
+                    declaration_witness = reference;
+                } else {
+                    if (reference.node_index.isNone() or @backingInt(reference.node_index) >= removed.capacity() or
+                        !removed.isSet(@backingInt(reference.node_index))) return false;
+                    if (!reference.flags.type_context and !reference.flags.value_as_type) {
+                        if (reference.flags.read or reference.flags.write) reads = std.math.add(u32, reads, 1) catch return false;
+                        if (reference.flags.write) writes = std.math.add(u32, writes, 1) catch return false;
+                    }
+                }
+            }
+            if (declarations != 1 or reads != symbol.reference_count or writes != symbol.write_count) return false;
+            if (!scopes.isSet(symbol.scope_id.toIndex())) {
+                if (node.tag != .function_declaration or !source_ast.hasExtra(node.data.extra, ast_mod.FunctionExtra.name)) return false;
+                const binding = source_ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name);
+                if (binding.isNone() or self.symbol_ids.items[@backingInt(binding)] != @as(?u32, @intCast(id)) or symbol.scope_id != self.scopes.items[function_scope].parent) return false;
+            } else if (!scopes.isSet(symbol.origin_scope.toIndex())) return false;
+            const declaration = declaration_witness orelse return false;
+            try next_retirements.put(self.allocator, @intCast(id), .{
+                .symbol_id = @fromBackingInt(@as(u32, @intCast(id))),
+                .before = symbol,
+                .declaration = declaration,
+                .declaration_node = if (declaration.declaration_node_index.isNone()) null else source_ast.getNode(declaration.declaration_node_index),
+                .source_owner = owner,
+                .source_owner_node = node,
+                .source_scope = known.scope,
+                .source_parent = self.scopes.items[function_scope].parent,
+                .source_name = source_name,
+                .source_name_symbol = source_name_symbol,
+                .closure_scope = @fromBackingInt(closure_scope),
+                .closure_parent = self.scopes.items[closure_scope].parent,
+                .reason = .source_function_closure,
+            });
+            retired_per_scope[symbol.scope_id.toIndex()] += 1;
+        }
+        for (self.symbol_ids.items, 0..) |id, raw| {
+            if (id) |actual| {
+                if (actual >= retired.capacity()) return false;
+                if (retired.isSet(actual) and (raw >= removed.capacity() or !removed.isSet(raw))) return false;
+            }
+        }
+        for (self.scope_maps.items, 0..) |map, raw| {
+            var entries = map.iterator();
+            while (entries.next()) |entry| {
+                const id = entry.value_ptr.*;
+                if (id >= retired.capacity()) return false;
+                if (retired.isSet(id)) {
+                    const symbol = self.symbols.items[id];
+                    if (symbol.scope_id.toIndex() != raw) return false;
+                    const name = symbol.nameText(source_ast.source);
+                    if (!std.mem.eql(u8, name, entry.key_ptr.*) and !Scanner.identifierValueEquals(name, entry.key_ptr.*)) return false;
+                    try aliases.append(self.allocator, .{ .scope = raw, .key = entry.key_ptr.* });
+                } else if (scopes.isSet(raw)) return false;
+            }
+            if (retired_per_scope[raw] > self.scopes.items[raw].symbol_count) return false;
+        }
+        var helper_names = self.helper_scope_map.valueIterator();
+        while (helper_names.next()) |id| if (id.* >= retired.capacity() or retired.isSet(id.*)) return false;
+        for (self.references.items) |reference| {
+            const id = @backingInt(reference.symbol_id);
+            if (id >= retired.capacity() or !self.validScope(reference.scope_id)) return false;
+            if (reference.node_index.isNone()) {
+                if (!reference.flags.declare) return false;
+            } else {
+                const raw = @backingInt(reference.node_index);
+                if (raw >= removed.capacity()) return false;
+                if (scopes.isSet(reference.scope_id.toIndex()) and !removed.isSet(raw)) return false;
+                if (removed.isSet(raw) and (raw >= self.symbol_ids.items.len or self.symbol_ids.items[raw] != @as(?u32, @intCast(id)) or reference.flags.declare)) return false;
+            }
+        }
+        var uses = self.node_scope_provenance.iterator();
+        while (uses.next()) |entry| {
+            const raw = @backingInt(entry.key_ptr.*);
+            if (raw >= removed.capacity() or !self.validScope(entry.value_ptr.scope)) return false;
+            if (scopes.isSet(entry.value_ptr.scope.toIndex()) and !removed.isSet(raw)) return false;
+        }
+        if (self.scope_history.enabled) {
+            for (subtree) |raw| if (self.scope_owner_map.get(raw)) |scope_id| {
+                self.scope_history.recordOwner(self.allocator, self.ast, @fromBackingInt(scope_id), self.scopes.items[scope_id], @fromBackingInt(raw), .none, .{}) catch |err| return historyError(err);
+            };
+        }
+        // No fallible work follows. Stable array slots and source provenance
+        // survive; only dead lexical edges/maps/counts/owner mappings retire.
+        var write: usize = 0;
+        for (self.references.items) |reference| {
+            if (retired.isSet(@backingInt(reference.symbol_id)) or
+                (!reference.node_index.isNone() and removed.isSet(@backingInt(reference.node_index))))
+            {
+                self.removeCounts(reference.symbol_id, reference.flags);
+                continue;
+            }
+            self.references.items[write] = reference;
+            write += 1;
+        }
+        self.references.shrinkRetainingCapacity(write);
+        self.reference_index.clearRetainingCapacity();
+        self.reference_index_built = false;
+        for (aliases.items) |alias| _ = self.scope_maps.items[alias.scope].remove(alias.key);
+        for (retired_per_scope, 0..) |count, raw| self.scopes.items[raw].symbol_count -= @intCast(count);
+        for (subtree) |raw| {
+            self.symbol_ids.items[raw] = null;
+            _ = self.scope_owner_map.remove(raw);
+            _ = self.node_scope_provenance.remove(@fromBackingInt(raw));
+        }
+        self.source_owned_retirements.deinit(self.allocator);
+        self.source_owned_retirements = next_retirements;
+        retirement_published = true;
+        return true;
+    }
+
+    pub fn captureFunctionNameEnvironments(self: *SemanticEditor, root: NodeIndex, native_engines: *const std.AutoHashMapUnmanaged(u32, ScopeId)) Error![]const @import("function_name_retirement.zig").Source {
+        return @import("function_name_retirement.zig").captureAll(self.allocator, self, root, native_engines);
+    }
+
+    /// Prepare the complete graph privately, including reparent History. No
+    /// original row/map/history mutation occurs on rejection or allocation fail.
+    pub fn retireFunctionNameEnvironments(self: *SemanticEditor, sources: []const @import("function_name_retirement.zig").Source, receipt: @import("function_retirement_receipt.zig").ApplicationReceipt, roots: @import("source_owned_retirement.zig").Roots) Error!usize {
+        if (sources.len == 0) return 0;
+        const Names = @import("function_name_retirement.zig");
+        if (receipt.domain != self.ast) return error.InvalidNode;
+        if (sources[0].root.isNone() or @backingInt(sources[0].root) >= self.ast.nodes.items.len) return error.InvalidNode;
+        const nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(self.allocator, self.ast, sources[0].root);
+        defer self.allocator.free(nodes);
+        var live = try std.DynamicBitSet.initEmpty(self.allocator, self.ast.nodes.items.len);
+        defer live.deinit();
+        for (nodes) |raw| live.set(raw);
+        var candidate = try SemanticEditor.init(self.allocator, self.ast, self.symbols.items, self.scopes.items, self.scope_maps.items, self.scope_owner_map, self.references.items, self.symbol_ids.items, self.helper_scope_map);
+        defer candidate.deinit();
+        try candidate.importScopeHistory(self.scopeHistoryView());
+        try candidate.importNodeScopeProvenance(self.node_scope_provenance);
+        try candidate.importSourceOwnedRetirements(self.source_owned_retirements);
+        var count: usize = 0;
+        for (sources, 0..) |source, index| {
+            const w = source.witness;
+            const e = w.event;
+            const sid = @backingInt(e.symbol_id);
+            if (source.domain != self.ast or source.backing.ptr != self.ast.source.ptr or source.backing.len != self.ast.source.len or source.root != sources[0].root or
+                !candidate.validSymbol(e.symbol_id) or e.owner.isNone() or @backingInt(e.owner) >= live.capacity() or e.name.isNone() or @backingInt(e.name) >= candidate.symbol_ids.items.len) return error.InvalidNode;
+            for (sources[0..index]) |previous| if (previous.witness.event.symbol_id == e.symbol_id or previous.witness.event.owner == e.owner) return error.DuplicateBinding;
+            // A wholly dead function is consumed by the existing whole-function
+            // source closure path. This API never retires its live body.
+            if (!live.isSet(@backingInt(e.owner))) continue;
+            var events: usize = 0;
+            for (receipt.function_name_elisions) |event| if (event.owner == e.owner) {
+                if (!Names.sameEvent(event, e)) return error.InvalidNode;
+                events += 1;
+            };
+            if (events == 0 and self.ast.readExtraNode(e.owner_node.data.extra, ast_mod.FunctionExtra.name) == e.name) continue;
+            if (events != 1) return error.InvalidNode;
+            if (candidate.source_owned_retirements.get(sid)) |prior| {
+                if (!Names.validateState(prior, self.ast, &live, candidate.symbols.items, candidate.symbol_ids.items, candidate.scopes.items, &candidate.scope_owner_map, candidate.references.items)) return error.InvalidSymbol;
+                continue;
+            }
+            if (!candidate.scope_history.enabled or !candidate.validScope(w.name_scope) or !candidate.validScope(w.body_scope) or !candidate.validScope(w.outer_scope) or
+                source.before.scope_id != w.name_scope or source.before.origin_scope != w.name_scope or !source.before.kind.isFunctionLike() or source.before.isSynthetic() or source.before.isExported() or
+                source.before.reference_count != 0 or source.before.write_count != 0 or source.before.decl_flags.preserve_class_name or
+                !@import("source_owned_retirement.zig").equalSymbol(source.before, candidate.symbols.items[sid]) or candidate.symbol_ids.items[@backingInt(e.name)] != sid or live.isSet(@backingInt(e.name))) return error.InvalidSymbol;
+            if (!std.meta.eql(candidate.scopes.items[w.name_scope.toIndex()], w.name_frame) or !std.meta.eql(candidate.scopes.items[w.body_scope.toIndex()], w.body_frame) or
+                w.name_frame.kind != .block or w.name_frame.parent != w.outer_scope or w.name_frame.symbol_count != 1 or w.name_frame.blocksMangling() or w.body_frame.kind != .function or w.body_frame.blocksMangling() or candidate.scopes.items[w.outer_scope.toIndex()].blocksMangling()) return error.InvalidScope;
+            const owner = self.ast.getNode(e.owner);
+            if (owner.tag != .function_expression or !self.ast.hasExtra(owner.data.extra, ast_mod.FunctionExtra.flags) or e.owner_node.tag != owner.tag or owner.data.extra != e.owner_node.data.extra or !std.meta.eql(owner.span, e.owner_node.span) or
+                !self.ast.readExtraNode(owner.data.extra, ast_mod.FunctionExtra.name).isNone() or self.ast.readExtraNode(owner.data.extra, ast_mod.FunctionExtra.params) != e.parameters or self.ast.readExtraNode(owner.data.extra, ast_mod.FunctionExtra.body) != e.body or
+                !@import("import_erasure.zig").equalNode(self.ast.getNode(e.name), e.name_node) or !std.meta.eql(source.before.name, e.name_node.data.string_ref) or !std.meta.eql(source.before.declaration_span, e.name_node.span) or
+                candidate.scope_owner_map.get(@backingInt(e.owner)) != @as(?u32, @backingInt(w.body_scope)) or (candidate.scope_owner_map.get(@backingInt(e.body)) != null and candidate.scope_owner_map.get(@backingInt(e.body)) != @as(?u32, @backingInt(w.body_scope)))) return error.InvalidNode;
+            if (!Names.validateFormals(w, self.ast, candidate.symbols.items, candidate.symbol_ids.items, candidate.references.items)) return error.InvalidSymbol;
+            const formal_scope = if (!w.parameter_scope.isNone() and !w.retire_parameters) w.parameter_scope else w.body_scope;
+            if (candidate.scope_owner_map.get(@backingInt(e.parameters))) |parameter_owner| if (parameter_owner != @backingInt(formal_scope)) return error.InvalidScope;
+            if (w.parameter_scope.isNone()) {
+                if (w.retire_parameters or w.body_frame.parent != w.name_scope) return error.InvalidScope;
+            } else {
+                if (!candidate.validScope(w.parameter_scope) or !std.meta.eql(candidate.scopes.items[w.parameter_scope.toIndex()], w.parameter_frame) or w.body_frame.parent != w.parameter_scope or
+                    w.parameter_frame.parent != w.name_scope or w.parameter_frame.kind != .function or w.parameter_frame.blocksMangling()) return error.InvalidScope;
+                if (w.retire_parameters) {
+                    if (w.parameter_frame.symbol_count != 0 or candidate.scope_maps.items[w.parameter_scope.toIndex()].count() != 0) return error.InvalidScope;
+                } else if (candidate.scope_owner_map.get(@backingInt(e.parameters)) != @as(?u32, @backingInt(w.parameter_scope)) or !live.isSet(@backingInt(e.parameters))) return error.InvalidScope;
+            }
+            for (candidate.symbols.items, 0..) |row, raw| if (row.scope_id == w.name_scope or (w.retire_parameters and !w.parameter_scope.isNone() and row.scope_id == w.parameter_scope)) {
+                if (raw != sid) return error.InvalidSymbol;
+            };
+            var declarations: usize = 0;
+            for (candidate.references.items) |row| {
+                if (row.symbol_id == e.symbol_id) {
+                    if (!std.meta.eql(row, source.declaration)) return error.InvalidSymbol;
+                    declarations += 1;
+                } else if (row.scope_id == w.name_scope or (w.retire_parameters and !w.parameter_scope.isNone() and row.scope_id == w.parameter_scope)) return error.InvalidScope;
+            }
+            if (declarations != 1 or source.declaration.node_index != .none or source.declaration.scope_id != w.name_scope or source.declaration.declaration_node_index != e.name or !std.meta.eql(source.declaration.flags, @as(ReferenceFlags, .{ .declare = true }))) return error.InvalidSymbol;
+            for (candidate.symbol_ids.items, 0..) |id, raw| if (id == sid and raw != @backingInt(e.name)) return error.InvalidSymbol;
+            for (candidate.scopes.items, 0..) |frame, raw| if (frame.parent == w.name_scope or (w.retire_parameters and !w.parameter_scope.isNone() and frame.parent == w.parameter_scope)) {
+                if (raw != w.body_scope.toIndex() and (w.parameter_scope.isNone() or raw != w.parameter_scope.toIndex())) return error.InvalidScope;
+            };
+            if (!Names.validateOwnerAliases(w, self.ast, &live, &candidate.scope_owner_map, false)) return error.InvalidScope;
+            var helpers = candidate.helper_scope_map.valueIterator();
+            while (helpers.next()) |id| if (id.* == sid) return error.InvalidSymbol;
+            for (roots.symbol_ids) |id| if (id == sid) return error.InvalidSymbol;
+            if (roots.runtime_helper_symbols) |map| {
+                var values = map.valueIterator();
+                while (values.next()) |id| if (@backingInt(id.*) == sid) return error.InvalidSymbol;
+            }
+            inline for (.{ roots.class_self_symbols, roots.namespace_member_owners, roots.namespace_declaration_owners }) |maybe_map| if (maybe_map) |map| {
+                var values = map.valueIterator();
+                while (values.next()) |id| if (id.* == sid) return error.InvalidSymbol;
+            };
+            for (candidate.scope_maps.items, 0..) |map, raw_scope| {
+                var rows = map.iterator();
+                while (rows.next()) |row| if (row.value_ptr.* == sid) {
+                    if (raw_scope != w.name_scope.toIndex() or !std.mem.eql(u8, row.key_ptr.*, self.ast.getText(source.before.name))) return error.InvalidScope;
+                };
+            }
+            if (candidate.scope_maps.items[w.name_scope.toIndex()].count() != 1) return error.InvalidScope;
+            try candidate.source_owned_retirements.put(candidate.allocator, sid, .{ .symbol_id = e.symbol_id, .before = source.before, .declaration = source.declaration, .declaration_node = e.name_node, .source_owner = e.owner, .source_owner_node = e.owner_node, .source_scope = w.body_scope, .source_parent = w.outer_scope, .source_name = e.name, .source_name_symbol = e.symbol_id, .closure_scope = w.name_scope, .closure_parent = w.outer_scope, .reason = .elided_function_name, .function_name_elision = w });
+            for (w.owners) |alias| {
+                candidate.scope_history.recordOwner(candidate.allocator, candidate.ast, alias.scope, candidate.scopes.items[alias.scope.toIndex()], alias.owner.node, .none, .{}) catch |err| return historyError(err);
+                _ = candidate.scope_owner_map.remove(@backingInt(alias.owner.node));
+            }
+            try candidate.reparentScope(if (!w.parameter_scope.isNone() and !w.retire_parameters) w.parameter_scope else w.body_scope, w.outer_scope);
+            _ = try candidate.removeDeclarationAtNode(e.name, e.symbol_id);
+            candidate.scope_maps.items[w.name_scope.toIndex()].clearRetainingCapacity();
+            candidate.scopes.items[w.name_scope.toIndex()].symbol_count -= 1;
+            candidate.symbol_ids.items[@backingInt(e.name)] = null;
+            _ = candidate.node_scope_provenance.remove(e.name);
+            count += 1;
+        }
+        var candidate_roots = roots;
+        candidate_roots.node_scope_provenance = &candidate.node_scope_provenance;
+        if (!try @import("source_owned_retirement.zig").validate(candidate.allocator, candidate.ast, &candidate.source_owned_retirements, &live, candidate.symbols.items, candidate.symbol_ids.items, candidate.scopes.items, candidate.scope_maps.items, &candidate.scope_owner_map, candidate.references.items, &candidate.helper_scope_map, candidate_roots)) return error.InvalidScope;
+        if (count == 0) return 0;
+        // The candidate and history are complete. Swap is nonfallible; defer
+        // now destroys the old graph backing, never either borrowed AST.
+        std.mem.swap(SemanticEditor, self, &candidate);
+        return count;
+    }
+
+    /// Capture only identities handed off by the actual static-class creator.
+    pub fn captureStaticCaptureAliases(self: *SemanticEditor, root: NodeIndex, completed: anytype) Error![]const @import("static_capture_retirement.zig").Source {
+        return @import("static_capture_retirement.zig").captureAll(self.allocator, self, root, completed);
+    }
+
+    /// Consume an exact alias copy without inventing a new output identity.
+    /// All validation/allocation precedes map, declaration and ID publication.
+    pub fn retireStaticCaptureAliases(self: *SemanticEditor, sources: []const @import("static_capture_retirement.zig").Source, receipt: @import("function_retirement_receipt.zig").ApplicationReceipt, roots: @import("source_owned_retirement.zig").Roots) Error!usize {
+        if (sources.len == 0) return 0;
+        const Static = @import("static_capture_retirement.zig");
+        const Retirement = @import("source_owned_retirement.zig");
+        if (sources[0].root.isNone() or @backingInt(sources[0].root) >= self.ast.nodes.items.len) return error.InvalidNode;
+        const nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(self.allocator, self.ast, sources[0].root);
+        defer self.allocator.free(nodes);
+        var live = try std.DynamicBitSet.initEmpty(self.allocator, self.ast.nodes.items.len);
+        defer live.deinit();
+        for (nodes) |raw| live.set(raw);
+        var selected: std.ArrayList(struct { source: Static.Source, witness: Static.Witness }) = .empty;
+        defer selected.deinit(self.allocator);
+        const Alias = struct { scope: usize, key: []const u8 };
+        var aliases: std.ArrayList(Alias) = .empty;
+        defer aliases.deinit(self.allocator);
+        for (sources, 0..) |source, source_index| {
+            if (source.root != sources[0].root or source.domain != self.ast or source.source_buffer.ptr != self.ast.source.ptr or source.source_buffer.len != self.ast.source.len) return error.InvalidNode;
+            const raw = @backingInt(source.symbol_id);
+            if (!self.validSymbol(source.symbol_id)) return error.InvalidSymbol;
+            for (sources[0..source_index]) |previous| if (previous.symbol_id == source.symbol_id) return error.DuplicateBinding;
+            if (self.source_owned_retirements.get(raw)) |existing| {
+                if (existing.reason != .static_class_capture_alias or !Retirement.equalSymbol(existing.before, source.before) or
+                    !Static.validateState(existing, self.ast, &live, self.symbols.items, self.symbol_ids.items, self.scopes.items, &self.scope_owner_map, self.references.items)) return error.InvalidSymbol;
+                continue;
+            }
+            const witness = (try Static.prepare(self, source, receipt, &live)) orelse continue;
+            var expected = source.before;
+            expected.reference_count = 0;
+            expected.write_count = 0;
+            if (!Retirement.equalSymbol(expected, self.symbols.items[raw]) or !self.validScope(expected.scope_id) or
+                self.scopes.items[expected.scope_id.toIndex()].parent != source.parent or self.scopes.items[expected.scope_id.toIndex()].symbol_count == 0) return error.InvalidSymbol;
+            var scope_retirements: usize = 1;
+            for (selected.items) |previous| if (previous.source.before.scope_id == expected.scope_id) {
+                scope_retirements += 1;
+            };
+            if (self.scopes.items[expected.scope_id.toIndex()].symbol_count < scope_retirements) return error.InvalidScope;
+            const binding = source.declaration.declaration_node_index;
+            if (@backingInt(binding) >= self.symbol_ids.items.len or self.symbol_ids.items[@backingInt(binding)] != raw or
+                !@import("import_erasure.zig").equalNode(self.ast.getNode(binding), source.binding_node)) return error.InvalidNode;
+            var declarations: usize = 0;
+            for (self.references.items) |row| if (row.symbol_id == source.symbol_id) {
+                if (!std.meta.eql(row, source.declaration)) return error.InvalidSymbol;
+                declarations += 1;
+            };
+            if (declarations != 1) return error.ReferenceNotFound;
+            for (self.symbol_ids.items, 0..) |id, node| if (id == raw and node != @backingInt(binding)) return error.InvalidSymbol;
+            var protected = self.helper_scope_map.valueIterator();
+            while (protected.next()) |id| if (id.* == raw) return error.InvalidSymbol;
+            for (roots.symbol_ids) |id| if (id == raw) return error.InvalidSymbol;
+            if (roots.runtime_helper_symbols) |map| {
+                var values = map.valueIterator();
+                while (values.next()) |id| if (@backingInt(id.*) == raw) return error.InvalidSymbol;
+            }
+            inline for (.{ roots.class_self_symbols, roots.namespace_member_owners, roots.namespace_declaration_owners }) |maybe_map| if (maybe_map) |map| {
+                var values = map.valueIterator();
+                while (values.next()) |id| if (id.* == raw) return error.InvalidSymbol;
+            };
+            inline for (.{ roots.namespace_member_owners, roots.namespace_declaration_owners }) |maybe_map| if (maybe_map) |map| {
+                if (map.contains(raw)) return error.InvalidSymbol;
+            };
+            var found_alias: usize = 0;
+            for (self.scope_maps.items, 0..) |map, scope| {
+                var entries = map.iterator();
+                while (entries.next()) |entry| if (entry.value_ptr.* == raw) {
+                    if (scope != expected.scope_id.toIndex() or !std.mem.eql(u8, entry.key_ptr.*, self.ast.getText(expected.name))) return error.InvalidScope;
+                    try aliases.append(self.allocator, .{ .scope = scope, .key = entry.key_ptr.* });
+                    found_alias += 1;
+                };
+            }
+            if (found_alias == 0 or self.scope_owner_map.contains(@backingInt(binding))) return error.InvalidScope;
+            try selected.append(self.allocator, .{ .source = source, .witness = witness });
+        }
+        if (selected.items.len == 0) return 0;
+        var next = try self.source_owned_retirements.clone(self.allocator);
+        errdefer next.deinit(self.allocator);
+        try next.ensureUnusedCapacity(self.allocator, @intCast(selected.items.len));
+        for (selected.items) |item| {
+            const source = item.source;
+            next.putAssumeCapacity(@backingInt(source.symbol_id), .{
+                .symbol_id = source.symbol_id,
+                .before = source.before,
+                .declaration = source.declaration,
+                .declaration_node = source.binding_node,
+                .source_owner = source.owner,
+                .source_owner_node = source.owner_node,
+                .source_scope = source.before.scope_id,
+                .source_parent = source.parent,
+                .source_name = source.class_binding,
+                .source_name_symbol = source.class_symbol,
+                .closure_scope = .none,
+                .closure_parent = .none,
+                .reason = .static_class_capture_alias,
+                .static_capture_alias = item.witness,
+            });
+        }
+        // No fallible work follows. Every source slot keeps its original birth.
+        for (selected.items) |item| {
+            const source = item.source;
+            var write: usize = 0;
+            for (self.references.items) |row| {
+                if (row.symbol_id == source.symbol_id) continue;
+                self.references.items[write] = row;
+                write += 1;
+            }
+            self.references.shrinkRetainingCapacity(write);
+            self.symbol_ids.items[@backingInt(source.declaration.declaration_node_index)] = null;
+            _ = self.node_scope_provenance.remove(source.declaration.declaration_node_index);
+            self.scopes.items[source.before.scope_id.toIndex()].symbol_count -= 1;
+        }
+        for (aliases.items) |alias| _ = self.scope_maps.items[alias.scope].remove(alias.key);
+        self.reference_index.clearRetainingCapacity();
+        self.reference_index_built = false;
+        self.source_owned_retirements.deinit(self.allocator);
+        self.source_owned_retirements = next;
+        return selected.items.len;
     }
 
     /// Remove the semantic declaration for a local const whose exact binding
@@ -3404,5 +4442,715 @@ test "known namespace declaration move uses actual parser identity and preserves
 test "known namespace declaration move rejects foreign contracts transactionally and restores" {
     inline for (std.meta.tags(NamespaceMoveMutation)) |mutation| {
         if (mutation != .none) try namespaceMoveForTest(mutation);
+    }
+}
+
+const UnreachableFunctionMutation = enum { none, live_owner, wrong_scope, wrong_params, wrong_body, paired_owner, live_descendant, exported, synthetic, escaping_read, escaping_alias, redeclaration, dynamic_scope };
+
+fn unreachableFunctionRetirementForTest(mutation: UnreachableFunctionMutation, fail_at: ?usize) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const input = "var keep=10;(function(p){let x=p;return x+keep});function live(q){return q}console.log(keep);";
+    var scanner = try Scanner.init(a, input);
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = @import("analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var owner: NodeIndex = .none;
+    var sibling: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .function_expression) owner = @fromBackingInt(@intCast(raw));
+        if (node.tag == .function_declaration) sibling = @fromBackingInt(@intCast(raw));
+    }
+    const node = parser.ast.getNode(owner);
+    var known = KnownUnreachableFunction{ .owner = owner, .scope = @fromBackingInt(analyzer.scope_owner_map.get(@backingInt(owner)).?), .params = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.params), .body = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.body), .body_scope = if (analyzer.scope_owner_map.get(@backingInt(parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.body)))) |value| @fromBackingInt(value) else .none };
+    std.debug.print("FUNCTION_RETIRE_SOURCE owner={d} scope={d} params={d} body={d} bodyOwner={any}\n", .{ @backingInt(owner), @backingInt(known.scope), @backingInt(known.params), @backingInt(known.body), analyzer.scope_owner_map.get(@backingInt(known.body)) });
+    var editor = try SemanticEditor.init(a, &parser.ast, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, analyzer.scope_owner_map, analyzer.references.items, analyzer.symbol_ids.items, analyzer.helper_scope_map);
+    defer editor.deinit();
+    const root = parser.ast.nodes.items.len - 1;
+    const program = parser.ast.nodes.items[root];
+    const removed_statement = parser.ast.extra_data.items[program.data.list.start + 1];
+    if (mutation != .live_owner) parser.ast.nodes.items[removed_statement].tag = .empty_statement;
+    const param_list = parser.ast.getNode(known.params).data.list;
+    const parameter: NodeIndex = @fromBackingInt(parser.ast.extra_data.items[param_list.start]);
+    const parameter_node = parser.ast.getNode(parameter);
+    const binding = if (parameter_node.tag == .formal_parameter) parser.ast.readExtraNode(parameter_node.data.extra, 0) else parameter;
+    const id = editor.symbol_ids.items[@backingInt(binding)].?;
+    switch (mutation) {
+        .none, .live_owner => {},
+        .wrong_scope => known.scope = editor.scopes.items[known.scope.toIndex()].parent,
+        .wrong_params => known.params = known.body,
+        .wrong_body => known.body = known.params,
+        .paired_owner => {
+            const other = editor.scope_owner_map.get(@backingInt(sibling)).?;
+            try editor.scope_owner_map.put(a, @backingInt(owner), other);
+            try editor.scope_owner_map.put(a, @backingInt(known.body), other);
+            editor.symbols.items[id].scope_id = @fromBackingInt(other);
+        },
+        .live_descendant => {
+            const shared = parser.ast.getNode(known.body).data.list;
+            const last: NodeIndex = @fromBackingInt(parser.ast.extra_data.items[shared.start + shared.len - 1]);
+            const read = parser.ast.getNode(last).data.unary.operand;
+            const extra_stmt = try parser.ast.addNode(.{ .tag = .expression_statement, .span = .EMPTY, .data = .{ .unary = .{ .operand = read, .flags = 0 } } });
+            const start: u32 = @intCast(parser.ast.extra_data.items.len);
+            const previous = try a.dupe(u32, parser.ast.extra_data.items[program.data.list.start..][0..program.data.list.len]);
+            try parser.ast.extra_data.appendSlice(a, previous);
+            try parser.ast.extra_data.append(a, @backingInt(extra_stmt));
+            const new_root = try parser.ast.addListNode(.program, program.span, .{ .start = start, .len = program.data.list.len + 1 });
+            parser.ast.transformed_root = new_root;
+        },
+        .exported => editor.symbols.items[id].decl_flags.is_exported = true,
+        .synthetic => editor.symbols.items[id].synthetic_kind = .runtime_helper_import,
+        .escaping_read => {
+            var row: ?Reference = null;
+            for (editor.references.items) |reference| if (@backingInt(reference.symbol_id) == id and reference.flags.read) {
+                row = reference;
+                break;
+            };
+            var escaped = row.?;
+            escaped.node_index = sibling;
+            try editor.references.append(a, escaped);
+            editor.symbols.items[id].reference_count += 1;
+        },
+        .escaping_alias => try editor.scope_maps.items[0].put(a, "p", id),
+        .redeclaration => {
+            var row: ?Reference = null;
+            for (editor.references.items) |reference| if (@backingInt(reference.symbol_id) == id and reference.flags.declare) {
+                row = reference;
+                break;
+            };
+            try editor.references.append(a, row.?);
+        },
+        .dynamic_scope => editor.scopes.items[known.scope.toIndex()].subtree_has_direct_eval = true,
+    }
+    const before_ids = try a.dupe(?u32, editor.symbol_ids.items);
+    const before_symbols = try a.dupe(Symbol, editor.symbols.items);
+    const before_references = try a.dupe(Reference, editor.references.items);
+    const before_scopes = try a.dupe(Scope, editor.scopes.items);
+    const before_owner_count = editor.scope_owner_map.count();
+    var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = fail_at orelse std.math.maxInt(usize) });
+    editor.allocator = failing.allocator();
+    const accepted = editor.retireUnreachableFunctionSubtree(known) catch |err| {
+        editor.allocator = a;
+        try std.testing.expectEqual(error.OutOfMemory, err);
+        try std.testing.expectEqualDeep(before_ids, editor.symbol_ids.items);
+        try std.testing.expectEqualDeep(before_symbols, editor.symbols.items);
+        try std.testing.expectEqualDeep(before_references, editor.references.items);
+        try std.testing.expectEqualDeep(before_scopes, editor.scopes.items);
+        try std.testing.expectEqual(before_owner_count, editor.scope_owner_map.count());
+        return false;
+    };
+    editor.allocator = a;
+    if (mutation != .none) {
+        try std.testing.expect(!accepted);
+        try std.testing.expectEqualDeep(before_ids, editor.symbol_ids.items);
+        try std.testing.expectEqualDeep(before_symbols, editor.symbols.items);
+        try std.testing.expectEqualDeep(before_references, editor.references.items);
+        try std.testing.expectEqualDeep(before_scopes, editor.scopes.items);
+        try std.testing.expectEqual(before_owner_count, editor.scope_owner_map.count());
+    } else {
+        try std.testing.expect(accepted);
+        try std.testing.expectEqual(before_ids.len, editor.symbol_ids.items.len);
+        try std.testing.expectEqual(before_symbols.len, editor.symbols.items.len);
+        try std.testing.expectEqual(before_scopes.len, editor.scopes.items.len);
+        try std.testing.expect(editor.symbol_ids.items[@backingInt(binding)] == null);
+        try std.testing.expect(!editor.scope_owner_map.contains(@backingInt(owner)));
+        try std.testing.expectEqual(@as(usize, 0), editor.scope_maps.items[known.scope.toIndex()].count());
+        try std.testing.expectEqual(@as(u16, 0), editor.scopes.items[known.scope.toIndex()].symbol_count);
+        _ = try editor.finish();
+    }
+    return accepted;
+}
+
+test "Buffer whole unreachable function retirement preserves slots and rejects paired escaping witnesses" {
+    inline for (std.meta.tags(UnreachableFunctionMutation)) |mutation| _ = try unreachableFunctionRetirementForTest(mutation, null);
+}
+
+test "Buffer whole unreachable function retirement OOM leaves editor unpublished and retries" {
+    var failures: usize = 0;
+    var success = false;
+    for (0..64) |index| {
+        if (try unreachableFunctionRetirementForTest(.none, index)) {
+            success = true;
+            break;
+        }
+        failures += 1;
+    }
+    try std.testing.expect(success and failures > 0);
+    std.debug.print("BUFFER_FUNCTION_RETIREMENT_OOM windows={d} retry=true\n", .{failures});
+}
+
+const SourceFunctionRetirementMutation = enum { none, foreign_domain, missing_reference_receipt, live_owner, changed_binding, changed_owner, forged_source_payload, forged_target_payload, forged_copy_reference, forged_copy_owner, forged_reference_flags, forged_reference_scope };
+
+fn sourceFunctionRetirementForTest(mutation: SourceFunctionRetirementMutation, fail_at: ?usize) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const input = "var keep=10;(function(p){let x=p;return x+keep});console.log(keep,keep);";
+    var scanner = try Scanner.init(a, input);
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = @import("analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var editor = try SemanticEditor.init(a, &parser.ast, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, analyzer.scope_owner_map, analyzer.references.items, analyzer.symbol_ids.items, analyzer.helper_scope_map);
+    var owner: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| if (node.tag == .function_expression) {
+        owner = @fromBackingInt(@intCast(raw));
+    };
+    const node = parser.ast.getNode(owner);
+    const body = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.body);
+    const known = KnownUnreachableFunction{
+        .owner = owner,
+        .scope = @fromBackingInt(editor.scope_owner_map.get(@backingInt(owner)).?),
+        .params = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.params),
+        .body = body,
+        .body_scope = if (editor.scope_owner_map.get(@backingInt(body))) |raw| @fromBackingInt(raw) else .none,
+    };
+    const plan = try editor.captureFunctionRetirementSources(&.{known});
+    var changes: std.ArrayList(@import("function_retirement_receipt.zig").ReferenceChange) = .empty;
+    // Apply the producer's actual row removals while preserving declaration
+    // anchors for the source-owned whole-function consumer.
+    for (plan.graph.references.items) |row| {
+        if (row.flags.declare or row.node_index.isNone()) continue;
+        var inside = false;
+        for (plan.subtree) |raw| if (raw == @backingInt(row.node_index)) {
+            inside = true;
+        };
+        if (!inside) continue;
+        try editor.removeReference(row.node_index);
+        try changes.append(a, .{ .before = row, .after = null });
+    }
+    const root = parser.ast.nodes.items[parser.ast.nodes.items.len - 1];
+    if (mutation != .live_owner) parser.ast.nodes.items[parser.ast.extra_data.items[root.data.list.start + 1]].tag = .empty_statement;
+    // The old backing is deliberately rewritten. Only the immutable source
+    // snapshot can still identify its original body and declaration edges.
+    parser.ast.nodes.items[@backingInt(body)].data.list.len = 0;
+    // An actual harmless copy outside the retired closure supplies paired
+    // source/target payloads and a reference for independent forgery tests.
+    var live_reads: std.ArrayList(Reference) = .empty;
+    for (editor.references.items) |row| {
+        if (!row.flags.declare and !row.node_index.isNone() and row.scope_id == editor.scopes.items[known.scope.toIndex()].parent)
+            try live_reads.append(a, row);
+    }
+    try std.testing.expectEqual(@as(usize, 2), live_reads.items.len);
+    const from = live_reads.items[0].node_index;
+    const to = live_reads.items[1].node_index;
+    var copies = [_]@import("function_retirement_receipt.zig").Copy{.{
+        .source = from,
+        .target = to,
+        .source_node = parser.ast.getNode(from),
+        .target_node = parser.ast.getNode(to),
+        .source_reference = live_reads.items[0],
+        .source_owner = null,
+        .source_reachable = true,
+        .target_reachable = true,
+    }};
+    parser.ast.nodes.items[@backingInt(to)] = parser.ast.getNode(from);
+    var receipt: @import("function_retirement_receipt.zig").ApplicationReceipt = .{
+        .domain = &parser.ast,
+        .reference_changes = changes.items,
+        .owner_changes = &.{},
+        .provenance_changes = &.{},
+        .copies = &copies,
+    };
+    var foreign_header = parser.ast;
+    switch (mutation) {
+        .none, .live_owner => {},
+        .foreign_domain => receipt.domain = &foreign_header,
+        .missing_reference_receipt => receipt.reference_changes = &.{},
+        .changed_binding => {
+            for (editor.references.items) |row| if (row.flags.declare and !row.declaration_node_index.isNone() and row.scope_id == known.scope) {
+                editor.symbol_ids.items[@backingInt(row.declaration_node_index)] = null;
+                break;
+            };
+        },
+        .changed_owner => _ = editor.scope_owner_map.remove(@backingInt(owner)),
+        .forged_source_payload => copies[0].source_node.span.start += 1,
+        .forged_target_payload => copies[0].target_node.span.start += 1,
+        .forged_copy_reference => copies[0].source_reference.?.flags.write = true,
+        .forged_copy_owner => copies[0].source_owner = known.scope,
+        .forged_reference_flags, .forged_reference_scope => {
+            const before = live_reads.items[1];
+            if (mutation == .forged_reference_flags) {
+                var flags = before.flags;
+                flags.write = true;
+                try editor.updateReferenceFlags(to, flags);
+            } else try editor.moveReference(to, known.scope, before.stmt_idx, before.scope_stmt_idx);
+            var after: ?Reference = null;
+            for (editor.references.items) |row| if (row.node_index == to) {
+                after = row;
+            };
+            try changes.append(a, .{ .before = before, .after = after.? });
+            receipt.reference_changes = changes.items;
+        },
+    }
+    const before_ids = try a.dupe(?u32, editor.symbol_ids.items);
+    const before_symbols = try a.dupe(Symbol, editor.symbols.items);
+    const before_rows = try a.dupe(Reference, editor.references.items);
+    const before_scopes = try a.dupe(Scope, editor.scopes.items);
+    const before_owner_count = editor.scope_owner_map.count();
+    var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = fail_at orelse std.math.maxInt(usize) });
+    editor.allocator = failing.allocator();
+    const accepted = editor.retireSourceOwnedFunction(plan, receipt) catch |err| {
+        try std.testing.expect(err == error.OutOfMemory);
+        try std.testing.expectEqualSlices(?u32, before_ids, editor.symbol_ids.items);
+        try std.testing.expectEqualDeep(before_symbols, editor.symbols.items);
+        try std.testing.expectEqualDeep(before_rows, editor.references.items);
+        try std.testing.expectEqualDeep(before_scopes, editor.scopes.items);
+        try std.testing.expectEqual(before_owner_count, editor.scope_owner_map.count());
+        editor.allocator = a;
+        try std.testing.expect(try editor.retireSourceOwnedFunction(plan, receipt));
+        return false;
+    };
+    // Retirement has returned successfully. The independent finish check is
+    // not another allocation window inside that operation.
+    editor.allocator = a;
+    if (mutation != .none) {
+        try std.testing.expect(!accepted);
+        try std.testing.expectEqualSlices(?u32, before_ids, editor.symbol_ids.items);
+        try std.testing.expectEqualDeep(before_rows, editor.references.items);
+        try std.testing.expectEqualDeep(before_symbols, editor.symbols.items);
+        try std.testing.expectEqualDeep(before_scopes, editor.scopes.items);
+        try std.testing.expectEqual(before_owner_count, editor.scope_owner_map.count());
+    } else {
+        try std.testing.expect(accepted);
+        try std.testing.expect(!editor.scope_owner_map.contains(@backingInt(owner)));
+        try std.testing.expectEqual(@as(usize, 0), editor.scope_maps.items[known.scope.toIndex()].count());
+        try std.testing.expectEqual(@as(u16, 0), editor.scopes.items[known.scope.toIndex()].symbol_count);
+        _ = try editor.finish();
+    }
+    return accepted;
+}
+
+test "Buffer source owned function retirement uses immutable pre rewrite closure and rejects foreign receipts" {
+    inline for (std.meta.tags(SourceFunctionRetirementMutation)) |mutation| _ = try sourceFunctionRetirementForTest(mutation, null);
+}
+
+test "Buffer source owned function retirement batch OOM preserves graph and retries" {
+    var failures: usize = 0;
+    var success = false;
+    for (0..256) |index| {
+        if (try sourceFunctionRetirementForTest(.none, index)) {
+            success = true;
+            break;
+        }
+        failures += 1;
+    }
+    try std.testing.expect(success and failures > 0);
+    std.debug.print("BUFFER_SOURCE_FUNCTION_RETIREMENT_OOM windows={d} retry=true\n", .{failures});
+}
+
+test "empty arrow elision preserves actual source identities and refuses stale plans" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const Analyzer = @import("analyzer.zig").SemanticAnalyzer;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "const value=42;function sibling(){};console.log((()=>value)());");
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(a, &parser.ast);
+    try analyzer.analyze();
+    var editor = try analyzer.beginEdit();
+    var owner: NodeIndex = .none;
+    var sibling_scope: ScopeId = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .arrow_function_expression) owner = @fromBackingInt(@as(u32, @intCast(raw)));
+        if (node.tag == .function_declaration) sibling_scope = @fromBackingInt(editor.scope_owner_map.get(@intCast(raw)).?);
+    }
+    try std.testing.expect(!owner.isNone() and !sibling_scope.isNone());
+    const scope: ScopeId = @fromBackingInt(editor.scope_owner_map.get(@backingInt(owner)).?);
+    const parent = editor.scopes.items[scope.toIndex()].parent;
+    const plan: SemanticEditor.EmptyArrowScopeElision = .{ .owner = owner, .scope = scope, .parent = parent, .source = parser.ast.getNode(owner) };
+    var original: ?Reference = null;
+    for (editor.references.items) |reference| if (!reference.flags.declare and reference.scope_id == scope) {
+        original = reference;
+    };
+    const reference = original orelse return error.MissingActualArrowReference;
+    var stale = plan;
+    stale.parent = sibling_scope;
+    try std.testing.expectError(error.InvalidScope, editor.elideEmptyArrowScopeOwner(stale));
+    stale = plan;
+    stale.source.tag = .function_expression;
+    try std.testing.expectError(error.InvalidNode, editor.elideEmptyArrowScopeOwner(stale));
+    editor.scopes.items[scope.toIndex()].subtree_has_direct_eval = true;
+    try std.testing.expectError(error.InvalidScope, editor.elideEmptyArrowScopeOwner(plan));
+    editor.scopes.items[scope.toIndex()].subtree_has_direct_eval = false;
+    try editor.scope_maps.items[scope.toIndex()].put(a, "poison", @backingInt(reference.symbol_id));
+    try std.testing.expectError(error.InvalidScope, editor.elideEmptyArrowScopeOwner(plan));
+    _ = editor.scope_maps.items[scope.toIndex()].remove("poison");
+    try std.testing.expectEqual(@as(?u32, @backingInt(scope)), editor.scope_owner_map.get(@backingInt(owner)));
+    try std.testing.expectEqual(scope, (try editor.referenceForNode(reference.node_index)).?.scope_id);
+    try editor.elideEmptyArrowScopeOwner(plan);
+    try std.testing.expectEqual(@as(?u32, null), editor.scope_owner_map.get(@backingInt(owner)));
+    const actual = (try editor.referenceForNode(reference.node_index)).?;
+    try std.testing.expectEqual(reference.symbol_id, actual.symbol_id);
+    try std.testing.expectEqual(reference.node_index, actual.node_index);
+    try std.testing.expectEqualDeep(reference.flags, actual.flags);
+    try std.testing.expectEqual(parent, actual.scope_id);
+}
+
+const SourceFunctionSelectionMutation = enum { none, select_live, duplicate, unknown, materialized_node, materialized_sid, materialized_role, live_copy };
+
+fn sourceFunctionSelectionForTest(mutation: SourceFunctionSelectionMutation) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const input = "var keep=10;(function(p){let x=p;return x+keep});function live(){return keep}console.log(keep);";
+    var scanner = try Scanner.init(a, input);
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = @import("analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var editor = try SemanticEditor.init(a, &parser.ast, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, analyzer.scope_owner_map, analyzer.references.items, analyzer.symbol_ids.items, analyzer.helper_scope_map);
+    var functions: std.ArrayList(KnownUnreachableFunction) = .empty;
+    var dead_owner: NodeIndex = .none;
+    var live_owner: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .function_expression and node.tag != .function_declaration) continue;
+        const owner: NodeIndex = @fromBackingInt(@intCast(raw));
+        const body = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.body);
+        try functions.append(a, .{
+            .owner = owner,
+            .scope = @fromBackingInt(editor.scope_owner_map.get(@intCast(raw)).?),
+            .params = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.params),
+            .body = body,
+            .body_scope = if (editor.scope_owner_map.get(@backingInt(body))) |scope| @fromBackingInt(scope) else .none,
+        });
+        if (node.tag == .function_expression) dead_owner = owner else live_owner = owner;
+    }
+    try std.testing.expectEqual(@as(usize, 2), functions.items.len);
+    const plan = try editor.captureFunctionRetirementSources(functions.items);
+    const dead = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, plan.source, dead_owner);
+    const dead_scope: ScopeId = @fromBackingInt(editor.scope_owner_map.get(@backingInt(dead_owner)).?);
+    var materialized_row: ?Reference = null;
+    var target_row: ?Reference = null;
+    for (editor.references.items) |row| {
+        if (!row.flags.read or row.node_index.isNone() or editor.symbols.items[@backingInt(row.symbol_id)].scope_id != editor.scopes.items[dead_scope.toIndex()].parent) continue;
+        if (row.scope_id == dead_scope) materialized_row = row;
+        if (row.scope_id == editor.scopes.items[dead_scope.toIndex()].parent) target_row = row;
+    }
+    const original = materialized_row.?;
+    const before_node = parser.ast.getNode(original.node_index);
+    var numeric: ?ast_mod.Node = null;
+    for (parser.ast.nodes.items) |node| if (node.tag == .numeric_literal) {
+        numeric = node;
+    };
+    var materialized = [_]@import("function_retirement_receipt.zig").MaterializedRead{.{
+        .node = original.node_index,
+        .before_node = before_node,
+        .after_node = numeric.?,
+        .before_reference = original,
+        .before_symbol_id = @backingInt(original.symbol_id),
+    }};
+    var copies = [_]@import("function_retirement_receipt.zig").Copy{.{
+        .source = original.node_index,
+        .target = target_row.?.node_index,
+        .source_node = before_node,
+        .target_node = parser.ast.getNode(target_row.?.node_index),
+        .source_reference = original,
+        .source_owner = null,
+        .source_reachable = false,
+        .target_reachable = true,
+    }};
+    if (mutation == .live_copy) {
+        parser.ast.nodes.items[@backingInt(target_row.?.node_index)] = before_node;
+    } else parser.ast.nodes.items[@backingInt(original.node_index)] = numeric.?;
+    var changes: std.ArrayList(@import("function_retirement_receipt.zig").ReferenceChange) = .empty;
+    for (plan.graph.references.items) |row| {
+        if (row.flags.declare or row.node_index.isNone()) continue;
+        var inside = false;
+        for (dead) |raw| if (raw == @backingInt(row.node_index)) {
+            inside = true;
+        };
+        if (!inside) continue;
+        try editor.removeReference(row.node_index);
+        try changes.append(a, .{ .before = row, .after = null });
+    }
+    const root = parser.ast.nodes.items[parser.ast.nodes.items.len - 1];
+    parser.ast.nodes.items[parser.ast.extra_data.items[root.data.list.start + 1]].tag = .empty_statement;
+    for (functions.items) |known| if (known.owner == dead_owner) {
+        parser.ast.nodes.items[@backingInt(known.body)].data.list.len = 0;
+    };
+    const receipt: @import("function_retirement_receipt.zig").ApplicationReceipt = .{
+        .domain = &parser.ast,
+        .reference_changes = changes.items,
+        .owner_changes = &.{},
+        .provenance_changes = &.{},
+        .copies = if (mutation == .live_copy) &copies else &.{},
+        .materialized_reads = if (mutation == .live_copy) &.{} else &materialized,
+    };
+    switch (mutation) {
+        .materialized_node => materialized[0].before_node.span.start += 1,
+        .materialized_sid => materialized[0].before_symbol_id += 1,
+        .materialized_role => materialized[0].after_node.tag = .identifier_reference,
+        else => {},
+    }
+    const owners: []const NodeIndex = switch (mutation) {
+        .select_live => &[_]NodeIndex{ dead_owner, live_owner },
+        .duplicate => &[_]NodeIndex{ dead_owner, dead_owner },
+        .unknown => &[_]NodeIndex{.none},
+        else => &[_]NodeIndex{dead_owner},
+    };
+    const before_ids = try a.dupe(?u32, editor.symbol_ids.items);
+    const before_rows = try a.dupe(Reference, editor.references.items);
+    const before_symbols = try a.dupe(Symbol, editor.symbols.items);
+    const before_scopes = try a.dupe(Scope, editor.scopes.items);
+    const owner_count = editor.scope_owner_map.count();
+    const accepted = try editor.retireSelectedSourceOwnedFunctions(plan, owners, receipt);
+    if (mutation == .none) {
+        try std.testing.expect(accepted);
+        try std.testing.expect(!editor.scope_owner_map.contains(@backingInt(dead_owner)));
+        try std.testing.expect(editor.scope_owner_map.contains(@backingInt(live_owner)));
+        try std.testing.expectEqual(@as(usize, 0), editor.scope_maps.items[dead_scope.toIndex()].count());
+        _ = try editor.finish();
+    } else {
+        try std.testing.expect(!accepted);
+        try std.testing.expectEqualSlices(?u32, before_ids, editor.symbol_ids.items);
+        try std.testing.expectEqualDeep(before_rows, editor.references.items);
+        try std.testing.expectEqualDeep(before_symbols, editor.symbols.items);
+        try std.testing.expectEqualDeep(before_scopes, editor.scopes.items);
+        try std.testing.expectEqual(owner_count, editor.scope_owner_map.count());
+    }
+}
+
+test "Buffer source owned function selection materializes known reads and rejects live copied descendants" {
+    inline for (std.meta.tags(SourceFunctionSelectionMutation)) |mutation| try sourceFunctionSelectionForTest(mutation);
+}
+
+test "Buffer source owned function retirement preserves dynamic parent declaration visibility" {
+    for ([_][]const u8{
+        "var keep=10;function removed(p){return p+keep}console.log(keep);",
+        "var keep=10;function removed(p){return p+keep}eval('typeof removed');",
+        "var keep=10;function removed(p){return p+keep}with({}){this['removed']}",
+    }, 0..) |input, case_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, input);
+        var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+        parser.configureFromExtension(".js");
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = @import("analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.enable_stmt_info = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        var editor = try SemanticEditor.init(a, &parser.ast, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, analyzer.scope_owner_map, analyzer.references.items, analyzer.symbol_ids.items, analyzer.helper_scope_map);
+        var owner: NodeIndex = .none;
+        for (parser.ast.nodes.items, 0..) |node, raw| if (node.tag == .function_declaration) {
+            owner = @fromBackingInt(@intCast(raw));
+        };
+        const node = parser.ast.getNode(owner);
+        const body = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.body);
+        const name = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name);
+        const sid = editor.symbol_ids.items[@backingInt(name)].?;
+        const symbol = editor.symbols.items[sid];
+        try std.testing.expectEqual(case_index != 0, editor.scopes.items[symbol.scope_id.toIndex()].blocksMangling());
+        try std.testing.expectEqual(case_index != 0, editor.scopes.items[symbol.origin_scope.toIndex()].blocksMangling());
+        const known: KnownUnreachableFunction = .{
+            .owner = owner,
+            .scope = @fromBackingInt(editor.scope_owner_map.get(@backingInt(owner)).?),
+            .params = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.params),
+            .body = body,
+            .body_scope = if (editor.scope_owner_map.get(@backingInt(body))) |raw| @fromBackingInt(raw) else .none,
+        };
+        const plan = try editor.captureFunctionRetirementSources(&.{known});
+        var changes: std.ArrayList(@import("function_retirement_receipt.zig").ReferenceChange) = .empty;
+        for (plan.graph.references.items) |row| {
+            if (row.flags.declare or row.node_index.isNone()) continue;
+            var inside = false;
+            for (plan.subtree) |raw| if (raw == @backingInt(row.node_index)) {
+                inside = true;
+            };
+            if (!inside) continue;
+            try editor.removeReference(row.node_index);
+            try changes.append(a, .{ .before = row, .after = null });
+        }
+        const root_index: NodeIndex = @fromBackingInt(@intCast(parser.ast.nodes.items.len - 1));
+        const root = parser.ast.getNode(root_index);
+        var removed_statements: usize = 0;
+        var write: usize = 0;
+        for (parser.ast.extra_data.items[root.data.list.start..][0..root.data.list.len]) |raw| {
+            if (raw == @backingInt(owner)) {
+                removed_statements += 1;
+                continue;
+            }
+            parser.ast.extra_data.items[root.data.list.start + write] = raw;
+            write += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), removed_statements);
+        parser.ast.nodes.items[@backingInt(root_index)].data.list.len = @intCast(write);
+        parser.ast.transformed_root = root_index;
+        const positions = try @import("statement_coordinates.zig").collect(a, &parser.ast, root_index);
+        const remaining_rows = try a.dupe(Reference, editor.references.items);
+        for (remaining_rows) |before| {
+            if (before.flags.declare or before.node_index.isNone()) continue;
+            const position = positions[@backingInt(before.node_index)].?;
+            if (before.stmt_idx == position.stmt_idx and before.scope_stmt_idx == position.scope_stmt_idx) continue;
+            try editor.moveReference(before.node_index, before.scope_id, position.stmt_idx, position.scope_stmt_idx);
+            var after = before;
+            after.stmt_idx = position.stmt_idx;
+            after.scope_stmt_idx = position.scope_stmt_idx;
+            try changes.append(a, .{ .before = before, .after = after });
+            std.debug.print("BUFFER_PARENT_COORD case={d} node={d} top={d}->{d} scope={d}->{d}\n", .{ case_index, @backingInt(before.node_index), before.stmt_idx, after.stmt_idx, before.scope_stmt_idx, after.scope_stmt_idx });
+        }
+        const receipt: @import("function_retirement_receipt.zig").ApplicationReceipt = .{
+            .domain = &parser.ast,
+            .reference_changes = changes.items,
+            .owner_changes = &.{},
+            .provenance_changes = &.{},
+            .copies = &.{},
+        };
+        const before_ids = try a.dupe(?u32, editor.symbol_ids.items);
+        const before_rows = try a.dupe(Reference, editor.references.items);
+        const before_symbols = try a.dupe(Symbol, editor.symbols.items);
+        const before_scopes = try a.dupe(Scope, editor.scopes.items);
+        const owner_count = editor.scope_owner_map.count();
+        const accepted = try editor.retireSelectedSourceOwnedFunctions(plan, &.{owner}, receipt);
+        std.debug.print("BUFFER_PARENT_DYNAMIC case={d} scope={d} origin={d} source_refs={d} accepted={}\n", .{ case_index, @backingInt(symbol.scope_id), @backingInt(symbol.origin_scope), symbol.reference_count, accepted });
+        try std.testing.expectEqual(case_index == 0, accepted);
+        if (accepted) continue;
+        try std.testing.expectEqualSlices(?u32, before_ids, editor.symbol_ids.items);
+        try std.testing.expectEqualDeep(before_rows, editor.references.items);
+        try std.testing.expectEqualDeep(before_symbols, editor.symbols.items);
+        try std.testing.expectEqualDeep(before_scopes, editor.scopes.items);
+        try std.testing.expectEqual(owner_count, editor.scope_owner_map.count());
+    }
+}
+
+test "source function retirement includes only its actual named expression self frame" {
+    const Mutation = enum { none, kind, parent, origin, map, owner, name_span, declaration_span, name_tag, foreign_sid };
+    for ([_][]const u8{ "(function self(p){const local=p;return local});console.log(42);", "(function self(p){const local=arguments[0];return local});console.log(42);" }) |source| {
+        inline for (std.meta.tags(Mutation)) |mutation| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            var scanner = try Scanner.init(a, source);
+            var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+            parser.configureFromExtension(".js");
+            const root = try parser.parse();
+            var analyzer = @import("analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+            analyzer.enable_exact_declaration_anchors = true;
+            analyzer.collect_unresolved_reference_nodes = true;
+            try analyzer.analyze();
+            var editor = try analyzer.beginEdit();
+            var owner: NodeIndex = .none;
+            for (parser.ast.nodes.items, 0..) |node, raw| if (node.tag == .function_expression) {
+                owner = @fromBackingInt(@as(u32, @intCast(raw)));
+            };
+            const node = parser.ast.getNode(owner);
+            const scope: ScopeId = @fromBackingInt(editor.scope_owner_map.get(@backingInt(owner)).?);
+            const name = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name);
+            const sid = editor.symbol_ids.items[@backingInt(name)].?;
+            const frame = editor.symbols.items[sid].scope_id;
+            try std.testing.expectEqual(frame, editor.scopes.items[scope.toIndex()].parent);
+            try std.testing.expectEqual(.block, editor.scopes.items[frame.toIndex()].kind);
+            const body = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.body);
+            const known: KnownUnreachableFunction = .{ .owner = owner, .scope = scope, .params = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.params), .body = body, .body_scope = if (editor.scope_owner_map.get(@backingInt(body))) |value| @fromBackingInt(value) else .none };
+            // Remove the actual source expression statement edge, preserving the
+            // function's immutable backing and every known declaration witness.
+            const list = &parser.ast.nodes.items[@backingInt(root)].data.list;
+            list.start += 1;
+            list.len -= 1;
+            switch (mutation) {
+                .none => {},
+                .kind => editor.scopes.items[frame.toIndex()].kind = .function,
+                .parent => editor.scopes.items[frame.toIndex()].parent = .none,
+                .origin => editor.symbols.items[sid].origin_scope = scope,
+                .map => {
+                    var values = editor.scope_maps.items[frame.toIndex()].valueIterator();
+                    values.next().?.* = sid + 1;
+                },
+                .owner => try editor.scope_owner_map.put(a, @backingInt(name), frame.toIndex()),
+                .name_span => editor.symbols.items[sid].name.end -= 1,
+                .declaration_span => editor.symbols.items[sid].declaration_span.end -= 1,
+                .name_tag => parser.ast.nodes.items[@backingInt(name)].tag = .identifier_reference,
+                .foreign_sid => editor.symbol_ids.items[@backingInt(name)] = sid + 1,
+            }
+            try std.testing.expectEqual(mutation == .none, try editor.retireUnreachableFunctionSubtree(known));
+            if (mutation == .none) {
+                const retirement = @import("source_owned_retirement.zig");
+                const live_nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, &parser.ast, root);
+                var live = try std.DynamicBitSet.initEmpty(a, parser.ast.nodes.items.len);
+                for (live_nodes) |raw| live.set(raw);
+                try std.testing.expect(editor.source_owned_retirements.contains(sid));
+                try std.testing.expect(try retirement.validate(a, &parser.ast, &editor.source_owned_retirements, &live, editor.symbols.items, editor.symbol_ids.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &editor.helper_scope_map, .{ .node_scope_provenance = &editor.node_scope_provenance }));
+                const coverage = @import("../transformer/symbol_coverage.zig");
+                const empty_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+                const empty_origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+                const legacy = try coverage.checkExactQuiet(a, &parser.ast, root, @intCast(parser.ast.nodes.items.len), editor.symbol_ids.items, editor.symbols.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &.{}, &editor.helper_scope_map, &analyzer.unresolved_reference_nodes, &empty_nodes, &empty_origins, .{ .pre_transform_scope_count = editor.scopes.items.len });
+                try std.testing.expectEqual(editor.source_owned_retirements.count(), legacy.scope_map_mismatch);
+                try std.testing.expect(!legacy.isClean());
+                var legacy_strict = try coverage.checkOutputSymbolIdentity(a, &parser.ast, root, @intCast(parser.ast.nodes.items.len), editor.symbol_ids.items, editor.symbols.items, editor.scopes.items, &editor.scope_owner_map, editor.references.items, .{ .unresolved_reference_nodes = &analyzer.unresolved_reference_nodes, .explicit_global_reference_nodes = &empty_nodes, .reference_origin_map = &empty_origins }, null);
+                defer legacy_strict.deinit(a);
+                var retired_arguments: usize = 0;
+                var retired_it = editor.source_owned_retirements.valueIterator();
+                while (retired_it.next()) |entry| if (entry.before.synthetic_kind == .implicit_arguments) {
+                    retired_arguments += 1;
+                };
+                try std.testing.expectEqual(retired_arguments, legacy_strict.orphan_symbols);
+                var normal = try coverage.checkOutputNormalFormQuiet(a, &parser.ast, root, @intCast(parser.ast.nodes.items.len), editor.symbol_ids.items, editor.symbols.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &.{}, &editor.helper_scope_map, &analyzer.unresolved_reference_nodes, &empty_nodes, &empty_origins, .{ .pre_transform_scope_count = editor.scopes.items.len }, &editor.source_owned_retirements, .{ .node_scope_provenance = &editor.node_scope_provenance });
+                defer normal.deinit(a);
+                try std.testing.expectEqual(@as(usize, 0), normal.retirement_state_mismatch);
+                try std.testing.expectEqual(@as(usize, 0), normal.strict.orphan_symbols);
+                try std.testing.expect(normal.exact.isClean());
+                try std.testing.expect(normal.hasCompleteOutputIdentityBeforeNames());
+                const witness = editor.source_owned_retirements.get(sid).?;
+                editor.source_owned_retirements.getPtr(sid).?.before.origin_scope = scope;
+                try std.testing.expect(!try retirement.validate(a, &parser.ast, &editor.source_owned_retirements, &live, editor.symbols.items, editor.symbol_ids.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &editor.helper_scope_map, .{ .node_scope_provenance = &editor.node_scope_provenance }));
+                editor.source_owned_retirements.getPtr(sid).?.* = witness;
+                editor.symbol_ids.items[@backingInt(name)] = sid;
+                try std.testing.expect(!try retirement.validate(a, &parser.ast, &editor.source_owned_retirements, &live, editor.symbols.items, editor.symbol_ids.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &editor.helper_scope_map, .{ .node_scope_provenance = &editor.node_scope_provenance }));
+                editor.symbol_ids.items[@backingInt(name)] = null;
+                editor.scopes.items[frame.toIndex()].subtree_has_direct_eval = true;
+                try std.testing.expect(!try retirement.validate(a, &parser.ast, &editor.source_owned_retirements, &live, editor.symbols.items, editor.symbol_ids.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &editor.helper_scope_map, .{ .node_scope_provenance = &editor.node_scope_provenance }));
+                editor.scopes.items[frame.toIndex()].subtree_has_direct_eval = false;
+                try editor.node_scope_provenance.put(a, name, .{ .scope = scope, .source_node = name });
+                try std.testing.expect(!try retirement.validate(a, &parser.ast, &editor.source_owned_retirements, &live, editor.symbols.items, editor.symbol_ids.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &editor.helper_scope_map, .{ .node_scope_provenance = &editor.node_scope_provenance }));
+                _ = editor.node_scope_provenance.remove(name);
+                try editor.scope_owner_map.put(a, @backingInt(name), scope.toIndex());
+                try std.testing.expect(!try retirement.validate(a, &parser.ast, &editor.source_owned_retirements, &live, editor.symbols.items, editor.symbol_ids.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &editor.helper_scope_map, .{ .node_scope_provenance = &editor.node_scope_provenance }));
+                _ = editor.scope_owner_map.remove(@backingInt(name));
+                try std.testing.expect(!try retirement.validate(a, &parser.ast, &editor.source_owned_retirements, &live, editor.symbols.items, editor.symbol_ids.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &editor.helper_scope_map, .{ .symbol_ids = &.{sid}, .node_scope_provenance = &editor.node_scope_provenance }));
+                analyzer.applyEdit(try editor.finish());
+                const repeated = try analyzer.beginEdit();
+                try std.testing.expectEqualDeep(witness.before, repeated.source_owned_retirements.get(sid).?.before);
+                try std.testing.expect(try retirement.validate(a, &parser.ast, &repeated.source_owned_retirements, &live, repeated.symbols.items, repeated.symbol_ids.items, repeated.scopes.items, repeated.scope_maps.items, &repeated.scope_owner_map, repeated.references.items, &repeated.helper_scope_map, .{ .node_scope_provenance = &repeated.node_scope_provenance }));
+                var data: @import("../bundler/module.zig").ModuleSemanticData = .{
+                    .symbols = analyzer.symbols,
+                    .scopes = analyzer.scopes.items,
+                    .scope_maps = analyzer.scope_maps.items,
+                    .scope_owner_map = analyzer.scope_owner_map,
+                    .symbol_ids = analyzer.symbol_ids.items,
+                    .references = analyzer.references.items,
+                    .exported_names = analyzer.exported_names,
+                    .unresolved_references = analyzer.unresolved_references,
+                    .helper_scope_map = analyzer.helper_scope_map,
+                    .node_scope_provenance = analyzer.node_scope_provenance,
+                    .source_owned_retirements = analyzer.source_owned_retirements,
+                };
+                var wire: std.ArrayList(u8) = .empty;
+                try @import("../bundler/semantic_codec.zig").serialize(&data, &wire, a);
+                var decoded = try @import("../bundler/semantic_codec.zig").deserialize(wire.items, a);
+                var cached_edit = try decoded.beginEdit(a, &parser.ast);
+                decoded.applyEdit(try cached_edit.finish());
+                try std.testing.expect(retirement.equalSymbol(witness.before, decoded.source_owned_retirements.get(sid).?.before));
+                try std.testing.expect(try retirement.validate(a, &parser.ast, &decoded.source_owned_retirements, &live, decoded.symbols.items, decoded.symbol_ids, decoded.scopes, decoded.scope_maps, &decoded.scope_owner_map, decoded.references, &decoded.helper_scope_map, .{ .node_scope_provenance = &decoded.node_scope_provenance }));
+            }
+        }
     }
 }

@@ -75,6 +75,7 @@ fn buildSemanticTestInfos(allocator: std.mem.Allocator, source: []const u8) !str
         &parser.ast,
         analyzer.symbols.items,
         analyzer.scopes.items,
+        analyzer.symbol_ids.items,
         analyzer.references.items,
         null,
         false,

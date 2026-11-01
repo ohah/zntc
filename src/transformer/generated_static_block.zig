@@ -23,7 +23,10 @@ pub fn create(self: anytype, parent: ScopeId, body: ast.NodeIndex, span: Span) !
             @panic("generated native static block has no strict var boundary");
         if (self.ast.getNode(body).tag != .block_statement or self.outputOwnedScope(body) != null)
             @panic("generated native static block lost its unowned canonical body");
-        try self.semantic_editor.?.scope_owner_map.put(self.allocator, @backingInt(body), @backingInt(scope));
+        self.semantic_editor.?.putScopeOwner(body, scope) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            @panic("invalid generated scope owner publication");
+        };
         try self.transformed_scope_owner_map.put(self.allocator, @backingInt(body), @backingInt(scope));
         try self.scope_owner_origins.put(self.allocator, @backingInt(body), @backingInt(body));
     }

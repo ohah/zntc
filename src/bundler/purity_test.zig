@@ -207,7 +207,8 @@ test "assignment statement: module-local assignment target identifier is removab
 
     const globals = &ctx.analyzer.unresolved_references;
     try std.testing.expect(!purity.stmtHasSideEffects(&ctx.ast, topLevelStmt(&ctx, 1), globals));
-    try std.testing.expect(!purity.stmtHasSideEffects(&ctx.ast, topLevelStmt(&ctx, 2), globals));
+    // The conditional does not prove repeated heritage access or prototype lookup pure.
+    try std.testing.expect(purity.stmtHasSideEffects(&ctx.ast, topLevelStmt(&ctx, 2), globals));
 }
 
 test "assignment statement: global, member, computed, and destructuring LHS stay side-effectful" {
@@ -1284,4 +1285,23 @@ test "native using declaration effects survive pure initializers" {
         }
     }
     try std.testing.expectEqual(@as(usize, 0), failures);
+}
+
+test "purity class heritage preserves identifier validation and literal constructors" {
+    const cases = [_]struct { source: []const u8, pure: bool }{
+        .{ .source = "const C=class extends Error{};", .pure = false },
+        .{ .source = "const C=class extends Missing{};", .pure = false },
+        .{ .source = "const C=class extends 0{};", .pure = false },
+        .{ .source = "const C=class extends (()=>{}){};", .pure = false },
+        .{ .source = "const C=class extends (async function(){}){};", .pure = false },
+        .{ .source = "const C=class extends (function*(){}){};", .pure = false },
+        .{ .source = "const C=class extends null{};", .pure = true },
+        .{ .source = "const C=class extends (function(){}){};", .pure = true },
+        .{ .source = "const C=class extends (class {}){};", .pure = true },
+    };
+    for (cases) |case| {
+        var ctx = try setup(std.testing.allocator, case.source);
+        defer ctx.deinit();
+        try std.testing.expectEqual(case.pure, purity.isExprPure(&ctx.ast, initOfDecl(&ctx, 0), &ctx.analyzer.unresolved_references));
+    }
 }

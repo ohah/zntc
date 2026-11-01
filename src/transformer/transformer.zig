@@ -332,6 +332,7 @@ pub const Transformer = struct {
     /// Provenance for generated refs that intentionally remain external.
     /// Coverage audits and bundler semantic resync both consume this marker set.
     explicit_global_reference_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    cjs_export_assignment_references: std.ArrayList(@import("cjs_export_assignment.zig").ModuleReference) = .empty,
     /// Standalone lenient-JS mangling may detach exact reads left after a local
     /// const enum is erased, but only after proving that no output binding of
     /// the same spelling survives. The value is the source enum binding node.
@@ -340,6 +341,8 @@ pub const Transformer = struct {
     /// Exact source proof for reads detached from an erased declaration-level
     /// type import. The key is the surviving external output reference node.
     erased_type_import_external_references: std.AutoHashMapUnmanaged(u32, ErasedTypeImportExternalReferenceProof) = .empty,
+    erased_const_enum_binding_handoffs: std.ArrayList(@import("erased_const_enum_handoff.zig").Plan) = .empty,
+    erased_const_enum_declaration_sources: std.ArrayList(@import("erased_const_enum_handoff.zig").DeclarationSource) = .empty,
     /// Graph prepass can retain this provenance across a later semantic resync.
     record_explicit_global_references: bool = false,
     /// Bundler retention must not treat opaque define text as an exact graph
@@ -427,6 +430,9 @@ pub const Transformer = struct {
     scope_maps: []const std.StringHashMapUnmanaged(usize) = &.{},
     /// analyzer가 기록한 원본 스코프 생성 노드 → ScopeId. 별도 소유권은 analyzer/module에 있다.
     scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    pending_erased_import_bindings: @import("../semantic/source_owned_retirement.zig").Map = .empty,
+    source_owned_retirements: @import("../semantic/source_owned_retirement.zig").Map = .empty,
+    scope_history: @import("../semantic/scope_frame_history.zig").History = .{},
     node_scope_provenance: @import("../semantic/node_scope_provenance.zig").Map = .empty,
     transformed_node_scope_provenance: @import("../semantic/node_scope_provenance.zig").Map = .empty,
     node_scope_provenance_changed: bool = false,
@@ -468,6 +474,7 @@ pub const Transformer = struct {
     static_class_captures: std.AutoHashMapUnmanaged(u32, @import("static_class_capture.zig").Capture) = .empty,
     /// Creator records consumed by takeDeclaration; active lifecycle stays empty.
     completed_static_class_captures: std.AutoHashMapUnmanaged(u32, @import("static_class_capture.zig").Capture) = .empty,
+    pending_static_initializer_transfers: std.ArrayList(@import("class_strict_context.zig").PendingInitializer) = .empty,
     /// Manual generator operation collection carries lexical insertion context
     /// separately from `current_scope`, which remains the visitor's source scope.
     generator_operation_scope: ScopeId = .none,
@@ -860,6 +867,7 @@ pub const Transformer = struct {
     /// Exact synthetic generator `_loop` owners whose callback parent cannot
     /// be finalized until the generator loop body/parameter migration.
     deferred_generator_loop_owners: std.AutoHashMapUnmanaged(u32, DeferredGeneratorLoopOwner) = .empty,
+    extracted_loop_generator_sources: std.AutoHashMapUnmanaged(u32, @import("../semantic/generator_environment_transfer.zig").Source) = .empty,
     /// Exact source-to-generated parameter identities for extracted generator
     /// loops, keyed by their generated function ScopeId until state binding.
     deferred_generator_loop_migrations: std.AutoHashMapUnmanaged(u32, DeferredGeneratorLoopMigration) = .empty,
@@ -920,6 +928,9 @@ pub const Transformer = struct {
     /// A lexical-capturing arrow or its method container was kept intact inside
     /// a dynamic `with` scope because aliases/home-object syntax could be unsafe.
     used_unsupported_arrow_dynamic_scope: bool = false,
+    /// A computed accessor retained in its actual with environment.
+    used_unsupported_object_accessor_with: bool = false,
+    used_unsupported_object_accessor_eval: bool = false,
 
     /// A lexical-capturing arrow was kept intact because a non-literal direct
     /// eval argument can observe any generated capture alias.
@@ -1271,6 +1282,7 @@ pub const Transformer = struct {
     pub const cloneGeneratedClassSelfReference = @import("transformer/semantic_edit.zig").cloneGeneratedClassSelfReference;
     pub const programScope = @import("transformer/semantic_edit.zig").programScope;
     pub const markOpaqueDefineScopeChain = @import("transformer/semantic_edit.zig").markOpaqueDefineScopeChain;
+    pub const markInjectedDirectEvalScopeChain = @import("transformer/semantic_edit.zig").markInjectedDirectEvalScopeChain;
     pub const nearestVarScope = @import("transformer/semantic_edit.zig").nearestVarScope;
     pub const syntheticTempOutputScopeIsDeferred = @import("transformer/semantic_edit.zig").syntheticTempOutputScopeIsDeferred;
     pub const tempOutputScopeIsDeferredIgnoringStateMachine = @import("transformer/semantic_edit.zig").tempOutputScopeIsDeferredIgnoringStateMachine;

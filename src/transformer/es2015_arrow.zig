@@ -479,6 +479,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
 
             // Plugin dispatch: worklet 등 AST 플러그인 적용
             const is_auto_worklet = self.plugins.worklet.auto_next;
+            if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_owner, result);
             if (try self.dispatchFunctionPlugins(result, .{
                 .node_idx = result,
                 .node_tag = .function_expression,

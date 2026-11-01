@@ -835,7 +835,26 @@ fn buildClosureObject(self: *Transformer, closure_vars: []const ClosureVar) Erro
     const zero_span = Span{ .start = 0, .end = 0 };
 
     for (closure_vars) |cv| {
-        const source_name_span = try self.ast.addString(cv.name);
+        const name_value = try @import("../../lexer/scanner.zig").Scanner.decodeIdentifierEscapesAlloc(self.allocator, cv.name);
+        defer if (name_value.ptr != cv.name.ptr) self.allocator.free(name_value);
+        // A copied user name already has an authoritative source/value datum.
+        // Keep source spelling source-backed instead of rewrapping its escapes
+        // as a logical StringTable value. Fresh factory names stay canonical.
+        const source_name_span = source: {
+            if (cv.class_factory_base == null) {
+                const original = self.ast.getNode(cv.ref_idx);
+                if (original.tag == .identifier_reference or original.tag == .assignment_target_identifier or original.tag == .jsx_identifier) {
+                    const datum = original.data.string_ref;
+                    const text = self.ast.getText(datum);
+                    const same_value = if (datum.start & ast_mod.Ast.STRING_TABLE_BIT != 0)
+                        std.mem.eql(u8, text, name_value)
+                    else
+                        @import("../../lexer/scanner.zig").Scanner.identifierValueEquals(text, name_value);
+                    if (same_value) break :source datum;
+                }
+            }
+            break :source try self.ast.addString(name_value);
+        };
         const closure_key = cv.closure_key orelse cv.name;
         const key_span = if (std.mem.eql(u8, closure_key, cv.name))
             source_name_span

@@ -1076,6 +1076,19 @@ test "Minify: refreshed semantic recomputes mangling after constant fact DCE" {
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "PRIVATE_MANGLE_DEAD_BRANCH") == null);
     try expectNoDuplicatePrivateMethodParams(result.output);
+    const actual = try std.process.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ "node", "-e", result.output },
+        .stdout_limit = std.Io.Limit.limited(16 * 1024),
+        .stderr_limit = std.Io.Limit.limited(16 * 1024),
+    });
+    defer std.testing.allocator.free(actual.stdout);
+    defer std.testing.allocator.free(actual.stderr);
+    switch (actual.term) {
+        .exited => |code| try std.testing.expectEqual(@as(u8, 0), code),
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expectEqualStrings("3\n", actual.stdout);
+    try std.testing.expectEqualStrings("", actual.stderr);
 }
 
 test "TreeShaking: seedAllStmts propagates export * chain — cheerio pattern" {
@@ -5910,4 +5923,71 @@ test "Bundler strict adjacent factories preserve exact declaration owners throug
         else => return error.TestUnexpectedResult,
     }
     try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+}
+
+test "Buffer frozen constructor member writes preserve PM and split writer runtime" {
+    const cases = [_]struct { source: []const u8, expected: []const u8 }{
+        .{ .source = "var buffer=require('buffer');var B=buffer.Buffer;if(B.from&&B.alloc&&B.allocUnsafe&&B.allocUnsafeSlow){module.exports=buffer}else{exports.Buffer=SafeBuffer}function SafeBuffer(){}SafeBuffer.alloc=function(){return {length:7}};console.log(module.exports.Buffer.alloc(10).length);\n", .expected = "10\n" },
+        .{ .source = "var buffer=require('buffer');var B=buffer.Buffer;B.from=null;if(B.from&&B.alloc&&B.allocUnsafe&&B.allocUnsafeSlow){module.exports=buffer}else{exports.Buffer=SafeBuffer}function SafeBuffer(){}SafeBuffer.alloc=function(){return {length:7}};console.log(module.exports.Buffer.alloc(10).length);\n", .expected = "7\n" },
+    };
+    for (cases) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "input/shared.cjs", case.source);
+        try writeFile(tmp.dir, "input/entry-a.mjs", "import './shared.cjs';\n");
+        try writeFile(tmp.dir, "input/entry-b.mjs", "import './shared.cjs';\n");
+        const entry_a = try absPath(&tmp, "input/entry-a.mjs");
+        defer std.testing.allocator.free(entry_a);
+        const entry_b = try absPath(&tmp, "input/entry-b.mjs");
+        defer std.testing.allocator.free(entry_b);
+        for ([_][]const u8{ entry_a, entry_b }) |entry| {
+            const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", entry } });
+            defer std.testing.allocator.free(native.stdout);
+            defer std.testing.allocator.free(native.stderr);
+            try std.testing.expect(native.term == .exited and native.term.exited == 0);
+            try std.testing.expectEqualStrings(case.expected, native.stdout);
+        }
+        for ([_]bool{ false, true }) |preserve| for ([_]bool{ false, true }) |minify| {
+            const directory = try std.fmt.allocPrint(std.testing.allocator, "out-{any}-{any}", .{ preserve, minify });
+            defer std.testing.allocator.free(directory);
+            const output_root = try absPath(&tmp, directory);
+            defer std.testing.allocator.free(output_root);
+            var bundler = Bundler.init(std.testing.allocator, .{
+                .entry_points = &.{ entry_a, entry_b },
+                .platform = .node,
+                .format = .esm,
+                .outdir = output_root,
+                .preserve_modules = preserve,
+                .code_splitting = !preserve,
+                .minify_identifiers = minify,
+            });
+            defer bundler.deinit();
+            const result = try bundler.bundle(std.testing.io);
+            defer result.deinit(std.testing.allocator);
+            if (result.hasErrors()) for (result.getDiagnostics()) |diag| std.debug.print("Buffer writer diagnostic: {s}\n", .{diag.message});
+            try std.testing.expect(!result.hasErrors());
+            const outputs = result.outputs orelse return error.MissingBufferWriterOutputs;
+            for (outputs) |output| {
+                const path = try std.fs.path.join(std.testing.allocator, &.{ directory, std.fs.path.basename(output.path) });
+                defer std.testing.allocator.free(path);
+                try writeFile(tmp.dir, path, output.contents);
+            }
+            const package_path = try std.fs.path.join(std.testing.allocator, &.{ directory, "package.json" });
+            defer std.testing.allocator.free(package_path);
+            try writeFile(tmp.dir, package_path, "{\"type\":\"module\"}");
+            for ([_][]const u8{ "entry-a.js", "entry-b.js" }) |filename| {
+                const path = try std.fs.path.join(std.testing.allocator, &.{ output_root, filename });
+                defer std.testing.allocator.free(path);
+                const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", path } });
+                defer std.testing.allocator.free(actual.stdout);
+                defer std.testing.allocator.free(actual.stderr);
+                if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, case.expected, actual.stdout)) {
+                    std.debug.print("Buffer frozen writer preserve={any} minify={any} file={s} expected={s}actual={s}stderr={s}\n", .{ preserve, minify, filename, case.expected, actual.stdout, actual.stderr });
+                    for (outputs) |output| std.debug.print("Buffer output {s}\n{s}\n", .{ output.path, output.contents });
+                }
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings(case.expected, actual.stdout);
+            }
+        };
+    }
 }

@@ -58,6 +58,64 @@ pub fn moveInitializerScopes(self: anytype, root: NodeIndex, source: ScopeId, pr
 }
 
 pub fn moveSourceReferences(self: anytype, root: NodeIndex, source: ScopeId, previous_output: ScopeId, target: ScopeId) !void {
+    return moveSourceReferencesIntoFactory(self, root, source, previous_output, target, null);
+}
+
+const Factory = struct { owner: NodeIndex, parameters: NodeIndex, body: NodeIndex, epoch: u32 };
+pub const PendingInitializer = struct { node: NodeIndex, source_node: NodeIndex, source_index: u32, from: ScopeId, to: ScopeId, move_index: usize };
+
+fn carryDynamicEffects(self: anytype, source: ScopeId, target: ScopeId) !void {
+    const editor = &self.semantic_editor.?;
+    const original = editor.scopes.items[source.toIndex()];
+    var completed = editor.scopes.items[target.toIndex()];
+    completed.subtree_has_direct_eval = completed.subtree_has_direct_eval or original.subtree_has_direct_eval;
+    completed.subtree_has_with = completed.subtree_has_with or original.subtree_has_with;
+    editor.scope_history.recordOwnedFrame(self.allocator, self.ast, editor.scopes.items, &editor.scope_owner_map, target, completed, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => @panic("strict initializer lost its actual dynamic frame"),
+    };
+    editor.scopes.items[target.toIndex()] = completed;
+}
+
+pub fn moveStaticFieldReferences(self: anytype, root: NodeIndex, source: ScopeId, target: ScopeId) !void {
+    if (!self.semantic_edit_enabled or root.isNone()) return;
+    try carryDynamicEffects(self, source, target);
+    try moveSourceReferencesIntoFactory(self, root, source, source, target, .{ .owner = .none, .parameters = .none, .body = .none, .epoch = 0 });
+}
+
+/// A class IIFE reserves its real frame before visiting fields, but publishes
+/// the actual function owner only after its complete body exists.
+pub fn completeReservedOwner(self: anytype, scope: ScopeId, owner: NodeIndex) !void {
+    if (!self.semantic_edit_enabled or self.pending_static_initializer_transfers.items.len == 0) return;
+    const editor = &self.semantic_editor.?;
+    var index: usize = 0;
+    while (index < self.pending_static_initializer_transfers.items.len) {
+        const pending = self.pending_static_initializer_transfers.items[index];
+        if (pending.to != scope) {
+            index += 1;
+            continue;
+        }
+        var entry = editor.node_scope_provenance.get(pending.node) orelse @panic("class initializer lost its pending exact source carrier");
+        var origin = entry.source_external orelse @panic("class initializer lost its pending unresolved origin");
+        if (pending.move_index >= origin.scope_moves.len) @panic("class initializer lost its pending move");
+        const moves = try self.allocator.dupe(@import("../semantic/source_external_origin.zig").ScopeMove, origin.scope_moves);
+        const move = &moves[pending.move_index];
+        if (move.reason != .lowerer_scope_relocation or move.node != pending.node or move.source_node != pending.source_node or move.from != pending.from or move.to != pending.to)
+            @panic("class initializer pending move changed its actual producer");
+        const function = self.ast.getNode(owner);
+        if (function.tag != .function_expression) @panic("class initializer has no actual class IIFE owner");
+        move.reason = .class_initializer_environment_transfer;
+        move.class_initializer = .{ .source_index = pending.source_index, .target_owner = (@import("../semantic/scope_frame_history.zig").Owner.capture(self.ast, owner) catch @panic("class IIFE has an invalid actual owner")).?, .parameters = self.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.params), .body = self.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.body), .owner_epoch = editor.scope_history.epoch() };
+        origin.scope_moves = moves;
+        entry.source_external = origin;
+        try editor.node_scope_provenance.put(self.allocator, pending.node, entry);
+        try self.transformed_node_scope_provenance.put(self.allocator, pending.node, entry);
+        self.node_scope_provenance_changed = true;
+        _ = self.pending_static_initializer_transfers.orderedRemove(index);
+    }
+}
+
+fn moveSourceReferencesIntoFactory(self: anytype, root: NodeIndex, source: ScopeId, previous_output: ScopeId, target: ScopeId, factory: ?Factory) !void {
     if (!self.semantic_edit_enabled) return;
     const editor = &self.semantic_editor.?;
     var stack: std.ArrayList(NodeIndex) = .empty;
@@ -65,7 +123,38 @@ pub fn moveSourceReferences(self: anytype, root: NodeIndex, source: ScopeId, pre
     try stack.append(self.allocator, root);
     while (stack.pop()) |idx| {
         if (idx.isNone()) continue;
-        try self.relocateNodeScopeProvenance(idx, source, target);
+        var transferred = false;
+        if (factory) |actual| if (editor.node_scope_provenance.get(idx)) |previous| {
+            if (previous.scope == source) if (previous.source_external) |origin| {
+                if (origin.execution_scope == source) {
+                    var known: ?u32 = null;
+                    for (editor.scope_history.source_initializers, 0..) |entry, index| {
+                        if (entry.scope != source or entry.initializer.node != root or entry.leaf.node != previous.source_node) continue;
+                        if (known != null) @panic("static initializer has duplicate original source carriers");
+                        known = @intCast(index);
+                    }
+                    const source_index = known orelse @panic("static initializer lost its original field carrier");
+                    var moved = previous;
+                    moved.scope = target;
+                    const External = @import("../semantic/source_external_origin.zig");
+                    if (actual.owner.isNone()) {
+                        moved.source_external = try External.moved(self.allocator, origin, idx, previous.source_node, source, target, editor.scopes.items, editor.scope_history.epoch());
+                        try self.pending_static_initializer_transfers.append(self.allocator, .{ .node = idx, .source_node = previous.source_node, .source_index = source_index, .from = source, .to = target, .move_index = moved.source_external.?.scope_moves.len - 1 });
+                    } else moved.source_external = try External.transferredClassInitializer(self.allocator, origin, idx, previous.source_node, source, target, editor.scopes.items, editor.scope_history.epoch(), .{
+                        .source_index = source_index,
+                        .target_owner = (@import("../semantic/scope_frame_history.zig").Owner.capture(self.ast, actual.owner) catch @panic("strict initializer factory has an invalid actual owner")).?,
+                        .parameters = actual.parameters,
+                        .body = actual.body,
+                        .owner_epoch = actual.epoch,
+                    });
+                    try editor.node_scope_provenance.put(self.allocator, idx, moved);
+                    try self.transformed_node_scope_provenance.put(self.allocator, idx, moved);
+                    self.node_scope_provenance_changed = true;
+                    transferred = true;
+                }
+            };
+        };
+        if (!transferred) try self.relocateNodeScopeProvenance(idx, source, target);
         if (previous_output != source) try self.relocateNodeScopeProvenance(idx, previous_output, target);
         const existing = editor.referenceForNode(idx) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -101,7 +190,7 @@ pub fn visitInitializer(self: anytype, source: NodeIndex, class_scope: ScopeId, 
     if (self.options.unsupported.class) {
         if (self.semantic_edit_enabled) {
             try moveInitializerScopes(self, source, class_scope, output_scope, output_scope);
-            try moveSourceReferences(self, source, class_scope, output_scope, output_scope);
+            try moveStaticFieldReferences(self, source, class_scope, output_scope);
         }
         const saved_scope = self.current_scope;
         self.current_scope = output_scope;
@@ -120,8 +209,10 @@ pub fn visitInitializer(self: anytype, source: NodeIndex, class_scope: ScopeId, 
     });
     if (self.semantic_edit_enabled) {
         try self.bindReservedFunctionOwner(factory_scope, factory);
+        const owner_epoch = self.semantic_editor.?.scope_history.epoch();
+        try carryDynamicEffects(self, class_scope, factory_scope);
         try moveInitializerScopes(self, source, class_scope, output_scope, factory_scope);
-        try moveSourceReferences(self, source, class_scope, output_scope, factory_scope);
+        try moveSourceReferencesIntoFactory(self, source, class_scope, output_scope, factory_scope, .{ .owner = factory, .parameters = params, .body = body, .epoch = owner_epoch });
     }
     const saved_scope = self.current_scope;
     self.current_scope = factory_scope;

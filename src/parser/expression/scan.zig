@@ -37,6 +37,7 @@ pub fn scanRequireCall(self: *Parser, callee: NodeIndex, arg_list: NodeList) voi
     const specifier = import_specifier_unescape.extract(self.allocator, raw);
 
     self.scan_import_records.append(self.allocator, .{
+        .source_node = arg_idx,
         .specifier = specifier,
         .kind = .require,
         .span = arg_node.span,

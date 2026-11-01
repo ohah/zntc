@@ -35,6 +35,7 @@ const ast_mod = @import("../parser/ast.zig");
 const ast_walk = @import("../parser/ast_walk.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const NodeList = ast_mod.NodeList;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
@@ -223,6 +224,27 @@ pub fn ES2015Class(comptime Transformer: type) type {
         ///
         /// class: extra = [name, super, body, type_params, impl_start, impl_len, deco_start, deco_len]
         /// 반환: function_declaration. 나머지 prototype assignment는 pending_nodes에 추가.
+        fn captureClassHeritage(self: *Transformer, owner: NodeIndex, class_scope: ScopeId, heritage: NodeIndex, parent: ScopeId) ?@import("../semantic/source_external_origin.zig").ClassHeritageTransfer {
+            if (!self.semantic_edit_enabled or heritage.isNone() or self.getSymbolIdAt(heritage) != null or self.ast.getNode(heritage).tag != .identifier_reference) return null;
+            const captured = (@import("../semantic/scope_frame_history.zig").Owner.capture(self.ast, owner) catch return null) orelse return null;
+            const epoch: u32 = if (self.semantic_editor) |*editor| editor.scope_history.epoch() else @intCast(self.scope_history.events.len);
+            return .{ .owner = captured, .class_scope = class_scope, .heritage = heritage, .evaluation_scope = parent, .capture_epoch = epoch };
+        }
+
+        fn recordClassHeritage(self: *Transformer, target: NodeIndex, source: NodeIndex, known: ?@import("../semantic/source_external_origin.zig").ClassHeritageTransfer) Transformer.Error!void {
+            const transfer = known orelse return;
+            const editor = &self.semantic_editor.?;
+            var entry = editor.node_scope_provenance.get(target) orelse return;
+            const external = entry.source_external orelse return;
+            entry.source_external = @import("../semantic/source_external_origin.zig").classHeritage(self.allocator, external, transfer, target, source) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => std.debug.panic("class heritage lost its exact source handoff: {s}", .{@errorName(err)}),
+            };
+            try editor.node_scope_provenance.put(self.allocator, target, entry);
+            try self.transformed_node_scope_provenance.put(self.allocator, target, entry);
+            self.node_scope_provenance_changed = true;
+        }
+
         pub fn lowerClassDeclaration(self: *Transformer, source_idx: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const e = node.data.extra;
             const span = node.span;
@@ -286,6 +308,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             else
                 self.current_scope;
             const iife_parent = if (self.semantic_edit_enabled) self.outputScopeParent(source_class_scope) else self.current_scope;
+            const heritage_source = captureClassHeritage(self, source_idx, source_class_scope, super_idx, iife_parent);
             const iife_scope = try self.reserveGeneratedFunctionScope(iife_parent);
             try self.reparentGeneratedScope(source_class_scope, iife_scope);
             if (self.current_class_self_symbol_id) |id| try self.moveSymbolToOutputScope(id, iife_scope);
@@ -322,6 +345,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                             super_node.data.string_ref;
                         super_expr_node = try self.makeIdentifierRefWithSymbol(super_name, super_idx);
                         try self.trackUserReadFromBinding(super_expr_node, super_idx, iife_parent);
+                        try recordClassHeritage(self, super_expr_node, super_idx, heritage_source);
                     }
                     super_span = try self.ast.addString(parameter_name.name);
                 } else {
@@ -729,10 +753,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const new_name = try self.visitNode(name_idx);
             const generated_class_output_name: ?es_helpers.ScopedSyntheticOutputName = if (!new_name.isNone())
                 null
-            else if (self.semantic_edit_enabled)
-                try es_helpers.resolveScopedSyntheticOutputName(self, "_Class", source_class_scope)
-            else
-                .{ .name = try es_helpers.resolveSyntheticName(self, "_Class"), .late = false };
+            else if (self.semantic_edit_enabled) blk: {
+                // A Stage 3 wrapper may already own the cached `_Class`
+                // spelling. Its exact writes must remain visible inside this
+                // constructor's IIFE, so allocate a distinct birth spelling.
+                if (self.synthetic_names.contains("_Class")) {
+                    break :blk try es_helpers.resolveDistinctScopedSyntheticOutputName(self, "_Class", source_class_scope);
+                }
+                break :blk try es_helpers.resolveScopedSyntheticOutputName(self, "_Class", source_class_scope);
+            } else .{ .name = try es_helpers.resolveSyntheticName(self, "_Class"), .late = false };
             const name_span = if (!new_name.isNone())
                 self.ast.getNode(new_name).data.string_ref
             else
@@ -753,6 +782,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_class_self_symbol_id = saved_class_self_symbol_id;
 
             const iife_parent = if (self.semantic_edit_enabled) self.outputScopeParent(source_class_scope) else self.current_scope;
+            const heritage_source = captureClassHeritage(self, source_idx, source_class_scope, super_idx, iife_parent);
 
             // super class
             const has_super = !super_idx.isNone();
@@ -781,6 +811,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                             super_node.data.string_ref;
                         expr_super_node = try self.makeIdentifierRefWithSymbol(super_name, super_idx);
                         try self.trackUserReadFromBinding(expr_super_node, super_idx, iife_parent);
+                        try recordClassHeritage(self, expr_super_node, super_idx, heritage_source);
                     }
                     super_span = try self.ast.addString(parameter_name.name);
                 } else {
@@ -1089,6 +1120,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const wrapper = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
                 try self.bindReservedFunctionOwner(iife_scope, wrapper);
                 if (self.semantic_edit_enabled) self.class_factory_statement_lists_changed = true;
+                try @import("worklet_class_clone.zig").recordLoweredClass(self, source_idx, func_expr, wrapper, iife_scope);
                 return es_helpers.makeCallExpr(self, wrapper, &.{}, span);
             }
 
@@ -1213,6 +1245,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             try self.bindReservedFunctionOwner(iife_scope, wrapper_fn);
             if (self.semantic_edit_enabled) self.class_factory_statement_lists_changed = true;
             try trackClassPrivateSymbols(self, wrapper_fn, cm, iife_scope);
+            try @import("worklet_class_clone.zig").recordLoweredClass(self, source_idx, func_node, wrapper_fn, iife_scope);
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
             // IIFE callee paren 은 emitCall 자동 wrap 이 처리 (#4042 PR8)
             return if (has_super and super_span != null) blk: {

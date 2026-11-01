@@ -369,6 +369,27 @@ pub const ExactReport = struct {
         return hash;
     }
 
+    /// Output graph identity precedes physical emitted-name allocation. Keep
+    /// a lexical collision observable here: it must be resolved by the final
+    /// name consumer, not turned into a missing or different binding identity.
+    /// This never changes isClean(), counters, details, or report printing.
+    pub fn hasCompleteOutputIdentityBeforeNames(self: ExactReport) bool {
+        if ((self.shadowed_external_reference == 0) != (self.first_shadowed_external_reference == null)) return false;
+        const info = @typeInfo(ExactReport).@"struct";
+        inline for (info.field_names, info.field_types) |name, field_type| {
+            if (comptime isObservationField(name)) continue;
+            if (comptime std.mem.eql(u8, name, "shadowed_external_reference") or
+                std.mem.eql(u8, name, "first_shadowed_external_reference")) continue;
+            if (comptime isDiagnosticField(name)) {
+                if (@field(self, name) != null) return false;
+                continue;
+            }
+            if (comptime field_type != usize) @compileError("unclassified ExactReport output-identity field");
+            if (@field(self, name) != 0) return false;
+        }
+        return true;
+    }
+
     /// Observations are allowed to be nonzero. Every other numeric field is
     /// an invariant counter and fails closed by default, so adding a new
     /// counter cannot silently leave the aggregate exact-coverage gate green.
@@ -666,6 +687,7 @@ fn ownerParentMatchesAst(
     owner_scope: u32,
     expected_parent_scope: u32,
     pre_transform_scope_count: ?usize,
+    lowered_classes: ?*const @import("../semantic/lowered_worklet_class.zig").Proof,
 ) bool {
     var parent = scopes[owner_scope].parent;
     var hops: usize = 0;
@@ -673,6 +695,31 @@ fn ownerParentMatchesAst(
         if (!exactValidScope(scopes, parent)) return false;
         const parent_id = parent.toIndex();
         if (parent_id == expected_parent_scope) return true;
+        if (lowered_classes) |proof| {
+            if (proof.bridge(parent)) |bridge| {
+                parent = bridge.actual_iife_scope;
+                continue;
+            }
+            // A lowered method can acquire its own actual function-name
+            // environment. Prove that exact name-slot/SID/map role first,
+            // then compose it with this class's independently proven bridge.
+            const lexical_parent = scopes[parent_id].parent;
+            if (exactValidScope(scopes, lexical_parent)) if (proof.bridge(lexical_parent)) |bridge| {
+                if (bridge.actual_iife_scope.toIndex() == expected_parent_scope and isFunctionExpressionNameScope(
+                    ast,
+                    owner_node,
+                    parent,
+                    lexical_parent,
+                    symbol_ids,
+                    symbols,
+                    scopes,
+                    scope_maps,
+                )) {
+                    parent = lexical_parent;
+                    continue;
+                }
+            };
+        }
 
         // Lowering can retain analyzer-owned lexical scopes after their AST
         // owners move or disappear. Those source scopes can remain between a
@@ -1609,6 +1656,28 @@ pub fn validateNodeScopeProvenance(
             child = parent;
         }
         if (entry.with_environment != with_environment) return false;
+        if (entry.external_import != null or entry.source_external != null) {
+            if (entry.external_import != null and entry.source_external != null) return false;
+            const actual = ast.getNode(node);
+            var flags: @import("../semantic/symbol.zig").ReferenceFlags = switch (actual.tag) {
+                .identifier_reference, .jsx_identifier => .{ .read = true },
+                .assignment_target_identifier => .{ .write = true },
+                else => return false,
+            };
+            if (parents.get(raw)) |parent_raw| {
+                const parent = ast.nodes.items[parent_raw];
+                if (parent.tag == .update_expression and parent.data.extra < ast.extra_data.items.len and ast.extra_data.items[parent.data.extra] == raw) {
+                    flags = .{ .read = true, .write = true };
+                } else if ((parent.tag == .assignment_target_property_identifier or parent.tag == .assignment_target_with_default or parent.tag == .assignment_pattern) and parent.data.binary.left == node) {
+                    flags = .{ .write = true };
+                } else if (parent.tag == .assignment_expression and parent.data.binary.left == node) {
+                    const op = std.enums.fromInt(@import("../lexer/token.zig").Kind, parent.data.binary.flags) orelse return false;
+                    flags = if (op.isCompoundAssignment()) .{ .read = true, .write = true } else .{ .write = true };
+                }
+            }
+            const recorded_flags = if (entry.external_import) |origin| origin.before.flags else entry.source_external.?.flags;
+            if (!std.meta.eql(flags, recorded_flags)) return false;
+        }
     }
     return true;
 }
@@ -2054,6 +2123,7 @@ const ExactCtx = struct {
     scope_maps: []const std.StringHashMapUnmanaged(usize),
     namespace_member_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     namespace_scope_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
+    all_references: []const Reference = &.{},
     references_by_node: *const std.AutoHashMapUnmanaged(u32, IndexedReference),
     helper_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     helper_scope_map: *const std.StringHashMapUnmanaged(usize),
@@ -2064,11 +2134,13 @@ const ExactCtx = struct {
     explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     origins: *const std.AutoHashMapUnmanaged(u32, u32),
     erased_const_enum_external_origins: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
+    output_external_origins: ?*const @import("../semantic/node_scope_provenance.zig").Map = null,
     reachable_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     report: *ExactReport,
     name_positions: std.AutoHashMapUnmanaged(u32, void) = .empty,
     jsx_variable_roots: std.AutoHashMapUnmanaged(u32, void) = .empty,
     oom: bool = false,
+    emit_details: bool = true,
 
     fn isWithinWithBody(ctx: *const ExactCtx, node: u32) bool {
         var current = node;
@@ -2406,7 +2478,7 @@ const ExactCtx = struct {
         const raw = @backingInt(idx);
         if (ctx.name_positions.contains(raw)) return;
         const node = ctx.ast.getNode(idx);
-        if (!ctx.reachable_nodes.contains(raw)) std.debug.print(
+        if (!ctx.reachable_nodes.contains(raw)) if (ctx.emit_details) std.debug.print(
             "zntc: symbol-identity-traversal-mismatch node={d} name={s} root={d}\n",
             .{ raw, ctx.ast.getText(node.data.string_ref), @backingInt(ctx.root) },
         );
@@ -2436,7 +2508,7 @@ const ExactCtx = struct {
                 ctx.report.missing_binding += 1;
                 if (generated) {
                     recordLegacyDebt(ctx.report, "missing_binding", finding);
-                    std.debug.print("zntc: symbol-debt-node kind=missing_binding node={d} name={s} tag={s} span={d}\n", .{ raw, name, @tagName(node.tag), node.span.start });
+                    if (ctx.emit_details) std.debug.print("zntc: symbol-debt-node kind=missing_binding node={d} name={s} tag={s} span={d}\n", .{ raw, name, @tagName(node.tag), node.span.start });
                 }
                 if (ctx.report.first_missing_binding == null) ctx.report.first_missing_binding = finding;
             } else {
@@ -2448,7 +2520,14 @@ const ExactCtx = struct {
                     ctx.explicit_global_nodes,
                     ctx.origins,
                 );
-                const external_classification = if (external_evidence)
+                const erased_origin = if (ctx.output_external_origins) |map| if (map.get(@fromBackingInt(raw))) |entry| entry.external_import != null or entry.source_external != null else false else false;
+                const external_classification = if (erased_origin) erased: {
+                    // This is an ordinary post-erasure lookup, including a
+                    // dynamic environment. It has no intrinsic-global power.
+                    const expected = expectedReferenceScope(ctx.ast, ctx.root, ctx.parent_by_node, ctx.scope_owner_map, raw) orelse break :erased ExternalReferenceClassification.unknown_scope;
+                    if (resolveInExactScopes(ctx, name, @fromBackingInt(@as(u32, @intCast(expected.scope))))) |_| break :erased ExternalReferenceClassification.shadowed;
+                    break :erased ExternalReferenceClassification.external;
+                } else if (external_evidence)
                     ctx.classifyExternalReference(raw, name)
                 else
                     .unknown_scope;
@@ -2458,7 +2537,7 @@ const ExactCtx = struct {
                         ctx.report.shadowed_external_reference += 1;
                         if (ctx.report.first_shadowed_external_reference == null)
                             ctx.report.first_shadowed_external_reference = finding;
-                        std.debug.print(
+                        if (ctx.emit_details) std.debug.print(
                             "zntc: symbol-shadowed-external node={d} name={s}\n",
                             .{ raw, name },
                         );
@@ -2467,7 +2546,7 @@ const ExactCtx = struct {
                         ctx.report.unclassified_reference += 1;
                         if (generated) {
                             recordLegacyDebt(ctx.report, "unclassified_reference", finding);
-                            std.debug.print("zntc: symbol-debt-node kind=unclassified_reference node={d} name={s} tag={s} span={d}\n", .{ raw, name, @tagName(node.tag), node.span.start });
+                            if (ctx.emit_details) std.debug.print("zntc: symbol-debt-node kind=unclassified_reference node={d} name={s} tag={s} span={d}\n", .{ raw, name, @tagName(node.tag), node.span.start });
                         }
                         if (ctx.report.first_unclassified_reference == null) ctx.report.first_unclassified_reference = finding;
                     },
@@ -2493,7 +2572,7 @@ const ExactCtx = struct {
                 const expected_scope = expectedBindingScope(ctx, raw, symbol.kind);
                 if (expected_scope) |expected| {
                     const lexical_scope = if (node.tag == .binding_identifier)
-                        expectedReferenceScope(
+                        functionExpressionNameBindingScope(ctx, raw, raw_id) orelse expectedReferenceScope(
                             ctx.ast,
                             ctx.root,
                             ctx.parent_by_node,
@@ -2565,7 +2644,7 @@ const ExactCtx = struct {
             {
                 ctx.report.missing_reference += 1;
                 recordLegacyDebt(ctx.report, "missing_reference", finding);
-                std.debug.print("zntc: symbol-debt-node kind=missing_reference node={d} name={s} tag={s} span={d}\n", .{ raw, name, @tagName(node.tag), node.span.start });
+                if (ctx.emit_details) std.debug.print("zntc: symbol-debt-node kind=missing_reference node={d} name={s} tag={s} span={d}\n", .{ raw, name, @tagName(node.tag), node.span.start });
                 if (ctx.report.first_missing_reference == null) ctx.report.first_missing_reference = finding;
             }
             return;
@@ -2577,9 +2656,9 @@ const ExactCtx = struct {
             const origin = ctx.origins.get(raw) orelse std.math.maxInt(u32);
             if (origin < ctx.ast.nodes.items.len and ctx.ast.nodes.items[origin].tag == .identifier_reference) {
                 const origin_node = ctx.ast.getNode(@fromBackingInt(@intCast(origin)));
-                std.debug.print("zntc: symbol-debt-node kind=missing_reference node={d} name={s} tag={s} span={d} id={d} origin={d}:{s}@{d}\n", .{ raw, name, @tagName(node.tag), node.span.start, raw_id, origin, ctx.ast.getText(origin_node.data.string_ref), origin_node.span.start });
+                if (ctx.emit_details) std.debug.print("zntc: symbol-debt-node kind=missing_reference node={d} name={s} tag={s} span={d} id={d} origin={d}:{s}@{d}\n", .{ raw, name, @tagName(node.tag), node.span.start, raw_id, origin, ctx.ast.getText(origin_node.data.string_ref), origin_node.span.start });
             } else {
-                std.debug.print("zntc: symbol-debt-node kind=missing_reference node={d} name={s} tag={s} span={d} id={d} origin={d}\n", .{ raw, name, @tagName(node.tag), node.span.start, raw_id, origin });
+                if (ctx.emit_details) std.debug.print("zntc: symbol-debt-node kind=missing_reference node={d} name={s} tag={s} span={d} id={d} origin={d}\n", .{ raw, name, @tagName(node.tag), node.span.start, raw_id, origin });
             }
             if (ctx.report.first_missing_reference == null) ctx.report.first_missing_reference = finding;
             return;
@@ -2618,7 +2697,7 @@ const ExactCtx = struct {
                         @tagName(ctx.symbols[indexed_id].kind)
                     else
                         "out-of-range";
-                    std.debug.print(
+                    if (ctx.emit_details) std.debug.print(
                         "zntc: symbol-reference-scope node={d}:{s} name={s} symbol={d}@{d}:{s} actual={d} owner={s}@{d} expected={d} owner={s}@{d}\n",
                         .{
                             raw,
@@ -2642,7 +2721,7 @@ const ExactCtx = struct {
             const native_owner = nativeArgumentsOwnerScope(ctx.ast, raw, ctx.scope_owner_map, ctx.parent_by_node, ctx.symbols);
             if (native_owner == null or native_owner.? != @backingInt(ctx.symbols[raw_id].scope_id)) {
                 ctx.report.scope_resolution_mismatch += 1;
-                std.debug.print("zntc: implicit-arguments-native-owner node={d} symbol={d} symbol_scope={d} actual_owner={any}\n", .{ raw, raw_id, @backingInt(ctx.symbols[raw_id].scope_id), native_owner });
+                if (ctx.emit_details) std.debug.print("zntc: implicit-arguments-native-owner node={d} symbol={d} symbol_scope={d} actual_owner={any}\n", .{ raw, raw_id, @backingInt(ctx.symbols[raw_id].scope_id), native_owner });
             }
         }
         const expected: ?u32 = if (ctx.helper_reference_nodes.contains(raw)) blk: {
@@ -2655,7 +2734,7 @@ const ExactCtx = struct {
                 const expected_scope = if (expected_id < ctx.symbols.len) @backingInt(ctx.symbols[expected_id].scope_id) else std.math.maxInt(u32);
                 const actual_scope = @backingInt(ctx.symbols[raw_id].scope_id);
                 const expected_kind = if (expected_id < ctx.symbols.len) @tagName(ctx.symbols[expected_id].kind) else "invalid";
-                std.debug.print(
+                if (ctx.emit_details) std.debug.print(
                     "zntc: symbol-identity-resolution node={d} name={s} actual={d}@{d}:{s} expected={d}@{d}:{s} ref_scope={d}\n",
                     .{ raw, name, raw_id, actual_scope, @tagName(ctx.symbols[raw_id].kind), expected_id, expected_scope, expected_kind, @backingInt(indexed.scope_id) },
                 );
@@ -2664,7 +2743,7 @@ const ExactCtx = struct {
                     if (binding_node >= ctx.ast.nodes.items.len or ctx.ast.nodes.items[binding_node].tag != .binding_identifier) continue;
                     const binding = ctx.ast.getNode(@fromBackingInt(@intCast(@as(u32, @intCast(binding_node)))));
                     const binding_name = ctx.ast.getText(binding.data.string_ref);
-                    std.debug.print(
+                    if (ctx.emit_details) std.debug.print(
                         "  identity-binding id={d} node={d} name={s} span={d} tag={s}\n",
                         .{ binding_id.?, binding_node, binding_name, binding.span.start, @tagName(ctx.ast.nodes.items[binding_node].tag) },
                     );
@@ -2852,6 +2931,22 @@ fn isFlowMatchDeclarationNode(ctx: *const ExactCtx, node_raw: u32) bool {
     }
 }
 
+fn functionExpressionNameBindingScope(ctx: *const ExactCtx, raw: u32, sid: u32) ?ExpectedScopeOwner {
+    if (raw >= ctx.ast.nodes.items.len or ctx.ast.nodes.items[raw].tag != .binding_identifier or raw >= ctx.symbol_ids.len or ctx.symbol_ids[raw] != @as(?u32, sid)) return null;
+    const owner = ctx.parent_by_node.get(raw) orelse return null;
+    const name_scope = functionExpressionNameScope(ctx.ast, ctx.scope_owner_map, ctx.scopes, owner, raw) orelse return null;
+    if (name_scope >= ctx.scopes.len or !isFunctionExpressionNameScope(ctx.ast, owner, @fromBackingInt(name_scope), ctx.scopes[name_scope].parent, ctx.symbol_ids, ctx.symbols, ctx.scopes, ctx.scope_maps)) return null;
+    var declarations: usize = 0;
+    for (ctx.all_references) |row| {
+        if (@backingInt(row.symbol_id) != sid or !row.flags.declare) continue;
+        if (row.scope_id != @as(ScopeId, @fromBackingInt(name_scope)) or !row.node_index.isNone() or @backingInt(row.declaration_node_index) != raw or
+            !std.meta.eql(row.flags, @as(@import("../semantic/symbol.zig").ReferenceFlags, .{ .declare = true }))) return null;
+        declarations += 1;
+    }
+    if (declarations != 1) return null;
+    return .{ .node = owner, .scope = name_scope };
+}
+
 fn expectedBindingScope(ctx: *const ExactCtx, node: u32, kind: @import("../semantic/symbol.zig").SymbolKind) ?u32 {
     if (node >= ctx.ast.nodes.items.len) return null;
     const binding_name = ctx.ast.nodes.items[node];
@@ -2951,6 +3046,10 @@ pub fn checkExact(
         null,
         null,
         false,
+        true,
+        null,
+        null,
+        null,
     );
 }
 
@@ -2994,6 +3093,10 @@ pub fn checkExactWithDeclarationAnchors(
         null,
         null,
         true,
+        true,
+        null,
+        null,
+        null,
     );
 }
 
@@ -3038,6 +3141,10 @@ pub fn checkExactWithCompleteSourceScopeOwners(
         null,
         0,
         true,
+        true,
+        null,
+        null,
+        null,
     );
 }
 
@@ -3084,6 +3191,10 @@ pub fn checkExactWithScopeBoundary(
         null,
         pre_transform_scope_count,
         false,
+        true,
+        null,
+        null,
+        null,
     );
 }
 
@@ -3130,6 +3241,10 @@ pub fn checkExactWithNamespaceMetadata(
         namespace_declaration_owners,
         pre_transform_scope_count,
         false,
+        true,
+        null,
+        null,
+        null,
     );
 }
 
@@ -3177,7 +3292,138 @@ pub fn checkExactWithNamespaceMetadataAndDeclarationAnchors(
         namespace_declaration_owners,
         pre_transform_scope_count,
         true,
+        true,
+        null,
+        null,
+        null,
     );
+}
+
+/// Same exact walker and report as the diagnostic entries. Only incidental
+/// stderr details are suppressed; no invariant or finding is filtered.
+pub const ExactQuietOptions = struct {
+    known_output_names: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null,
+    erased_const_enum_external_origins: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
+    namespace_member_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
+    namespace_declaration_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
+    pre_transform_scope_count: ?usize = null,
+    require_declaration_anchors: bool = true,
+};
+
+pub fn checkExactQuiet(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
+    helper_reference_nodes: []const u32,
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    origins: *const std.AutoHashMapUnmanaged(u32, u32),
+    options: ExactQuietOptions,
+) std.mem.Allocator.Error!ExactReport {
+    return checkExactImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_maps, scope_owner_map, references, helper_reference_nodes, helper_scope_map, unresolved_nodes, explicit_global_nodes, origins, options.erased_const_enum_external_origins, options.namespace_member_owners, options.namespace_declaration_owners, options.pre_transform_scope_count, options.require_declaration_anchors, false, null, null, null);
+}
+
+pub const OutputNormalFormReport = struct {
+    exact: ExactReport,
+    strict: StrictReport,
+    retirement_state_mismatch: usize = 0,
+    pub fn deinit(self: *OutputNormalFormReport, allocator: std.mem.Allocator) void {
+        self.strict.deinit(allocator);
+    }
+    pub fn hasCompleteOutputIdentityBeforeNames(self: OutputNormalFormReport) bool {
+        return self.retirement_state_mismatch == 0 and self.exact.hasCompleteOutputIdentityBeforeNames() and self.strict.hasCompleteSymbolIdentity();
+    }
+};
+
+pub fn checkOutputNormalFormQuiet(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
+    helper_reference_nodes: []const u32,
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    origins: *const std.AutoHashMapUnmanaged(u32, u32),
+    options: ExactQuietOptions,
+    retirements: *const @import("../semantic/source_owned_retirement.zig").Map,
+    retirement_roots: @import("../semantic/source_owned_retirement.zig").Roots,
+) std.mem.Allocator.Error!OutputNormalFormReport {
+    const nodes = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root);
+    defer allocator.free(nodes);
+    var reachable = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len);
+    defer reachable.deinit();
+    for (nodes) |raw| reachable.set(raw);
+    // A runtime role is admitted only for this exact query's actual target
+    // backings. It never authorizes an AST leaf or a reference row.
+    const runtime_proof: ?@import("../semantic/output_runtime_coverage.zig").Proof = runtime: {
+        const supplied = retirement_roots.runtime_output_proof orelse break :runtime null;
+        break :runtime @import("../semantic/output_runtime_coverage.zig").prepare(supplied.target, .{
+            .ast = ast,
+            .symbols = symbols,
+            .symbol_ids = symbol_ids,
+            .scopes = scopes,
+            .scope_maps = scope_maps,
+            .scope_owners = scope_owner_map,
+            .references = references,
+            .helper_scope_map = helper_scope_map,
+            .helper_reference_nodes = helper_reference_nodes,
+            .retirements = retirements,
+            .scope_history = retirement_roots.scope_history orelse break :runtime null,
+            .provenance = retirement_roots.node_scope_provenance,
+            .class_self_symbols = retirement_roots.class_self_symbols orelse break :runtime null,
+            .namespace_member_owners = retirement_roots.namespace_member_owners orelse break :runtime null,
+            .namespace_declaration_owners = retirement_roots.namespace_declaration_owners orelse break :runtime null,
+        });
+    };
+    const runtime_valid = retirement_roots.runtime_output_proof == null or runtime_proof != null;
+    const runtime_permission: ?@import("../semantic/scope_frame_history.zig").RuntimePermission = permission: {
+        const proof = runtime_proof orelse break :permission null;
+        const wrapper = proof.wrapper() orelse break :permission null;
+        const program_scope = scope_owner_map.get(@backingInt(wrapper.program)) orelse break :permission null;
+        break :permission .{ .module_index = @backingInt(proof.moduleIndex() orelse break :permission null), .wrapper_scope = wrapper.scope, .program_scope = @fromBackingInt(program_scope) };
+    };
+    const empty_history: @import("../semantic/scope_frame_history.zig").History = .{};
+    const history = retirement_roots.scope_history orelse &empty_history;
+    var frame_index = try @import("../semantic/scope_frame_history.zig").validateAndIndex(allocator, ast, scopes, scope_owner_map, history, runtime_permission);
+    defer frame_index.deinit(allocator);
+    const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    var lowered_proof = try @import("../semantic/lowered_worklet_class.zig").prepare(allocator, ast, &frame_index, history.lowered_worklet_classes, .{
+        .ast_owner = ast,
+        .symbols = symbols,
+        .scopes = scopes,
+        .scope_maps = scope_maps,
+        .owners = scope_owner_map,
+        .ids = symbol_ids,
+        .references = references,
+        .class_self_symbols = retirement_roots.class_self_symbols orelse &empty_class_symbols,
+        .root = root,
+        .history_identity = @ptrCast(history),
+    });
+    defer if (lowered_proof) |*proof| proof.deinit(allocator);
+    const valid = runtime_valid and frame_index.valid and lowered_proof != null and try @import("../semantic/source_owned_retirement.zig").validate(allocator, ast, retirements, &reachable, symbols, symbol_ids, scopes, scope_maps, scope_owner_map, references, helper_scope_map, retirement_roots) and
+        try validateNodeScopeProvenance(allocator, ast, root, scope_owner_map, retirement_roots.node_scope_provenance) and
+        @import("../semantic/source_external_origin.zig").validate(ast, parser_node_count, symbol_ids, scopes, unresolved_nodes, retirement_roots.node_scope_provenance, &frame_index);
+    const exact = try checkExactImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_maps, scope_owner_map, references, helper_reference_nodes, helper_scope_map, unresolved_nodes, explicit_global_nodes, origins, options.erased_const_enum_external_origins, options.namespace_member_owners, options.namespace_declaration_owners, options.pre_transform_scope_count, options.require_declaration_anchors, false, if (valid) retirements else null, if (valid) retirement_roots.node_scope_provenance else null, if (valid) if (lowered_proof) |*proof| proof else null else null);
+    return .{
+        .retirement_state_mismatch = @intFromBool(!valid),
+        .strict = try checkStrictImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_owner_map, references, null, .{ .unresolved_reference_nodes = unresolved_nodes, .explicit_global_reference_nodes = explicit_global_nodes, .reference_origin_map = origins, .output_external_origins = if (valid) retirement_roots.node_scope_provenance else null }, true, options.known_output_names, if (valid) retirements else null, if (valid) runtime_proof else null),
+        .exact = exact,
+    };
 }
 
 fn checkExactImpl(
@@ -3201,6 +3447,10 @@ fn checkExactImpl(
     namespace_declaration_owners: ?*const std.AutoHashMapUnmanaged(u32, u32),
     pre_transform_scope_count: ?usize,
     require_declaration_anchors: bool,
+    emit_details: bool,
+    retired_symbols: ?*const @import("../semantic/source_owned_retirement.zig").Map,
+    output_external_origins: ?*const @import("../semantic/node_scope_provenance.zig").Map,
+    lowered_classes: ?*const @import("../semantic/lowered_worklet_class.zig").Proof,
 ) std.mem.Allocator.Error!ExactReport {
     const VisitState = enum { visiting, visited };
     const VisitFrame = struct {
@@ -3691,12 +3941,18 @@ fn checkExactImpl(
             defer reachable_scope_owners.deinit(allocator);
             var live_scope_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
             defer live_scope_ids.deinit(allocator);
-            for (symbols) |symbol| {
+            for (symbols, 0..) |symbol, sid| {
+                if (retired_symbols) |state| if (state.contains(@intCast(sid))) continue;
                 try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @backingInt(symbol.scope_id));
                 // origin_scope is semantic provenance used by redeclaration
                 // checks; a generated origin scope is live even when storage,
                 // references, and scope maps point elsewhere.
-                try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @backingInt(symbol.origin_scope));
+                const historical_arguments_origin = if (retired_symbols) |state|
+                    @import("../semantic/source_owned_retirement.zig").hasHistoricalArgumentsOrigin(state, @intCast(sid), symbol)
+                else
+                    false;
+                if (!historical_arguments_origin)
+                    try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @backingInt(symbol.origin_scope));
             }
             for (references) |reference| try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @backingInt(reference.scope_id));
             for (scope_maps, 0..) |scope_map, scope_index| {
@@ -3733,7 +3989,8 @@ fn checkExactImpl(
                 // reference, or descendant scope depends on them. Gate every
                 // semantically live transform scope and its ancestor chain.
                 if (!live_scope_ids.contains(scope_id)) continue;
-                if (reachable_scope_owners.contains(scope_id)) {
+                const has_lowered_class_owner = if (lowered_classes) |proof| proof.bridge(@fromBackingInt(scope_id)) != null else false;
+                if (reachable_scope_owners.contains(scope_id) or has_lowered_class_owner) {
                     report.generated_scope_owners_checked += 1;
                     continue;
                 }
@@ -3817,6 +4074,7 @@ fn checkExactImpl(
     // symbol in that scope, and every symbol must be reachable through its
     // scope map or the isolated runtime-helper map.
     for (symbols, 0..) |symbol, sid| {
+        if (retired_symbols) |state| if (state.contains(@intCast(sid))) continue;
         if (!exactValidScope(scopes, symbol.scope_id)) continue;
         // Expression `export default` has a synthetic reachability facade
         // without an emitted local binding when no using transform runs.
@@ -4033,6 +4291,7 @@ fn checkExactImpl(
                 scope_raw,
                 expected_parent.scope,
                 pre_transform_scope_count,
+                lowered_classes,
             )) continue;
             recordScopeOwnerParentMismatch(
                 &report,
@@ -4066,6 +4325,7 @@ fn checkExactImpl(
             scope_raw,
             expected_parent.scope,
             pre_transform_scope_count,
+            lowered_classes,
         )) continue;
         recordScopeOwnerParentMismatch(
             &report,
@@ -4414,6 +4674,7 @@ fn checkExactImpl(
     }
 
     var ctx: ExactCtx = .{
+        .all_references = references,
         .allocator = allocator,
         .ast = ast,
         .root = root,
@@ -4437,8 +4698,10 @@ fn checkExactImpl(
         .explicit_global_nodes = explicit_global_nodes,
         .origins = origins,
         .erased_const_enum_external_origins = erased_const_enum_external_origins,
+        .output_external_origins = output_external_origins,
         .reachable_nodes = &reachable_nodes,
         .report = &report,
+        .emit_details = emit_details,
     };
     defer ctx.name_positions.deinit(allocator);
     defer ctx.jsx_variable_roots.deinit(allocator);
@@ -5360,6 +5623,15 @@ pub fn printExact(file_path: []const u8, report: ExactReport) void {
     printExactNamed("symbol-identity", file_path, report);
 }
 
+/// Phase labels only: counters, findings, and schema use the existing printer.
+pub fn printExactSourceSlots(file_path: []const u8, report: ExactReport) void {
+    printExactNamed("symbol-identity-source-slots", file_path, report);
+}
+
+pub fn printExactRejectedOutput(file_path: []const u8, report: ExactReport) void {
+    printExactNamed("symbol-identity-rejected-output", file_path, report);
+}
+
 pub fn printExactPrepass(file_path: []const u8, report: ExactReport, retained_graph: bool) void {
     const graph = if (retained_graph) "retained" else "reanalyzed";
     std.debug.print("zntc: symbol-identity-prepass-mode {s}: semantic_graph={s}\n", .{ file_path, graph });
@@ -5701,6 +5973,7 @@ pub const StrictExternalEvidence = struct {
     unresolved_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     explicit_global_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     reference_origin_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    output_external_origins: ?*const @import("../semantic/node_scope_provenance.zig").Map = null,
 };
 
 pub const OrphanSyntheticSymbol = struct {
@@ -5800,6 +6073,9 @@ const StrictCtx = struct {
     allocator: std.mem.Allocator,
     ast: *const Ast,
     parser_node_count: u32,
+    include_source_identifiers: bool = false,
+    output_binding_nodes: ?*const std.AutoHashMapUnmanaged(u32, void) = null,
+    output_names: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null,
     symbol_ids: []const ?u32,
     symbols: []const Symbol,
     scopes: []const Scope,
@@ -5816,7 +6092,7 @@ const StrictCtx = struct {
 
     fn add(self: *StrictCtx, idx: NodeIndex, node: Node) void {
         const raw = @backingInt(idx);
-        if (raw < self.parser_node_count or self.seen.contains(raw)) return;
+        if ((!self.include_source_identifiers and raw < self.parser_node_count) or self.seen.contains(raw)) return;
         self.seen.put(self.allocator, raw, {}) catch {
             self.oom = true;
             return;
@@ -5855,9 +6131,11 @@ const StrictCtx = struct {
         trace: ?ScopeTrace,
         reference: ?ReferenceEvidence,
     ) StrictStatus {
+        const is_binding = node.tag == .binding_identifier or if (self.output_binding_nodes) |bindings| bindings.contains(raw) else false;
         const id = sid orelse {
-            if (node.tag == .binding_identifier) return .missing_binding;
+            if (is_binding) return .missing_binding;
             if (self.external_evidence) |evidence| {
+                if (evidence.output_external_origins) |origins| if (origins.get(@fromBackingInt(raw))) |entry| if (entry.external_import != null or entry.source_external != null) return .external;
                 if (hasExactExternalEvidence(
                     self.ast,
                     raw,
@@ -5873,13 +6151,29 @@ const StrictCtx = struct {
         };
         if (id >= self.symbols.len) return .invalid_id;
         const symbol = self.symbols[id];
-        const symbol_name = if (symbol.synthetic_name.len > 0)
+        const output_override = if (self.output_names) |names| names.get(id) else null;
+        const symbol_name = if (self.include_source_identifiers)
+            exactSymbolName(self.ast, &symbol)
+        else if (symbol.synthetic_name.len > 0)
             symbol.synthetic_name
         else
             self.ast.getText(symbol.name);
-        if (!std.mem.eql(u8, baseName(name), baseName(symbol_name))) return .name_mismatch;
+        if (self.include_source_identifiers) {
+            const node_is_value = node.data.string_ref.start & Ast.STRING_TABLE_BIT != 0;
+            const symbol_is_value = (symbol.synthetic_kind != .enum_iife_parameter and symbol.synthetic_name.len > 0) or symbol.name.start & Ast.STRING_TABLE_BIT != 0;
+            const matches = if (node_is_value and symbol_is_value)
+                std.mem.eql(u8, name, symbol_name)
+            else if (node_is_value)
+                Scanner.identifierValueEquals(symbol_name, name)
+            else if (symbol_is_value)
+                Scanner.identifierValueEquals(name, symbol_name)
+            else
+                Scanner.identifierNamesEqual(name, symbol_name);
+            const matches_override = if (output_override) |alias| if (node_is_value) std.mem.eql(u8, name, alias) else Scanner.identifierValueEquals(name, alias) else false;
+            if (!matches and !matches_override) return .name_mismatch;
+        } else if (!std.mem.eql(u8, baseName(name), baseName(symbol_name))) return .name_mismatch;
 
-        if (node.tag == .binding_identifier) {
+        if (is_binding) {
             if (!validScope(symbol.scope_id, self.scopes) or !validScope(symbol.origin_scope, self.scopes)) return .invalid_scope;
             const expected = trace orelse return .scope_unknown;
             if (expected.ambiguous) return .scope_ambiguous;
@@ -5927,13 +6221,13 @@ const StrictCtx = struct {
     }
 };
 
-const ScopeTrace = struct {
+pub const ScopeTrace = struct {
     scope_id: ?u32 = null,
     valid: bool = true,
     ambiguous: bool = false,
 };
 
-const ParentTrace = struct {
+pub const ParentTrace = struct {
     parent: u32,
     ambiguous: bool = false,
 };
@@ -5948,7 +6242,7 @@ const ParentVisit = struct {
     parent: ?u32 = null,
 };
 
-fn collectParentTraces(
+pub fn collectParentTraces(
     allocator: std.mem.Allocator,
     ast: *const Ast,
     root: NodeIndex,
@@ -5975,7 +6269,18 @@ fn collectParentTraces(
         }
         const visited_result = try visited.getOrPut(allocator, raw);
         if (visited_result.found_existing) continue;
-        try ast_walk.collectChildrenInto(ast, ast.getNode(parent_visit.node), &children, allocator);
+        const parent = ast.getNode(parent_visit.node);
+        // A static pattern key is a property protocol name, not another
+        // binding parent. Parser shorthand defaults may share that leaf with
+        // the assignment-pattern target. Computed keys remain evaluated edges.
+        const static_pattern_key = parent.tag == .binding_property and
+            !parent.data.binary.left.isNone() and @backingInt(parent.data.binary.left) < ast.nodes.items.len and
+            ast.getNode(parent.data.binary.left).tag != .computed_property_key;
+        if (static_pattern_key) {
+            children.clearRetainingCapacity();
+            const value = if (parent.data.binary.right.isNone()) parent.data.binary.left else parent.data.binary.right;
+            if (!value.isNone()) try children.append(allocator, value);
+        } else try ast_walk.collectChildrenInto(ast, parent, &children, allocator);
         for (children.items) |child| try stack.append(allocator, .{ .node = child, .parent = raw });
     }
     return traces;
@@ -6111,7 +6416,7 @@ fn visibleFrom(binding: ScopeId, reference: ScopeId, scopes: []const Scope) bool
     return false;
 }
 
-fn collectScopeTraces(
+pub fn collectScopeTraces(
     allocator: std.mem.Allocator,
     ast: *const Ast,
     root: NodeIndex,
@@ -6207,7 +6512,7 @@ fn collectReferenceEvidence(
 fn strictBindingVisit(ctx: *StrictCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
     if (reference_walk.isTypeOnly(node.tag)) return .skip_children;
     if (node.tag == .ts_module_declaration and node.data.binary.flags == 1) return .skip_children;
-    if (node.tag == .binding_identifier) {
+    if (node.tag == .binding_identifier or if (ctx.output_binding_nodes) |bindings| bindings.contains(@backingInt(idx)) else false) {
         const raw = @backingInt(idx);
         if (raw < ctx.symbol_ids.len) {
             if (ctx.symbol_ids[raw]) |id| {
@@ -6358,6 +6663,10 @@ pub fn checkStrict(
         references,
         synthetic,
         null,
+        false,
+        null,
+        null,
+        null,
     );
 }
 
@@ -6386,7 +6695,31 @@ pub fn checkStrictWithExactExternalEvidence(
         references,
         synthetic,
         external_evidence,
+        false,
+        null,
+        null,
+        null,
     );
+}
+
+/// Validate every reachable output identifier in the edited graph, including
+/// surviving source nodes. The real parser boundary remains intact: it is
+/// authority for exact external-source provenance, not a selection shortcut.
+/// This adds an output consumer proof without changing generated-only reports.
+pub fn checkOutputSymbolIdentity(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
+    external_evidence: StrictExternalEvidence,
+    output_names: ?*const std.AutoHashMapUnmanaged(u32, []const u8),
+) std.mem.Allocator.Error!StrictReport {
+    return checkStrictImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_owner_map, references, null, external_evidence, true, output_names, null, null);
 }
 
 fn checkStrictImpl(
@@ -6401,6 +6734,10 @@ fn checkStrictImpl(
     references: []const Reference,
     synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
     external_evidence: ?StrictExternalEvidence,
+    include_source_identifiers: bool,
+    output_names: ?*const std.AutoHashMapUnmanaged(u32, []const u8),
+    retired_symbols: ?*const @import("../semantic/source_owned_retirement.zig").Map,
+    runtime_proof: ?@import("../semantic/output_runtime_coverage.zig").Proof,
 ) std.mem.Allocator.Error!StrictReport {
     var report: StrictReport = .{};
     errdefer report.deinit(allocator);
@@ -6413,10 +6750,23 @@ fn checkStrictImpl(
     defer reference_evidence.deinit(allocator);
     var reachable_binding_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer reachable_binding_symbols.deinit(allocator);
+    var output_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer output_bindings.deinit(allocator);
+    if (include_source_identifiers and report.cyclic_ast_edges == 0) {
+        const reachable_nodes = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root);
+        defer allocator.free(reachable_nodes);
+        var reachable: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        defer reachable.deinit(allocator);
+        for (reachable_nodes) |raw| try reachable.put(allocator, raw, {});
+        output_bindings = try collectDeclarationNodes(allocator, ast, &reachable);
+    }
     var ctx: StrictCtx = .{
         .allocator = allocator,
         .ast = ast,
         .parser_node_count = parser_node_count,
+        .include_source_identifiers = include_source_identifiers,
+        .output_binding_nodes = if (include_source_identifiers) &output_bindings else null,
+        .output_names = output_names,
         .symbol_ids = symbol_ids,
         .symbols = symbols,
         .scopes = scopes,
@@ -6443,6 +6793,7 @@ fn checkStrictImpl(
     // can still poison scope maps and later name allocation even though every
     // reachable identifier has exact identity.
     for (symbols, 0..) |symbol, raw_id| {
+        if (retired_symbols) |state| if (state.contains(@intCast(raw_id))) continue;
         const has_generated_name_provenance = symbol.synthetic_name.len > 0 or
             symbol.synthetic_kind != null or
             symbol.name.start & Ast.STRING_TABLE_BIT != 0;
@@ -6457,6 +6808,7 @@ fn checkStrictImpl(
         if (symbol.decl_flags.is_default_export and std.mem.eql(u8, exactSymbolName(ast, &symbol), "_default")) continue;
         const id: u32 = @intCast(raw_id);
         if (reachable_binding_symbols.contains(id)) continue;
+        if (runtime_proof) |proof| if (proof.hasOutputBinding(id)) continue;
         report.orphan_symbols += 1;
         try report.orphan_symbol_findings.append(allocator, .{
             .symbol_id = id,
@@ -7546,6 +7898,12 @@ test "exact identity audit rejects a copied external reference shadowed in its o
     try std.testing.expectEqual(@as(usize, 0), report.external_references);
     try std.testing.expectEqual(@as(usize, 1), report.shadowed_external_reference);
     try std.testing.expect(!report.isClean());
+    const quiet = try checkExactQuiet(allocator, &ast, root, 1, &symbol_ids, &symbols, &scopes, &scope_maps, &scope_owner_map, &references, &.{}, &.{}, &unresolved, &explicit_globals, &origins, .{ .require_declaration_anchors = false });
+    try std.testing.expectEqualDeep(report, quiet);
+    try std.testing.expect(!quiet.isClean());
+    // This original negative fixture also lacks a declaration anchor. Quiet
+    // mode must preserve that independent rejection, not forgive it as naming.
+    try std.testing.expect(!quiet.hasCompleteOutputIdentityBeforeNames());
 }
 
 test "exact identity audit accepts a provenance-backed external at a known ordinary scope" {
@@ -10030,4 +10388,114 @@ test "escaped enum audit rejects unknown keys and forged proxy ownership" {
     const root_node = f.transformer.ast.getNode(f.root);
     const key = try f.transformer.ast.addNode(.{ .tag = .numeric_literal, .span = root_node.span, .data = .{ .none = 0 } });
     try std.testing.expect(ExactCtx.enumMemberKeyMatches(&f.ctx, key, "A") == null);
+}
+
+test "quiet output identity preserves actual class global producer findings" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const Transformer = @import("transformer.zig").Transformer;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "const Object=17;class C{static read(){return 42}}console.log(C.read());";
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    const source_scopes = analyzer.scopes.items.len;
+    var t = try Transformer.initFromOwnedAst(a, &parser.ast, .{ .unsupported = @import("options.zig").TransformOptions.compat.fromESTarget(.es5) });
+    try t.initSymbolIdsOwned(analyzer.ast, analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.helper_scope_map = analyzer.helper_scope_map;
+    t.namespace_member_owners = &analyzer.namespace_member_owners;
+    t.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    t.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
+    t.record_explicit_global_references = true;
+    t.semantic_edit_enabled = true;
+    const root = try t.transform();
+    analyzer.class_self_symbol_map = t.class_self_symbol_map;
+    if (try t.finishSemanticEdit()) |edited| analyzer.applyEdit(edited);
+    const original = try checkExactWithNamespaceMetadataAndDeclarationAnchors(a, t.ast, root, t.parser_node_count, analyzer.symbol_ids.items, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, &analyzer.scope_owner_map, analyzer.references.items, t.helper_ref_nodes.items, &analyzer.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &t.reference_origin_map, &analyzer.namespace_member_owners, &analyzer.namespace_declaration_owners, source_scopes, &t.erased_const_enum_external_reference_origins);
+    const quiet = try checkExactQuiet(a, t.ast, root, t.parser_node_count, analyzer.symbol_ids.items, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, &analyzer.scope_owner_map, analyzer.references.items, t.helper_ref_nodes.items, &analyzer.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &t.reference_origin_map, .{
+        .namespace_member_owners = &analyzer.namespace_member_owners,
+        .namespace_declaration_owners = &analyzer.namespace_declaration_owners,
+        .pre_transform_scope_count = source_scopes,
+        .erased_const_enum_external_origins = &t.erased_const_enum_external_reference_origins,
+    });
+    try std.testing.expectEqualDeep(original, quiet);
+    try std.testing.expectEqual(@as(usize, 1), quiet.shadowed_external_reference);
+    try std.testing.expect(quiet.first_shadowed_external_reference != null);
+    try std.testing.expect(!original.isClean() and !quiet.isClean());
+    if (!quiet.hasCompleteOutputIdentityBeforeNames()) printExact("quiet-class-producer", quiet);
+    try std.testing.expect(quiet.hasCompleteOutputIdentityBeforeNames());
+}
+
+test "exact NFE name declaration role preserves parameter shadow and rejects foreign identity roles" {
+    for (0..7) |poison| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, "var value=function Inner(Inner){return Inner};var other=function Inner(x){return x};");
+        var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+        const root = try parser.parse();
+        var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.enable_exact_declaration_anchors = true;
+        analyzer.collect_unresolved_reference_nodes = true;
+        try analyzer.analyze();
+        var functions: [2]u32 = undefined;
+        var found: usize = 0;
+        for (parser.ast.nodes.items, 0..) |node, raw| if (node.tag == .function_expression) {
+            try std.testing.expect(found < functions.len);
+            functions[found] = @intCast(raw);
+            found += 1;
+        };
+        try std.testing.expectEqual(@as(usize, 2), found);
+        const name = parser.ast.readExtraNode(parser.ast.nodes.items[functions[0]].data.extra, ast_mod.FunctionExtra.name);
+        const other_name = parser.ast.readExtraNode(parser.ast.nodes.items[functions[1]].data.extra, ast_mod.FunctionExtra.name);
+        const name_sid = analyzer.symbol_ids.items[@backingInt(name)].?;
+        const other_sid = analyzer.symbol_ids.items[@backingInt(other_name)].?;
+        const name_scope = analyzer.symbols.items[name_sid].scope_id;
+        const body_scope = analyzer.scope_owner_map.get(functions[0]).?;
+        var parameter: ?Reference = null;
+        var name_declaration: ?Reference = null;
+        var parameter_read: ?usize = null;
+        for (analyzer.references.items, 0..) |row, offset| {
+            if (@backingInt(row.symbol_id) == name_sid and row.flags.declare) name_declaration = row;
+            if (!row.symbol_id.isNone() and @backingInt(row.symbol_id) < analyzer.symbols.items.len and analyzer.symbols.items[@backingInt(row.symbol_id)].kind == .parameter and @backingInt(row.scope_id) == body_scope) {
+                if (row.flags.declare) parameter = row;
+                if (row.flags.read) parameter_read = offset;
+            }
+        }
+        try std.testing.expect(parameter != null and parameter_read != null and name_declaration != null);
+        switch (poison) {
+            0 => {},
+            1 => analyzer.symbol_ids.items[@backingInt(name)] = other_sid,
+            2 => analyzer.symbols.items[name_sid].scope_id = analyzer.symbols.items[other_sid].scope_id,
+            3 => analyzer.symbol_ids.items[@backingInt(parameter.?.declaration_node_index)] = name_sid,
+            4 => {
+                const raw = @backingInt(analyzer.references.items[parameter_read.?].node_index);
+                analyzer.symbol_ids.items[raw] = name_sid;
+                analyzer.references.items[parameter_read.?].symbol_id = @fromBackingInt(name_sid);
+            },
+            5 => try analyzer.references.append(a, name_declaration.?),
+            6 => analyzer.scope_maps.items[name_scope.toIndex()].clearRetainingCapacity(),
+            else => unreachable,
+        }
+        const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+        const report = try checkExactQuiet(a, &parser.ast, root, @intCast(parser.ast.nodes.items.len), analyzer.symbol_ids.items, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, &analyzer.scope_owner_map, analyzer.references.items, &.{}, &analyzer.helper_scope_map, &analyzer.unresolved_reference_nodes, &explicit_globals, &origins, .{ .require_declaration_anchors = true });
+        if (poison == 0) try std.testing.expect(report.isClean()) else try std.testing.expect(!report.isClean());
+    }
 }

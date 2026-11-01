@@ -99,6 +99,7 @@ pub const chunk_emit_cache = @import("chunk_emit_cache.zig");
 pub const ChunkEmitCache = chunk_emit_cache.ChunkEmitCache;
 
 test {
+    _ = json_to_esm;
     _ = types;
     _ = import_scanner;
     _ = resolver;
@@ -156,6 +157,8 @@ test {
     _ = @import("linker_test.zig");
     _ = @import("linker/preamble_writer_test.zig"); // #4510 CJS interop 회귀 가드
     _ = @import("linker/namespace_access_test.zig"); // #4596 JSX 태그 namespace 접근 색인 가드
+    _ = @import("linker/shared_namespace_output_test.zig");
+    _ = @import("linker/shared_namespace.zig");
     _ = @import("emitter_test.zig");
     _ = @import("emitter/external_imports_test.zig");
     _ = @import("chunk_test.zig");

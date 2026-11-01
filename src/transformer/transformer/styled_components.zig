@@ -119,6 +119,7 @@ pub fn detectStyledImport(self: *Transformer, node: Node) Error!void {
                 const local_name = self.ast.getText(spec_node.data.string_ref);
                 if (local_name.len == 0) continue;
                 self.plugins.styled_components.default_binding = local_name;
+                self.plugins.styled_components.default_binding_node = spec_idx;
                 self.plugins.styled_components.default_binding_symbol_id = if (self.getSymbolIdAt(spec_idx)) |symbol_id|
                     @fromBackingInt(@intCast(symbol_id))
                 else
@@ -152,6 +153,48 @@ pub fn detectStyledImport(self: *Transformer, node: Node) Error!void {
             else => {},
         }
     }
+}
+
+/// Import elision runs before JSX lowering creates the module-level styled
+/// call. Discover its actual source import first, including separate css-helper
+/// imports, then keep only that specifier when a supported callsite exists.
+pub fn prepareCssPropImport(self: *Transformer, root: NodeIndex) Error!void {
+    if (!self.options.styled_components or !self.options.styled_components_css_prop or !self.options.shouldLowerJsx()) return;
+    const nodes = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(self.allocator, self.ast, root);
+    defer self.allocator.free(nodes);
+    for (nodes) |raw| {
+        const node = self.ast.nodes.items[raw];
+        if (node.tag == .import_declaration) try detectStyledImport(self, node);
+    }
+    if (self.plugins.styled_components.default_binding_node == null) return;
+    for (nodes) |raw| {
+        if (cssPropWillExtract(self, self.ast.nodes.items[raw])) {
+            self.plugins.styled_components.css_prop_import_required = true;
+            return;
+        }
+    }
+}
+
+fn cssPropWillExtract(self: *Transformer, node: Node) bool {
+    if (node.tag != .jsx_element or !self.ast.hasExtra(node.data.extra, 4)) return false;
+    const tag = self.readNodeIdx(node.data.extra, 0);
+    if (tag.isNone()) return false;
+    const tag_node = self.ast.getNode(tag);
+    const text = self.ast.getText(tag_node.span);
+    const intrinsic = tag_node.tag == .jsx_identifier and text.len != 0 and text[0] >= 'a' and text[0] <= 'z';
+    if (!intrinsic and !isCustomComponentTag(self, tag)) return false;
+    const start = self.readU32(node.data.extra, 1);
+    const len = self.readU32(node.data.extra, 2);
+    for (self.ast.extra_data.items[start..][0..len]) |raw| {
+        const attr = self.ast.getNode(@fromBackingInt(raw));
+        if (attr.tag != .jsx_attribute or attr.data.binary.left.isNone()) continue;
+        const key = self.ast.getNode(attr.data.binary.left);
+        if (key.tag != .jsx_identifier or !std.mem.eql(u8, self.ast.getText(key.span), "css")) continue;
+        const value = attr.data.binary.right;
+        if (value.isNone()) return false;
+        return self.ast.getNode(value).tag == .object_expression or extractCssTemplateIdx(self, value) != null;
+    }
+    return false;
 }
 
 /// helper binding 필드 이름 (`maybeMinifyHelperTemplate` 의 tag 매칭에 사용).
@@ -1755,9 +1798,13 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         .none;
 
     // 사용자 styled import 가 있으면 그 모듈 최상위 바인딩을, 없으면 자동 주입할 합성 import 이름.
-    const styled_ref = if (self.plugins.styled_components.default_binding != null)
-        try self.makeRootScopeRef(default_binding)
-    else blk: {
+    const styled_ref = if (state.default_binding_node) |binding| blk: {
+        const source = self.ast.getNode(binding);
+        const ref = try self.makeIdentifierRefWithSymbol(source.data.string_ref, binding);
+        if (self.semantic_edit_enabled)
+            try self.trackUserReadFromBinding(ref, binding, self.programScope());
+        break :blk ref;
+    } else blk: {
         // Resolve once for the entire module. Re-resolving the already-selected
         // suffix for each JSX scope would keep adding digits (`_styled3`, `_styled32`, ...).
         const resolved = if (state.css_prop_inject_name_resolved)
@@ -1867,8 +1914,8 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         decl_list.len,
     });
 
-    // program body 끝에 hoist — `trailing_nodes` 는 nearest list 라 declarator list 같은
-    // 부적절한 위치에 들어갈 수 있음. visitProgram 의 후처리로 drain.
+    // Only the program statement visitor drains these declarations. Nested
+    // declarator/attribute lists must not consume module-level storage.
     try self.plugins.styled_components.css_prop_pending_decls.append(self.allocator, var_decl);
 
     const top = self.scratch.items.len;

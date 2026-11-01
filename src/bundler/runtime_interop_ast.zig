@@ -349,7 +349,7 @@ pub fn build(arena: std.mem.Allocator, flavor: source_module.InteropFlavor, opti
         .numeric_const_texts = analyzer.numeric_const_texts,
         .helper_scope_map = analyzer.helper_scope_map,
     };
-    const stmt_info = try @import("stmt_info.zig").buildFromSemantic(arena, &parser.ast, semantic.symbols.items, semantic.scopes, semantic.references, &semantic.unresolved_references, false, false) orelse return error.InvalidInteropProgram;
+    const stmt_info = try @import("stmt_info.zig").buildFromSemantic(arena, &parser.ast, semantic.symbols.items, semantic.scopes, semantic.symbol_ids, semantic.references, &semantic.unresolved_references, false, false) orelse return error.InvalidInteropProgram;
     return .{ .ast = parser.ast, .root = root, .semantic = semantic, .anchors = anchors, .helpers = try bindAnchors(&parser.ast, &semantic, anchors), .stmt_info = stmt_info, .flavor = flavor };
 }
 

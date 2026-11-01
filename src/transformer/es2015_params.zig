@@ -887,8 +887,14 @@ pub fn ES2015Params(comptime Transformer: type) type {
                     plan.scope = try self.addGeneratedScope(self.current_scope, plan.block, .block);
                     const editor = &self.semantic_editor.?;
                     const source = editor.scopes.items[plan.body_scope.toIndex()];
-                    editor.scopes.items[plan.scope.toIndex()].subtree_has_direct_eval = source.subtree_has_direct_eval;
-                    editor.scopes.items[plan.scope.toIndex()].subtree_has_with = source.subtree_has_with;
+                    var completed_frame = editor.scopes.items[plan.scope.toIndex()];
+                    completed_frame.subtree_has_direct_eval = source.subtree_has_direct_eval;
+                    completed_frame.subtree_has_with = source.subtree_has_with;
+                    editor.scope_history.recordOwnedFrame(self.allocator, self.ast, editor.scopes.items, &editor.scope_owner_map, plan.scope, completed_frame, .{}) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => @panic("native parameter shadow lost its actual frame owner"),
+                    };
+                    editor.scopes.items[plan.scope.toIndex()] = completed_frame;
                 }
                 argument_shadow = plan;
             };

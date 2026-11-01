@@ -30,6 +30,10 @@ pub const WorkletClassFactory = struct {
     target_class: NodeIndex,
     target_scope: @import("../semantic/scope.zig").ScopeId,
     target_self: SymbolId,
+    source_birth: ?@import("../semantic/lowered_worklet_class.zig").Class = null,
+    target_birth: ?@import("../semantic/lowered_worklet_class.zig").Class = null,
+    creator_epoch: u32 = 0,
+    creator_index: ?u32 = null,
 };
 
 pub const WorkletClassReferenceOrigin = struct {
@@ -193,6 +197,9 @@ pub const StyledComponentsState = struct {
     /// Semantic mode 에서 위 default import 를 가리키는 정확한 binding identity.
     /// Graphless transform 에서만 이름 비교 fallback 을 허용한다.
     default_binding_symbol_id: ?SymbolId = null,
+    /// Actual source default specifier needed by a later generated css-prop call.
+    default_binding_node: ?NodeIndex = null,
+    css_prop_import_required: bool = false,
 
     /// `import { css } from "styled-components"` named import 의 local binding 이름.
     /// minify 적용에 사용 (`styled.X` 처럼 displayName/componentId 는 부여 안 함 —
