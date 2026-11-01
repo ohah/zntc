@@ -9309,6 +9309,122 @@ test "post-minify audit rejects a helper reference shadowed by a source binding"
     try std.testing.expect(!inferred_helper_report.isClean());
 }
 
+test "post-minify audit checks a helper reference under its exact output alias" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const source_name = try ast.addString("sourceHelper");
+    const helper_alias = try ast.addString("helperAlias");
+    const local_binding = try makeTestIdentifierNode(&ast, .binding_identifier, source_name);
+    const helper_reference = try makeTestIdentifierNode(&ast, .identifier_reference, helper_alias);
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = source_name,
+        .data = .{ .list = try ast.addNodeList(&.{ local_binding, helper_reference }) },
+    });
+
+    const actual = [_]?u32{ 1, 0, null };
+    const resolved = [_]?u32{ 1, null, null };
+    const symbols = [_]Symbol{
+        .{
+            .name = helper_alias,
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .kind = .import_binding,
+            .declaration_span = helper_alias,
+            .synthetic_kind = .runtime_helper_preamble,
+            .synthetic_name = "helperAlias",
+        },
+        .{
+            .name = source_name,
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .kind = .variable_let,
+            .declaration_span = source_name,
+        },
+    };
+    var helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer helper_scope_map.deinit(allocator);
+    try helper_scope_map.put(allocator, "helperAlias", 0);
+    const helper_nodes = [_]u32{@backingInt(helper_reference)};
+    const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const clean_alias_report = try checkPostMinify(
+        allocator,
+        &ast,
+        root,
+        &actual,
+        &resolved,
+        &symbols,
+        &symbols,
+        &.{},
+        &helper_nodes,
+        &helper_scope_map,
+        &empty_markers,
+        &empty_markers,
+        &empty_class_symbols,
+        &empty_class_symbols,
+    );
+    try std.testing.expectEqual(@as(usize, 1), clean_alias_report.helper_references);
+    try std.testing.expect(clean_alias_report.isClean());
+
+    // If the selected output alias is mutated to a source binding's spelling,
+    // fresh output resolution must catch that shadow even though the transform
+    // graph still points at the exact helper SymbolId.
+    var shadow_ast = Ast.init(allocator, "");
+    defer shadow_ast.deinit();
+    const shadow_name = try shadow_ast.addString("helperAlias");
+    const shadow_binding = try makeTestIdentifierNode(&shadow_ast, .binding_identifier, shadow_name);
+    const shadow_reference = try makeTestIdentifierNode(&shadow_ast, .identifier_reference, shadow_name);
+    const shadow_root = try shadow_ast.addNode(.{
+        .tag = .block_statement,
+        .span = shadow_name,
+        .data = .{ .list = try shadow_ast.addNodeList(&.{ shadow_binding, shadow_reference }) },
+    });
+    const shadow_actual = [_]?u32{ 1, 0, null };
+    const shadow_resolved = [_]?u32{ 1, 1, null };
+    const shadow_symbols = [_]Symbol{
+        .{
+            .name = shadow_name,
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .kind = .import_binding,
+            .declaration_span = shadow_name,
+            .synthetic_kind = .runtime_helper_preamble,
+            .synthetic_name = "helperAlias",
+        },
+        .{
+            .name = shadow_name,
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .kind = .variable_let,
+            .declaration_span = shadow_name,
+        },
+    };
+    var shadow_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer shadow_helper_scope_map.deinit(allocator);
+    try shadow_helper_scope_map.put(allocator, "helperAlias", 0);
+    const shadow_helper_nodes = [_]u32{@backingInt(shadow_reference)};
+    const shadow_report = try checkPostMinify(
+        allocator,
+        &shadow_ast,
+        shadow_root,
+        &shadow_actual,
+        &shadow_resolved,
+        &shadow_symbols,
+        &shadow_symbols,
+        &.{},
+        &shadow_helper_nodes,
+        &shadow_helper_scope_map,
+        &empty_markers,
+        &empty_markers,
+        &empty_class_symbols,
+        &empty_class_symbols,
+    );
+    try std.testing.expectEqual(@as(usize, 1), shadow_report.wrong_reference_target);
+    try std.testing.expect(!shadow_report.isClean());
+}
+
 test "post-minify audit requires exact class self mapping before fallback" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -4804,6 +4804,20 @@ fn transpileWithCallbackInternal(
         }
     }
 
+    // Codegen resolves these after all transformed symbols are known. Compute
+    // the same map before post-minify analysis so helper references can be
+    // checked under the spelling that the emitted preamble will use.
+    var standalone_late_output_name_overrides: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    const use_late_helper_names = transformer.options.defer_runtime_helper_name_resolution and
+        transformer.semantic_edit_enabled and
+        !transformer.options.emit_runtime_helper_imports;
+    if (use_late_helper_names) {
+        standalone_late_output_name_overrides = try buildStandaloneLateOutputNameOverrides(arena_alloc, &transformer);
+        if ((transformer.runtime_helpers.hasAny() or transformer.jsx_import_info.hasImports()) and
+            standalone_late_output_name_overrides.count() == 0)
+            return error.TransformError;
+    }
+
     // Syntax minification mutates the AST; identifier minification builds the
     // final SymbolId-to-name map. Audit after both decisions so syntax-only,
     // identifier-only, and combined minification all pass through this gate.
@@ -4816,6 +4830,74 @@ fn transpileWithCallbackInternal(
         const audit_symbol_ids = if (audit_uses_reanalyzed_graph) audit_graph.symbol_ids.items else transformer.symbol_ids.items;
         const audit_helper_nodes = if (audit_uses_reanalyzed_graph) audit_graph.helper_ref_nodes else transformer.helper_ref_nodes.items;
         const audit_class_self = if (audit_uses_reanalyzed_graph) &audit_graph.class_self_symbol_map else &transformer.class_self_symbol_map;
+
+        // Runtime helper declarations live in the emitted preamble, outside
+        // the AST being reanalyzed here. Give helper callsites the exact name
+        // the preamble/codegen resolver will emit, then restore their AST
+        // spellings before normal codegen. Otherwise a source binding with the
+        // helper's staging name can be mistaken for the helper's output target.
+        var post_minify_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+        var helper_scope_entries = audit_graph.helper_scope_map.iterator();
+        while (helper_scope_entries.next()) |entry| {
+            try post_minify_helper_scope_map.put(arena_alloc, entry.key_ptr.*, entry.value_ptr.*);
+        }
+        const HelperNameRewrite = struct {
+            node_raw: u32,
+            original_span: @import("lexer/token.zig").Span,
+        };
+        var helper_name_rewrites: std.ArrayListUnmanaged(HelperNameRewrite) = .empty;
+        defer for (helper_name_rewrites.items) |rewrite| {
+            transformer.ast.nodes.items[rewrite.node_raw].data.string_ref = rewrite.original_span;
+        };
+
+        if (!audit_uses_reanalyzed_graph and transformer.semantic_edit_enabled and
+            !transformer.options.emit_runtime_helper_imports)
+        {
+            var final_helper_renames: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null;
+            if (mangle_uses_transform_semantic) {
+                if (mangle_result) |*result| final_helper_renames = &result.renames;
+            }
+            const helper_name_resolver: StandaloneRuntimeHelperNameResolver = .{
+                .transformer = &transformer,
+                .final_renames = final_helper_renames,
+                .final_output_names = if (use_late_helper_names) &standalone_late_output_name_overrides else null,
+            };
+
+            for (audit_helper_nodes) |raw| {
+                if (raw >= transformer.ast.nodes.items.len or raw >= audit_symbol_ids.len) continue;
+                const node = transformer.ast.nodes.items[raw];
+                if (node.tag != .identifier_reference) continue;
+                const helper_id = audit_symbol_ids[raw] orelse continue;
+                if (helper_id >= audit_graph.symbols.items.len or
+                    audit_graph.symbols.items[helper_id].synthetic_kind != .runtime_helper_preamble)
+                    continue;
+
+                var helper_base_name: ?[]const u8 = null;
+                var runtime_helper_ids = transformer.runtime_helper_symbol_ids.iterator();
+                while (runtime_helper_ids.next()) |entry| {
+                    if (@backingInt(entry.value_ptr.*) == helper_id) {
+                        helper_base_name = entry.key_ptr.*;
+                        break;
+                    }
+                }
+                const base_name = helper_base_name orelse return error.TransformError;
+                const output_name = try helper_name_resolver.resolve(base_name, options.minify_whitespace);
+                if (post_minify_helper_scope_map.get(output_name)) |existing_id| {
+                    if (existing_id != helper_id) return error.TransformError;
+                } else {
+                    try post_minify_helper_scope_map.put(arena_alloc, output_name, helper_id);
+                }
+
+                const original_span = node.data.string_ref;
+                if (std.mem.eql(u8, transformer.ast.getText(original_span), output_name)) continue;
+                try helper_name_rewrites.append(arena_alloc, .{
+                    .node_raw = raw,
+                    .original_span = original_span,
+                });
+                transformer.ast.nodes.items[raw].data.string_ref = try transformer.ast.addString(output_name);
+            }
+        }
+
         const post_minify_coverage = @import("transformer/symbol_coverage.zig");
         var post_minify_analyzer = SemanticAnalyzer.init(arena_alloc, transformer.ast);
         post_minify_analyzer.is_strict_mode = parser.is_strict_mode;
@@ -4832,7 +4914,7 @@ fn transpileWithCallbackInternal(
             post_minify_analyzer.symbols.items,
             audit_graph.references.items,
             audit_helper_nodes,
-            &audit_graph.helper_scope_map,
+            &post_minify_helper_scope_map,
             &post_minify_analyzer.unresolved_reference_nodes,
             &transformer.explicit_global_reference_nodes,
             audit_class_self,
@@ -4880,15 +4962,6 @@ fn transpileWithCallbackInternal(
         break :blk transformer.symbol_ids.items;
     } else transformer.symbol_ids.items;
     var has_helpers = transformer.runtime_helpers.hasAny();
-    var standalone_late_output_name_overrides: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
-    const use_late_helper_names = transformer.options.defer_runtime_helper_name_resolution and
-        transformer.semantic_edit_enabled and
-        !transformer.options.emit_runtime_helper_imports;
-    if (use_late_helper_names) {
-        standalone_late_output_name_overrides = try buildStandaloneLateOutputNameOverrides(arena_alloc, &transformer);
-        if ((has_helpers or transformer.jsx_import_info.hasImports()) and standalone_late_output_name_overrides.count() == 0)
-            return error.TransformError;
-    }
     var helper_final_renames: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null;
     if (mangle_uses_transform_semantic) {
         if (mangle_result) |*mr| helper_final_renames = &mr.renames;
