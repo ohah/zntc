@@ -18094,12 +18094,12 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         return;
     };
     defer prepared.discard(self.allocator);
-    const initial_state = prepared.candidate.state;
     var candidate_completed = false;
+    var candidate_diagnosed = false;
     var published_exact: ?@import("../../transformer/symbol_coverage.zig").ExactReport = null;
-    runCandidate(self, &prepared.candidate, arena_alloc, &candidate_completed, &published_exact);
+    runCandidate(self, &prepared.candidate, arena_alloc, &candidate_completed, &candidate_diagnosed, &published_exact);
     if (!candidate_completed) {
-        if (prepared.candidate.state == initial_state)
+        if (!candidate_diagnosed)
             self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Generic prepass transaction failed", "The staged transform did not complete; the installed module was left unchanged.");
         return;
     }
@@ -18354,7 +18354,7 @@ fn minifyGenericPrepassGraph(
     };
 }
 
-fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, candidate_completed: *bool, published_exact: *?@import("../../transformer/symbol_coverage.zig").ExactReport) void {
+fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, candidate_completed: *bool, candidate_diagnosed: *bool, published_exact: *?@import("../../transformer/symbol_coverage.zig").ExactReport) void {
     if (module.ast == null) return;
     const ast_ptr = &(module.ast.?);
 
@@ -18665,10 +18665,12 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
         can_keep_semantic_graph = false;
     if (transformer.unsupported_arrow_private_scope_span) |span| {
         self.addDiag(.arrow_private_dynamic_scope, .@"error", module.path, span, .parse, TransformOptions.arrow_private_dynamic_scope_msg, null);
+        candidate_diagnosed.* = true;
         return;
     }
     if (transformer.used_unsupported_static_initializer_dynamic_scope) {
         self.addDiag(.static_initializer_dynamic_scope, .@"error", module.path, Span.EMPTY, .parse, TransformOptions.static_initializer_dynamic_scope_msg, null);
+        candidate_diagnosed.* = true;
         return;
     }
     for (retained_console_object_references) |reference| {
@@ -18842,7 +18844,7 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
             "Could not preserve generated global references",
             "The transformed AST's explicit global references could not be tracked safely.",
         );
-        module.state = .ready;
+        candidate_diagnosed.* = true;
         return;
     };
     module.transform_cache = .{
@@ -18879,6 +18881,7 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
             if (debug_symbol_coverage) {
                 if (exact) |report| std.debug.print("zntc: tracked-plugin-graph-rejected {s}: {any}\n", .{ module.path, report });
             }
+            candidate_diagnosed.* = true;
             failRetainedGraphRefresh(
                 self,
                 module,
@@ -19066,6 +19069,7 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
             (!lowered_simple_static_class_field_global or module.semantic.?.unresolved_references.contains("Object")) and
             (!worklet_global_reference or module.semantic.?.unresolved_references.contains("global"));
         if (!generated_globals_recorded) {
+            candidate_diagnosed.* = true;
             failRetainedGraphRefresh(
                 self,
                 module,
@@ -19074,6 +19078,7 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
             return;
         }
         resyncModuleGraphMetadataAfterAstMutation(self, module, arena_alloc) catch {
+            candidate_diagnosed.* = true;
             failRetainedGraphRefresh(
                 self,
                 module,
@@ -19090,6 +19095,7 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
         const entry_metadata_completed = !entry_certificate_required or
             (@import("../../transformer/sideeffect_entry_graph.zig").metadataRequirementSatisfied(&transformer, module, root) catch false);
         if (!entry_metadata_published or !entry_metadata_completed) {
+            candidate_diagnosed.* = true;
             failRetainedGraphRefresh(
                 self,
                 module,
@@ -19108,6 +19114,7 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
                     root,
                     semantic,
                 ) catch null) orelse {
+                    candidate_diagnosed.* = true;
                     failRetainedGraphRefresh(self, module, "Transformed reference statement coordinates could not be completed.");
                     return;
                 };
@@ -19129,6 +19136,7 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
                     false,
                     module.memberAugmentGate(self.transform_options_base.minify_syntax),
                 ) catch {
+                    candidate_diagnosed.* = true;
                     failRetainedGraphRefresh(
                         self,
                         module,
@@ -19162,6 +19170,7 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
             &unresolved_nodes,
             published_exact,
         );
+        candidate_diagnosed.* = !candidate_completed.*;
         return;
     }
 }
@@ -27618,4 +27627,40 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), dev_generated_undefined_read_count);
     try std.testing.expectEqual(@as(usize, 1), dev_member_read_count);
     try std.testing.expectEqual(@as(usize, 1), dev_source_void_zero_count);
+}
+
+test "generic prepass source current binds actual class key history backing and values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "class C{static[unknownKey]=7}";
+    const fixture = try runtimeHelperReanalysisTestFixture(a, source);
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.js");
+    module.source = source;
+    module.module_type = .js;
+    module.state = .ready;
+    module.ast = fixture.ast;
+    module.semantic = fixture.semantic;
+    const History = @import("../../semantic/scope_frame_history.zig");
+    var initial = try History.Recorder.init(a, &module.ast.?, module.semantic.?.scopes, &module.semantic.?.scope_owner_map);
+    module.semantic.?.scope_history = try initial.finish(a);
+    const actual = try a.dupe(History.ClassKeySource, module.semantic.?.scope_history.source_class_keys);
+    try std.testing.expectEqual(@as(usize, 1), actual.len);
+    module.semantic.?.scope_history.source_class_keys = actual;
+    var prepared = try PreparedGenericPrepass.init(&module, a);
+    defer prepared.discard(std.testing.allocator);
+    try std.testing.expect(try prepared.isCurrent(a));
+    module.semantic.?.scope_history.source_class_keys = try a.dupe(History.ClassKeySource, actual);
+    try std.testing.expect(!try prepared.isCurrent(a));
+    module.semantic.?.scope_history.source_class_keys = actual;
+    try std.testing.expect(try prepared.isCurrent(a));
+    const before = actual[0];
+    actual[0].member_slot +%= 1;
+    try std.testing.expect(!try prepared.isCurrent(a));
+    actual[0] = before;
+    try std.testing.expect(try prepared.isCurrent(a));
+    actual[0].leaf.node = actual[0].key.node;
+    try std.testing.expect(!try prepared.isCurrent(a));
+    actual[0] = before;
+    try std.testing.expect(try prepared.isCurrent(a));
 }
