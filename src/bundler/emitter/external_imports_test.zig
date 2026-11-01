@@ -1,4 +1,62 @@
 const std = @import("std");
+
+test "external exact import identities use name data rather than diagnostic spans" {
+    const a = std.testing.allocator;
+    const cases = [_]struct { source: []const u8, expected: []const u8 }{
+        .{ .source = "import {value as local} from 'dep';console.log(local);", .expected = "value as local" },
+        .{ .source = "import local from 'dep';console.log(local);", .expected = "import local from" },
+        .{ .source = "import * as local from 'dep';console.log(local);", .expected = "import * as local from" },
+        .{ .source = "import {v\\u0061lue as l\\u006fcal} from 'dep';console.log(local);", .expected = "value as local" },
+    };
+    var failures: usize = 0;
+    for (cases, 0..) |item, index| {
+        var arena = std.heap.ArenaAllocator.init(a);
+        defer arena.deinit();
+        const aa = arena.allocator();
+        var scanner = try @import("../../lexer/scanner.zig").Scanner.init(aa, item.source);
+        scanner.is_module = true;
+        var parser = @import("../../parser/parser.zig").Parser.init(aa, &scanner);
+        parser.is_module = true;
+        _ = try parser.parse();
+        var analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer.init(aa, &parser.ast);
+        analyzer.is_module = true;
+        try analyzer.analyze();
+        var module = Module.init(.fromUsize(0), "name-datum.mjs");
+        module.source = item.source;
+        module.ast = parser.ast;
+        module.semantic = .{ .symbols = analyzer.symbols, .scopes = analyzer.scopes.items, .scope_maps = analyzer.scope_maps.items, .exported_names = analyzer.exported_names, .symbol_ids = analyzer.symbol_ids.items, .unresolved_references = analyzer.unresolved_references };
+        // Generated identifiers can keep a source-map span while their actual
+        // name lives in the string table. This changes diagnostics, not names,
+        // source SymbolIds or lexical ownership.
+        for (module.ast.?.nodes.items) |*node| switch (node.tag) {
+            .identifier_reference, .binding_identifier, .import_default_specifier, .import_namespace_specifier => {
+                const name = module.ast.?.identifierNameText(node.*);
+                node.data.string_ref = try module.ast.?.addString(name);
+                node.span = .{ .start = 0, .end = 6 };
+            },
+            else => {},
+        };
+        const scan = try @import("../import_scanner.zig").extractImportsWithCjsDetection(aa, &module.ast.?);
+        module.import_records = scan.records;
+        for (module.import_records) |*record| record.is_external = true;
+        const bindings = try @import("../binding_scanner.zig").extractImportBindings(aa, &module.ast.?, module.import_records, null);
+        try std.testing.expectEqual(@as(usize, 1), bindings.len);
+        for (bindings) |*binding| binding.local_symbol = @import("../binding_scanner.zig").resolveImportLocalSymbol(binding.*, .{ .module_index = module.index, .ast = &module.ast.?, .symbol_ids = analyzer.symbol_ids.items, .symbols = analyzer.symbols.items });
+        module.import_bindings = bindings;
+        if (!std.mem.eql(u8, bindings[0].local_name, "local")) failures += 1;
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(aa);
+        emitChunkExternalImports(&output, aa, true, &.{&module}, null, false) catch {
+            failures += 1;
+            std.debug.print("IMPORT_NAME_DATUM case={d} result=error\n", .{index});
+            continue;
+        };
+        const matched = std.mem.indexOf(u8, output.items, item.expected) != null;
+        std.debug.print("IMPORT_NAME_DATUM case={d} local={s} matched={d}\n", .{ index, bindings[0].local_name, @intFromBool(matched) });
+        if (!matched) failures += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}
 const testing = std.testing;
 const types = @import("../types.zig");
 const Module = @import("../module.zig").Module;
