@@ -4718,12 +4718,13 @@ fn isSafeConstructorDirectLexicalDeclaration(
     return true;
 }
 
-/// A derived constructor lexical declaration may use one direct, non-computed
-/// `super.property` initializer after the leading `super()` call. Direct
+/// A derived constructor lexical declaration may use one direct `super`
+/// property initializer after the leading `super()` call. Computed access is
+/// limited to an exact, unescaped source-bound identifier key. Direct
 /// `this.property` initializers are handled by the shared declaration gate,
 /// which this function reaches only after the same leading-super check. Keep
-/// `super.property` separate from ordinary safe values because the class
-/// lowerer records the generated home-object read in the retained graph.
+/// `super` reads separate from ordinary safe values because class lowering
+/// records the generated home-object reference in the retained graph.
 fn isSafePostSuperDirectLexicalDeclaration(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -4744,8 +4745,19 @@ fn isSafePostSuperDirectLexicalDeclaration(
     if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
     const initializer: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
     if (initializer.isNone() or @backingInt(initializer) >= ast.nodes.items.len or
-        ast.getNode(initializer).tag != .static_member_expression or
         !isRetainableDirectSuperPropertyAccess(ast, initializer, false)) return false;
+    const member = ast.getNode(initializer);
+    if (member.tag == .computed_member_expression) {
+        const member_extra = member.data.extra;
+        if (member_extra > extras.len or extras.len - member_extra < 3) return false;
+        const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[member_extra + 1]));
+        if (property_idx.isNone() or @backingInt(property_idx) >= ast.nodes.items.len or
+            ast.getNode(property_idx).tag != .identifier_reference or
+            !isBoundSourceIdentifierReference(ast, semantic, property_idx) or
+            std.mem.indexOfScalar(u8, ast.getText(ast.getNode(property_idx).span), '\\') != null) return false;
+    } else if (member.tag != .static_member_expression) {
+        return false;
+    }
     return isSafeConstructorDirectLexicalDeclaration(ast, semantic, declaration, true);
 }
 
@@ -22917,7 +22929,7 @@ test "ES5 same-var-scope lexical declarations alone admit the retained graph" {
         .{ .source = "class Base {} class Read extends Base { constructor() { super(); { let local = 1; this.value = local; } } }", .expected = false },
         .{ .source = "class Base {} class Read extends Base { constructor() { super(); let { local } = { local: 1 }; this.value = local; } }", .expected = false },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current, other = 1; this.value = value + other; } }", .expected = false },
-        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor(input) { super(); let value = super[input]; this.value = value; } }", .expected = false },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor(input) { super(); let value = super[input]; this.value = value; } }", .expected = true },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor(input) { super(); let value = super[input?.name]; this.value = value; } }", .expected = false },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current(); this.value = value; } }", .expected = false },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current + 1; this.value = value; } }", .expected = false },
@@ -23015,13 +23027,14 @@ test "ES5 same-var-scope lexical declarations alone admit the retained graph" {
     try std.testing.expect(!malformed_retained);
 }
 
-test "ES5 uninitialized constructor lets retain the production semantic graph" {
+test "ES5 audited constructor lexical initializers retain the production semantic graph" {
     const helpers = @import("../test_helpers.zig");
     const sources = [_][]const u8{
         "class Read { constructor() { let local; local = 1; this.value = local; } } console.log(new Read().value);",
         "function Base() {} class Read extends Base { constructor() { super(); let local; this.value = local; } } console.log(new Read().value);",
         "class Read { get current() { return 4; } constructor() { let local = this.current; this.value = local; } } console.log(new Read().value);",
         "class Base { get current() { return 5; } } class Read extends Base { constructor() { super(); const local = this.current; this.value = local; } } console.log(new Read().value);",
+        "class Base { get current() { return 6; } } class Read extends Base { constructor(key) { super(); const local = super[key]; this.value = local; } } console.log(new Read('current').value);",
     };
     for (sources) |source| {
         var tmp = std.testing.tmpDir(.{});

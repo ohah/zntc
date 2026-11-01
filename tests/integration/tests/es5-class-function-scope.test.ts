@@ -52,6 +52,17 @@ const cases = {
     }
     console.log(new Box().value, reads);
   `,
+  'derived constructor computed super-property lexical read': `
+    var reads = 0;
+    class Base {
+      constructor(value) { this.slot = value; }
+      get current() { reads++; return 6; }
+    }
+    class Box extends Base {
+      constructor(key, value) { super(value); const local = super[key]; this.value = local; }
+    }
+    console.log(new Box('current', 6).value, reads);
+  `,
   'nested closures in computed method': `
     const key = 'make';
     class Box {
