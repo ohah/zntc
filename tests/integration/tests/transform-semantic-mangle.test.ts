@@ -763,15 +763,20 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(execution.stdout.trim()).toBe('42');
   });
 
-  test('compound define in a with scope keeps the reanalysis fallback', async () => {
+  test('compound define in a with scope preserves dynamic lookup effects on the retained graph', async () => {
     const fixture = await createFixture({
       'input.js': [
+        'let hasHits = 0;',
+        'let getterHits = 0;',
         'function read(input) {',
         '  const FLAG = 0;',
-        '  with ({ input: 90 }) { input; }',
+        '  const scope = new Proxy({ get input() { getterHits++; return 90; } }, {',
+        "    has(target, key) { if (key === 'input') hasHits++; return Reflect.has(target, key); },",
+        '  });',
+        '  with (scope) { input; }',
         '  return FLAG;',
         '}',
-        'process.stdout.write(String(read(40)));',
+        'process.stdout.write(String(read(40)) + ":" + String(hasHits) + ":" + String(getterHits));',
       ].join('\n'),
     });
     cleanup = fixture.cleanup;
@@ -795,7 +800,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     const identity = expectPrepassGraph(
       `${result.stdout}\n${result.stderr}`,
       'input.js',
-      'reanalyzed',
+      'retained',
     );
     expect(identity).toMatch(/clean=1(?:\s|$)/);
     for (const counter of EXACT_ZERO_COUNTERS) {
@@ -803,7 +808,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     }
     const execution = await runNode(output);
     expect(execution.stderr).toBe('');
-    expect(execution.stdout.trim()).toBe('41');
+    expect(execution.stdout.trim()).toBe('41:1:1');
   });
 
   test('opaque compound define does not claim an exact retained graph', async () => {

@@ -28,19 +28,19 @@ const TestCtx = struct {
     }
 };
 
-fn setup(allocator: std.mem.Allocator, source: []const u8) !TestCtx {
+fn setupMode(allocator: std.mem.Allocator, source: []const u8, is_module: bool) !TestCtx {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const a = arena.allocator();
 
     var scanner = try Scanner.init(a, source);
-    scanner.is_module = true;
+    scanner.is_module = is_module;
     var parser = Parser.init(a, &scanner);
-    parser.is_module = true;
+    parser.is_module = is_module;
     const root = try parser.parse();
 
     var analyzer = SemanticAnalyzer.init(a, &parser.ast);
-    analyzer.is_module = true;
+    analyzer.is_module = is_module;
     try analyzer.analyze();
 
     return .{
@@ -49,6 +49,14 @@ fn setup(allocator: std.mem.Allocator, source: []const u8) !TestCtx {
         .root = root,
         .analyzer = analyzer,
     };
+}
+
+fn setup(allocator: std.mem.Allocator, source: []const u8) !TestCtx {
+    return setupMode(allocator, source, true);
+}
+
+fn setupScript(allocator: std.mem.Allocator, source: []const u8) !TestCtx {
+    return setupMode(allocator, source, false);
 }
 
 fn topLevelStmt(ctx: *const TestCtx, stmt_idx: usize) Node {
@@ -1021,6 +1029,7 @@ fn removalCtx(ctx: *const TestCtx) purity.StmtRemovalCtx {
     return .{
         .symbol_ids = ctx.analyzer.symbol_ids.items,
         .symbols = ctx.analyzer.symbols.items,
+        .scopes = ctx.analyzer.scopes.items,
         .unresolved_globals = &ctx.analyzer.unresolved_references,
     };
 }
@@ -1077,6 +1086,23 @@ test "isRemovableAtStmtPos: var / 파라미터 읽기는 삭제 가능 (DSE 수�
 
     try std.testing.expect(purity.isRemovableAtStmtPos(&ctx.ast, try firstIdentRef(&ctx, "loc"), removalCtx(&ctx)));
     try std.testing.expect(purity.isRemovableAtStmtPos(&ctx.ast, try firstIdentRef(&ctx, "p"), removalCtx(&ctx)));
+}
+
+test "isRemovableAtStmtPos: with environment may invoke Proxy traps or getters" {
+    const alloc = std.testing.allocator;
+    var ctx = try setupScript(alloc, "function f(input, scope) { with (scope) { input; } }\n");
+    defer ctx.deinit();
+
+    // Static resolution finds the parameter, but runtime lookup checks the with
+    // object environment first. Removing this discarded read could erase traps.
+    const input_ref = try firstIdentRef(&ctx, "input");
+    const symbol_id = ctx.analyzer.symbol_ids.items[@backingInt(input_ref)] orelse return error.MissingInputSymbol;
+    try std.testing.expect(symbol_id < ctx.analyzer.symbols.items.len);
+    const owner_scope = ctx.analyzer.symbols.items[symbol_id].scope_id;
+    try std.testing.expect(!owner_scope.isNone());
+    try std.testing.expect(owner_scope.toIndex() < ctx.analyzer.scopes.items.len);
+    try std.testing.expect(ctx.analyzer.scopes.items[owner_scope.toIndex()].subtree_has_with);
+    try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx.ast, input_ref, removalCtx(&ctx)));
 }
 
 test "isRemovableAtStmtPos: block-scoped(let/const/class) 읽기는 TDZ 때문에 삭제 불가" {

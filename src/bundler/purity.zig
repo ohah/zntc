@@ -22,6 +22,7 @@ const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const CallFlags = @import("../parser/ast.zig").CallFlags;
 const Token = @import("../lexer/token.zig");
 const symbol_mod = @import("../semantic/symbol.zig");
+const scope_mod = @import("../semantic/scope.zig");
 
 /// 재귀 깊이 제한. 초과 시 보수적으로 불순 처리.
 const max_depth: u32 = 128;
@@ -941,6 +942,7 @@ pub const StmtRemovalCtx = struct {
     /// AST node index → symbol index. null = 미해결 전역(또는 심볼 아님).
     symbol_ids: []const ?u32,
     symbols: []const symbol_mod.Symbol,
+    scopes: []const scope_mod.Scope,
     unresolved_globals: ?*const GlobalRefSet,
 };
 
@@ -1067,14 +1069,25 @@ pub fn isRemovableAtStmtPosDepth(ast: *const Ast, idx: NodeIndex, ctx: StmtRemov
     };
 }
 
-/// `identifier_reference` 하나를 삭제해도 되는지. 삭제 시 사라지는 관측 가능한 효과는
-/// **ReferenceError** 뿐이므로(값은 버려짐), 그 가능성을 전부 배제할 수 있을 때만 true.
+/// `identifier_reference` 하나를 삭제해도 되는지. 값은 버려지지만, 미해결 참조의
+/// **ReferenceError** 나 `with` 객체 환경의 동적 lookup 효과(Proxy trap / getter)는
+/// 사라질 수 있으므로 그 가능성을 전부 배제할 수 있을 때만 true.
 fn isIdentRemovableAtStmtPos(ni: u32, ctx: StmtRemovalCtx) bool {
     if (ni >= ctx.symbol_ids.len) return false;
     // 미해결 전역 — 존재하지 않으면 읽는 순간 ReferenceError (#4514 증상 3).
     const sid = ctx.symbol_ids[ni] orelse return false;
     if (sid >= ctx.symbols.len) return false;
     const sym = ctx.symbols[sid];
+
+    // A binding scope with a `with` descendant may have reads intercepted by
+    // an object environment first. Even when static analysis assigns a read to
+    // a local or parameter, evaluating it can invoke a Proxy `has` trap or
+    // property getter. The scope flag conservatively protects every read of
+    // that binding, including reads outside the `with` body.
+    if (sym.scope_id.isNone()) return false;
+    const owner_scope = sym.scope_id.toIndex();
+    if (owner_scope >= ctx.scopes.len) return false;
+    if (ctx.scopes[owner_scope].subtree_has_with) return false;
 
     // top-level(scope 0) 바인딩과 import 는 live binding — `import * as ns` 등의 초기화
     // 순서를 건드릴 수 있고 module TDZ 도 가능하다. 보수적으로 유지.
