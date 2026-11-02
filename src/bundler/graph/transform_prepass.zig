@@ -2401,6 +2401,7 @@ fn isRetainableJsxMemberChain(
             .static_member_expression => property.tag == .identifier_reference,
             .computed_member_expression => switch (property.tag) {
                 .string_literal, .numeric_literal, .bigint_literal, .boolean_literal, .null_literal => true,
+                .template_literal => isExactJsxNoSubstitutionTemplateLiteral(ast, property_idx),
                 .identifier_reference => isBoundSourceIdentifierReference(ast, semantic, property_idx) or
                     isUnresolvedGlobalUndefinedReference(ast, semantic, property_idx),
                 .unary_expression => isRetainableJsxVoidPrimitiveValue(ast, property_idx),
@@ -3124,8 +3125,17 @@ fn isUnresolvedGlobalUndefinedReference(
     return std.mem.eql(u8, ast.getText(ast.getNode(node_idx).span), "undefined");
 }
 
+fn isExactJsxNoSubstitutionTemplateLiteral(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
+    if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[@backingInt(node_idx)];
+    if (node.tag != .template_literal) return false;
+    const list = node.data.list;
+    return list.len == 0 and list.start <= ast.extra_data.items.len;
+}
+
 /// `void` over a parenthesized chain ending in a primitive literal has no
-/// identifier reads or operand effects. Other operands remain fallback.
+/// identifier reads or operand effects. A no-substitution template is also a
+/// side-effect-free string value. Other operands remain fallback.
 fn isRetainableJsxVoidPrimitiveValue(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
     if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
     const node = ast.nodes.items[@backingInt(node_idx)];
@@ -3147,6 +3157,7 @@ fn isRetainableJsxVoidPrimitiveValue(ast: *const ast_mod.Ast, node_idx: ast_mod.
         }
         return switch (operand.tag) {
             .string_literal, .numeric_literal, .bigint_literal, .boolean_literal, .null_literal => true,
+            .template_literal => isExactJsxNoSubstitutionTemplateLiteral(ast, operand_idx),
             else => false,
         };
     }
@@ -17460,7 +17471,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
         try std.testing.expect(tag != .spread_element and tag != .elision);
     }
 
-    const classic_source = "const React = { createElement: function() {} }; const props = { id: 'from-props' }; const member = { deep: { value: 'M' }, 'undefined': 'U' }; const memberKey = 'deep'; const detachedRole = 'dialog'; const detachedCount = 2; const items = [1, 2]; const result = <div {...props} {...{ memberValue: member[memberKey].value, voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} value={items}>{...items}</div>; const detached = <aside {...{ role: detachedRole, count: detachedCount }} />;";
+    const classic_source = "const React = { createElement: function() {} }; const props = { id: 'from-props' }; const member = { deep: { value: 'M' }, 'undefined': 'U' }; const memberKey = 'deep'; const detachedRole = 'dialog'; const detachedCount = 2; const items = [1, 2]; const result = <div {...props} {...{ memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} value={items}>{...items}</div>; const detached = <aside {...{ role: detachedRole, count: detachedCount }} />;";
     var classic_fixture = try jsxSpreadChildTestFixture(allocator, classic_source);
     const classic_owner = classic_fixture.semantic.captureOwnerToken();
     var classic_item_symbol: ?u32 = null;
@@ -17579,11 +17590,11 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 3), classic_factory_read_count);
     try std.testing.expectEqual(@as(usize, 1), classic_detached_role_read_count);
     try std.testing.expectEqual(@as(usize, 1), classic_detached_count_read_count);
-    try std.testing.expectEqual(@as(usize, 4), classic_member_read_count);
+    try std.testing.expectEqual(@as(usize, 6), classic_member_read_count);
     try std.testing.expectEqual(@as(usize, 1), classic_member_key_read_count);
     try std.testing.expectEqual(@as(usize, 2), classic_undefined_read_count);
 
-    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" }, \"undefined\": \"U\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...props} {...{ id: label, count: count, memberValue: member[memberKey].value, voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;";
+    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" }, \"undefined\": \"U\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...props} {...{ id: label, count: count, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;";
     var key_fallback_fixture = try jsxSpreadChildTestFixture(allocator, key_fallback_source);
     const key_fallback_owner = key_fallback_fixture.semantic.captureOwnerToken();
     var key_fallback_item_symbol: ?u32 = null;
@@ -17692,11 +17703,11 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), key_fallback_props_read_count);
     try std.testing.expectEqual(@as(usize, 1), key_fallback_label_read_count);
     try std.testing.expectEqual(@as(usize, 1), key_fallback_count_read_count);
-    try std.testing.expectEqual(@as(usize, 4), key_fallback_member_read_count);
+    try std.testing.expectEqual(@as(usize, 6), key_fallback_member_read_count);
     try std.testing.expectEqual(@as(usize, 1), key_fallback_member_key_read_count);
     try std.testing.expectEqual(@as(usize, 2), key_fallback_undefined_read_count);
 
-    const dev_source = "const member = { deep: { value: \"D\" }, \"undefined\": \"U\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...{ memberValue: member[memberKey].value, voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}</Comp>;";
+    const dev_source = "const member = { deep: { value: \"D\" }, \"undefined\": \"U\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...{ memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}</Comp>;";
     var dev_fixture = try jsxSpreadChildTestFixture(allocator, dev_source);
     const dev_owner = dev_fixture.semantic.captureOwnerToken();
     var source_dev_member_symbol: ?u32 = null;
@@ -17815,7 +17826,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 3), dev_undefined_reference_count);
     try std.testing.expectEqual(@as(usize, 2), dev_source_undefined_read_count);
     try std.testing.expectEqual(@as(usize, 1), dev_generated_undefined_read_count);
-    try std.testing.expectEqual(@as(usize, 4), dev_member_read_count);
+    try std.testing.expectEqual(@as(usize, 6), dev_member_read_count);
     try std.testing.expectEqual(@as(usize, 1), dev_member_key_read_count);
     try std.testing.expectEqual(@as(usize, 1), dev_source_void_primitive_count);
 }
@@ -24436,6 +24447,40 @@ fn auditedJsxSpreadPropsOperandForTest(fixture: *const RuntimeHelperReanalysisTe
     return false;
 }
 
+test "#6193 automatic key fallback props rejects malformed no-substitution template lists" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var fixture = try jsxSpreadChildTestFixture(
+        arena.allocator(),
+        "const member = { undefined: \"x\" }; const items = [1]; const result = <Comp {...{ voidKey: member[void (`unused`)] }} key=\"k\">{...items}</Comp>;",
+    );
+    try std.testing.expect(auditedJsxSpreadPropsOperandForTest(&fixture));
+
+    var template_idx: ?ast_mod.NodeIndex = null;
+    var void_idx: ?ast_mod.NodeIndex = null;
+    for (fixture.ast.nodes.items, 0..) |node, raw| {
+        const node_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+        if (node.tag == .template_literal and template_idx == null) template_idx = node_idx;
+        if (node.tag == .unary_expression and isRetainableJsxVoidPrimitiveValue(&fixture.ast, node_idx))
+            void_idx = node_idx;
+    }
+    const template = template_idx orelse return error.MissingJsxNoSubstitutionTemplate;
+    const void_value = void_idx orelse return error.MissingJsxVoidTemplateValue;
+    try std.testing.expect(isExactJsxNoSubstitutionTemplateLiteral(&fixture.ast, template));
+    try std.testing.expect(isRetainableJsxVoidPrimitiveValue(&fixture.ast, void_value));
+
+    const template_raw: usize = @intCast(@backingInt(template));
+    const saved_list = fixture.ast.nodes.items[template_raw].data.list;
+    fixture.ast.nodes.items[template_raw].data.list.start = std.math.maxInt(u32);
+    try std.testing.expect(!isExactJsxNoSubstitutionTemplateLiteral(&fixture.ast, template));
+    try std.testing.expect(!isRetainableJsxVoidPrimitiveValue(&fixture.ast, void_value));
+    fixture.ast.nodes.items[template_raw].data.list = saved_list;
+
+    fixture.ast.nodes.items[template_raw].data.list.len = 1;
+    try std.testing.expect(!isExactJsxNoSubstitutionTemplateLiteral(&fixture.ast, template));
+    try std.testing.expect(!isRetainableJsxVoidPrimitiveValue(&fixture.ast, void_value));
+}
+
 test "#6193 automatic key fallback props spread admits static data and bound value reads" {
     const allocator = std.testing.allocator;
     const safe_sources = [_][]const u8{
@@ -24466,11 +24511,17 @@ test "#6193 automatic key fallback props spread admits static data and bound val
         "const member = { \"undefined\": \"x\" }; const items = [1]; const result = <Comp {...{ id: member[void (1n)] }} key=\"k\">{...items}</Comp>;",
         "const member = { \"undefined\": \"x\" }; const items = [1]; const result = <Comp {...{ id: member[void 0x0] }} key=\"k\">{...items}</Comp>;",
         "const member = { \"undefined\": \"x\" }; const items = [1]; const result = <Comp {...{ id: member[void 0.0] }} key=\"k\">{...items}</Comp>;",
+        "const member = { \"undefined\": \"x\" }; const items = [1]; const result = <Comp {...{ id: member[`undefined`] }} key=\"k\">{...items}</Comp>;",
+        "const member = { \"undefined\": \"x\" }; const items = [1]; const result = <Comp {...{ id: member[void (`unused`)] }} key=\"k\">{...items}</Comp>;",
+        "const member = { \"undefined\": \"x\" }; const items = [1]; const result = <Comp {...{ id: member[void (`0`)] }} key=\"k\">{...items}</Comp>;",
         "const member = { \"undefined\": \"x\" }; const items = [1]; const result = <Comp {...{ id: member[undefined] }} key=\"k\">{...items}</Comp>;",
         "const member = { nested: { \"undefined\": \"x\" } }; const items = [1]; const result = <Comp {...{ id: member.nested[undefined] }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ optional: undefined }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ optional: void 0 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ optional: void 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ optional: void (`unused`) }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ id: member[void `0`] }} key=\"k\">{...items}</Comp>;",
+        "const props = {}; const items = [1]; const result = <Comp {...{ id: props[`nested`].id }} key=\"k\">{...items}</Comp>;",
     };
     for (safe_sources) |source| {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -24507,7 +24558,7 @@ test "#6193 automatic key fallback props spread admits static data and bound val
         "const base = {}; const member = {}; const items = [1]; const result = <Comp {...{ id: member[base?.[undefined]] }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ id: missingProps[undefined] }} key=\"k\">{...items}</Comp>;",
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[(undefined)] }} key=\"k\">{...items}</Comp>;",
-        "const member = {}; const items = [1]; const result = <Comp {...{ id: member[`undefined`] }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const suffix = \"x\"; const items = [1]; const result = <Comp {...{ id: member[`undefined${suffix}`] }} key=\"k\">{...items}</Comp>;",
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[/undefined/] }} key=\"k\">{...items}</Comp>;",
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[void undefined] }} key=\"k\">{...items}</Comp>;",
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[!0] }} key=\"k\">{...items}</Comp>;",
@@ -24520,7 +24571,7 @@ test "#6193 automatic key fallback props spread admits static data and bound val
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[void ({ value: 0 })] }} key=\"k\">{...items}</Comp>;",
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[void ([])] }} key=\"k\">{...items}</Comp>;",
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[void (/x/)] }} key=\"k\">{...items}</Comp>;",
-        "const member = {}; const items = [1]; const result = <Comp {...{ id: member[void (`0`)] }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const suffix = \"x\"; const items = [1]; const result = <Comp {...{ id: member[void (`0${suffix}`)] }} key=\"k\">{...items}</Comp>;",
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[void -0] }} key=\"k\">{...items}</Comp>;",
         "const key = 0; const member = {}; const items = [1]; const result = <Comp {...{ id: member[void key] }} key=\"k\">{...items}</Comp>;",
         "function getKey() { return 0; } const member = {}; const items = [1]; const result = <Comp {...{ id: member[void getKey()] }} key=\"k\">{...items}</Comp>;",
@@ -24528,7 +24579,6 @@ test "#6193 automatic key fallback props spread admits static data and bound val
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[void { value: 0 }] }} key=\"k\">{...items}</Comp>;",
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[void []] }} key=\"k\">{...items}</Comp>;",
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[void /x/] }} key=\"k\">{...items}</Comp>;",
-        "const member = {}; const items = [1]; const result = <Comp {...{ id: member[void `0`] }} key=\"k\">{...items}</Comp>;",
         "function getKey() { return 0; } const member = {}; const items = [1]; const result = <Comp {...{ id: member[void (getKey(), 0)] }} key=\"k\">{...items}</Comp>;",
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[void new Number(0)] }} key=\"k\">{...items}</Comp>;",
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member?.[void 0] }} key=\"k\">{...items}</Comp>;",
@@ -24539,7 +24589,6 @@ test "#6193 automatic key fallback props spread admits static data and bound val
         "const props = {}; const items = [1]; const result = <Comp {...{ id: props[{}].id }} key=\"k\">{...items}</Comp>;",
         "const props = {}; const items = [1]; const result = <Comp {...{ id: props[[]].id }} key=\"k\">{...items}</Comp>;",
         "const props = {}; const items = [1]; const result = <Comp {...{ id: props[/x/].id }} key=\"k\">{...items}</Comp>;",
-        "const props = {}; const items = [1]; const result = <Comp {...{ id: props[`nested`].id }} key=\"k\">{...items}</Comp>;",
         "const props = {}; function getKey() { return \"nested\"; } const items = [1]; const result = <Comp {...{ id: props[getKey()].id }} key=\"k\">{...items}</Comp>;",
         "const props = {}; const items = [1]; const result = <Comp {...{ id: props[Symbol()].id }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ id: missingProps.id }} key=\"k\">{...items}</Comp>;",
@@ -24697,11 +24746,14 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         "const member = { undefined: 'x' }; const items = [1]; const result = <div {...{ id: member[void 'unused'] }}>{...items}</div>;",
         "const member = { undefined: 'x' }; const items = [1]; const result = <div {...{ id: member[void true] }}>{...items}</div>;",
         "const member = { undefined: 'x' }; const items = [1]; const result = <div {...{ id: member[void (1n)] }}>{...items}</div>;",
+        "const member = { undefined: 'x' }; const items = [1]; const result = <div {...{ id: member[`undefined`] }}>{...items}</div>;",
+        "const member = { undefined: 'x' }; const items = [1]; const result = <div {...{ id: member[void (`unused`)] }}>{...items}</div>;",
         "const member = { '0': 'x' }; const items = [1]; const result = <div {...{ id: member[void (0)] }}>{...items}</div>;",
         "const member = { 'undefined': 'x' }; const items = [1]; const result = <div {...{ id: member[undefined] }}>{...items}</div>;",
         "const items = [1]; const result = <div {...{ optional: undefined }}>{...items}</div>;",
         "const items = [1]; const result = <div {...{ optional: void 0 }}>{...items}</div>;",
         "const items = [1]; const result = <div {...{ optional: void 1 }}>{...items}</div>;",
+        "const items = [1]; const result = <div {...{ optional: void (`unused`) }}>{...items}</div>;",
         "const props = {}; const items = [1]; const one = <div {...props} />; const two = <div>{...items}</div>;",
         "const items = [1]; const one = <div {...{ id: 'x' }} />; const two = <div>{...items}</div>;",
         "const props = {}; const items = [1]; const one = <div {...props}>before</div>; const two = <div>{...items}</div>;",
