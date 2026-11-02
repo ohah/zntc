@@ -3974,6 +3974,14 @@ pub const Linker = struct {
                     self.allocator.free(helper_name);
                     continue;
                 }
+                // A CJS export is a runtime object property, not a lexical
+                // local carrying this public name. In a single bundle the
+                // property read cannot be captured by a consumer's nested
+                // binding, and the CJS module may contain an unrelated local
+                // with the same spelling. Never route that name through
+                // putCanonicalName's scope-map lookup. Cross-chunk consumers
+                // take the other branch and rename their exact nested SID.
+                if (target_module.wrap_kind == .cjs) continue;
                 const export_local = self.getExportLocalName(cmod, resolved.canonical.export_name) orelse resolved.canonical.export_name;
                 var suffix: u32 = 1;
                 const candidate = try self.findAvailableCandidate(ref_name, cmod, &suffix, name_to_owners);
