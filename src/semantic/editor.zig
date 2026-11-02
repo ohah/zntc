@@ -445,7 +445,7 @@ pub const SemanticEditor = struct {
             const body_symbol = self.symbols.items[old_id];
             if (!body_symbol.kind.isFunctionLike() or body_symbol.scope_id != symbol.scope_id) return error.InvalidSymbol;
             const body_name = if (body_symbol.synthetic_name.len > 0) body_symbol.synthetic_name else self.ast.getText(body_symbol.name);
-            if (!std.mem.eql(u8, body_name, old_name)) return error.InvalidSymbol;
+            if (!Scanner.identifierNamesEqual(body_name, old_name)) return error.InvalidSymbol;
         } else if (symbol.kind == .parameter) {
             // Parameter expressions and a non-simple function body now have
             // distinct source scopes. When the corresponding body map still
@@ -464,7 +464,7 @@ pub const SemanticEditor = struct {
                         if (!valid_body_alias or body_symbol.scope_id != body_scope)
                             return error.InvalidSymbol;
                         const body_name = if (body_symbol.synthetic_name.len > 0) body_symbol.synthetic_name else self.ast.getText(body_symbol.name);
-                        if (!std.mem.eql(u8, body_name, old_name)) return error.InvalidSymbol;
+                        if (!Scanner.identifierNamesEqual(body_name, old_name)) return error.InvalidSymbol;
                     }
                 }
             }
