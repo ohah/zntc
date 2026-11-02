@@ -4105,7 +4105,7 @@ test "namespace rewrite: ns.prop resolved in ns_member_rewrites" {
     try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
 }
 
-test "namespace access analysis uses the import SymbolId under hostile scope maps" {
+test "namespace access analysis uses import identity anchors under hostile scope maps" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -4118,7 +4118,7 @@ test "namespace access analysis uses the import SymbolId under hostile scope map
             "console.log(ns.answer, decoy0.wrong0, decoy1.wrong1, decoy2.wrong2, decoy3.wrong3, decoy4.wrong4, " ++
             "decoy5.wrong5, decoy6.wrong6, decoy7.wrong7, decoy8.wrong8, decoy9.wrong9);\n",
     );
-    try writeFile(tmp.dir, "provider.ts", "export const answer = 42;\n");
+    try writeFile(tmp.dir, "provider.ts", "export const answer = 42, wrong0 = 99;\n");
 
     var r = try buildLinkAndRename(allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
@@ -4137,6 +4137,8 @@ test "namespace access analysis uses the import SymbolId under hostile scope map
     };
     const binding_symbol = entry.import_bindings[binding_index].local_symbol.semanticIndex() orelse
         return error.MissingNamespaceImportSymbol;
+    const binding_anchor = entry.import_bindings[binding_index].local_symbol_node orelse
+        return error.MissingNamespaceImportAnchor;
     try std.testing.expectEqual(entry_index, entry.import_bindings[binding_index].local_symbol.moduleIndex());
 
     const mutable_scope_maps = @constCast(semantic.scope_maps);
@@ -4156,6 +4158,42 @@ test "namespace access analysis uses the import SymbolId under hostile scope map
         try std.testing.expectEqual(@as(usize, 1), properties.len);
         try std.testing.expectEqualStrings("answer", properties[0]);
     }
+
+    const decoy_symbol = semantic.scope_maps[0].get("decoy0") orelse return error.MissingNamespaceDecoy;
+    entry.import_bindings[binding_index].local_symbol = bundler_symbol.SymbolRef.makeSemantic(entry_index, decoy_symbol);
+    r.linker.populateNamespaceAccesses();
+    try std.testing.expect(entry.import_bindings[binding_index].namespace_used_properties == null);
+
+    // An invalid low-level SymbolRef must still prefer the retained import AST
+    // anchor over a poisoned spelling row when the semantic graph is present.
+    entry.import_bindings[binding_index].local_symbol = .invalid;
+    try mutable_scope_maps[0].put(allocator, "ns", decoy_symbol);
+    r.linker.populateNamespaceAccesses();
+    const recovered = entry.import_bindings[binding_index].namespace_used_properties orelse
+        return error.MissingNamespaceProperties;
+    var answer_found = false;
+    var decoy_found = false;
+    for (recovered) |property| {
+        answer_found = answer_found or std.mem.eql(u8, property, "answer");
+        decoy_found = decoy_found or std.mem.eql(u8, property, "wrong0");
+    }
+    try std.testing.expect(answer_found);
+    try std.testing.expect(!decoy_found);
+
+    // Keep the documented compatibility fallback for truly anchorless
+    // low-level bindings, while requiring its root row to identify the import.
+    entry.import_bindings[binding_index].local_symbol_node = null;
+    try mutable_scope_maps[0].put(allocator, "ns", binding_symbol);
+    r.linker.populateNamespaceAccesses();
+    const fallback = entry.import_bindings[binding_index].namespace_used_properties orelse
+        return error.MissingNamespaceFallbackProperties;
+    try std.testing.expectEqual(@as(usize, 1), fallback.len);
+    try std.testing.expectEqualStrings("answer", fallback[0]);
+
+    try mutable_scope_maps[0].put(allocator, "ns", decoy_symbol);
+    r.linker.populateNamespaceAccesses();
+    try std.testing.expect(entry.import_bindings[binding_index].namespace_used_properties == null);
+    entry.import_bindings[binding_index].local_symbol_node = binding_anchor;
 }
 
 test "namespace re-export metadata uses the import binding SymbolId under a hostile scope map" {
