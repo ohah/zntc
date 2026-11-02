@@ -165,6 +165,51 @@ pub const Provider = struct {
         if (!std.meta.eql(expected_symbol, actual)) return error.InvalidCrossChunkExport;
     }
 
+    fn consumeNumericFactHint(expected: *Symbol, actual: Symbol, owner: *const Module, sid: u32) bool {
+        if (expected.const_kind == actual.const_kind) return true;
+        const sem = owner.semantic orelse return false;
+        // refreshFoldedNumericExportFacts owns this same-SID numeric fact.
+        // const_kind is an inference hint, not binding/name or literal-value
+        // authority. All identity fields remain in the exact comparison.
+        if (actual.const_kind != .number or (actual.kind != .variable_const and actual.kind != .variable_let) or
+            !actual.isExported() or actual.write_count != 0 or sid >= sem.symbols.items.len or sem.numericConstText(sid).len == 0) return false;
+        expected.const_kind = actual.const_kind;
+        return true;
+    }
+
+    /// Rebind the same source SID to the exact COW target row. Every immutable
+    /// symbol datum and source anchor survives; only use counts may change.
+    pub fn prepareModulePublication(self: Provider, l: *const Linker, candidate: *const Module, binding: *const ExportBinding, published: ExportBinding, allocator: std.mem.Allocator) Error!Provider {
+        try self.validate(l);
+        const previous = switch (self.role) {
+            .semantic, .entry_guard => |known| known,
+            else => return error.InvalidCrossChunkExport,
+        };
+        if (candidate.index != self.owner.index or candidate.semantic == null or candidate.semantic.?.owner_token != self.owner_token) return error.InvalidCrossChunkExport;
+        const sid = previous.original.symbol.semanticIndex() orelse return error.InvalidCrossChunkExport;
+        if (candidate.exportBindingSemanticIndex(binding.*) != @as(?u32, sid)) return error.InvalidCrossChunkExport;
+        const actual = candidate.semantic.?.symbols.items[sid];
+        var expected = previous.symbol;
+        expected.reference_count = actual.reference_count;
+        expected.write_count = actual.write_count;
+        if (!consumeNumericFactHint(&expected, actual, candidate, sid)) return error.InvalidCrossChunkExport;
+        if (!std.meta.eql(expected, actual) or !(try checkedSymbol(allocator, candidate, binding)).eql(previous.original.symbol)) return error.InvalidCrossChunkExport;
+        const anchor = if (binding.has_default_export_facade) binding.default_export_node else binding.local_symbol_node;
+        if (anchor != previous.anchor) return error.InvalidCrossChunkExport;
+        var next = previous;
+        next.binding = binding;
+        next.original = published;
+        next.symbol = actual;
+        if (previous.default_role == null) next.default_source = try captureDefaultFunctionSource(candidate, binding, sid);
+        var result = self;
+        result.public_name = binding.exported_name;
+        switch (result.role) {
+            .semantic, .entry_guard => |*known| known.* = next,
+            else => unreachable,
+        }
+        return result;
+    }
+
     /// Preparation retains the original facade witness. Publication is owned
     /// by Linker's no-fail batch, after every role and allocation succeeds.
     pub fn prepareStrictOutputFunction(self: Provider, l: *const Linker, role: *const @import("strict_function_context.zig").Role, allocator: std.mem.Allocator) Error!Provider {
@@ -235,6 +280,7 @@ pub const Provider = struct {
         // Exact edits may change use counts while preserving the same binding.
         expected.reference_count = actual.reference_count;
         expected.write_count = actual.write_count;
+        if (!consumeNumericFactHint(&expected, actual, self.owner, sid)) return error.InvalidCrossChunkExport;
         if (!std.meta.eql(expected, actual)) return error.InvalidCrossChunkExport;
         if (known.anchor) |anchor| {
             if (!attached(sem.symbol_ids, anchor, sid)) return error.InvalidCrossChunkExport;

@@ -50,7 +50,7 @@ pub const TreeShaker = struct {
     /// Module storage 접근 포인터 (#1779 PR #2). 기존 `[]const Module` slice
     /// 필드를 대체. `analyze` 내부에서 `module.side_effects` 를 mutate 하므로 non-const.
     graph: *ModuleGraph,
-    linker: *const Linker,
+    linker: *Linker,
     included: std.DynamicBitSet,
     used_exports: std.StringHashMapUnmanaged(void) = .empty,
     /// Exact folded-if/kept-assignment relations, scoped to this shake run.
@@ -134,7 +134,7 @@ pub const TreeShaker = struct {
 
     const ReExportNsConsumerUsage = re_export_namespace.ConsumerUsage;
 
-    pub fn init(allocator: std.mem.Allocator, graph: *ModuleGraph, linker: *const Linker) !TreeShaker {
+    pub fn init(allocator: std.mem.Allocator, graph: *ModuleGraph, linker: *Linker) !TreeShaker {
         const mod_count = graph.moduleCount();
         var included = try std.DynamicBitSet.initEmpty(allocator, mod_count);
         errdefer included.deinit();
@@ -2544,7 +2544,10 @@ pub const TreeShaker = struct {
             // the reachability facts before committing the module and publish
             // them without another allocation. Rejection keeps both branches.
             self.node_buffer_folded_exports.ensureUnusedCapacity(self.allocator, @intCast(plan.exports.len)) catch continue;
-            if (!prepared.publish(m)) continue;
+            var exports_publication = self.linker.prepareCanonicalModulePublication(m, &prepared.candidate) catch continue;
+            defer exports_publication.deinit();
+            if (!exports_publication.isCurrent() or !prepared.publish(m)) continue;
+            exports_publication.publishAssumePrepared();
             for (plan.exports) |fact| {
                 const key = (@as(u64, @intCast(i)) << 32) | @as(u64, @backingInt(fact.statement));
                 self.node_buffer_folded_exports.putAssumeCapacity(key, fact);

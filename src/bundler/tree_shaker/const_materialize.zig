@@ -1303,10 +1303,17 @@ fn prepareAndPublishConstFactsForIndex(
         new_scratch = try Scratch.init(self.allocator, self.graph.moduleCount());
     const publication = (try runtime_registration.preparePublication(self.graph.allocator, self.graph, m, candidate)) orelse return false;
     if (!publication.isCurrent()) return false;
+    var exports_publication = self.linker.prepareCanonicalModulePublication(m, candidate) catch |err| {
+        if (err == error.OutOfMemory) return err;
+        return false;
+    };
+    defer exports_publication.deinit();
+    if (!exports_publication.isCurrent()) return false;
     // No operation below this line allocates or refuses publication. Publish
     // the real Module header before its already-prepared backing registry.
     prepared.publish();
     publication.publishAssumePrepared();
+    exports_publication.publishAssumePrepared();
     self.ast_mutated_after_link = staged_shaker.ast_mutated_after_link;
     if (skip_minify) {
         if (new_scratch) |owned| {

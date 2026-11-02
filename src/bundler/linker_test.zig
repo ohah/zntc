@@ -10080,3 +10080,134 @@ test "const enum surviving writes preserve actual erased and outer binding looku
         }
     };
 }
+
+test "canonical export COW publication preserves actual source receipts and rejects paired target roles" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.mjs", "export const other=11;");
+    try writeFile(tmp.dir, "entry.mjs", "export const local=7;export{local as 'public-key'};export{other as forwarded}from'./dep.mjs';");
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+    try r.linker.computeRenames();
+    r.linker.populateReExportAliases();
+    const index = findModuleIdx(r.graph, "entry.mjs").?;
+    const source = r.graph.moduleAtMut(index).?;
+    const foreign = r.graph.getModule(findModuleIdx(r.graph, "dep.mjs").?).?;
+    const original = source.*;
+    const before_count = r.linker.canonical_export_receipts.count();
+    const candidate = try a.create(Module);
+    candidate.* = source.*;
+    candidate.ast = try source.ast.?.cloneForTransformer(a);
+    candidate.export_bindings = try a.dupe(@import("module.zig").ExportBinding, source.export_bindings);
+    candidate.alias_table = bundler_symbol.AliasTable.init(a);
+    try candidate.alias_table.?.aliases.appendSlice(a, source.alias_table.?.aliases.items);
+    for (candidate.export_bindings) |*binding| if (binding.public_key_origin) |*origin| {
+        try std.testing.expect(origin.ast == &source.ast.?);
+        origin.ast = &candidate.ast.?;
+    };
+    var editor = try source.semantic.?.beginEdit(a, &candidate.ast.?);
+    candidate.semantic.?.applyEdit(try editor.finish());
+    const receipt_capacity = r.linker.canonical_export_receipts.capacity();
+    const receipt_backing = r.linker.canonical_export_receipts.metadata;
+    var prepared = try r.linker.prepareCanonicalModulePublication(source, candidate);
+    defer prepared.deinit();
+    try std.testing.expectEqual(receipt_capacity, r.linker.canonical_export_receipts.capacity());
+    try std.testing.expect(receipt_backing == r.linker.canonical_export_receipts.metadata);
+    try std.testing.expectEqual(source.export_bindings.len, prepared.count);
+    try std.testing.expect(prepared.isCurrent());
+    for (source.export_bindings, candidate.export_bindings) |*old, *next| {
+        try std.testing.expect(r.linker.canonical_export_receipts.contains(@intFromPtr(old)));
+        try std.testing.expect(!r.linker.canonical_export_receipts.contains(@intFromPtr(next)));
+    }
+    const source_first = source.export_bindings[0];
+    source.export_bindings[0].local_span.end += 1;
+    try std.testing.expect(!prepared.isCurrent());
+    source.export_bindings[0] = source_first;
+    const source_token = source.semantic.?.owner_token;
+    source.semantic.?.owner_token = foreign.semantic.?.owner_token;
+    try std.testing.expect(!prepared.isCurrent());
+    source.semantic.?.owner_token = source_token;
+    try std.testing.expect(prepared.isCurrent());
+    const first = candidate.export_bindings[0];
+    candidate.export_bindings[0].symbol = foreign.export_bindings[0].symbol;
+    try std.testing.expect(!prepared.isCurrent());
+    try std.testing.expectError(error.InvalidCrossChunkExport, r.linker.prepareCanonicalModulePublication(source, candidate));
+    candidate.export_bindings[0] = first;
+    candidate.export_bindings[0].local_symbol_node = candidate.export_bindings[1].local_symbol_node;
+    try std.testing.expectError(error.InvalidCrossChunkExport, r.linker.prepareCanonicalModulePublication(source, candidate));
+    candidate.export_bindings[0] = first;
+    candidate.export_bindings[0].exported_name = "other";
+    try std.testing.expectError(error.InvalidCrossChunkExport, r.linker.prepareCanonicalModulePublication(source, candidate));
+    candidate.export_bindings[0] = first;
+    const token = candidate.semantic.?.owner_token;
+    candidate.semantic.?.owner_token = foreign.semantic.?.owner_token;
+    try std.testing.expect(!prepared.isCurrent());
+    try std.testing.expectError(error.InvalidCrossChunkExport, r.linker.prepareCanonicalModulePublication(source, candidate));
+    candidate.semantic.?.owner_token = token;
+    const first_sid = first.symbol.semanticIndex().?;
+    const kind_hint = candidate.semantic.?.symbols.items[first_sid].const_kind;
+    candidate.semantic.?.symbols.items[first_sid].const_kind = .true_;
+    try std.testing.expectError(error.InvalidCrossChunkExport, r.linker.prepareCanonicalModulePublication(source, candidate));
+    candidate.semantic.?.symbols.items[first_sid].const_kind = kind_hint;
+    const text = candidate.ast.?.source;
+    candidate.ast.?.source = try a.dupe(u8, text);
+    try std.testing.expectError(error.InvalidCrossChunkExport, r.linker.prepareCanonicalModulePublication(source, candidate));
+    candidate.ast.?.source = text;
+    const quoted = candidate.export_bindings[1].public_key_origin.?;
+    candidate.export_bindings[1].public_key_origin.?.ast = &foreign.ast.?;
+    try std.testing.expectError(error.InvalidCrossChunkExport, r.linker.prepareCanonicalModulePublication(source, candidate));
+    candidate.export_bindings[1].public_key_origin = quoted;
+    try std.testing.expectError(error.InvalidCrossChunkExport, r.linker.prepareCanonicalModulePublication(foreign, candidate));
+    try std.testing.expectEqual(before_count, r.linker.canonical_export_receipts.count());
+    try std.testing.expect(source.export_bindings.ptr == original.export_bindings.ptr);
+    try std.testing.expect(source.semantic.?.symbol_ids.ptr == original.semantic.?.symbol_ids.ptr);
+
+    // Replacing the same number of known rows requires no map growth. This
+    // sweep covers every mandatory temporary preparation allocation.
+    const heap = r.linker.canonical_export_allocator;
+    var failures: usize = 0;
+    while (failures < 128) : (failures += 1) {
+        var failing = std.testing.FailingAllocator.init(heap, .{ .fail_index = failures, .resize_fail_index = 0 });
+        r.linker.canonical_export_allocator = failing.allocator();
+        const result = r.linker.prepareCanonicalModulePublication(source, candidate);
+        if (result) |value| {
+            var owned = value;
+            owned.deinit();
+            r.linker.canonical_export_allocator = heap;
+            try std.testing.expect(!failing.has_induced_failure);
+            try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+            break;
+        } else |err| {
+            r.linker.canonical_export_allocator = heap;
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expect(failing.has_induced_failure);
+            try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        }
+        try std.testing.expectEqual(before_count, r.linker.canonical_export_receipts.count());
+        try std.testing.expect(source.export_bindings.ptr == original.export_bindings.ptr);
+        try std.testing.expect(prepared.isCurrent());
+    }
+    try std.testing.expect(failures > 0 and failures < 128);
+    try std.testing.expect(prepared.isCurrent());
+    for (candidate.export_bindings) |*binding| if (binding.public_key_origin) |*origin| {
+        origin.ast = &source.ast.?;
+    };
+    source.alias_table.?.deinit();
+    source.* = candidate.*;
+    prepared.publishAssumePrepared();
+    try std.testing.expectEqual(before_count, r.linker.canonical_export_receipts.count());
+    try std.testing.expectEqual(receipt_capacity, r.linker.canonical_export_receipts.capacity());
+    try std.testing.expect(receipt_backing == r.linker.canonical_export_receipts.metadata);
+    for (original.export_bindings, source.export_bindings) |*old, *next| {
+        try std.testing.expect(!r.linker.canonical_export_receipts.contains(@intFromPtr(old)));
+        const receipt = r.linker.canonical_export_receipts.get(@intFromPtr(next)).?;
+        try std.testing.expect(receipt.owner == source and receipt.binding == next);
+        try std.testing.expect((try receipt.localName(&r.linker)) != null);
+        try std.testing.expect(r.linker.getCanonicalForExport(next.*, index.toU32()) != null);
+    }
+}

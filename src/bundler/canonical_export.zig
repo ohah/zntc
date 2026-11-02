@@ -60,6 +60,38 @@ pub const Receipt = struct {
         return .{ .owner = owner, .binding = binding, .before = binding.*, .owner_token = token, .role = role };
     }
 
+    /// Transfer an already authenticated source receipt through a graph COW
+    /// publication. The candidate is a target, never a source of identity.
+    pub fn preparePublication(self: Receipt, l: *const Linker, candidate: *const Module, binding: *const Binding, allocator: std.mem.Allocator) Error!Receipt {
+        _ = try self.localName(l);
+        if (candidate.index != self.owner.index or candidate.semantic == null or self.owner.semantic == null or
+            candidate.semantic.?.owner_token != self.owner_token or candidate.codegen_output_owner != self.owner.codegen_output_owner or
+            !source.registered(candidate, binding) or !samePublicationBinding(self.owner, candidate, self.before, binding.*)) return error.InvalidCrossChunkExport;
+        var result = self;
+        result.binding = binding;
+        result.before = binding.*;
+        if (result.before.public_key_origin) |*origin| origin.ast = &self.owner.ast.?;
+        switch (self.role) {
+            .local => |known| result.role = .{ .local = try known.prepareModulePublication(l, candidate, binding, result.before, allocator) },
+            .alias => |known| {
+                const table = if (candidate.alias_table) |*value| value else return error.InvalidCrossChunkExport;
+                if (binding.symbol != .alias or binding.symbol.alias.symbol != known.id or
+                    @backingInt(known.id) >= table.aliases.items.len or !std.mem.eql(u8, table.getName(known.id), known.name)) return error.InvalidCrossChunkExport;
+                try validateAlias(allocator, candidate, binding.*);
+                result.role = .{ .alias = .{ .table = &self.owner.alias_table.?, .backing = table.aliases.items, .id = known.id, .name = table.getName(known.id), .external = known.external } };
+            },
+            .namespace => try validateNamespace(allocator, candidate, binding.*),
+            .cjs_member => |known| {
+                const sid = candidate.require_symbol orelse return error.InvalidCrossChunkExport;
+                if (known.module != candidate.index or @backingInt(known.inner) != @backingInt(sid) or
+                    @backingInt(sid) >= candidate.semantic.?.symbols.items.len or candidate.semantic.?.symbols.items[@backingInt(sid)].synthetic_kind != .cjs_require or
+                    candidate.getRequireName(null) == null) return error.InvalidCrossChunkExport;
+            },
+            .graphless => return error.InvalidCrossChunkExport,
+        }
+        return result;
+    }
+
     pub fn localName(self: Receipt, l: *const Linker) Error!?[]const u8 {
         if (l.getModule(self.owner.index.toU32()) != self.owner or !source.registered(self.owner, self.binding) or
             !std.meta.eql(self.before, self.binding.*)) return error.InvalidCrossChunkExport;
@@ -156,4 +188,26 @@ pub fn sameImportedSourceLocal(owner: *const Module, exported: Binding, imported
     if (actual.semanticIndex() != @as(?u32, sid)) return false;
     _ = owner.checkedSourceImportLocalSymbol(imported) catch return false;
     return true;
+}
+
+fn sameOptionalText(a: ?[]const u8, b: ?[]const u8) bool {
+    if (a) |value| return if (b) |other| std.mem.eql(u8, value, other) else false;
+    return b == null;
+}
+
+fn samePublicationBinding(owner: *const Module, candidate: *const Module, before: Binding, after: Binding) bool {
+    if (!std.mem.eql(u8, before.exported_name, after.exported_name) or !std.mem.eql(u8, before.local_name, after.local_name) or
+        !sameOptionalText(before.public_key_literal, after.public_key_literal) or !sameOptionalText(before.public_key_binding_value, after.public_key_binding_value)) return false;
+    var expected = before;
+    expected.exported_name = after.exported_name;
+    expected.local_name = after.local_name;
+    expected.public_key_literal = after.public_key_literal;
+    expected.public_key_binding_value = after.public_key_binding_value;
+    if (before.public_key_origin) |origin| {
+        const current = after.public_key_origin orelse return false;
+        if (owner.ast == null or candidate.ast == null or origin.ast != &owner.ast.? or
+            (current.ast != &owner.ast.? and current.ast != &candidate.ast.?) or origin.specifier != current.specifier or origin.literal != current.literal) return false;
+        expected.public_key_origin = current;
+    } else if (after.public_key_origin != null) return false;
+    return std.meta.eql(expected, after);
 }
