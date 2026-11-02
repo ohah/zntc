@@ -1748,6 +1748,88 @@ test "styled (cssProp): intrinsic tag + template_literal css value 추출" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
 }
 
+test "#4819 styled cssProp producer records generated component as a read" {
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\import styled from "styled-components";
+        \\const _styled_0 = 17;
+        \\function App() { return <div css={`color: red;`}>x</div>; }
+    ;
+
+    var scanner = try helpers.Scanner.init(allocator, source);
+    var parser = helpers.Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
+    try analyzer.analyze();
+
+    var transformer = try helpers.Transformer.init(allocator, &parser.ast, .{
+        .styled_components = true,
+        .styled_components_css_prop = true,
+        .jsx_transform = true,
+        .jsx_runtime = .automatic,
+        .jsx_filename = "/src/App.tsx",
+        .emit_jsx_runtime_imports = true,
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.scope_history = analyzer.scope_history;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    const root_idx: NodeIndex = @fromBackingInt(@intCast(transformer.parser_node_count - 1));
+    try @import("../transformer/transformer/styled_components.zig").prepareCssPropImport(&transformer, root_idx);
+    const root = try transformer.visitNode(root_idx);
+    const ast_walk = @import("../parser/ast_walk.zig");
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, root);
+
+    var generated_binding: ?NodeIndex = null;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or raw < transformer.parser_node_count) continue;
+        if (std.mem.startsWith(u8, transformer.ast.getText(node.data.string_ref), "_styled_")) {
+            generated_binding = @fromBackingInt(@intCast(raw));
+            break;
+        }
+    }
+    const binding = generated_binding orelse return error.TestExpectedEqual;
+    const binding_id = transformer.getSymbolIdAt(binding) orelse return error.TestExpectedEqual;
+    const edited = transformer.semantic_editor orelse return error.TestExpectedEqual;
+    var read_count: usize = 0;
+    for (edited.references.items) |reference| {
+        if (@backingInt(reference.symbol_id) != binding_id or reference.node_index.isNone()) continue;
+        const raw = @backingInt(reference.node_index);
+        if (raw >= transformer.ast.nodes.items.len or
+            transformer.ast.nodes.items[raw].tag != .identifier_reference) continue;
+        try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw) != null);
+        try std.testing.expect(reference.flags.read);
+        try std.testing.expect(!reference.flags.write);
+        read_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), read_count);
+    try std.testing.expect(!root.isNone());
+}
+
 test "#4819 styled cssProp generated component keeps its exact symbol" {
     const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
     const ast_walk = @import("../parser/ast_walk.zig");
