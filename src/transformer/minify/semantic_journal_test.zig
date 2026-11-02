@@ -350,11 +350,16 @@ const ActualInlineFixture = struct {
     }
 
     fn initSource(a: std.mem.Allocator, source: []const u8) !ActualInlineFixture {
+        return initSourceWithCopyPrefix(a, source, false);
+    }
+
+    fn initSourceWithCopyPrefix(a: std.mem.Allocator, source: []const u8, copy_prefix: bool) !ActualInlineFixture {
         const f = try Fixture.initWithSourceOrigins(a, source, true, true);
         var journal = try f.createJournal(a);
         const deltas = try a.alloc(u32, f.analyzer.symbols.items.len);
         @memset(deltas, 0);
-        @import("../minify.zig").minify(&f.parser.ast, .{
+        const minify = @import("../minify.zig");
+        const ctx: minify.MinifyCtx = .{
             .symbols = f.analyzer.symbols.items,
             .symbol_ids = f.editor.symbol_ids.items,
             .symbol_ids_mut = f.editor.symbol_ids.items,
@@ -364,7 +369,34 @@ const ActualInlineFixture = struct {
             .unresolved_globals = &f.analyzer.unresolved_references,
             .ref_deltas = deltas,
             .allow_top_level_inline = true,
-        }, a, f.root);
+        };
+        if (copy_prefix) {
+            const tree = &f.parser.ast;
+            var outer: ast_mod.NodeIndex = .none;
+            for (tree.nodes.items, 0..) |node, raw| {
+                if (node.tag != .conditional_expression or node.data.ternary.b.isNone()) continue;
+                if (tree.getNode(node.data.ternary.b).tag != .conditional_expression) continue;
+                try std.testing.expect(outer.isNone());
+                outer = @fromBackingInt(@as(u32, @intCast(raw)));
+            }
+            try std.testing.expect(!outer.isNone());
+            const outer_node = tree.getNode(outer);
+            const inner = outer_node.data.ternary.b;
+            const inner_node = tree.getNode(inner);
+            for ([_]ast_mod.NodeIndex{ outer_node.data.ternary.a, inner_node.data.ternary.a }) |condition| {
+                const literal = tree.getNode(condition);
+                try std.testing.expectEqual(ast_mod.Node.Tag.boolean_literal, literal.tag);
+                try std.testing.expectEqualStrings("true", tree.getText(literal.span));
+            }
+            const read = inner_node.data.ternary.b;
+            const read_node = tree.getNode(read);
+            try std.testing.expectEqual(ast_mod.Node.Tag.identifier_reference, read_node.tag);
+            var changed = false;
+            minify.replaceNodeFromChild(tree, ctx, @backingInt(inner), @backingInt(read), read_node, &changed);
+            minify.replaceNodeFromChild(tree, ctx, @backingInt(outer), @backingInt(inner), tree.getNode(inner), &changed);
+            try std.testing.expect(changed and journal.failure == null);
+        }
+        minify.minify(&f.parser.ast, ctx, a, f.root);
         try std.testing.expect(journal.failure == null);
         try std.testing.expectEqual(@as(usize, 1), journal.inlined_bindings.items.len);
         const receipt = try journal.applyReferenceAndOwnerEdits(&f.editor, f.root, null, null);
@@ -540,7 +572,7 @@ test "minifier actual copied inline read retains its baseline origin and ordered
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const actual = try ActualInlineFixture.initSource(a, COPIED_INLINE_SOURCE);
+    const actual = try ActualInlineFixture.initSourceWithCopyPrefix(a, COPIED_INLINE_SOURCE, true);
     const event = actual.receipt.inlined_bindings[0];
     try std.testing.expect(event.read_step_count > 0 and event.read_step_count <= actual.receipt.reference_steps.len);
     try std.testing.expect(event.read_origin.node_index != event.witness.read_reference.node_index);
@@ -589,7 +621,7 @@ test "minifier copied inline origin rejects paired cursor hop order and stale ov
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
         const a = arena.allocator();
-        const actual = try ActualInlineFixture.initSource(a, COPIED_INLINE_SOURCE);
+        const actual = try ActualInlineFixture.initSourceWithCopyPrefix(a, COPIED_INLINE_SOURCE, true);
         const f = actual.fixture;
         const original = actual.receipt.inlined_bindings[0];
         try std.testing.expect(original.read_step_count > 1);
