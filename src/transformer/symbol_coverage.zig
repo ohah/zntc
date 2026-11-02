@@ -682,6 +682,8 @@ fn isFunctionExpressionNameScope(
 
 fn ownerParentMatchesAst(
     ast: *const Ast,
+    parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
+    reachable_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     symbol_ids: []const ?u32,
     symbols: []const Symbol,
     scopes: []const Scope,
@@ -753,7 +755,14 @@ fn ownerParentMatchesAst(
             }
         }
         if (pre_transform_scope_count) |source_scope_count| {
-            if (parent_id < source_scope_count and scopeOwnerNode(scope_owner_map, parent_id) != null) {
+            if (parent_id < source_scope_count and sourceScopeBridgeHasValidOwner(
+                ast,
+                parent_by_node,
+                reachable_nodes,
+                owner_node,
+                scope_owner_map,
+                parent_id,
+            )) {
                 parent = scopes[parent_id].parent;
                 continue;
             }
@@ -1804,6 +1813,65 @@ fn scopeOwnerNode(scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32), sc
     var it = scope_owner_map.iterator();
     while (it.next()) |entry| if (entry.value_ptr.* == scope) return entry.key_ptr.*;
     return null;
+}
+
+fn isAstAncestorOrSelf(
+    parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
+    node: u32,
+    ancestor: u32,
+) bool {
+    var current = node;
+    var hops: usize = 0;
+    while (true) : (hops += 1) {
+        if (current == ancestor) return true;
+        if (hops > parent_by_node.count()) return false;
+        current = parent_by_node.get(current) orelse return false;
+    }
+}
+
+fn sourceOwnerSpanContainsGeneratedOwner(ast: *const Ast, source_owner: u32, owner_node: u32) bool {
+    const outer = ast.nodes.items[source_owner].span;
+    const inner = ast.nodes.items[owner_node].span;
+    const string_table_bit = Ast.STRING_TABLE_BIT;
+    if (((outer.start | outer.end | inner.start | inner.end) & string_table_bit) != 0 or
+        outer.end <= outer.start or inner.end <= inner.start) return false;
+    const contains = outer.start <= inner.start and outer.end >= inner.end;
+    if (!contains) return false;
+    // Equal spans cannot distinguish two sibling lexical block owners that
+    // were cloned from one source range. A loop/class/function source owner
+    // may legitimately retain the complete source range for a moved closure.
+    if (outer.start == inner.start and outer.end == inner.end and
+        ast.nodes.items[source_owner].tag == .block_statement) return false;
+    return true;
+}
+
+/// A retained source scope can bridge a generated scope to its emitted AST
+/// parent after lowering moves the source owner. A reachable owner must be an
+/// AST ancestor or its original source span must contain the generated owner;
+/// a sibling scope cannot bridge just because its parent chain is valid.
+fn sourceScopeBridgeHasValidOwner(
+    ast: *const Ast,
+    parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
+    reachable_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    owner_node: u32,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    scope_id: u32,
+) bool {
+    var found_owner = false;
+    var owners = scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        if (entry.value_ptr.* != scope_id) continue;
+        const source_owner = entry.key_ptr.*;
+        if (source_owner >= ast.nodes.items.len) return false;
+        found_owner = true;
+        if (reachable_nodes.contains(source_owner) and
+            !isAstAncestorOrSelf(parent_by_node, owner_node, source_owner) and
+            !sourceOwnerSpanContainsGeneratedOwner(ast, source_owner, owner_node))
+        {
+            return false;
+        }
+    }
+    return found_owner;
 }
 
 fn scopeOwnerKindMatches(tag: Node.Tag, kind: ScopeKind) bool {
@@ -4286,6 +4354,8 @@ fn checkExactImpl(
             };
             if (ownerParentMatchesAst(
                 ast,
+                &parent_by_node,
+                &reachable_nodes,
                 symbol_ids,
                 symbols,
                 scopes,
@@ -4320,6 +4390,8 @@ fn checkExactImpl(
         };
         if (ownerParentMatchesAst(
             ast,
+            &parent_by_node,
+            &reachable_nodes,
             symbol_ids,
             symbols,
             scopes,
