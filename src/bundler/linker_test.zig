@@ -381,6 +381,28 @@ fn findModuleIdx(graph: *ModuleGraph, basename: []const u8) ?ModuleIndex {
     return null;
 }
 
+/// Resolve a fixture's source declaration once, then inspect its canonical
+/// mapping by exact SymbolId. Production output-name lookup must not recover
+/// the identity from this spelling.
+fn sourceTopLevelSymbolId(graph: *ModuleGraph, module_index: ModuleIndex, name: []const u8) ?bundler_symbol.SymbolID {
+    const module = graph.getModule(module_index) orelse return null;
+    const semantic = module.semantic orelse return null;
+    if (semantic.scope_maps.len == 0) return null;
+    const symbol_index = semantic.scope_maps[0].get(name) orelse return null;
+    if (symbol_index >= semantic.symbols.items.len) return null;
+    return bundler_symbol.SymbolID.make(module_index, @as(u32, @intCast(symbol_index)));
+}
+
+fn sourceTopLevelCanonicalName(
+    graph: *ModuleGraph,
+    linker: *const Linker,
+    module_index: ModuleIndex,
+    name: []const u8,
+) ?[]const u8 {
+    const symbol_id = sourceTopLevelSymbolId(graph, module_index, name) orelse return null;
+    return linker.rename_table.get(symbol_id);
+}
+
 fn buildAndLink(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !TestResult {
     const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(dp);
@@ -3401,7 +3423,7 @@ test "rename: different names — no conflict" {
     try std.testing.expectEqual(@as(u32, 0), r.linker.canonical_strings.items.len);
 }
 
-test "rename: getCanonicalName returns renamed" {
+test "rename: exact SymbolId query returns renamed" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "a.ts", "import './b';\nexport const count = 0;");
@@ -3412,20 +3434,23 @@ test "rename: getCanonicalName returns renamed" {
     defer r.destroyGraph();
     defer r.cache.deinit();
 
-    // 하나는 getCanonicalName으로 리네임 조회 가능
+    // Source spelling is used only by this fixture helper to find the exact
+    // initial SID; the production rename table is queried by that SID.
     var found_rename = false;
     for (0..r.graph.moduleCount()) |i| {
-        if (r.linker.getCanonicalName(@intCast(i), "count")) |renamed| {
+        const module_index: ModuleIndex = @fromBackingInt(@intCast(i));
+        if (sourceTopLevelCanonicalName(r.graph, &r.linker, module_index, "count")) |renamed| {
             try std.testing.expect(std.mem.startsWith(u8, renamed, "count$"));
             found_rename = true;
         }
     }
     try std.testing.expect(found_rename);
 
-    // 원본 유지되는 모듈은 getCanonicalName이 null
+    // 원본 유지되는 모듈 has no rename_table entry for its exact SID.
     var found_original = false;
     for (0..r.graph.moduleCount()) |i| {
-        if (r.linker.getCanonicalName(@intCast(i), "count") == null) {
+        const module_index: ModuleIndex = @fromBackingInt(@intCast(i));
+        if (sourceTopLevelCanonicalName(r.graph, &r.linker, module_index, "count") == null) {
             found_original = true;
         }
     }
@@ -3574,15 +3599,12 @@ test "single-owner reserved name: candidate skips nested binding" {
 
     // b.ts의 console.log → console이 reserved_globals에 수집됨.
     // a.ts의 const console은 단일 소유자이지만 글로벌 shadowing → 리네임됨.
-    const renamed = r.linker.getCanonicalName(0, "console");
-    try std.testing.expect(renamed != null);
-    // nested scope에 console$1이 있으므로 console$2가 되어야 함
-    try std.testing.expectEqualStrings("console$2", renamed.?);
     const entry_index = findModuleIdx(r.graph, "a.ts") orelse return error.MissingRenameOwnerModule;
     const entry = r.graph.getModule(entry_index) orelse return error.MissingRenameOwnerModule;
     const semantic = entry.semantic orelse return error.MissingRenameOwnerSemantic;
     const console_symbol = semantic.scope_maps[0].get("console") orelse return error.MissingRenameOwnerSymbol;
     const console_id = bundler_symbol.SymbolID.make(entry_index, @as(u32, @intCast(console_symbol)));
+    // nested scope에 console$1이 있으므로 exact root SID는 console$2를 받아야 함.
     try std.testing.expectEqualStrings("console$2", r.linker.rename_table.get(console_id) orelse return error.MissingExactRenameOwner);
     const nested_console = blk: {
         for (semantic.scope_maps[1..]) |scope_map| {
@@ -3590,6 +3612,12 @@ test "single-owner reserved name: candidate skips nested binding" {
         }
         return error.MissingNestedRenameOwner;
     };
+    try std.testing.expect(r.linker.rename_table.get(bundler_symbol.SymbolID.make(entry_index, @as(u32, @intCast(nested_console)))) == null);
+
+    // Hostile same-name remap after assignment cannot redirect the SID-keyed result.
+    const poisoned_root_scope = @constCast(&semantic.scope_maps[0]);
+    try poisoned_root_scope.put(entry.parse_arena.?.allocator(), "console", @intCast(nested_console));
+    try std.testing.expectEqualStrings("console$2", r.linker.rename_table.get(console_id).?);
     try std.testing.expect(r.linker.rename_table.get(bundler_symbol.SymbolID.make(entry_index, @as(u32, @intCast(nested_console)))) == null);
 }
 
@@ -3639,7 +3667,8 @@ test "computeRenamesForModules: 지정된 모듈만 대상으로 충돌 감지" 
     try linker.computeRenames();
     var global_rename_count: usize = 0;
     for (0..graph.moduleCount()) |i| {
-        if (linker.getCanonicalName(@intCast(i), "x") != null) global_rename_count += 1;
+        const module_index: ModuleIndex = @fromBackingInt(@intCast(i));
+        if (sourceTopLevelCanonicalName(&graph, &linker, module_index, "x") != null) global_rename_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), global_rename_count);
 
@@ -3648,7 +3677,8 @@ test "computeRenamesForModules: 지정된 모듈만 대상으로 충돌 감지" 
     try linker.computeRenamesForModules(subset, &.{});
     var subset_rename_count: usize = 0;
     for (0..graph.moduleCount()) |i| {
-        if (linker.getCanonicalName(@intCast(i), "x") != null) subset_rename_count += 1;
+        const module_index: ModuleIndex = @fromBackingInt(@intCast(i));
+        if (sourceTopLevelCanonicalName(&graph, &linker, module_index, "x") != null) subset_rename_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), subset_rename_count);
 }
