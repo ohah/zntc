@@ -165,3 +165,58 @@ test "parameter dynamic-lookup rename includes every anchored body binding" {
     try std.testing.expect(renames.contains(@intCast(body_id)));
     try std.testing.expect(renames.contains(@intCast(decoy_id)));
 }
+
+test "parameter field-capture rename accepts an escaped equal body-var name" {
+    const source = "const outer = 9; class C { value = outer; constructor(outer = 0) { var \\u006futer = 2; } }";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es2015),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    var parameter_id: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.kind == .parameter and std.mem.eql(u8, parser.ast.getText(symbol.name), "outer")) {
+            parameter_id = @intCast(raw);
+            break;
+        }
+    }
+    const id = parameter_id orelse return error.MissingParameterBinding;
+    var body_var_id: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.kind == .variable_var and std.mem.eql(u8, parser.ast.getText(symbol.name), "\\u006futer")) {
+            body_var_id = @intCast(raw);
+            break;
+        }
+    }
+    const body_var = body_var_id orelse return error.MissingEscapedBodyVar;
+    var field_capture_renames = try parameter_environment.collectFieldCaptureRenames(&transformer);
+    defer field_capture_renames.deinit(allocator);
+    try std.testing.expect(field_capture_renames.contains(id));
+    try std.testing.expect(field_capture_renames.contains(body_var));
+
+    try transformer.buildBlockRenameMap();
+    const renamed = transformer.block_rename_map.?.get(id) orelse return error.MissingParameterRename;
+    try std.testing.expect(!std.mem.eql(u8, renamed, "outer"));
+    const renamed_body_var = transformer.block_rename_map.?.get(body_var) orelse return error.MissingBodyVarRename;
+    try std.testing.expect(!std.mem.eql(u8, renamed_body_var, "outer"));
+}
