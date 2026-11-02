@@ -894,8 +894,17 @@ pub const Linker = struct {
             var it = sem.scope_maps[scope_index].iterator();
             while (it.next()) |entry| {
                 const symbol_index = entry.value_ptr.*;
-                if (symbol_index >= sem.symbols.items.len) continue;
-                switch (sem.symbols.items[symbol_index].kind) {
+                if (symbol_index >= sem.symbols.items.len) return error.InvalidTopLevelOwnerSymbolIdentity;
+                const symbol = sem.symbols.items[symbol_index];
+                // The map row is only a candidate index. Confirm the SID's
+                // declared spelling and lexical owner before filtering, so a
+                // poisoned row cannot disappear behind either a non-hoistable
+                // decoy kind or a same-name module binding.
+                if (symbol.scope_id.isNone() or symbol.scope_id.toIndex() != scope_index)
+                    return error.InvalidTopLevelOwnerSymbolIdentity;
+                self.validateTopLevelOwnerSpelling(m, &sem, entry.key_ptr.*, symbol_index) catch
+                    return error.InvalidTopLevelOwnerSymbolIdentity;
+                switch (symbol.kind) {
                     .variable_let, .variable_const, .class_decl, .function_decl => {},
                     else => continue,
                 }
@@ -7558,6 +7567,172 @@ pub const Linker = struct {
         try self.runUnifiedMangle(&chunk_set, occupied_names);
     }
 };
+
+const HoistedBlockMapMutation = enum {
+    wrong_spelling_same_scope,
+    same_spelling_other_scope,
+    out_of_range_symbol,
+    max_symbol_index,
+    alias_only,
+    duplicate_alias,
+    root_shadow_hides_bad_row,
+    missing_symbol_scope,
+    invalid_symbol_scope,
+    invalid_symbol_span,
+};
+
+fn expectHoistedBlockMapMutationRejected(mutation: HoistedBlockMapMutation) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var cache = @import("resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.unsupported.block_scoping = true;
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+
+    const spans = [_]Span{
+        .{ .start = 0, .end = 4 },
+        .{ .start = 5, .end = 9 },
+        .{ .start = 10, .end = 14 },
+        .{ .start = 15, .end = 19 },
+    };
+    var symbols: std.ArrayList(semantic_symbol.Symbol) = .empty;
+    try symbols.append(arena_allocator, .{ .name = spans[0], .scope_id = @fromBackingInt(1), .kind = .variable_const, .declaration_span = spans[0] });
+    try symbols.append(arena_allocator, .{ .name = spans[1], .scope_id = @fromBackingInt(1), .kind = .variable_const, .declaration_span = spans[1] });
+    try symbols.append(arena_allocator, .{ .name = spans[2], .scope_id = @fromBackingInt(2), .kind = .variable_const, .declaration_span = spans[2] });
+    try symbols.append(arena_allocator, .{ .name = spans[3], .scope_id = @fromBackingInt(0), .kind = .variable_const, .declaration_span = spans[3] });
+
+    var root_map: std.StringHashMapUnmanaged(usize) = .empty;
+    var first_block_map: std.StringHashMapUnmanaged(usize) = .empty;
+    try first_block_map.put(arena_allocator, "real", 0);
+    var second_block_map: std.StringHashMapUnmanaged(usize) = .empty;
+    try second_block_map.put(arena_allocator, "real", 2);
+    var scope_maps = [_]std.StringHashMapUnmanaged(usize){ root_map, first_block_map, second_block_map };
+    const scopes = [_]SemanticScope{
+        .{ .parent = .none, .kind = .module, .is_strict = true },
+        .{ .parent = @fromBackingInt(0), .kind = .block, .is_strict = true },
+        .{ .parent = @fromBackingInt(0), .kind = .block, .is_strict = true },
+    };
+    const semantic = ModuleSemanticData{
+        .symbols = symbols,
+        .scopes = &scopes,
+        .scope_maps = &scope_maps,
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+    };
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "entry.ts");
+    module.source = "real evil real real";
+    module.semantic = semantic;
+
+    switch (mutation) {
+        .wrong_spelling_same_scope => try scope_maps[1].put(arena_allocator, "real", 1),
+        .same_spelling_other_scope => try scope_maps[1].put(arena_allocator, "real", 2),
+        .out_of_range_symbol => try scope_maps[1].put(arena_allocator, "real", symbols.items.len),
+        .max_symbol_index => try scope_maps[1].put(arena_allocator, "real", std.math.maxInt(usize)),
+        .alias_only => {
+            _ = scope_maps[1].remove("real");
+            try scope_maps[1].put(arena_allocator, "alias", 0);
+        },
+        .duplicate_alias => try scope_maps[1].put(arena_allocator, "alias", 0),
+        .root_shadow_hides_bad_row => {
+            try root_map.put(arena_allocator, "real", 3);
+            scope_maps[0] = root_map;
+            try scope_maps[1].put(arena_allocator, "real", 1);
+        },
+        .missing_symbol_scope => symbols.items[0].scope_id = .none,
+        .invalid_symbol_scope => symbols.items[0].scope_id = @fromBackingInt(@intCast(scopes.len + 1)),
+        .invalid_symbol_span => symbols.items[0].name.end = @intCast(module.source.len + 1),
+    }
+
+    const Ctx = struct {
+        fn add(_: @This(), _: []const u8, _: u32) anyerror!void {}
+    };
+    try std.testing.expectError(
+        error.InvalidTopLevelOwnerSymbolIdentity,
+        linker.forEachHoistedBlockOwner(module, Ctx, .{}, Ctx.add),
+    );
+}
+
+test "ES5 hoisted-block owner collection rejects ten hostile scope-map mutations" {
+    inline for (@typeInfo(HoistedBlockMapMutation).@"enum".field_values) |value| {
+        try expectHoistedBlockMapMutationRejected(@fromBackingInt(@intCast(value)));
+    }
+}
+
+test "ES5 hoisted-block owner keeps its exact SID in a cross-module collision" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "entry.mjs",
+        .data = "import './provider.mjs'; { const collision = 1; console.log(collision); }",
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "provider.mjs",
+        .data = "export const collision = 2;",
+    });
+    const entry_path = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry_path);
+
+    var cache = @import("resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es5);
+    try graph.build(std.testing.io, &.{entry_path});
+
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    try linker.computeRenames();
+
+    const entry_index = graph.path_to_module.get(entry_path) orelse return error.MissingEntryModule;
+    const provider = blk: {
+        var it = graph.modulesIterator();
+        while (it.next()) |module| {
+            if (std.mem.endsWith(u8, module.path, "/provider.mjs")) break :blk module;
+        }
+        return error.MissingProviderModule;
+    };
+    const entry = graph.getModule(entry_index) orelse return error.MissingEntryModule;
+    const entry_semantic = entry.semantic orelse return error.MissingEntrySemantic;
+    var block_owner: ?bundler_symbol.SymbolID = null;
+    for (entry_semantic.scopes, 0..) |scope, scope_index| {
+        if (scope_index == 0 or scope.kind != .block or scope_index >= entry_semantic.scope_maps.len) continue;
+        const symbol_index = entry_semantic.scope_maps[scope_index].get("collision") orelse continue;
+        if (symbol_index >= entry_semantic.symbols.items.len) return error.InvalidTopLevelOwnerSymbolIdentity;
+        const symbol = entry_semantic.symbols.items[symbol_index];
+        if (symbol.scope_id.toIndex() != scope_index or symbol.kind != .variable_const) continue;
+        if (block_owner != null) return error.AmbiguousHoistedBlockOwner;
+        block_owner = bundler_symbol.SymbolID.make(entry_index, @as(u32, @intCast(symbol_index)));
+    }
+    const block_id = block_owner orelse return error.MissingHoistedBlockOwner;
+    const provider_semantic = provider.semantic orelse return error.MissingProviderSemantic;
+    const provider_symbol = provider_semantic.scope_maps[0].get("collision") orelse return error.MissingProviderOwner;
+    const provider_id = bundler_symbol.SymbolID.make(provider.index, @as(u32, @intCast(provider_symbol)));
+    var name_to_owners: Linker.NameToOwnersMap = .empty;
+    defer {
+        var owners_it = name_to_owners.valueIterator();
+        while (owners_it.next()) |owners| owners.deinit(std.testing.allocator);
+        name_to_owners.deinit(std.testing.allocator);
+    }
+    try linker.collectModuleNames(entry.*, entry_index.toU32(), &name_to_owners);
+    try linker.collectModuleNames(provider.*, provider.index.toU32(), &name_to_owners);
+    const owners = (name_to_owners.get("collision") orelse return error.MissingCollisionOwners).items;
+    try std.testing.expectEqual(@as(usize, 2), owners.len);
+    var saw_block_owner = false;
+    var saw_provider_owner = false;
+    for (owners) |owner| {
+        const owner_id = owner.symbol_id orelse return error.MissingCollisionOwnerSymbolId;
+        saw_block_owner = saw_block_owner or bundler_symbol.SymbolID.eql(owner_id, block_id);
+        saw_provider_owner = saw_provider_owner or bundler_symbol.SymbolID.eql(owner_id, provider_id);
+    }
+    try std.testing.expect(saw_block_owner and saw_provider_owner);
+}
 
 test "default-export compatibility owner rejects a missing SID beside a same-named synthetic decoy" {
     const local_module: ModuleIndex = @fromBackingInt(@as(u32, 0));
