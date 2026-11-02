@@ -1135,7 +1135,9 @@ fn emitChunksImpl(
                 try parent.appendJsStringLiteral(allocator, &chunk_output, options.public_path);
                 try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
                 // 해석 계층(__zntc_require + 브라우저 <script> 로더), 멱등.
-                try rt.appendZntcResolveBrowser(&chunk_output, allocator, min);
+                // Classic targets (including Hermes) must parse the loader too;
+                // their DOM/Worker paths do not need a native import-expression fallback.
+                try rt.appendZntcResolveBrowser(&chunk_output, allocator, min, !options.unsupported.async_await);
             }
             // self-register factory prefix (모든 청크). 본문·exports 가 안에.
             // ⚠ federation_emit.zig(P1-3)가 `({"<reg_id>"` 부분문자열로 expose
@@ -1469,7 +1471,9 @@ fn emitChunksImpl(
                         const name = maybe orelse continue;
                         const quoted = try std.json.Stringify.valueAlloc(allocator, name, .{});
                         defer allocator.free(quoted);
-                        try chunk_output.print(allocator, "var {s}={s}[{s}];\n", .{ name, ns_local, quoted });
+                        const helper = try readinessHelperExpression(allocator, graph, chunk_graph, chunk, options, linker orelse return error.MissingTlaReadinessHelper, reg_ids);
+                        defer allocator.free(helper);
+                        try chunk_output.print(allocator, "var {s}={s}.state({s}(\"{s}\")).internals[{s}];\n", .{ name, helper, if (reg_split) "__zntc_require" else "require", bind_arg, quoted });
                     }
                     continue;
                 }
@@ -1677,16 +1681,16 @@ fn emitChunksImpl(
                 }
             }
 
-            if (!reg_split and !options.preserve_modules) {
+            if (!options.preserve_modules and (!reg_split or firstAsyncChunkModule(dep_chunk, graph) != null)) {
                 if (chunk.esm_wrapper_cross_imports.get(dep_ci)) |initializers| {
                     std.mem.sort(SymbolID, initializers.items, {}, esmInitLessThan);
-                    const ready_holder: ?[]const u8 = if (cjs_require and initializers.items.len != 0 and firstAsyncChunkModule(dep_chunk, graph) != null) blk: {
+                    const ready_holder: ?[]const u8 = if ((cjs_require or reg_split) and initializers.items.len != 0 and firstAsyncChunkModule(dep_chunk, graph) != null) blk: {
                         const actual = graph.getModule(initializers.items[0].module) orelse return error.InvalidEsmInitOwner;
                         const base = try types.makeNsVarName(allocator, actual.path);
                         try alias_strs.append(allocator, base);
                         const holder = try mintConsumerLocal(allocator, base, &used_locals, &natural_bindings, &alias_strs);
                         try chunk_output.appendSlice(allocator, if (split_async_import_depth == 0) (if (split_assign_host) "module.exports = " else "") else "return ");
-                        try chunk_output.print(allocator, "require(\"{s}\").then(function({s}) {{\n", .{ bind_arg, holder });
+                        try chunk_output.print(allocator, "{s}(\"{s}\").then(function({s}) {{\n", .{ if (reg_split) "__zntc_require" else "require", bind_arg, holder });
                         split_async_import_depth += 1;
                         break :blk holder;
                     } else null;
@@ -1699,7 +1703,10 @@ fn emitChunksImpl(
                             // Promise as if it already were that namespace.
                             const quoted = try std.json.Stringify.valueAlloc(allocator, name, .{});
                             defer allocator.free(quoted);
-                            try chunk_output.print(allocator, "var {s}={s}[{s}];\n", .{ name, holder, quoted });
+                            _ = holder;
+                            const helper = try readinessHelperExpression(allocator, graph, chunk_graph, chunk, options, linker orelse return error.MissingTlaReadinessHelper, reg_ids);
+                            defer allocator.free(helper);
+                            try chunk_output.print(allocator, "var {s}={s}.state({s}(\"{s}\")).internals[{s}];\n", .{ name, helper, if (reg_split) "__zntc_require" else "require", bind_arg, quoted });
                         } else if (cjs_require) {
                             const provider = graph.getModule(init.module) orelse return error.InvalidEsmInitOwner;
                             if ((try provider.esmInitSymbol()).eql(init)) {
@@ -2165,14 +2172,14 @@ fn emitChunksImpl(
             pm_emit_options.defer_async_entry_exports = &pm_deferred_exports;
             pm_deferred_exports.pm_protocol = pm_protocol_owner != null;
         }
-        var split_deferred_exports: parent.DeferredAsyncEntryExports = .{ .module_index = entry_mod_idx orelse 0 };
+        var split_deferred_exports: parent.DeferredAsyncEntryExports = .{ .module_index = entry_mod_idx orelse 0, .cjs_value = !chunk_is_user_entry or options.format == .cjs };
         defer if (split_deferred_exports.value) |value| allocator.free(value);
         var split_emit_options = if (reg_split) iife_emit_opts else options.*;
         const split_needs_readiness = !options.preserve_modules and options.format != .esm and
             (split_async_import_depth > 0 or firstAsyncChunkModule(chunk, graph) != null);
         const split_contexts = try allocator.alloc(parent.DeferredAsyncEntryExports, if (split_needs_readiness) module_count else 0);
         defer allocator.free(split_contexts);
-        for (split_contexts, 0..) |*context, index| context.* = .{ .module_index = @intCast(index) };
+        for (split_contexts, 0..) |*context, index| context.* = .{ .module_index = @intCast(index), .cjs_value = !chunk_is_user_entry or options.format == .cjs };
         defer for (split_contexts) |context| {
             if (context.value) |value| allocator.free(value);
             if (context.init_name) |value| allocator.free(value);
@@ -2802,7 +2809,7 @@ fn emitChunksImpl(
             }
         }
 
-        if (!reg_split and !options.preserve_modules and chunk.esm_wrapper_cross_exports.count() > 0) {
+        if (!options.preserve_modules and (!reg_split or split_needs_readiness) and chunk.esm_wrapper_cross_exports.count() > 0) {
             var initializers: std.ArrayListUnmanaged(SymbolID) = .empty;
             defer initializers.deinit(allocator);
             var init_iterator = chunk.esm_wrapper_cross_exports.keyIterator();
@@ -2815,7 +2822,7 @@ fn emitChunksImpl(
                 try alias_strs.append(allocator, public);
                 if (split_needs_readiness) try split_bridge_entries.append(allocator, .{ .local = local, .exported = public });
                 if (initialized_namespaces.contains(init)) continue;
-                if (options.format == .cjs) {
+                if (options.format == .cjs or reg_split) {
                     try chunk_output.print(allocator, "exports.{s}={s};\n", .{ public, local });
                 } else if (std.mem.eql(u8, local, public)) {
                     try chunk_output.print(allocator, "export {{ {s} }};\n", .{local});
@@ -2941,9 +2948,14 @@ fn emitChunksImpl(
                 try @import("../runtime_interop_ast.zig").emit(&chunk_output, allocator, graph, l, options);
                 chunk_interop_emitted = true;
             }
-            try chunk_output.appendSlice(allocator, if (split_async_import_depth == 0) (if (split_assign_host) "module.exports = " else "") else "return ");
+            // Preserve the actual host export carrier in the existing private
+            // protocol. Public default/namespace values never acquire transport
+            // keys, while wrapper consumers retain their exact original carrier.
+            try chunk_output.print(allocator, "{s}.register(exports,exports);\n", .{helper});
+            if (split_async_import_depth != 0) try chunk_output.appendSlice(allocator, "return ");
+            try chunk_output.print(allocator, "{s}.publish(exports,module,function(){{return ", .{helper});
             try chunk_output.appendSlice(allocator, waits.items);
-            try chunk_output.appendSlice(allocator, ".then(function() {\n");
+            try chunk_output.appendSlice(allocator, ";},[],function() {\n");
             if (if (public_context) |context| context.value else null) |value| {
                 try chunk_output.appendSlice(allocator, value);
             } else {
@@ -2951,7 +2963,7 @@ fn emitChunksImpl(
                 defer allocator.free(value);
                 try chunk_output.appendSlice(allocator, value);
             }
-            try chunk_output.appendSlice(allocator, "});\n");
+            try chunk_output.print(allocator, "}},{s});\n", .{if (split_assign_host) "true" else "false"});
             for (0..split_async_import_depth) |_| try chunk_output.appendSlice(allocator, "});\n");
         }
 
