@@ -5177,7 +5177,7 @@ pub fn computeAllUsedNames(
             // same-number SID.
             const needs_local_identity = eb.kind == .local or eb.symbol.semanticIndex() != null;
             const output_symbol = if (needs_local_identity)
-                (exactOutputLocalExportSemanticIndex(m, eb) orelse {
+                (m.exportBindingLocalNodeSemanticIndex(eb) orelse {
                     all_used = true;
                     break;
                 })
@@ -5277,23 +5277,6 @@ pub fn computeAllUsedNames(
     }
 
     return list;
-}
-
-/// Reachability pruning may use an export SID only when its source local node
-/// still carries that exact identity in this module's current semantic graph.
-/// A missing or stale anchor keeps the output name conservatively.
-fn exactOutputLocalExportSemanticIndex(module: *const Module, binding: ExportBinding) ?u32 {
-    const symbol_index = module.exportBindingSemanticIndex(binding) orelse return null;
-    const local_node = binding.local_symbol_node orelse return null;
-    if (local_node.isNone()) return null;
-    const raw = @backingInt(local_node);
-    const ast = module.ast orelse return null;
-    const semantic = module.semantic orelse return null;
-    if (raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len) return null;
-    const node = ast.nodes.items[raw];
-    if (node.tag != .binding_identifier and node.tag != .identifier_reference) return null;
-    if (semantic.symbol_ids[raw] != symbol_index) return null;
-    return symbol_index;
 }
 
 fn expectOutputNamesFailClosed(
@@ -5396,7 +5379,7 @@ test "used output export names survive ten stale export SID carriers" {
         const infos = shaker.getModuleStmtInfos(provider_index) orelse return error.MissingProviderStmtInfos;
         const decoy_stmt = infos.declaredStmtBySymbol(@intCast(decoy_symbol)) orelse return error.MissingDecoyStatement;
         try std.testing.expect(!shaker.isStmtReachable(provider_index, decoy_stmt));
-        try std.testing.expectEqual(@as(?u32, live_symbol), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try std.testing.expectEqual(@as(?u32, live_symbol), provider.exportBindingLocalNodeSemanticIndex(binding.*));
         const original_symbol = binding.symbol;
         const original_anchor = binding.local_symbol_node;
         const original_kind = binding.kind;
@@ -5434,17 +5417,17 @@ test "used output export names survive ten stale export SID carriers" {
         // A valid same-module SID is still the wrong export owner. The scanner's
         // exact local node must stop this stale carrier from hiding a used name.
         binding.symbol = SymbolRef.makeSemantic(provider.index, decoy_symbol);
-        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try std.testing.expectEqual(@as(?u32, null), provider.exportBindingLocalNodeSemanticIndex(binding.*));
         try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
 
         // Equal scalar SIDs from another module must fail the module-owner check.
         binding.symbol = SymbolRef.makeSemantic(foreign.index, live_symbol);
-        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try std.testing.expectEqual(@as(?u32, null), provider.exportBindingLocalNodeSemanticIndex(binding.*));
         try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
 
         // A foreign decoy also cannot seed this module's statement reachability.
         binding.symbol = SymbolRef.makeSemantic(foreign.index, foreign_decoy_symbol);
-        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try std.testing.expectEqual(@as(?u32, null), provider.exportBindingLocalNodeSemanticIndex(binding.*));
         try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
 
         // A mismatched local AST anchor must not authorize the otherwise valid
@@ -5459,15 +5442,15 @@ test "used output export names survive ten stale export SID carriers" {
             }
         }
         binding.local_symbol_node = @fromBackingInt(decoy_binding_node orelse return error.MissingDecoyBindingNode);
-        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try std.testing.expectEqual(@as(?u32, null), provider.exportBindingLocalNodeSemanticIndex(binding.*));
         try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
 
         binding.local_symbol_node = null;
-        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try std.testing.expectEqual(@as(?u32, null), provider.exportBindingLocalNodeSemanticIndex(binding.*));
         try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
 
         binding.local_symbol_node = @as(NodeIndex, .none);
-        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try std.testing.expectEqual(@as(?u32, null), provider.exportBindingLocalNodeSemanticIndex(binding.*));
         try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
 
         const ast = if (provider.ast) |*value| value else return error.MissingProviderAst;
@@ -5477,19 +5460,19 @@ test "used output export names survive ten stale export SID carriers" {
         extended_symbol_ids[original_symbol_ids.len] = null;
         semantic.symbol_ids = extended_symbol_ids;
         binding.local_symbol_node = @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len))));
-        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try std.testing.expectEqual(@as(?u32, null), provider.exportBindingLocalNodeSemanticIndex(binding.*));
         try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
         semantic.symbol_ids = original_symbol_ids;
 
         binding.local_symbol_node = original_anchor;
         binding.symbol = .invalid;
-        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try std.testing.expectEqual(@as(?u32, null), provider.exportBindingLocalNodeSemanticIndex(binding.*));
         try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
 
         binding.symbol = original_symbol;
         const anchor_raw = @backingInt(original_anchor orelse return error.MissingLiveExportAnchor);
         semantic.symbol_ids = original_symbol_ids[0..anchor_raw];
-        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try std.testing.expectEqual(@as(?u32, null), provider.exportBindingLocalNodeSemanticIndex(binding.*));
         try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
         semantic.symbol_ids = original_symbol_ids;
 
@@ -5506,7 +5489,7 @@ test "used output export names survive ten stale export SID carriers" {
         const previous_non_identifier_sid = mutable_symbol_ids[non_identifier_raw];
         mutable_symbol_ids[non_identifier_raw] = live_symbol;
         binding.local_symbol_node = non_identifier_node;
-        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try std.testing.expectEqual(@as(?u32, null), provider.exportBindingLocalNodeSemanticIndex(binding.*));
         try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
         mutable_symbol_ids[non_identifier_raw] = previous_non_identifier_sid;
         binding.local_symbol_node = original_anchor;
@@ -5515,7 +5498,7 @@ test "used output export names survive ten stale export SID carriers" {
         // metadata has classified its export path as a re-export.
         binding.symbol = SymbolRef.makeSemantic(provider.index, decoy_symbol);
         binding.kind = .re_export;
-        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try std.testing.expectEqual(@as(?u32, null), provider.exportBindingLocalNodeSemanticIndex(binding.*));
         try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
         binding.kind = original_kind;
         binding.symbol = original_symbol;

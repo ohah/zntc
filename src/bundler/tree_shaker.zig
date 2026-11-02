@@ -1178,12 +1178,31 @@ pub const TreeShaker = struct {
                         continue;
                     }
 
-                    const sem = m.semantic orelse continue;
-                    if (sem.scope_maps.len == 0) continue;
+                    const sem = m.semantic orelse {
+                        try self.markAndSeedAllStmts(@intCast(i), &queue, module_stmt_infos, reachable_stmts);
+                        continue;
+                    };
+                    if (sem.scope_maps.len == 0) {
+                        try self.markAndSeedAllStmts(@intCast(i), &queue, module_stmt_infos, reachable_stmts);
+                        continue;
+                    }
+                    var has_invalid_export_identity = false;
                     for (m.export_bindings) |eb| {
                         if (eb.kind.isReExportAll()) continue;
-                        const sym_idx = eb.symbol.semanticIndex() orelse continue;
+                        const needs_local_identity = eb.kind == .local or eb.symbol.semanticIndex() != null;
+                        if (!needs_local_identity) continue;
+                        const sym_idx = m.exportBindingLocalNodeSemanticIndex(eb) orelse {
+                            has_invalid_export_identity = true;
+                            break;
+                        };
                         try self.enqueueSymbolLiveStatements(@intCast(i), infos, sym_idx, reachable_stmts, &queue);
+                    }
+                    if (has_invalid_export_identity) {
+                        // An all-exports root cannot discard a declaration based
+                        // on a missing, foreign, or stale export SID. Preserve the
+                        // complete source module and its re-export dependencies.
+                        try self.markAndSeedAllStmts(@intCast(i), &queue, module_stmt_infos, reachable_stmts);
+                        continue;
                     }
                     // dynamic import target도 re-export 체인 따라 transitive 모듈까지
                     // 전파해야 함(#1260). seedOpaqueModule은 opaque_visited로 중복 방지.
@@ -1286,11 +1305,11 @@ pub const TreeShaker = struct {
             for (0..mod_count) |i| {
                 const m = self.getModule(@intCast(i)) orelse continue;
                 const infos = module_stmt_infos[i] orelse continue;
-                const sem = m.semantic orelse continue;
-                if (sem.scope_maps.len == 0) continue;
                 for (m.export_bindings) |eb| {
                     if (eb.kind.isReExportAll()) continue;
-                    const sym_idx = eb.symbol.semanticIndex() orelse continue;
+                    const needs_local_identity = eb.kind == .local or eb.symbol.semanticIndex() != null;
+                    if (!needs_local_identity) continue;
+                    const sym_idx = m.exportBindingLocalNodeSemanticIndex(eb) orelse continue;
                     if (infos.declaredStmtBySymbol(sym_idx)) |stmt_idx| {
                         if (reachable_stmts[i] != null and reachable_stmts[i].?.isSet(stmt_idx)) {
                             try self.markExportUsed(@intCast(i), eb.exported_name);
