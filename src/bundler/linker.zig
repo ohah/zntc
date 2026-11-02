@@ -1007,7 +1007,13 @@ pub const Linker = struct {
                 // export default function foo → foo 이름으로 등록
                 const local = m.exportBindingLocalName(eb);
                 if (module_scope.get(local) == null) {
-                    try cb(ctx, local, .{});
+                    // The compatibility owner has no root-map row, but the
+                    // export scanner may still carry an exact local SID.
+                    const symbol_id = if (sem.scopes.len > 0)
+                        try self.exactLocalExportOwnerForName(m, &sem, local)
+                    else
+                        null;
+                    try cb(ctx, local, .{ .symbol_id = symbol_id });
                 }
             }
         }
@@ -1160,6 +1166,81 @@ pub const Linker = struct {
         try std.testing.expectEqualStrings("synthetic_wrapper$1", linker.rename_table.get(wrapper_id) orelse return error.MissingWrapperSyntheticOwnerRename);
         try std.testing.expect(linker.rename_table.get(bundler_symbol.SymbolID.make(module.index, @as(u32, 2))) == null);
         try std.testing.expect(linker.rename_table.get(bundler_symbol.SymbolID.make(module.index, @as(u32, 3))) == null);
+    }
+
+    // Private default-export owner capture and canonical sink need direct coverage.
+    test "default-export compatibility owner keeps its exact SID without a root-map row" {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
+
+        var cache = @import("resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var linker = Linker.init(std.testing.allocator, &graph, .esm);
+        defer linker.deinit();
+
+        const local_span = Span{ .start = 0, .end = 3 };
+        var symbols: std.ArrayList(semantic_symbol.Symbol) = .empty;
+        try symbols.append(arena_allocator, .{
+            .name = local_span,
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .kind = .function_decl,
+            .declaration_span = local_span,
+        });
+        try symbols.append(arena_allocator, .{
+            .name = local_span,
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .kind = .variable_const,
+            .declaration_span = local_span,
+        });
+
+        const root_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+        var scope_maps = [_]std.StringHashMapUnmanaged(usize){root_scope_map};
+        const scopes = [_]SemanticScope{.{ .parent = .none, .kind = .module, .is_strict = true }};
+        const semantic = ModuleSemanticData{
+            .symbols = symbols,
+            .scopes = &scopes,
+            .scope_maps = &scope_maps,
+            .exported_names = .empty,
+            .symbol_ids = &.{},
+            .unresolved_references = .empty,
+        };
+        var module = Module.init(@fromBackingInt(@as(u32, 0)), "entry.ts");
+        module.source = "foo";
+        module.ast = ast_mod.Ast.init(arena_allocator, module.source);
+        module.semantic = semantic;
+        var export_bindings = [_]ExportBinding{.{
+            .exported_name = "default",
+            .local_name = "foo",
+            .local_span = local_span,
+            .kind = .local,
+            .symbol = bundler_symbol.SymbolRef.makeSemantic(module.index, @as(u32, 0)),
+        }};
+        module.export_bindings = &export_bindings;
+
+        var name_to_owners: NameToOwnersMap = .empty;
+        defer {
+            var owners_it = name_to_owners.valueIterator();
+            while (owners_it.next()) |owners| owners.deinit(std.testing.allocator);
+            name_to_owners.deinit(std.testing.allocator);
+        }
+        try linker.collectModuleNames(module, 0, &name_to_owners);
+
+        const owners = (name_to_owners.get("foo") orelse return error.MissingDefaultExportOwner).items;
+        try std.testing.expectEqual(@as(usize, 1), owners.len);
+        const owner = owners[0];
+        const exact_id = bundler_symbol.SymbolID.make(module.index, @as(u32, 0));
+        try std.testing.expectEqual(exact_id, owner.symbol_id orelse return error.MissingDefaultExportOwnerId);
+
+        // A late same-spelling map row must not redirect the captured export owner.
+        try scope_maps[0].put(arena_allocator, "foo", 1);
+        try linker.putCanonicalNameForOwner(owner, "foo", try std.testing.allocator.dupe(u8, "foo$1"));
+
+        try std.testing.expectEqualStrings("foo$1", linker.rename_table.get(exact_id) orelse return error.MissingDefaultExportOwnerRename);
+        const decoy_id = bundler_symbol.SymbolID.make(module.index, @as(u32, 1));
+        try std.testing.expect(linker.rename_table.get(decoy_id) == null);
     }
 
     /// Recover a root owner only when the export scanner independently carries
