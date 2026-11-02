@@ -493,7 +493,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     }
   });
 
-  test('define call roots retain lexical identities through direct-eval console reanalysis', async () => {
+  test('define call roots retain exact identity across direct eval and console dropping', async () => {
     const fixture = await createFixture({
       'input.js': [
         'const globalThis = { reader: { readFlag() { return 7; } } };',
@@ -523,7 +523,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     const identity = expectPrepassGraph(
       `${result.stdout}\n${result.stderr}`,
       'input.js',
-      'reanalyzed',
+      'retained',
     );
     expect(identity).toMatch(/clean=1(?:\s|$)/);
     expect(identity).toMatch(/unclassified_reference=0(?:\s|$)/);
