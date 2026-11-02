@@ -4427,10 +4427,28 @@ test "namespace re-export metadata uses the import binding SymbolId under a host
             try std.testing.expect(metadata.ns_member_rewrites.get(binding_symbol) != null);
             try std.testing.expect(metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
         }
+
+        // A missing linker-derived SID must use the exact retained import
+        // anchor, never the poisoned local-name row, and must stay missing.
+        const binding_ptr = for (entry.import_bindings) |*candidate| {
+            if (std.mem.eql(u8, candidate.local_name, "value")) break candidate;
+        } else return error.MissingNamespaceImportBinding;
+        const saved_local = binding_ptr.local_symbol;
+        binding_ptr.local_symbol = .invalid;
+        const decoy_symbol = semantic.scope_maps[0].get("decoy9") orelse return error.MissingNamespaceDecoy;
+        try mutable_scope_maps[0].put(allocator, "value", decoy_symbol);
+
+        var missing_sid_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+        defer missing_sid_metadata.deinit();
+
+        try std.testing.expect(missing_sid_metadata.ns_member_rewrites.get(binding_symbol) != null);
+        try std.testing.expect(missing_sid_metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
+        try std.testing.expect(!binding_ptr.local_symbol.isValid());
+        binding_ptr.local_symbol = saved_local;
     }
 }
 
-test "namespace hostile metadata rejects foreign and alias SymbolRefs, preserving invalid fallback" {
+test "namespace hostile metadata rejects foreign and alias SymbolRefs, and uses only an exact source anchor" {
     const allocator = std.testing.allocator;
     const barrel_sources = [_][]const u8{
         "import * as ns from './provider.ts'; export { ns };\n",
@@ -4471,6 +4489,7 @@ test "namespace hostile metadata rejects foreign and alias SymbolRefs, preservin
         const decoy_symbol = semantic.scope_maps[0].get("decoy0") orelse return error.MissingNamespaceDecoy;
         const mutable_scope_maps = @constCast(semantic.scope_maps);
         const binding = &entry.import_bindings[binding_index];
+        const source_anchor = binding.local_symbol_node orelse return error.MissingNamespaceImportAnchor;
 
         // A valid same-module SymbolRef wins over a poisoned spelling map and
         // keeps the namespace rewrite attached to the captured binding SID.
@@ -4497,20 +4516,21 @@ test "namespace hostile metadata rejects foreign and alias SymbolRefs, preservin
         try std.testing.expect(alias_metadata.ns_member_rewrites.get(binding_symbol) == null);
         try std.testing.expect(alias_metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
 
-        // Invalid SymbolRef is reserved for low-level callers that have no
-        // captured identity, so the legacy name-to-scope fallback remains live.
+        // A missing derived SID uses the exact retained source anchor even when
+        // the spelling row is poisoned, and does not repair local_symbol.
         binding.local_symbol = .invalid;
         try mutable_scope_maps[0].put(allocator, "value", decoy_symbol);
-        var poisoned_fallback_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
-        defer poisoned_fallback_metadata.deinit();
-        try std.testing.expect(poisoned_fallback_metadata.ns_member_rewrites.get(binding_symbol) == null);
-        try std.testing.expect(poisoned_fallback_metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
+        var missing_sid_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+        defer missing_sid_metadata.deinit();
+        try std.testing.expect(missing_sid_metadata.ns_member_rewrites.get(binding_symbol) != null);
+        try std.testing.expect(missing_sid_metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
+        try std.testing.expect(!binding.local_symbol.isValid());
 
         try mutable_scope_maps[0].put(allocator, "value", semantic.symbols.items.len + 7);
-        var out_of_range_fallback_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
-        defer out_of_range_fallback_metadata.deinit();
-        try std.testing.expect(out_of_range_fallback_metadata.ns_member_rewrites.get(binding_symbol) == null);
-        try std.testing.expect(out_of_range_fallback_metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
+        var out_of_range_map_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+        defer out_of_range_map_metadata.deinit();
+        try std.testing.expect(out_of_range_map_metadata.ns_member_rewrites.get(binding_symbol) != null);
+        try std.testing.expect(out_of_range_map_metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
 
         // Even a same-spelling, in-range root row cannot stand in for an
         // import binding if its semantic kind belongs to an ordinary const.
@@ -4519,17 +4539,28 @@ test "namespace hostile metadata rejects foreign and alias SymbolRefs, preservin
         mutable_symbols[decoy_symbol].name = mutable_symbols[binding_symbol].name;
         _ = mutable_scope_maps[0].remove("decoy0");
         try mutable_scope_maps[0].put(allocator, "value", decoy_symbol);
-        var wrong_kind_fallback_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
-        defer wrong_kind_fallback_metadata.deinit();
-        try std.testing.expect(wrong_kind_fallback_metadata.ns_member_rewrites.get(binding_symbol) == null);
-        try std.testing.expect(wrong_kind_fallback_metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
+        var wrong_kind_map_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+        defer wrong_kind_map_metadata.deinit();
+        try std.testing.expect(wrong_kind_map_metadata.ns_member_rewrites.get(binding_symbol) != null);
+        try std.testing.expect(wrong_kind_map_metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
         mutable_symbols[decoy_symbol].name = original_decoy_name;
         try mutable_scope_maps[0].put(allocator, "decoy0", decoy_symbol);
 
+        // If both the derived SID and exact source anchor are absent from an
+        // AST-backed module, even a correct-looking name row cannot reconstruct
+        // identity. Keep this distinct from graphless legacy callers.
+        binding.local_symbol_node = null;
         try mutable_scope_maps[0].put(allocator, "value", binding_symbol);
-        var fallback_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
-        defer fallback_metadata.deinit();
-        try std.testing.expect(fallback_metadata.ns_member_rewrites.get(binding_symbol) != null);
+        var anchorless_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+        defer anchorless_metadata.deinit();
+        try std.testing.expect(anchorless_metadata.ns_member_rewrites.get(binding_symbol) == null);
+        try std.testing.expect(anchorless_metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
+        binding.local_symbol_node = source_anchor;
+
+        try mutable_scope_maps[0].put(allocator, "value", binding_symbol);
+        var anchored_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+        defer anchored_metadata.deinit();
+        try std.testing.expect(anchored_metadata.ns_member_rewrites.get(binding_symbol) != null);
     }
 }
 
