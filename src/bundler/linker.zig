@@ -4122,6 +4122,8 @@ pub const Linker = struct {
                 if (binding) |symbol_index| {
                     if (symbol_index >= semantic.symbols.items.len)
                         return error.InvalidExplicitGlobalBinding;
+                    self.validateScopeMapOwnerIdentity(module.*, semantic, name, scope_index, symbol_index) catch
+                        return error.InvalidExplicitGlobalBinding;
                     const symbol_raw: u32 = @intCast(symbol_index);
                     const symbol_id = bundler_symbol.SymbolID.make(
                         @fromBackingInt(@intCast(module_index)),
@@ -7799,6 +7801,120 @@ test "consumer shadow renaming rejects a same-name SID from another scope" {
             &name_to_owners,
             0,
         ),
+    );
+    try std.testing.expectEqual(@as(usize, 0), linker.rename_table.count());
+}
+
+test "explicit-global shadow lookup rejects a same-name SID from another scope" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "entry.mjs",
+        .data = "function run(Object) { function nested(Object) { return Object; } class C { static value() { return 10; } } return [C.value(), Object, nested(3)]; }",
+    });
+    const entry_path = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry_path);
+
+    var cache = @import("resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es5);
+    try graph.build(std.testing.io, &.{entry_path});
+
+    const module_index = graph.path_to_module.get(entry_path) orelse return error.MissingEntryModule;
+    const module = graph.moduleAtMut(module_index).?;
+    const semantic = &(module.semantic orelse return error.MissingEntrySemantic);
+    const ast = &(module.ast orelse return error.MissingEntryAst);
+    const transform_cache = module.transform_cache orelse return error.MissingExplicitGlobalTransformCache;
+    const root = ast.transformed_root orelse return error.MissingEntryRoot;
+    const Frame = struct { node: NodeIndex, parent: ?u32 };
+    var stack: std.ArrayList(Frame) = .empty;
+    defer stack.deinit(std.testing.allocator);
+    try stack.append(std.testing.allocator, .{ .node = root, .parent = null });
+    var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer parents.deinit(std.testing.allocator);
+    var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer visited.deinit(std.testing.allocator);
+    while (stack.pop()) |frame| {
+        if (frame.node.isNone() or @backingInt(frame.node) >= ast.nodes.items.len) continue;
+        const raw = @backingInt(frame.node);
+        if (!visited.contains(raw)) {
+            try visited.put(std.testing.allocator, raw, {});
+            if (frame.parent) |parent| try parents.put(std.testing.allocator, raw, parent);
+            var children = ast_walk.children(ast, ast.getNode(frame.node));
+            while (children.next()) |child| {
+                if (!child.isNone()) try stack.append(std.testing.allocator, .{ .node = child, .parent = raw });
+            }
+        }
+    }
+    var owner_scope: ?usize = null;
+    var owner_symbol: ?usize = null;
+    for (transform_cache.explicit_global_ref_nodes) |raw| {
+        if (raw >= ast.nodes.items.len or ast.nodes.items[raw].tag != .identifier_reference) continue;
+        if (!std.mem.eql(u8, ast.getText(ast.nodes.items[raw].data.string_ref), "Object")) continue;
+        var node_cursor: ?u32 = raw;
+        var scope_cursor: ?u32 = null;
+        var node_hops: usize = 0;
+        while (node_cursor) |node| : (node_hops += 1) {
+            if (node_hops > ast.nodes.items.len) return error.CyclicExplicitGlobalParent;
+            if (semantic.scope_owner_map.get(node)) |scope| {
+                scope_cursor = scope;
+                break;
+            }
+            node_cursor = parents.get(node);
+        }
+        var scope = scope_cursor orelse continue;
+        var hops: usize = 0;
+        while (true) : (hops += 1) {
+            if (scope >= semantic.scopes.len or hops >= semantic.scopes.len) return error.InvalidExplicitGlobalScope;
+            const scope_index: usize = @intCast(scope);
+            if (scope_index < semantic.scope_maps.len) {
+                if (semantic.scope_maps[scope_index].get("Object")) |symbol_index| {
+                    owner_scope = scope_index;
+                    owner_symbol = symbol_index;
+                    break;
+                }
+            }
+            const parent = semantic.scopes[scope_index].parent;
+            if (parent.isNone()) break;
+            scope = parent.toIndex();
+        }
+        if (owner_scope != null) break;
+    }
+    const actual_scope = owner_scope orelse return error.MissingExplicitGlobalOwnerScope;
+    const actual_symbol = owner_symbol orelse return error.MissingExplicitGlobalOwnerSymbol;
+    if (actual_symbol >= semantic.symbols.items.len) return error.InvalidExplicitGlobalBinding;
+
+    var decoy_symbol: ?usize = null;
+    for (semantic.scope_maps, 0..) |scope_map, scope_index| {
+        if (scope_index == actual_scope) continue;
+        const candidate = scope_map.get("Object") orelse continue;
+        if (candidate >= semantic.symbols.items.len) continue;
+        const symbol = semantic.symbols.items[candidate];
+        if (symbol.scope_id.isNone() or symbol.scope_id.toIndex() != scope_index) continue;
+        if (!bundler_symbol.SymbolID.eql(
+            bundler_symbol.SymbolID.make(module_index, @as(u32, @intCast(candidate))),
+            bundler_symbol.SymbolID.make(module_index, @as(u32, @intCast(actual_symbol))),
+        )) {
+            decoy_symbol = candidate;
+            break;
+        }
+    }
+    const wrong_owner = decoy_symbol orelse return error.MissingExplicitGlobalDecoy;
+    try std.testing.expect(semantic.symbols.items[wrong_owner].scope_id.toIndex() != actual_scope);
+
+    try @constCast(&semantic.scope_maps[actual_scope]).put(
+        module.parse_arena.?.allocator(),
+        "Object",
+        wrong_owner,
+    );
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    var name_to_owners: Linker.NameToOwnersMap = .empty;
+    try std.testing.expectError(
+        error.InvalidExplicitGlobalBinding,
+        linker.resolveExplicitGlobalShadowsInModule(module_index.toU32(), &name_to_owners),
     );
     try std.testing.expectEqual(@as(usize, 0), linker.rename_table.count());
 }
