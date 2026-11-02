@@ -3165,6 +3165,65 @@ test "linker exact export owners survive nested and out-of-range scope-map corru
     }
 }
 
+test "CJS re-export shadow leaves a same-named private provider local alone" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "entry.mjs",
+        "import { publicValue as imported } from './barrel.mjs'; function read(foo) { return imported + foo; } console.log(read(1));",
+    );
+    try writeFile(tmp.dir, "barrel.mjs", "export { foo as publicValue } from './provider.cjs';");
+    try writeFile(tmp.dir, "provider.cjs", "const foo = 41; const decoy = 99; exports.foo = foo;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingRenameOwnerModule;
+    const entry = r.graph.getModule(entry_index) orelse return error.MissingRenameOwnerModule;
+    const entry_binding = entry.import_bindings[0];
+    const resolved = r.linker.getResolvedBinding(entry_index.toU32(), entry_binding.local_span) orelse
+        return error.MissingResolvedImport;
+    const provider_index = findModuleIdx(r.graph, "provider.cjs") orelse return error.MissingRenameOwnerModule;
+    try std.testing.expectEqual(provider_index, resolved.canonical.module_index);
+    try std.testing.expectEqualStrings("foo", resolved.canonical.export_name);
+
+    const provider = r.graph.getModule(provider_index) orelse return error.MissingRenameOwnerModule;
+    try std.testing.expectEqual(.cjs, provider.wrap_kind);
+    const semantic = provider.semantic orelse return error.MissingRenameOwnerSemantic;
+    const private_symbol = semantic.scope_maps[0].get("foo") orelse return error.MissingRenameOwnerSymbol;
+    const decoy_symbol = semantic.scope_maps[0].get("decoy") orelse return error.MissingRenameOwnerDecoy;
+    const private_id = bundler_symbol.SymbolID.make(provider_index, @as(u32, @intCast(private_symbol)));
+    const decoy_id = bundler_symbol.SymbolID.make(provider_index, @as(u32, @intCast(decoy_symbol)));
+    try r.linker.computeRenames();
+    try std.testing.expect(r.linker.rename_table.get(private_id) == null);
+    try std.testing.expect(r.linker.rename_table.get(decoy_id) == null);
+
+    const helpers = @import("test_helpers.zig");
+    const entry_path = try helpers.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry_path);
+    const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", entry_path } });
+    defer std.testing.allocator.free(native.stdout);
+    defer std.testing.allocator.free(native.stderr);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, native.term);
+    try std.testing.expectEqualStrings("42\n", native.stdout);
+
+    var bundled = try helpers.bundleEntry(std.testing.allocator, &tmp, entry_path, .{ .platform = .node });
+    defer bundled.deinit();
+    try std.testing.expect(!bundled.result.hasErrors());
+    try writeFile(tmp.dir, "actual.cjs", bundled.code());
+    const output_path = try helpers.absPath(&tmp, "actual.cjs");
+    defer std.testing.allocator.free(output_path);
+    const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", output_path } });
+    defer std.testing.allocator.free(actual.stdout);
+    defer std.testing.allocator.free(actual.stderr);
+    if (actual.term != .exited or actual.term.exited != 0) std.debug.print("CJS re-export shadow output failed: {s}\n{s}\n", .{ actual.stderr, bundled.code() });
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+    try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+}
+
 test "rename: three modules same name — $1 and $2" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
