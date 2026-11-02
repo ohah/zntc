@@ -7039,6 +7039,40 @@ test "runtime helper CJS factory scope zero shadows rename the exact provider" {
             resolved.canonical.export_name,
             "__callSuper",
         ));
+        const mutable_entry = @constCast(entry);
+        const sibling_helper_local = for (mutable_entry.import_bindings) |candidate| {
+            if (candidate.is_helper and !std.mem.eql(u8, candidate.imported_name, "__callSuper")) break candidate.local_symbol;
+        } else return error.MissingSiblingHelperImport;
+        try std.testing.expectEqual(entry_index, sibling_helper_local.moduleIndex());
+        try std.testing.expect(sibling_helper_local.semanticIndex() != local);
+        var checked_missing_import = false;
+        for (mutable_entry.import_bindings) |*candidate| {
+            if (!candidate.is_helper or !std.mem.eql(u8, candidate.imported_name, "__callSuper")) continue;
+            const saved_local = candidate.local_symbol;
+            candidate.local_symbol = .invalid;
+            const shadowed = result.linker.preserveRuntimeHelperImportIsShadowed(
+                entry_index.toU32(),
+                provider.index.toU32(),
+                resolved.canonical.export_name,
+                "__callSuper",
+            );
+            const remained_missing = !candidate.local_symbol.isValid();
+            candidate.local_symbol = saved_local;
+            try std.testing.expectEqual(index < 2, shadowed);
+            try std.testing.expect(remained_missing);
+            candidate.local_symbol = sibling_helper_local;
+            const shadowed_with_same_module_decoy = result.linker.preserveRuntimeHelperImportIsShadowed(
+                entry_index.toU32(),
+                provider.index.toU32(),
+                resolved.canonical.export_name,
+                "__callSuper",
+            );
+            candidate.local_symbol = saved_local;
+            try std.testing.expectEqual(index < 2, shadowed_with_same_module_decoy);
+            checked_missing_import = true;
+            break;
+        }
+        try std.testing.expect(checked_missing_import);
         if (index == 0) {
             const semantic = entry.semantic.?;
             const source_binding_id = semantic.scope_maps[0].get("__callSuper") orelse return error.MissingSourceShadow;
@@ -7063,7 +7097,6 @@ test "runtime helper CJS factory scope zero shadows rename the exact provider" {
                 "__callSuper",
             ));
             try mutable_scope_maps[0].put(std.testing.allocator, "__callSuper", source_binding_id);
-            const mutable_entry = @constCast(entry);
             const saved_scope_maps = mutable_entry.semantic.?.scope_maps;
             mutable_entry.semantic.?.scope_maps = &.{};
             try std.testing.expect(result.linker.preserveRuntimeHelperImportIsShadowed(
@@ -7078,7 +7111,6 @@ test "runtime helper CJS factory scope zero shadows rename the exact provider" {
             const source_binding_id = entry.semantic.?.scope_maps[0].get("__callSuper").?;
             const source_id = bundler_symbol.SymbolID.make(entry_index, source_binding_id);
             try std.testing.expectEqualStrings("__callSuper", result.linker.rename_table.get(source_id) orelse "__callSuper");
-            const mutable_entry = @constCast(entry);
             var helper_binding: ?*ImportBinding = null;
             for (mutable_entry.import_bindings) |*candidate| {
                 if (candidate.is_helper and candidate.local_symbol.semanticIndex() == local) helper_binding = candidate;
@@ -7109,9 +7141,10 @@ test "runtime helper CJS factory scope zero shadows rename the exact provider" {
                     11 => mutable_entry.semantic.?.scope_maps[0].getPtr("__callSuper").?.* = @intCast(mutable_entry.semantic.?.symbols.items.len),
                     else => unreachable,
                 }
-                // Malformed root rows conservatively request a collision-free
-                // import alias; unrelated invalid helper identities still reject.
-                const expected_shadow = hostile == 6 or hostile == 7 or hostile == 11;
+                // A stale/missing derived SID uses the exact source anchor;
+                // missing root rows remain conservative, while a wrong source
+                // binding kind cannot borrow the helper identity.
+                const expected_shadow = hostile == 1 or hostile == 2 or hostile == 3 or hostile == 6 or hostile == 7 or hostile == 11;
                 try std.testing.expectEqual(expected_shadow, result.linker.preserveRuntimeHelperImportIsShadowed(
                     entry_index.toU32(),
                     if (hostile == 9) entry_index.toU32() else provider.index.toU32(),

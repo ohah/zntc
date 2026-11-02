@@ -4370,15 +4370,22 @@ pub const Linker = struct {
     /// bindings can capture a helper provider's canonical global spelling,
     /// although they are deliberately outside hasNestedBinding's scope 1+ set.
     /// A removed helper import itself is not a physical factory-local shadow.
+    fn checkedRuntimeHelperImportLocalSid(module: *const Module, binding: ImportBinding) ?u32 {
+        if (!binding.is_helper) return null;
+        const local = module.checkedSourceImportLocalSymbol(binding) catch return null;
+        if (!local.isValid() or local.moduleIndex() != module.index) return null;
+        const local_sid = local.semanticIndex() orelse return null;
+        const sem = module.semantic orelse return null;
+        if (local_sid >= sem.symbols.items.len or sem.symbols.items[local_sid].kind != .import_binding) return null;
+        return local_sid;
+    }
+
     fn helperFactoryScopeZeroShadow(self: *const Linker, m: *const Module, binding: ImportBinding, name: []const u8) bool {
         if (!binding.is_helper or m.wrap_kind != .cjs) return false;
         const sem = if (m.semantic) |*value| value else return false;
+        const local = checkedRuntimeHelperImportLocalSid(m, binding);
         const selected = if (sem.scope_maps.len > 0) sem.scope_maps[0].get(name) else null;
         const id = selected orelse {
-            const local = if (binding.local_symbol.moduleIndex() == m.index)
-                binding.local_symbol.semanticIndex()
-            else
-                null;
             for (sem.symbols.items, 0..) |symbol, raw| {
                 if (symbol.scope_id.isNone() or symbol.scope_id.toIndex() != 0) continue;
                 if (local) |local_id| if (@as(usize, local_id) == raw and symbol.kind == .import_binding) continue;
@@ -4392,8 +4399,8 @@ pub const Linker = struct {
         // cannot prove the exact factory-local owner, treat it as a possible
         // shadow so the helper receives a collision-free provider alias.
         self.validateScopeMapOwnerIdentity(m.*, sem, name, 0, id) catch return true;
-        if (binding.local_symbol.moduleIndex() == m.index and sem.symbols.items[id].kind == .import_binding)
-            if (binding.local_symbol.semanticIndex()) |local| if (id == local) return false;
+        if (sem.symbols.items[id].kind == .import_binding)
+            if (local) |local_id| if (id == local_id) return false;
         return true;
     }
 
@@ -5353,14 +5360,15 @@ pub const Linker = struct {
         const provider_sid = helper_module.findLocalExportSemanticIndex(export_name) orelse return false;
         const provider_sem = helper_module.semantic orelse return false;
         if (provider_sid >= provider_sem.symbols.items.len) return false;
-        const sem = consumer.semantic orelse return false;
         for (consumer.import_bindings) |binding| {
-            if (!binding.is_helper or binding.local_symbol.moduleIndex() != consumer.index) continue;
-            const local_sid = binding.local_symbol.semanticIndex() orelse continue;
-            if (local_sid >= sem.symbols.items.len or sem.symbols.items[local_sid].kind != .import_binding) continue;
+            if (!binding.is_helper) continue;
             const resolved = self.getResolvedBinding(consumer_module_index, binding.local_span) orelse continue;
             if (resolved.canonical.module_index != helper_module.index or
                 !std.mem.eql(u8, resolved.canonical.export_name, export_name)) continue;
+            // The installed binding can be missing during graph reuse. Its exact
+            // scanner-owned node still authorizes this import's semantic SID;
+            // never use a stale stored SID or a same-spelling scope entry here.
+            _ = checkedRuntimeHelperImportLocalSid(consumer, binding) orelse continue;
             if (self.helperFactoryScopeZeroShadow(consumer, binding, binding_name)) return true;
         }
         return false;
