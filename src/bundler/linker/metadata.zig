@@ -2244,6 +2244,34 @@ pub const ConstProviderCollector = struct {
     incomplete: bool = false,
 };
 
+fn crossModuleConstImportLocalSemanticIndex(
+    module: *const Module,
+    semantic: *const ModuleSemanticData,
+    binding: ImportBinding,
+) ?u32 {
+    const expected_kind: semantic_symbol.SymbolKind = switch (binding.local_role) {
+        .import_binding => .import_binding,
+        .materialized_var => .variable_var,
+        .materialized_const => .variable_const,
+    };
+    if (binding.local_symbol.isValid()) {
+        if (binding.local_symbol.moduleIndex() != module.index) return null;
+        const sid = binding.local_symbol.semanticIndex() orelse return null;
+        if (sid >= semantic.symbols.items.len or semantic.symbols.items[sid].kind != expected_kind) return null;
+        if (binding.local_symbol_node != null) {
+            const anchored = module.checkedSourceImportLocalSymbol(binding) catch return null;
+            if (!binding.local_symbol.eql(anchored)) return null;
+        }
+        return sid;
+    }
+    if (binding.local_symbol_node == null) return null;
+    const anchored = module.checkedSourceImportLocalSymbol(binding) catch return null;
+    if (!anchored.isValid() or anchored.moduleIndex() != module.index) return null;
+    const sid = anchored.semanticIndex() orelse return null;
+    if (sid >= semantic.symbols.items.len or semantic.symbols.items[sid].kind != expected_kind) return null;
+    return sid;
+}
+
 pub fn buildCrossModuleConstValues(
     self: *const Linker,
     m: *const Module,
@@ -2261,7 +2289,7 @@ pub fn buildCrossModuleConstValues(
 pub fn buildCrossModuleConstValuesProfiled(
     self: *const Linker,
     m: *const Module,
-    _: @import("../module.zig").ModuleSemanticData,
+    sem: @import("../module.zig").ModuleSemanticData,
     profile_cats: ConstValuesProfile,
     collector: ?*ConstProviderCollector,
 ) !std.AutoHashMapUnmanaged(u32, semantic_symbol.ConstValue) {
@@ -2337,15 +2365,16 @@ pub fn buildCrossModuleConstValuesProfiled(
             if (target_sym.scope_id.isNone() or target_sym.scope_id.toIndex() >= lookup.sem.scopes.len) continue;
             if (lookup.sem.scopes[target_sym.scope_id.toIndex()].blocksMangling()) continue;
         }
-        // import binding의 local symbol에 매핑
-        if (ib.local_symbol.semanticIndex()) |local_sym| {
-            try const_values.put(self.allocator, local_sym, cv);
-            // (#4557 B-precise, [1][2]) 이 const 의 re-export 체인 전체(중간 barrel 포함)를 diskPath 로
-            // 수집. canon 까지 clean named `.re_export` 로 못 따라가면 incomplete → 소비자 crude-b 폴백.
-            if (collector) |c| {
-                const complete = collectConstProviderChain(self, rec.resolved, ib.imported_name, canon.module_index, &c.paths) catch false;
-                if (!complete) c.incomplete = true;
-            }
+        // The cached local SID is linker-derived. If it is absent, preserve
+        // this fact under the exact scanner-owned source identity without
+        // publishing a repaired ImportBinding field or consulting a name map.
+        const local_sym = crossModuleConstImportLocalSemanticIndex(m, &sem, ib) orelse continue;
+        try const_values.put(self.allocator, local_sym, cv);
+        // (#4557 B-precise, [1][2]) 이 const 의 re-export 체인 전체(중간 barrel 포함)를 diskPath 로
+        // 수집. canon 까지 clean named `.re_export` 로 못 따라가면 incomplete → 소비자 crude-b 폴백.
+        if (collector) |c| {
+            const complete = collectConstProviderChain(self, rec.resolved, ib.imported_name, canon.module_index, &c.paths) catch false;
+            if (!complete) c.incomplete = true;
         }
     }
     return const_values;

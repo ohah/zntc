@@ -3294,6 +3294,53 @@ test "linker: cross-module const identity adversarial input matrix" {
     }
 }
 
+test "linker: cross-module const facts use the source anchor when the cached import SID is missing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs",
+        \\import { value } from './barrel.mjs';
+        \\const decoy = 7;
+        \\console.log(value);
+    );
+    try writeFile(tmp.dir, "barrel.mjs", "export { value } from './provider.mjs';");
+    try writeFile(tmp.dir, "provider.mjs", "export const value = 42;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingEntryModule;
+    const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingEntryModule);
+    const semantic = entry.semantic orelse return error.MissingEntrySemantic;
+    const binding = &entry.import_bindings[0];
+    const source_anchor = binding.local_symbol_node orelse return error.MissingImportAnchor;
+    const source_ref = try entry.checkedSourceImportLocalSymbol(binding.*);
+    const source_sid = source_ref.semanticIndex() orelse return error.MissingSourceSID;
+    const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoySID;
+    try std.testing.expect(source_sid != decoy_sid);
+    const decoy_sid_u32: u32 = @intCast(decoy_sid);
+
+    binding.local_symbol = .invalid;
+    try @constCast(semantic.scope_maps)[0].put(std.testing.allocator, "value", decoy_sid);
+    var const_values = try r.linker.buildCrossModuleConstValues(entry, semantic);
+    defer const_values.deinit(std.testing.allocator);
+    const fact = const_values.get(source_sid) orelse return error.MissingAnchoredConstFact;
+    try std.testing.expectEqual(semantic_symbol.ConstValue.Kind.number, fact.kind);
+    try std.testing.expectEqualStrings("42", fact.number_text);
+    try std.testing.expect(const_values.get(decoy_sid_u32) == null);
+    try std.testing.expect(!binding.local_symbol.isValid());
+
+    // With both exact carriers absent, a correct-looking name row must not
+    // reconstruct a const fact from spelling alone.
+    binding.local_symbol_node = null;
+    try @constCast(semantic.scope_maps)[0].put(std.testing.allocator, "value", source_sid);
+    var anchorless_values = try r.linker.buildCrossModuleConstValues(entry, semantic);
+    defer anchorless_values.deinit(std.testing.allocator);
+    try std.testing.expect(anchorless_values.get(source_sid) == null);
+    binding.local_symbol_node = source_anchor;
+}
+
 test "rename: no conflict — no rename" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
