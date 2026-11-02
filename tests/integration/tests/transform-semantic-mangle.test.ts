@@ -79,7 +79,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(execution.stdout).toBe('42');
   });
 
-  test('bundler retains erased namespace-export graphs and rejects extra downlevel work', async () => {
+  test('bundler preserves exact identity across namespace and ES5 field lowering', async () => {
     const fixture = await createFixture({
       'input.ts': [
         'export as namespace Api;',
@@ -97,12 +97,52 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         'const box = new Box();',
         'process.stdout.write(String(box.value + 2));',
       ].join('\n'),
+      'downlevel-call-field.ts': [
+        'export as namespace Api;',
+        'let calls = 0;',
+        'function seed() { calls++; return 40; }',
+        'export class Box { value: number = seed(); }',
+        'const box = new Box();',
+        'process.stdout.write(`${box.value + 2}:${calls}`);',
+      ].join('\n'),
+      'downlevel-computed-key.ts': [
+        'export as namespace Api;',
+        'let calls = 0;',
+        'function key() { calls++; return "value"; }',
+        'export class Box { [key()]: number = 40; }',
+        'const box = new Box();',
+        'process.stdout.write(`${box.value + 2}:${calls}`);',
+      ].join('\n'),
+      'downlevel-private-field.ts': [
+        'export as namespace Api;',
+        'export class Box { #value: number = 40; read() { return this.#value; } }',
+        'const box = new Box();',
+        'process.stdout.write(String(box.read() + 2));',
+      ].join('\n'),
     });
     cleanup = fixture.cleanup;
     const cases = [
-      { entry: 'input.ts', target: 'esnext', graph: 'retained' as const },
-      { entry: 'script.ts', target: 'esnext', graph: 'retained' as const },
-      { entry: 'downlevel.ts', target: 'es5', graph: 'reanalyzed' as const },
+      { entry: 'input.ts', target: 'esnext', graph: 'retained' as const, stdout: '42' },
+      { entry: 'script.ts', target: 'esnext', graph: 'retained' as const, stdout: '42' },
+      { entry: 'downlevel.ts', target: 'es5', graph: 'retained' as const, stdout: '42' },
+      {
+        entry: 'downlevel-call-field.ts',
+        target: 'es5',
+        graph: 'retained' as const,
+        stdout: '42:1',
+      },
+      {
+        entry: 'downlevel-computed-key.ts',
+        target: 'es5',
+        graph: 'retained' as const,
+        stdout: '42:1',
+      },
+      {
+        entry: 'downlevel-private-field.ts',
+        target: 'es5',
+        graph: 'retained' as const,
+        stdout: '42',
+      },
     ];
     for (const item of cases) {
       const input = join(fixture.dir, item.entry);
@@ -126,9 +166,14 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       for (const counter of EXACT_ZERO_COUNTERS) {
         expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
       }
+      if (item.target === 'es5') {
+        const code = readFileSync(output, 'utf8');
+        expect(code, item.entry).not.toContain('class Box');
+        expect(code, item.entry).not.toContain('#value');
+      }
       const execution = await runNode(output);
       expect(execution.stderr, item.entry).toBe('');
-      expect(execution.stdout, item.entry).toBe('42');
+      expect(execution.stdout, item.entry).toBe(item.stdout);
     }
   });
 
@@ -3539,7 +3584,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout.trim()).toBe('one,two,other');
   });
 
-  test('bundler keeps the edited Flow match graph only for the syntax-local path', async () => {
+  test('bundler keeps the edited Flow match graph across exact transforms', async () => {
     const fixture = await createFixture({
       'match.mjs': `
         // @flow
@@ -3674,26 +3719,20 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       ['array-rest.mjs', 'match-array-rest-kept', [], true, '4:2'],
       ['array-shadow.mjs', 'match-array-shadow-kept', [], true, '4 false'],
       ['object-rest-shadow.mjs', 'match-object-rest-shadow-kept', [], true, '1'],
-      ['array-shadow.mjs', 'match-array-shadow-es5-fallback', ['--target=es5'], false, '4 false'],
-      [
-        'object-rest-shadow.mjs',
-        'match-object-rest-shadow-es5-fallback',
-        ['--target=es5'],
-        false,
-        '1',
-      ],
-      ['array-pattern.mjs', 'match-array-es5-fallback', ['--target=es5'], false, '4'],
-      ['object-rest.mjs', 'match-object-rest-es5-fallback', ['--target=es5'], false, '1'],
+      ['array-shadow.mjs', 'match-array-shadow-kept-es5', ['--target=es5'], true, '4 false'],
+      ['object-rest-shadow.mjs', 'match-object-rest-shadow-kept-es5', ['--target=es5'], true, '1'],
+      ['array-pattern.mjs', 'match-array-kept-es5', ['--target=es5'], true, '4'],
+      ['object-rest.mjs', 'match-object-rest-kept-es5', ['--target=es5'], true, '1'],
       ['typed.mjs', 'flow-types-kept', [], true, '7 5'],
       ['typed-import.mjs', 'flow-type-import-retained', [], true, '3'],
-      ['with-import.mjs', 'match-import-fallback', [], false, '5'],
-      ['with-eval.mjs', 'match-eval-fallback', [], false, 'zero'],
-      ['match.mjs', 'match-es5-fallback', ['--target=es5'], false, '4 zero outer user-m user-m2'],
+      ['with-import.mjs', 'match-import-retained', [], true, '5'],
+      ['with-eval.mjs', 'match-eval-retained', [], true, 'zero'],
+      ['match.mjs', 'match-es5-retained', ['--target=es5'], true, '4 zero outer user-m user-m2'],
       [
         'match.mjs',
-        'match-minify-syntax-fallback',
+        'match-minify-syntax-retained',
         ['--minify-syntax'],
-        false,
+        true,
         '4 zero outer user-m user-m2',
       ],
     ] as const) {
@@ -5145,6 +5184,54 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
           '5,3,5,99,zero,outer-m',
         );
       }
+    }
+  });
+
+  test('Flow match guard blocks preserve a shadowed outer reference through ES5 lowering', async () => {
+    const fixture = await createFixture({
+      'input.js': `
+        // @flow
+        function classify(value, Object) {
+          return match (value) {
+            const item if (item > 0) => Object.keys({ payload: item }).length + Object.marker,
+            _ => 0,
+          };
+        }
+        const objectApi = {
+          keys(value) { return globalThis.Object.keys(value); },
+          marker: 22,
+        };
+        console.log(classify(1, objectApi), classify(0, objectApi));
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    for (const minifySyntax of [false, true]) {
+      const output = join(fixture.dir, `output-es5-${minifySyntax}.js`);
+      const result = await runZntc(
+        [
+          input,
+          '-o',
+          output,
+          '--target=es5',
+          '--minify-identifiers',
+          ...(minifySyntax ? ['--minify-syntax'] : []),
+          '--flow',
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, `minifySyntax=${minifySyntax}: ${result.stderr}`).toBe(0);
+      const identity = result.stderr
+        .split(/\r?\n/)
+        .find((line) => line.includes('zntc: symbol-identity '));
+      expect(identity).toBeDefined();
+      expect(identity).toMatch(/clean=1(?:\s|$)/);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      }
+      const transformed = await runNode(output);
+      expect(transformed.stderr, `minifySyntax=${minifySyntax}`).toBe('');
+      expect(transformed.stdout.trim(), `minifySyntax=${minifySyntax}`).toBe('23 0');
     }
   });
 

@@ -370,7 +370,8 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
     defer self.allocator.free(if_stmts);
 
     for (arm_indices, 0..) |ai, k| {
-        const arm = self.ast.getNode(@fromBackingInt(@intCast(ai)));
+        const arm_idx: NodeIndex = @fromBackingInt(@intCast(ai));
+        const arm = self.ast.getNode(arm_idx);
         const pattern = arm.data.binary.left;
         const new_body_raw = try self.visitNode(arm.data.binary.right);
         const body_node = self.ast.getNode(new_body_raw);
@@ -400,6 +401,11 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
 
         const then_block = try mkBlock(self, span, &.{});
         const arm_scope = try self.addGeneratedScope(fn_scope, then_block, .block);
+        const source_arm_scope = if (self.semantic_edit_enabled)
+            self.outputOwnedScope(arm_idx) orelse @panic("Flow match arm lost its source ScopeId")
+        else
+            ScopeId.none;
+        const source_pattern_scope = if (source_arm_scope.isNone()) .none else self.outputScopeParent(source_arm_scope);
         const context: FlowMatchContext = .{
             .temp_span = match_var,
             .symbol_id = match_symbol,
@@ -409,6 +415,11 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
         var subject = MatchSubject{};
         defer subject.path.deinit(self.allocator);
         const lp = try lowerMatchPattern(self, pattern, &subject, span, context);
+        // Pattern value expressions run before the source arm's binding scope.
+        // Lowering places those exact expressions inside the generated matcher
+        // function, so move their unresolved-name provenance and nested owners
+        // to the function's actual output scope before validating the graph.
+        try self.reparentGeneratedBodyScopes(source_pattern_scope, fn_scope, lp.test_expr);
 
         // then-block: bindings... + (guard ? if (guard) { body } : body)
         var then_list: std.ArrayListUnmanaged(NodeIndex) = .empty;
@@ -416,17 +427,27 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
         if (lp.guard.isNone()) {
             for (body_stmts.items) |s| try then_list.append(self.allocator, s);
         } else {
+            const guarded_body = try mkBlock(self, span, body_stmts.items);
+            const guard_scope = try self.addGeneratedScope(arm_scope, guarded_body, .block);
+            // The guarded body is a real lexical block nested inside the arm.
+            // Move source references and nested owners onto that exact output
+            // scope before the final tree walk assigns any missing scopes.
+            try self.reparentGeneratedBodyScopes(source_arm_scope, guard_scope, guarded_body);
             try then_list.append(self.allocator, try self.ast.addNode(.{
                 .tag = .if_statement,
                 .span = span,
                 .data = .{ .ternary = .{
                     .a = lp.guard,
-                    .b = try mkBlock(self, span, body_stmts.items),
+                    .b = guarded_body,
                     .c = NodeIndex.none,
                 } },
             }));
         }
         self.ast.nodes.items[@backingInt(then_block)].data.list = try self.ast.addNodeList(then_list.items);
+        // Guards and arm bodies move from the parser-owned Flow arm into this
+        // generated block. Keep unresolved-name provenance and nested lexical
+        // owners aligned with the emitted block's exact ScopeId.
+        try self.reparentGeneratedBodyScopes(source_arm_scope, arm_scope, then_block);
 
         if_stmts[k] = try self.ast.addNode(.{
             .tag = .if_statement,
