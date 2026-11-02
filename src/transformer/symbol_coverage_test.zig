@@ -2261,17 +2261,27 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var ast = Ast.init(allocator, "");
+    var ast = Ast.init(allocator, "01234567890123456789012345678901234567890123456789012345678901234567890123456789");
     defer ast.deinit();
 
     const name = try ast.addString("_generated");
-    const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
-    const generated_block = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{binding}));
-    const sibling_generated_block = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{}));
-    const parent_block = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{ sibling_generated_block, generated_block }));
-    const root = try ast.addListNode(.program, name, try ast.addNodeList(&.{parent_block}));
-    const detached_source_block = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{}));
-    const source_class_body = try ast.addListNode(.class_body, name, try ast.addNodeList(&.{}));
+    var source_sibling_blocks: [10]AstNodeIndex = undefined;
+    for (&source_sibling_blocks, 0..) |*block, index| {
+        block.* = try ast.addListNode(.block_statement, .{ .start = @intCast(index * 2), .end = @intCast(index * 2 + 1) }, try ast.addNodeList(&.{}));
+    }
+    const generated_span = @import("../lexer/token.zig").Span{ .start = 32, .end = 40 };
+    const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = generated_span, .data = .{ .string_ref = name } });
+    const generated_block = try ast.addListNode(.block_statement, generated_span, try ast.addNodeList(&.{binding}));
+    const sibling_generated_block = try ast.addListNode(.block_statement, .{ .start = 42, .end = 43 }, try ast.addNodeList(&.{}));
+    const parent_children = try allocator.alloc(AstNodeIndex, source_sibling_blocks.len + 2);
+    @memcpy(parent_children[0..source_sibling_blocks.len], &source_sibling_blocks);
+    parent_children[source_sibling_blocks.len] = sibling_generated_block;
+    parent_children[source_sibling_blocks.len + 1] = generated_block;
+    const parent_span = @import("../lexer/token.zig").Span{ .start = 0, .end = 52 };
+    const parent_block = try ast.addListNode(.block_statement, parent_span, try ast.addNodeList(parent_children));
+    const root = try ast.addListNode(.program, parent_span, try ast.addNodeList(&.{parent_block}));
+    const detached_source_block = try ast.addListNode(.block_statement, .{ .start = 55, .end = 56 }, try ast.addNodeList(&.{}));
+    const source_class_body = try ast.addListNode(.class_body, .{ .start = 57, .end = 58 }, try ast.addNodeList(&.{}));
     const class_none = @backingInt(AstNodeIndex.none);
     const source_class_extra = try ast.addExtras(&.{
         class_none,
@@ -2283,35 +2293,44 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
         0,
         0,
     });
-    const source_class = try ast.addNode(.{ .tag = .class_expression, .span = name, .data = .{ .extra = source_class_extra } });
+    const source_class = try ast.addNode(.{ .tag = .class_expression, .span = parent_span, .data = .{ .extra = source_class_extra } });
 
     const global_scope: ScopeId = @fromBackingInt(@intCast(0));
     const emitted_parent_scope: ScopeId = @fromBackingInt(@intCast(1));
     const retained_source_class_scope: ScopeId = @fromBackingInt(@intCast(2));
     const detached_source_scope: ScopeId = @fromBackingInt(@intCast(3));
-    const sibling_generated_scope: ScopeId = @fromBackingInt(@intCast(4));
-    const generated_scope: ScopeId = @fromBackingInt(@intCast(5));
-    const scopes = [_]Scope{
+    var sibling_source_scopes: [10]ScopeId = undefined;
+    for (&sibling_source_scopes, 0..) |*scope, index| scope.* = @fromBackingInt(@intCast(4 + index));
+    const sibling_generated_scope: ScopeId = @fromBackingInt(@intCast(14));
+    const generated_scope: ScopeId = @fromBackingInt(@intCast(15));
+    var scopes: [16]Scope = undefined;
+    scopes[0..4].* = .{
         .{ .parent = .none, .kind = .global, .is_strict = false },
         .{ .parent = global_scope, .kind = .block, .is_strict = false },
         .{ .parent = emitted_parent_scope, .kind = .class_body, .is_strict = true },
         .{ .parent = global_scope, .kind = .block, .is_strict = false },
-        .{ .parent = emitted_parent_scope, .kind = .block, .is_strict = false },
-        .{ .parent = retained_source_class_scope, .kind = .block, .is_strict = true },
     };
+    for (4..14) |scope_index| {
+        scopes[scope_index] = .{ .parent = emitted_parent_scope, .kind = .block, .is_strict = false };
+    }
+    scopes[14] = .{ .parent = emitted_parent_scope, .kind = .block, .is_strict = false };
+    scopes[15] = .{ .parent = retained_source_class_scope, .kind = .block, .is_strict = true };
     var generated_names: std.StringHashMapUnmanaged(usize) = .empty;
     defer generated_names.deinit(allocator);
     try generated_names.put(allocator, "_generated", 0);
-    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, .empty, .empty, .empty, .empty, generated_names };
+    var scope_maps: [16]std.StringHashMapUnmanaged(usize) = @splat(.empty);
+    scope_maps[15] = generated_names;
     const symbols = [_]Symbol{.{
         .name = name,
         .scope_id = generated_scope,
         .origin_scope = generated_scope,
         .kind = .variable_let,
-        .declaration_span = name,
+        .declaration_span = generated_span,
         .synthetic_name = "_generated",
     }};
-    const symbol_ids = [_]?u32{0};
+    const symbol_ids = try allocator.alloc(?u32, @as(usize, @intCast(@backingInt(binding))) + 1);
+    @memset(symbol_ids, null);
+    symbol_ids[@backingInt(binding)] = 0;
     const references = [_]Reference{.{
         .node_index = .none,
         .scope_id = generated_scope,
@@ -2322,6 +2341,9 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
     defer scope_owner_map.deinit(allocator);
     try scope_owner_map.put(allocator, @backingInt(root), @backingInt(global_scope));
     try scope_owner_map.put(allocator, @backingInt(parent_block), @backingInt(emitted_parent_scope));
+    for (source_sibling_blocks, sibling_source_scopes) |block, scope| {
+        try scope_owner_map.put(allocator, @backingInt(block), @backingInt(scope));
+    }
     try scope_owner_map.put(allocator, @backingInt(sibling_generated_block), @backingInt(sibling_generated_scope));
     try scope_owner_map.put(allocator, @backingInt(generated_block), @backingInt(generated_scope));
     try scope_owner_map.put(allocator, @backingInt(detached_source_block), @backingInt(detached_source_scope));
@@ -2335,8 +2357,8 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
         allocator,
         &ast,
         root,
-        0,
-        &symbol_ids,
+        @intCast(@backingInt(binding)),
+        symbol_ids,
         &symbols,
         &scopes,
         &scope_maps,
@@ -2347,9 +2369,69 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
         &unresolved,
         &explicit_globals,
         &origins,
-        4,
+        14,
     );
     try std.testing.expect(report.isClean());
+
+    // Reachable source scopes are not bridges when their owners are siblings
+    // of the generated node. Verify ten distinct source-owner mutations; each
+    // would otherwise make sibling lexical names visible through the forged
+    // parent chain while preserving individually valid ScopeIds.
+    for (sibling_source_scopes) |sibling_source_scope| {
+        var sibling_corruption = scopes;
+        sibling_corruption[@backingInt(generated_scope)].parent = sibling_source_scope;
+        const sibling_source_bridge = try coverage.checkExactWithScopeBoundary(
+            allocator,
+            &ast,
+            root,
+            @intCast(@backingInt(binding)),
+            symbol_ids,
+            &symbols,
+            &sibling_corruption,
+            &scope_maps,
+            &scope_owner_map,
+            &references,
+            &.{},
+            &helpers,
+            &unresolved,
+            &explicit_globals,
+            &origins,
+            14,
+        );
+        try std.testing.expectEqual(@as(usize, 1), sibling_source_bridge.scope_owner_parent_mismatch);
+        try std.testing.expect(!sibling_source_bridge.isClean());
+    }
+
+    // Cloned siblings can carry equal source ranges, so span equality alone
+    // must not turn a lexical sibling into a valid bridge.
+    for (source_sibling_blocks, sibling_source_scopes) |block, sibling_source_scope| {
+        const raw = @backingInt(block);
+        const original_span = ast.nodes.items[raw].span;
+        ast.nodes.items[raw].span = generated_span;
+        var equal_span_corruption = scopes;
+        equal_span_corruption[@backingInt(generated_scope)].parent = sibling_source_scope;
+        const equal_span_bridge = try coverage.checkExactWithScopeBoundary(
+            allocator,
+            &ast,
+            root,
+            @intCast(@backingInt(binding)),
+            symbol_ids,
+            &symbols,
+            &equal_span_corruption,
+            &scope_maps,
+            &scope_owner_map,
+            &references,
+            &.{},
+            &helpers,
+            &unresolved,
+            &explicit_globals,
+            &origins,
+            14,
+        );
+        ast.nodes.items[raw].span = original_span;
+        try std.testing.expectEqual(@as(usize, 1), equal_span_bridge.scope_owner_parent_mismatch);
+        try std.testing.expect(!equal_span_bridge.isClean());
+    }
 
     // A generated origin_scope is live semantic metadata even when the
     // symbol's storage scope is elsewhere. It must not escape the generated
@@ -2372,8 +2454,8 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
         allocator,
         &ast,
         root,
-        0,
-        &symbol_ids,
+        @intCast(@backingInt(binding)),
+        symbol_ids,
         &origin_only_symbols,
         origin_only_scopes,
         origin_only_scope_maps,
@@ -2384,7 +2466,7 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
         &unresolved,
         &explicit_globals,
         &origins,
-        4,
+        14,
     );
     try std.testing.expectEqual(@as(usize, 1), origin_only_report.scope_owner_mismatch);
     try std.testing.expectEqualStrings(
@@ -2400,8 +2482,8 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
         allocator,
         &ast,
         root,
-        0,
-        &symbol_ids,
+        @intCast(@backingInt(binding)),
+        symbol_ids,
         &symbols,
         &corrupted_scopes,
         &scope_maps,
@@ -2412,7 +2494,7 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
         &unresolved,
         &explicit_globals,
         &origins,
-        4,
+        14,
     );
     try std.testing.expectEqual(@as(usize, 1), detached_class_scope.scope_owner_parent_mismatch);
     try std.testing.expect(!detached_class_scope.isClean());
@@ -2425,8 +2507,8 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
         allocator,
         &ast,
         root,
-        0,
-        &symbol_ids,
+        @intCast(@backingInt(binding)),
+        symbol_ids,
         &symbols,
         &corrupted_scopes,
         &scope_maps,
@@ -2437,7 +2519,7 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
         &unresolved,
         &explicit_globals,
         &origins,
-        4,
+        14,
     );
     try std.testing.expectEqual(@as(usize, 1), generated_scope_bridge.scope_owner_parent_mismatch);
     try std.testing.expect(!generated_scope_bridge.isClean());
