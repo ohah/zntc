@@ -25571,11 +25571,13 @@ test "#6193 unresolved void undefined graph admission rejects local and dynamic 
     defer local_arena.deinit();
     var local_fixture = try jsxSpreadChildTestFixture(
         local_arena.allocator(),
-        "const undefined = 0; const member = { undefined: \"value\" }; const items = [1]; const result = <Comp {...{ id: member[void undefined] }} key=\"k\">{...items}</Comp>;",
+        "const undefined = 0; const member = { undefined: \"value\" }; const items = [1]; const result = <Comp {...{ id: member[void ((undefined))] }} key=\"k\">{...items}</Comp>;",
     );
-    try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&local_fixture, .automatic, true));
+    inline for (.{ .classic, .automatic, .automatic_dev }) |runtime| {
+        try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&local_fixture, runtime, true));
+        try std.testing.expect(!fullPrepassAuditedJsxGraphAdmissionForTest(&local_fixture, runtime));
+    }
     try std.testing.expect(!auditedJsxSpreadPropsOperandForTest(&local_fixture));
-    try std.testing.expect(!fullPrepassAuditedJsxGraphAdmissionForTest(&local_fixture, .automatic));
 
     var eval_arena = std.heap.ArenaAllocator.init(allocator);
     defer eval_arena.deinit();

@@ -31843,7 +31843,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('JSX spread retains only the unresolved global void undefined read', () => {
+  test('JSX spread keeps exact void undefined identities across runtimes', () => {
     const modes = [
       {
         name: 'classic',
@@ -31860,7 +31860,10 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     ] as const;
     const inputs = [
       { name: 'unresolved-global', prefix: '', graph: 'retained' },
-      { name: 'local-binding', prefix: 'const undefined = 0;\n', graph: 'reanalyzed' },
+      // This bounded preflight adds only the unresolved global case. The
+      // completed retained-graph pipeline can also keep an existing local SID
+      // when the final exact identity audit proves that it survived lowering.
+      { name: 'local-binding', prefix: 'const undefined = 0;\n', graph: 'retained' },
     ] as const;
 
     for (const mode of modes) {
