@@ -18927,7 +18927,8 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     {
         // Generated built-ins are not source references. Complete the same
         // candidate's unresolved-name metadata before its final identity proof;
-        // no analyzer fallback may publish another identity space.        addFlowMatchGeneratedGlobals(arena_alloc, &module.semantic.?, flow_match_generated_globals) catch {};
+        // no analyzer fallback may publish another identity space.
+        addFlowMatchGeneratedGlobals(arena_alloc, &module.semantic.?, flow_match_generated_globals) catch {};
         if (lowered_object_spread_global)
             addGeneratedGlobal(arena_alloc, &module.semantic.?, "Object") catch {};
         if (lowered_exponentiation_global)
