@@ -12,6 +12,8 @@ Tree-shaker import liveness와 reverse index는 `ImportBinding.local_symbol`을 
 
 선택적 minify 및 bundler prepass는 AST와 semantic graph를 함께 준비하고 함께 게시한다. 실패한 후보는 원본 AST·graph·export metadata·cache에 부분 결과를 남기지 않는다. 원본 선언을 제거하는 변환은 실제 producer의 선언·참조·scope·외부 root를 포함한 retirement 증명을 남긴다. source symbol의 storage/origin을 일반적인 “삭제됨” 표시로 덮어 검사에서 제외하지 않는다.
 
+Zig bundler AST Visitor는 기본적으로 graph 보존 계약이 없다. plain JavaScript의 제한된 prepass 조건에서 Visitor가 binding/reference/scope identity를 바꾸지 않는다고 명시하면 `.identity_preserving_visitor_edits` 경로를 사용할 수 있다. 후보 출력은 exact identity audit를 통과해야 게시된다. 적대 검증은 숫자 literal span 편집을 허용하고, reference의 출력 이름만 동명 decoy binding으로 바꾼 변조는 기존 SID와의 불일치로 후보를 거부하며 원본 AST·graph를 보존하는지 확인한다. 이 계약은 임의 subtree 재작성이나 binding/reference/scope 생성·삭제·이동을 허가하지 않으며, `onFunction` 또는 auto-worklet 훅과 조합할 수 없다.
+
 `scope_frame_history.zig`의 초기 scope/owner와 생성·이동 기록은 graph와 같은 생명주기를 가진다. Worklet class lowerer, computed class key, enum 및 명시적 statement drop 같은 역할은 각 생성자의 실제 사건으로 증명한다. History의 copy-on-write, 해제, codec 및 새 AST domain 복원에서도 역할과 소유권을 함께 보존해야 한다. 증명은 임의의 동형 AST나 다른 graph에서 재사용할 수 없다.
 
 ## 분석 호출 경계

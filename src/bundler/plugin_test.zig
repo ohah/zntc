@@ -24,6 +24,13 @@ test "plugin graph retention classifies every AST mutation capability" {
         .onFunction = builtin.onFunction,
         .ast_graph_contract = .tracked_function_edits,
     }).hasTrackedFunctionGraphContract());
+    const identity_preserving_visitor = Plugin{
+        .name = "identity-preserving-visitor",
+        .visitor = .{ .on_program = builtin.visitor.?.on_program },
+        .ast_graph_contract = .identity_preserving_visitor_edits,
+    };
+    try std.testing.expect(identity_preserving_visitor.hasIdentityPreservingVisitorGraphContract());
+    try std.testing.expect(identity_preserving_visitor.hasRetainedGraphContract());
     try std.testing.expect((Plugin{ .name = "auto-worklet", .autoWorkletCallees = builtin.autoWorkletCallees }).hasAstTransformHooks());
     try std.testing.expect(!(Plugin{
         .name = "tracked-function-and-visitor",
@@ -31,6 +38,18 @@ test "plugin graph retention classifies every AST mutation capability" {
         .visitor = .{ .on_program = builtin.visitor.?.on_program },
         .ast_graph_contract = .tracked_function_edits,
     }).hasTrackedFunctionGraphContract());
+    try std.testing.expect(!(Plugin{
+        .name = "visitor-and-function",
+        .onFunction = builtin.onFunction,
+        .visitor = .{ .on_program = builtin.visitor.?.on_program },
+        .ast_graph_contract = .identity_preserving_visitor_edits,
+    }).hasIdentityPreservingVisitorGraphContract());
+    try std.testing.expect(!(Plugin{
+        .name = "visitor-with-auto-worklet",
+        .visitor = .{ .on_program = builtin.visitor.?.on_program },
+        .autoWorkletCallees = builtin.autoWorkletCallees,
+        .ast_graph_contract = .identity_preserving_visitor_edits,
+    }).hasIdentityPreservingVisitorGraphContract());
     inline for (@typeInfo(plugin_mod.Visitor).@"struct".field_names) |field| {
         var visitor: plugin_mod.Visitor = .{};
         @field(visitor, field) = @field(builtin.visitor.?, field);

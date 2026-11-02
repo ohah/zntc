@@ -106,12 +106,13 @@ pub const PluginFailure = struct {
     }
 };
 
-/// AST callbacks default to an untracked graph contract. A function-hook
-/// plugin may opt into semantic-editor tracking; bundler retention still
-/// requires the exact post-transform graph audit to pass.
+/// AST callbacks default to an untracked graph contract. Function hooks may
+/// opt into semantic-editor tracking. Visitors may opt in only when they
+/// preserve lexical identities; both contracts require an exact output audit.
 pub const AstGraphContract = enum {
     untracked,
     tracked_function_edits,
+    identity_preserving_visitor_edits,
 };
 
 /// fallible plugin hook 의 out-param. 호출자가 stack 에 만들어 hook 으로 전달하면
@@ -346,9 +347,10 @@ pub const Plugin = struct {
 
     // ─── AST 훅 (transformer 내부에서 AST 노드 방문 시 호출) ───
 
-    /// AST callbacks are analyzer-backed unless their graph edits are routed
-    /// through the exact semantic-editor API. This contract currently applies
-    /// only to `onFunction`; arbitrary visitor callbacks remain untracked.
+    /// AST callbacks are analyzer-backed unless their graph edits use a
+    /// retained-graph contract and pass the exact output identity audit.
+    /// Visitors must explicitly promise to preserve binding/reference/scope
+    /// edges; uncontracted visitors remain on the conservative path.
     ast_graph_contract: AstGraphContract = .untracked,
 
     /// 함수 노드 방문 훅. visitFunction 완료 후 호출.
@@ -398,9 +400,8 @@ pub const Plugin = struct {
         return false;
     }
 
-    /// Exact graph edits are currently available for function hooks that use
-    /// AstTransformCtx's tracked insertion-scope operations. A visitor can
-    /// replace arbitrary subtrees and needs a separate graph contract.
+    /// Exact graph edits are available for function hooks that use
+    /// AstTransformCtx's tracked insertion-scope operations.
     pub fn hasTrackedFunctionGraphContract(self: Plugin) bool {
         if (self.ast_graph_contract != .tracked_function_edits or self.onFunction == null or
             self.autoWorkletCallees.len > 0) return false;
@@ -410,6 +411,24 @@ pub const Plugin = struct {
             }
         }
         return true;
+    }
+
+    /// A visitor may opt in only when it promises to preserve bindings,
+    /// references, and lexical scopes. The bundler validates that promise with
+    /// the exact retained-graph audit before publishing the candidate.
+    pub fn hasIdentityPreservingVisitorGraphContract(self: Plugin) bool {
+        if (self.ast_graph_contract != .identity_preserving_visitor_edits or
+            self.onFunction != null or self.autoWorkletCallees.len > 0) return false;
+        const visitor = self.visitor orelse return false;
+        inline for (@typeInfo(Visitor).@"struct".field_names) |field| {
+            if (@field(visitor, field) != null) return true;
+        }
+        return false;
+    }
+
+    pub fn hasRetainedGraphContract(self: Plugin) bool {
+        return self.hasTrackedFunctionGraphContract() or
+            self.hasIdentityPreservingVisitorGraphContract();
     }
 };
 
