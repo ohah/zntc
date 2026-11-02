@@ -2370,7 +2370,8 @@ fn isRetainableJsxSpreadChild(
 
 /// Keep identifier operands only with their exact source binding. Inline
 /// object literals are limited to static data properties with primitive
-/// literals, exact bound reads, member chains rooted in a bound identifier,
+/// literals (including no-substitution templates), exact bound reads, member
+/// chains rooted in a bound identifier,
 /// the unresolved global undefined, or void over primitive literals. Member
 /// chains allow dot names, primitive literal bracket keys, void over primitive
 /// literals, exact bound identifier keys, or the unresolved global undefined.
@@ -2450,6 +2451,9 @@ fn isRetainableJsxSpreadPropsOperand(
         if (value_idx.isNone() or @backingInt(value_idx) >= ast.nodes.items.len) return false;
         switch (ast.nodes.items[@backingInt(value_idx)].tag) {
             .string_literal, .numeric_literal, .bigint_literal, .boolean_literal, .null_literal => {},
+            .template_literal => {
+                if (!isExactJsxNoSubstitutionTemplateLiteral(ast, value_idx)) return false;
+            },
             .identifier_reference => {
                 if (!isBoundSourceIdentifierReference(ast, semantic, value_idx) and
                     !isUnresolvedGlobalUndefinedReference(ast, semantic, value_idx)) return false;
@@ -17471,7 +17475,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
         try std.testing.expect(tag != .spread_element and tag != .elision);
     }
 
-    const classic_source = "const React = { createElement: function() {} }; const props = { id: 'from-props' }; const member = { deep: { value: 'M' }, 'undefined': 'U' }; const memberKey = 'deep'; const detachedRole = 'dialog'; const detachedCount = 2; const items = [1, 2]; const result = <div {...props} {...{ memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} value={items}>{...items}</div>; const detached = <aside {...{ role: detachedRole, count: detachedCount }} />;";
+    const classic_source = "const React = { createElement: function() {} }; const props = { id: 'from-props' }; const member = { deep: { value: 'M' }, 'undefined': 'U' }; const memberKey = 'deep'; const detachedRole = 'dialog'; const detachedCount = 2; const items = [1, 2]; const result = <div {...props} {...{ staticTemplateValue: `static`, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} value={items}>{...items}</div>; const detached = <aside {...{ role: detachedRole, count: detachedCount }} />;";
     var classic_fixture = try jsxSpreadChildTestFixture(allocator, classic_source);
     const classic_owner = classic_fixture.semantic.captureOwnerToken();
     var classic_item_symbol: ?u32 = null;
@@ -17594,7 +17598,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), classic_member_key_read_count);
     try std.testing.expectEqual(@as(usize, 2), classic_undefined_read_count);
 
-    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" }, \"undefined\": \"U\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...props} {...{ id: label, count: count, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;";
+    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" }, \"undefined\": \"U\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...props} {...{ staticTemplateValue: `static`, id: label, count: count, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;";
     var key_fallback_fixture = try jsxSpreadChildTestFixture(allocator, key_fallback_source);
     const key_fallback_owner = key_fallback_fixture.semantic.captureOwnerToken();
     var key_fallback_item_symbol: ?u32 = null;
@@ -17707,7 +17711,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), key_fallback_member_key_read_count);
     try std.testing.expectEqual(@as(usize, 2), key_fallback_undefined_read_count);
 
-    const dev_source = "const member = { deep: { value: \"D\" }, \"undefined\": \"U\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...{ memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}</Comp>;";
+    const dev_source = "const member = { deep: { value: \"D\" }, \"undefined\": \"U\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...{ staticTemplateValue: `static`, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}</Comp>;";
     var dev_fixture = try jsxSpreadChildTestFixture(allocator, dev_source);
     const dev_owner = dev_fixture.semantic.captureOwnerToken();
     var source_dev_member_symbol: ?u32 = null;
@@ -24481,12 +24485,44 @@ test "#6193 automatic key fallback props rejects malformed no-substitution templ
     try std.testing.expect(!isRetainableJsxVoidPrimitiveValue(&fixture.ast, void_value));
 }
 
+test "#6193 automatic key fallback props accepts only exact no-substitution template values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var fixture = try jsxSpreadChildTestFixture(
+        arena.allocator(),
+        "const items = [1]; const result = <Comp {...{ label: `static` }} key=\"k\">{...items}</Comp>;",
+    );
+    try std.testing.expect(auditedJsxSpreadPropsOperandForTest(&fixture));
+
+    var template_idx: ?ast_mod.NodeIndex = null;
+    for (fixture.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .template_literal) {
+            template_idx = @fromBackingInt(@intCast(raw));
+            break;
+        }
+    }
+    const template = template_idx orelse return error.MissingJsxTemplateValue;
+    try std.testing.expect(isExactJsxNoSubstitutionTemplateLiteral(&fixture.ast, template));
+
+    const template_raw: usize = @intCast(@backingInt(template));
+    const saved_list = fixture.ast.nodes.items[template_raw].data.list;
+    fixture.ast.nodes.items[template_raw].data.list.start = std.math.maxInt(u32);
+    try std.testing.expect(!isExactJsxNoSubstitutionTemplateLiteral(&fixture.ast, template));
+    try std.testing.expect(!auditedJsxSpreadPropsOperandForTest(&fixture));
+    fixture.ast.nodes.items[template_raw].data.list = saved_list;
+
+    fixture.ast.nodes.items[template_raw].data.list.len = 1;
+    try std.testing.expect(!isExactJsxNoSubstitutionTemplateLiteral(&fixture.ast, template));
+    try std.testing.expect(!auditedJsxSpreadPropsOperandForTest(&fixture));
+}
+
 test "#6193 automatic key fallback props spread admits static data and bound value reads" {
     const allocator = std.testing.allocator;
     const safe_sources = [_][]const u8{
         "const props = {}; const items = [1]; const result = <Comp {...props} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{}} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ id: \"x\", count: 2, enabled: true, empty: null }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ id: `x`, label: `y` }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ \"data-id\": \"x\", 2: false }} key=\"k\">{...items}</Comp>;",
         "const label = \"x\"; const count = 2; const items = [1]; const result = <Comp {...{ id: label, count: count }} key=\"k\">{...items}</Comp>;",
         "const id = \"x\"; const items = [1]; const result = <Comp {...{ id: id }} key=\"k\">{...items}</Comp>;",
@@ -24600,6 +24636,18 @@ test "#6193 automatic key fallback props spread admits static data and bound val
         "const items = [1]; const result = <Comp {...{ get id() { return \"x\"; } }} key=\"k\">{...items}</Comp>;",
         "const source = {}; const items = [1]; const result = <Comp {...{ ...source }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ nested: { value: 1 } }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ label: `prefix${suffix}` }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ label: `prefix${missingValue}` }} key=\"k\">{...items}</Comp>;",
+        "function getLabel() { return \"x\"; } const items = [1]; const result = <Comp {...{ label: `prefix${getLabel()}` }} key=\"k\">{...items}</Comp>;",
+        "const source = { label: \"x\" }; const items = [1]; const result = <Comp {...{ label: `prefix${source.label}` }} key=\"k\">{...items}</Comp>;",
+        "const left = \"a\"; const right = \"b\"; const items = [1]; const result = <Comp {...{ label: `${left}${right}` }} key=\"k\">{...items}</Comp>;",
+        "const suffix = \"x\"; const items = [1]; const result = <Comp {...{ label: `outer${`inner${suffix}`}` }} key=\"k\">{...items}</Comp>;",
+        "function getLabel() { return \"x\"; } const items = [1]; const result = <Comp {...{ label: `prefix${getLabel?.()}` }} key=\"k\">{...items}</Comp>;",
+        "function observe() { return 1; } const items = [1]; const result = <Comp {...{ label: `${(observe(), \"x\")}` }} key=\"k\">{...items}</Comp>;",
+        "const object = {}; const items = [1]; const result = <Comp {...{ label: `prefix${object}` }} key=\"k\">{...items}</Comp>;",
+        "let changed = false; const items = [1]; const result = <Comp {...{ label: `${(changed = true)}` }} key=\"k\">{...items}</Comp>;",
+        "const symbol = Symbol(\"x\"); const items = [1]; const result = <Comp {...{ label: `prefix${symbol}` }} key=\"k\">{...items}</Comp>;",
+        "function tag(value) { return value[0]; } const items = [1]; const result = <Comp {...{ label: tag`static` }} key=\"k\">{...items}</Comp>;",
         "function getValue() { return 1; } const items = [1]; const result = <Comp {...{ value: getValue() }} key=\"k\">{...items}</Comp>;",
     };
     for (hostile_sources) |source| {
