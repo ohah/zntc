@@ -1174,6 +1174,31 @@ pub fn hoistLegacyDecoratorComputedMethodKeys(
 /// 모든 멤버의 computed 키를 소스 순서대로 temp 에 평가하고, 키를 `[_t]` 로 바꾼 새
 /// class_body 를 돌려준다. 대입은 클래스 **식**이면 `key_assigns`(쉼표 식)로, **선언**이면
 /// 앞 문장(pending_nodes)으로 낸다.
+// Hoisting executes a key outside its class environment. Eliminate only an
+// actually unevaluated RHS selected by a literal boolean before visiting it;
+// its source references then leave the live tree and normal dead-read cleanup
+// consumes them. A live class-self read keeps the existing TDZ path.
+fn selectLiteralClassKeyBranch(self: *Transformer, original: NodeIndex) NodeIndex {
+    var current = original;
+    while (true) {
+        var inspected = current;
+        while (self.ast.getNode(inspected).tag == .parenthesized_expression)
+            inspected = self.ast.getNode(inspected).data.unary.operand;
+        const node = self.ast.getNode(inspected);
+        if (node.tag != .logical_expression) return current;
+        const left = self.ast.getNode(node.data.binary.left);
+        if (left.tag != .boolean_literal) return current;
+        const text = self.ast.getText(left.span);
+        const value = if (std.mem.eql(u8, text, "true")) true else if (std.mem.eql(u8, text, "false")) false else return current;
+        const op: @import("../../lexer/token.zig").Kind = @fromBackingInt(@intCast(node.data.binary.flags));
+        current = switch (op) {
+            .amp2 => if (value) node.data.binary.right else node.data.binary.left,
+            .pipe2 => if (value) node.data.binary.left else node.data.binary.right,
+            else => return current,
+        };
+    }
+}
+
 fn hoistAllComputedKeys(self: *Transformer, source_idx: NodeIndex, tag: Node.Tag, body_idx: NodeIndex, key_assigns: *std.ArrayListUnmanaged(NodeIndex)) Error!NodeIndex {
     const body = self.ast.getNode(body_idx);
     var members: std.ArrayListUnmanaged(NodeIndex) = .empty;
@@ -1197,7 +1222,8 @@ fn hoistAllComputedKeys(self: *Transformer, source_idx: NodeIndex, tag: Node.Tag
             continue;
         }
         const key_node = self.ast.getNode(key_idx);
-        const visited_key = try self.visitNode(key_node.data.unary.operand);
+        const evaluated_key = selectLiteralClassKeyBranch(self, key_node.data.unary.operand);
+        const visited_key = try self.visitNode(evaluated_key);
         // Field keys move into the constructor or after the class (#5553).
         const value = if (member.tag == .property_definition)
             try es_helpers.makeToPropertyKey(self, visited_key, key_node.span)
