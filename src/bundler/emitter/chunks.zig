@@ -6717,11 +6717,11 @@ test "shared namespace output consumer selects final alias by known output refer
     try std.testing.expectError(error.MissingCrossChunkProvider, crossChunkBindingName(&linker, missing));
 }
 
-fn checkAliasedPurity(source: []const u8, expected_pure: bool) !void {
+fn checkAliasedPurity(source: []const u8, expected_pure: bool, missing_import_sid: bool) !void {
     const helpers = @import("../test_helpers.zig");
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try helpers.writeFile(tmp.dir, "entry.mjs", "import{visible}from'./provider.mjs';visible();");
+    try helpers.writeFile(tmp.dir, "entry.mjs", "import{visible}from'./provider.mjs';const decoy=0;visible();");
     try helpers.writeFile(tmp.dir, "provider.mjs", source);
     const path = try helpers.absPath(&tmp, "entry.mjs");
     defer std.testing.allocator.free(path);
@@ -6743,6 +6743,19 @@ fn checkAliasedPurity(source: []const u8, expected_pure: bool) !void {
     const m = @constCast(entry orelse return error.MissingPurityControl);
     const ast = &m.ast.?;
     const sem = &m.semantic.?;
+    var saved_local: ?@import("../symbol.zig").SymbolRef = null;
+    if (missing_import_sid) {
+        const binding = for (m.import_bindings) |*candidate| {
+            if (std.mem.eql(u8, candidate.local_name, "visible")) break candidate;
+        } else return error.MissingPurityImportBinding;
+        const exact_local = try m.checkedSourceImportLocalSymbol(binding.*);
+        const local_sid = exact_local.semanticIndex() orelse return error.MissingPurityImportSymbol;
+        const decoy_sid = sem.scope_maps[0].get("decoy") orelse return error.MissingPurityDecoy;
+        try std.testing.expect(local_sid != decoy_sid);
+        saved_local = binding.local_symbol;
+        binding.local_symbol = .invalid;
+        try @constCast(sem.scope_maps)[0].put(std.testing.allocator, "visible", decoy_sid);
+    }
     var call_count: usize = 0;
     for (ast.nodes.items) |node| if (node.tag == .call_expression) {
         try std.testing.expect(ast.extra_data.items[node.data.extra + 3] & @import("../../parser/ast.zig").CallFlags.is_pure == 0);
@@ -6753,14 +6766,25 @@ fn checkAliasedPurity(source: []const u8, expected_pure: bool) !void {
     for (ast.nodes.items) |node| if (node.tag == .call_expression) {
         try std.testing.expectEqual(expected_pure, ast.extra_data.items[node.data.extra + 3] & @import("../../parser/ast.zig").CallFlags.is_pure != 0);
     };
+    if (missing_import_sid) {
+        const binding = for (m.import_bindings) |*candidate| {
+            if (std.mem.eql(u8, candidate.local_name, "visible")) break candidate;
+        } else return error.MissingPurityImportBinding;
+        try std.testing.expect(!binding.local_symbol.isValid());
+        binding.local_symbol = saved_local.?;
+    }
 }
 
 test "cross module purity cannot borrow a sibling binding through an export key" {
-    try checkAliasedPurity("/* @__NO_SIDE_EFFECTS__ */ function visible(){}function actual(){console.log('side')}export{actual as visible};", false);
+    try checkAliasedPurity("/* @__NO_SIDE_EFFECTS__ */ function visible(){}function actual(){console.log('side')}export{actual as visible};", false, false);
 }
 
 test "cross module purity follows the actual aliased export binding" {
-    try checkAliasedPurity("function visible(){console.log('side')}/* @__NO_SIDE_EFFECTS__ */ function actual(){return 7}export{actual as visible};", true);
+    try checkAliasedPurity("function visible(){console.log('side')}/* @__NO_SIDE_EFFECTS__ */ function actual(){return 7}export{actual as visible};", true, false);
+}
+
+test "cross module purity uses the exact source anchor when the cached import SID is missing" {
+    try checkAliasedPurity("function visible(){console.log('side')}/* @__NO_SIDE_EFFECTS__ */ function actual(){return 7}export{actual as visible};", true, true);
 }
 
 test "PM ordinary import target rejects a replaced source export carrier" {
