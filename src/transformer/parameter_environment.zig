@@ -39,6 +39,77 @@ fn scopeOwnersOf(self: anytype) *const std.AutoHashMapUnmanaged(u32, u32) {
     return &self.scope_owner_map;
 }
 
+/// Resolve a source declaration from its AST binding anchor and current
+/// SymbolId. A scope map is a useful index, but its row is not an independent
+/// witness that the selected symbol owns this exact lexical spelling.
+fn sourceBindingIdAt(self: anytype, symbols: []const Symbol, binding: ast_mod.NodeIndex, scope: ScopeId, name: []const u8) ?u32 {
+    if (binding.isNone() or @backingInt(binding) >= self.ast.nodes.items.len) return null;
+    const node = self.ast.getNode(binding);
+    if (node.tag != .binding_identifier) return null;
+    const id = self.getSymbolIdAt(binding) orelse return null;
+    if (id >= symbols.len or symbols[id].scope_id != scope) return null;
+    const symbol = symbols[id];
+    const symbol_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
+    if (!Scanner.identifierNamesEqual(symbol_name, name) or
+        !Scanner.identifierNamesEqual(self.ast.identifierNameText(node), name)) return null;
+    return id;
+}
+
+fn scopeMapOwnerId(self: anytype, symbols: []const Symbol, scope: ScopeId, name: []const u8, raw_id: usize) ?u32 {
+    if (raw_id >= symbols.len or symbols[raw_id].scope_id != scope) return null;
+    const symbol = symbols[raw_id];
+    const symbol_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
+    if (!Scanner.identifierNamesEqual(symbol_name, name)) return null;
+    return @intCast(raw_id);
+}
+
+fn containsIdentifierName(names: *const std.StringHashMapUnmanaged(void), name: []const u8) bool {
+    var iter = names.keyIterator();
+    while (iter.next()) |candidate| if (Scanner.identifierNamesEqual(candidate.*, name)) return true;
+    return false;
+}
+
+fn hasFunctionBinding(
+    self: anytype,
+    symbols: []const Symbol,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    scope_raw: usize,
+    scope: ScopeId,
+    name: []const u8,
+) bool {
+    if (scope_raw >= scope_maps.len) return false;
+    if (scope_maps[scope_raw].get(name)) |raw_id| {
+        if (scopeMapOwnerId(self, symbols, scope, name, raw_id)) |id| return symbols[id].kind.isFunctionLike();
+        // Only an invalid present row needs the slower source-anchor fallback.
+    } else return false;
+    for (self.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier) continue;
+        const binding: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+        const id = sourceBindingIdAt(self, symbols, binding, scope, name) orelse continue;
+        if (symbols[id].kind.isFunctionLike()) return true;
+    }
+    return false;
+}
+
+fn addSourceBindingRenames(self: anytype, result: *Table, symbols: []const Symbol, scope: ScopeId, name: []const u8) std.mem.Allocator.Error!void {
+    for (self.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier) continue;
+        const binding: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+        const id = sourceBindingIdAt(self, symbols, binding, scope, name) orelse continue;
+        const kind = symbols[id].kind;
+        if (kind == .variable_var or kind == .variable_let or kind == .variable_const or kind == .class_decl)
+            try result.put(self.allocator, id, {});
+    }
+    // Function declaration instantiation can retain several declaration
+    // anchors for one owner. Only attached declarations participate in output.
+    for (self.ast.nodes.items) |declaration| {
+        if (declaration.tag != .function_declaration) continue;
+        const binding = self.ast.readExtraNode(declaration.data.extra, ast_mod.FunctionExtra.name);
+        const id = sourceBindingIdAt(self, symbols, binding, scope, name) orelse continue;
+        if (symbols[id].kind.isFunctionLike()) try result.put(self.allocator, id, {});
+    }
+}
+
 /// Dynamic lookup in a parameter expression is distinct from a body `eval`:
 /// the analyzer propagates body flags to the parameter scope's ancestors.
 pub fn parameterListHasDynamicLookup(self: anytype, params: ast_mod.NodeList) std.mem.Allocator.Error!bool {
@@ -401,6 +472,8 @@ pub fn collectFieldCaptureRenames(self: anytype) std.mem.Allocator.Error!Table {
     errdefer result.deinit(self.allocator);
     const lowers_public_fields = self.options.unsupported.class_field or !self.options.use_define_for_class_fields;
     if (!lowers_public_fields and !@import("native_parameter_cells.zig").hasPotentialClassWork(self)) return result;
+    const symbols = symbolsOf(self);
+    const scopes = scopesOf(self);
     const scope_maps = scopeMapsOf(self);
     const scope_owners = scopeOwnersOf(self);
     var names: std.StringHashMapUnmanaged(void) = .empty;
@@ -436,10 +509,24 @@ pub fn collectFieldCaptureRenames(self: anytype) std.mem.Allocator.Error!Table {
         const scopes_to_check = [_]?u32{ scope_owners.get(ctor), if (functionParamsNode(self, ctor)) |p| scope_owners.get(p) else null };
         for (scopes_to_check) |maybe_scope| {
             const scope_raw = maybe_scope orelse continue;
-            if (scope_raw >= scope_maps.len) continue;
+            if (scope_raw >= scopes.len or scope_raw >= scope_maps.len) continue;
+            const scope: ScopeId = @fromBackingInt(@intCast(scope_raw));
             var bindings = scope_maps[scope_raw].iterator();
             while (bindings.next()) |entry| {
-                if (names.contains(entry.key_ptr.*)) try result.put(self.allocator, @intCast(entry.value_ptr.*), {});
+                const name = entry.key_ptr.*;
+                if (!containsIdentifierName(&names, name)) continue;
+                if (scopeMapOwnerId(self, symbols, scope, name, entry.value_ptr.*)) |id| {
+                    try result.put(self.allocator, id, {});
+                } else {
+                    // A poisoned map row must not redirect the field-capture
+                    // rename to a foreign or same-scope wrong-name symbol.
+                    for (self.ast.nodes.items, 0..) |node, raw| {
+                        if (node.tag != .binding_identifier) continue;
+                        const binding: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+                        const id = sourceBindingIdAt(self, symbols, binding, scope, name) orelse continue;
+                        try result.put(self.allocator, id, {});
+                    }
+                }
             }
         }
     }
@@ -510,14 +597,30 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
             // environment by aliasing every body-owned name before moving it.
             // If the body itself has dynamic lookup, the function-scope guard
             // above keeps us on the existing conservative path.
-            var body_symbols = scope_maps[scope_raw].valueIterator();
-            while (body_symbols.next()) |raw_id| {
-                if (raw_id.* >= symbols.len or symbols[raw_id.*].scope_id != scope_id) continue;
-                const kind = symbols[raw_id.*].kind;
-                if (kind == .parameter or kind == .variable_var or kind == .variable_let or
-                    kind == .variable_const or kind == .class_decl or kind.isFunctionLike())
-                {
-                    try result.put(self.allocator, @intCast(raw_id.*), {});
+            var body_symbols = scope_maps[scope_raw].iterator();
+            while (body_symbols.next()) |entry| {
+                const name = entry.key_ptr.*;
+                if (scopeMapOwnerId(self, symbols, scope_id, name, entry.value_ptr.*)) |raw_id| {
+                    const kind = symbols[raw_id].kind;
+                    if (kind == .parameter or kind == .variable_var or kind == .variable_let or
+                        kind == .variable_const or kind == .class_decl or kind.isFunctionLike())
+                    {
+                        try result.put(self.allocator, raw_id, {});
+                    }
+                } else {
+                    // Preserve every body binding visible to parameter eval
+                    // even if a scope-map row was redirected or has an invalid ID.
+                    for (self.ast.nodes.items, 0..) |body_node, body_raw| {
+                        if (body_node.tag != .binding_identifier) continue;
+                        const binding: ast_mod.NodeIndex = @fromBackingInt(@intCast(body_raw));
+                        const raw_id = sourceBindingIdAt(self, symbols, binding, scope_id, name) orelse continue;
+                        const kind = symbols[raw_id].kind;
+                        if (kind == .parameter or kind == .variable_var or kind == .variable_let or
+                            kind == .variable_const or kind == .class_decl or kind.isFunctionLike())
+                        {
+                            try result.put(self.allocator, raw_id, {});
+                        }
+                    }
                 }
             }
         }
@@ -531,10 +634,8 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
                 const parameter = symbols[parameter_id];
                 if (parameter.kind != .parameter or parameter.scope_id != parameter_scope) continue;
                 const name = self.ast.getText(parameter.name);
-                if (scope_maps[scope_raw].get(name)) |body_id| {
-                    if (body_id < symbols.len and body_id != parameter_id and symbols[body_id].kind.isFunctionLike())
-                        try result.put(self.allocator, parameter_id, {});
-                }
+                if (hasFunctionBinding(self, symbols, scope_maps, scope_raw, scope_id, name))
+                    try result.put(self.allocator, parameter_id, {});
             }
             // Use the existing edge-aware walker: static property names,
             // labels and binding keys also carry identifier tags but do not
@@ -552,25 +653,16 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
                 else
                     false;
                 if (!is_outer) continue;
-                if (scope_maps[scope_raw].get(name)) |body_id| {
-                    if (body_id >= symbols.len) continue;
-                    const kind = symbols[body_id].kind;
-                    if (kind == .variable_var or kind == .variable_let or kind == .variable_const or kind == .class_decl) {
-                        try result.put(self.allocator, @intCast(body_id), {});
-                    } else if (symbols[body_id].kind.isFunctionLike()) {
-                        // Repeated declarations can leave historical symbols
-                        // with no AST binding. Rename only identities attached
-                        // to actual function names, never those orphan records.
-                        for (self.ast.nodes.items) |declaration| {
-                            if (declaration.tag != .function_declaration) continue;
-                            const binding = self.ast.readExtraNode(declaration.data.extra, 0);
-                            const id = self.getSymbolIdAt(binding) orelse continue;
-                            if (id >= symbols.len) continue;
-                            const symbol = symbols[id];
-                            if (symbol.scope_id == scope_id and symbol.kind.isFunctionLike() and
-                                std.mem.eql(u8, self.ast.getText(symbol.name), name))
-                                try result.put(self.allocator, @intCast(id), {});
+                if (scope_maps[scope_raw].get(name)) |raw_id| {
+                    if (scopeMapOwnerId(self, symbols, scope_id, name, raw_id)) |body_id| {
+                        const kind = symbols[body_id].kind;
+                        if (kind == .variable_var or kind == .variable_let or kind == .variable_const or kind == .class_decl) {
+                            try result.put(self.allocator, body_id, {});
+                        } else if (kind.isFunctionLike()) {
+                            try addSourceBindingRenames(self, &result, symbols, scope_id, name);
                         }
+                    } else {
+                        try addSourceBindingRenames(self, &result, symbols, scope_id, name);
                     }
                 }
             }
