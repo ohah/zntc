@@ -77,6 +77,63 @@ test "define-use census ignores static import and export names" {
     }
 }
 
+test "generated lexical references reject a scope-map row owned by an outer shadow" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const shared = 1; function f() { const shared = 2; const decoy = 3; return shared; }");
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    try analyzer.analyze();
+
+    const outer_id = analyzer.scope_maps.items[0].get("shared") orelse return error.MissingOuterShared;
+    var inner_id: ?usize = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.scope_id.isNone() or symbol.scope_id.toIndex() == 0) continue;
+        const scope_index = symbol.scope_id.toIndex();
+        if (scope_index >= analyzer.scope_maps.items.len) continue;
+        if (analyzer.scope_maps.items[scope_index].get("shared") == raw) {
+            inner_id = raw;
+            break;
+        }
+    }
+    const local_id = inner_id orelse return error.MissingInnerShared;
+    const local_scope = analyzer.symbols.items[local_id].scope_id;
+    const decoy_id = analyzer.scope_maps.items[local_scope.toIndex()].get("decoy") orelse return error.MissingLocalDecoy;
+    // Seed the source snapshot before SemanticEditor copies its scope maps.
+    try analyzer.scope_maps.items[local_scope.toIndex()].put(allocator, "shared", outer_id);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    const cases = [_]usize{ outer_id, decoy_id, std.math.maxInt(usize) };
+    for (cases, 0..) |poisoned_id, index| {
+        // A same-spelled outer owner is still lexically visible from the local
+        // scope and passes checks that verify ancestry without exact ownership.
+        if (index > 0) try transformer.semantic_editor.?.scope_maps.items[local_scope.toIndex()].put(allocator, "shared", poisoned_id);
+        const generated = try transformer.makeLexicalScopeRefAtScope("shared", local_scope);
+        try std.testing.expectEqual(@as(?u32, @intCast(local_id)), transformer.getSymbolIdAt(generated));
+        const reference = (try transformer.semantic_editor.?.referenceForNode(generated)) orelse return error.MissingGeneratedSharedReference;
+        try std.testing.expectEqual(local_id, @as(usize, @backingInt(reference.symbol_id)));
+        try std.testing.expectEqual(local_scope, reference.scope_id);
+    }
+}
+
 test "define primitive graph safety accepts only exact values" {
     const is_safe = @import("transformer/define.zig").isGraphSafePrimitiveDefineValue;
     const safe_values = [_][]const u8{ "true", "false", "null", "undefined" };

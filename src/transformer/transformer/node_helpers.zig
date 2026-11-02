@@ -4,6 +4,9 @@ const token_mod = @import("../../lexer/token.zig");
 const es_helpers = @import("../es_helpers.zig");
 const es2015_class = @import("../es2015_class.zig");
 const es2020 = @import("../es2020.zig");
+const Scanner = @import("../../lexer/scanner.zig").Scanner;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
+const Symbol = @import("../../semantic/symbol.zig").Symbol;
 
 const Node = ast_mod.Node;
 const Tag = Node.Tag;
@@ -463,18 +466,52 @@ pub fn makeLexicalScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
     return makeLexicalScopeRefAtScope(self, name, self.current_scope);
 }
 
-pub fn lexicalSymbolIdAtScope(self: anytype, name: []const u8, scope: @import("../../semantic/scope.zig").ScopeId) ?u32 {
+pub fn lexicalSymbolIdAtScope(self: anytype, name: []const u8, scope: ScopeId) ?u32 {
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
     const scope_maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
+    const symbols: []const Symbol = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
     var cursor = scope;
     var hops: usize = 0;
     while (!cursor.isNone() and hops < scopes.len) : (hops += 1) {
         const scope_index = cursor.toIndex();
         if (scope_index >= scopes.len or scope_index >= scope_maps.len) return null;
-        if (scope_maps[scope_index].get(name)) |raw_symbol| return @intCast(raw_symbol);
+        if (scope_maps[scope_index].get(name)) |raw_symbol| {
+            if (scopeMapOwnerId(self, symbols, cursor, name, raw_symbol)) |symbol_id| return symbol_id;
+            // A stale row may point at a same-named symbol in another scope,
+            // which remains visible here. Recover only from a unique existing
+            // Symbol record that owns this exact lexical scope and spelling.
+            switch (scopeSymbolIdByName(self, symbols, cursor, name)) {
+                .none => {},
+                .unique => |symbol_id| return symbol_id,
+                .ambiguous => std.debug.panic("lexical scope has multiple owners for one spelling", .{}),
+            }
+        }
         cursor = scopes[scope_index].parent;
     }
     return null;
+}
+
+fn scopeMapOwnerId(self: anytype, symbols: []const Symbol, scope: ScopeId, name: []const u8, raw_symbol: usize) ?u32 {
+    if (raw_symbol >= symbols.len or symbols[raw_symbol].scope_id != scope or
+        !symbolNameMatches(self, symbols[raw_symbol], name)) return null;
+    return @intCast(raw_symbol);
+}
+
+const ScopeSymbolMatch = union(enum) { none, unique: u32, ambiguous };
+
+fn scopeSymbolIdByName(self: anytype, symbols: []const Symbol, scope: ScopeId, name: []const u8) ScopeSymbolMatch {
+    var found: ?u32 = null;
+    for (symbols, 0..) |symbol, raw| {
+        if (symbol.scope_id != scope or !symbolNameMatches(self, symbol, name)) continue;
+        if (found != null and found.? != raw) return .ambiguous;
+        found = @intCast(raw);
+    }
+    return if (found) |symbol_id| .{ .unique = symbol_id } else .none;
+}
+
+fn symbolNameMatches(self: anytype, symbol: Symbol, name: []const u8) bool {
+    const symbol_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
+    return Scanner.identifierNamesEqual(symbol_name, name);
 }
 
 /// Create a generated read that resolves as ordinary code in an explicitly
