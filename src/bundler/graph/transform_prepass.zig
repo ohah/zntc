@@ -17213,6 +17213,8 @@ test "generic prepass staging detaches mutable graph state and aborts without so
 test "#6193 automatic JSX spread child prepass keeps exact source graph without reanalysis" {
     const TestGraph = struct {
         allocator: std.mem.Allocator,
+        preserve_modules: bool = false,
+        code_splitting: bool = false,
         transform_options_base: TransformOptions = .{
             .strip_types = true,
             .jsx_runtime = .automatic,
@@ -17775,6 +17777,8 @@ test "generic prepass transaction publishes a completed isolated candidate" {
 test "generic prepass run publishes transformed output and preserves parser AST" {
     const TestGraph = struct {
         allocator: std.mem.Allocator,
+        preserve_modules: bool = false,
+        code_splitting: bool = false,
         transform_options_base: TransformOptions = .{ .strip_types = true },
         helper_plugin_opts: @import("../../runtime_helper_modules.zig").SourceOptions = .{},
         plugins: []const plugin_mod.Plugin = &.{},
