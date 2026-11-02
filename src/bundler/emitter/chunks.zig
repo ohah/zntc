@@ -5171,9 +5171,22 @@ pub fn computeAllUsedNames(
             if (eb.kind.isReExportAll()) continue;
             if (!s.isExportUsed(mod_idx, eb.exported_name)) continue;
 
+            // A local export name and its statement owner both depend on the
+            // exact source carrier. If that proof is stale, emit the module
+            // conservatively instead of deriving a replacement name from a
+            // same-number SID.
+            const needs_local_identity = eb.kind == .local or eb.symbol.semanticIndex() != null;
+            const output_symbol = if (needs_local_identity)
+                (exactOutputLocalExportSemanticIndex(m, eb) orelse {
+                    all_used = true;
+                    break;
+                })
+            else
+                null;
+
             // 크로스-모듈 BFS 도달성
             if (s.getModuleStmtInfos(mod_idx)) |ts_infos| {
-                if (eb.symbol.semanticIndex()) |sym_idx| {
+                if (output_symbol) |sym_idx| {
                     if (ts_infos.declaredStmtBySymbol(sym_idx)) |stmt_idx| {
                         if (!s.isStmtReachable(mod_idx, stmt_idx)) continue;
                     }
@@ -5264,6 +5277,264 @@ pub fn computeAllUsedNames(
     }
 
     return list;
+}
+
+/// Reachability pruning may use an export SID only when its source local node
+/// still carries that exact identity in this module's current semantic graph.
+/// A missing or stale anchor keeps the output name conservatively.
+fn exactOutputLocalExportSemanticIndex(module: *const Module, binding: ExportBinding) ?u32 {
+    const symbol_index = module.exportBindingSemanticIndex(binding) orelse return null;
+    const local_node = binding.local_symbol_node orelse return null;
+    if (local_node.isNone()) return null;
+    const raw = @backingInt(local_node);
+    const ast = module.ast orelse return null;
+    const semantic = module.semantic orelse return null;
+    if (raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len) return null;
+    const node = ast.nodes.items[raw];
+    if (node.tag != .binding_identifier and node.tag != .identifier_reference) return null;
+    if (semantic.symbol_ids[raw] != symbol_index) return null;
+    return symbol_index;
+}
+
+fn expectOutputNamesFailClosed(
+    allocator: std.mem.Allocator,
+    sorted: []*const Module,
+    graph: *const ModuleGraph,
+    shaker: *const TreeShaker,
+    module_slot: usize,
+) !void {
+    const used_names = try computeAllUsedNames(allocator, sorted, graph, shaker);
+    defer {
+        for (used_names) |entry| if (!entry.all_used) allocator.free(entry.names);
+        allocator.free(used_names);
+    }
+    try std.testing.expect(used_names[module_slot].all_used);
+    try std.testing.expectEqual(@as(usize, 0), used_names[module_slot].names.len);
+}
+
+test "used output export names survive ten stale export SID carriers" {
+    const test_helpers = @import("../test_helpers.zig");
+    const resolve_cache_mod = @import("../resolve_cache.zig");
+    const SymbolRef = @import("../symbol.zig").SymbolRef;
+    const cases = [_]struct {
+        provider: []const u8,
+        export_name: []const u8,
+        local_name: []const u8,
+        import_name: []const u8,
+    }{
+        .{ .provider = "export const live = 1;\nconst decoy = 2;", .export_name = "live", .local_name = "live", .import_name = "live" },
+        .{ .provider = "const live = 1;\nexport { live };\nconst decoy = 2;", .export_name = "live", .local_name = "live", .import_name = "live" },
+        .{ .provider = "const live = 1;\nexport { live as publicLive };\nconst decoy = 2;", .export_name = "publicLive", .local_name = "live", .import_name = "publicLive" },
+        .{ .provider = "export let live = 1;\nlet decoy = 2;", .export_name = "live", .local_name = "live", .import_name = "live" },
+        .{ .provider = "export var live = 1;\nvar decoy = 2;", .export_name = "live", .local_name = "live", .import_name = "live" },
+        .{ .provider = "export function live() { return 1; }\nfunction decoy() { return 2; }", .export_name = "live", .local_name = "live", .import_name = "live" },
+        .{ .provider = "function live() { return 1; }\nexport { live as publicLive };\nfunction decoy() { return 2; }", .export_name = "publicLive", .local_name = "live", .import_name = "publicLive" },
+        .{ .provider = "export class Live {}\nclass decoy {}", .export_name = "Live", .local_name = "Live", .import_name = "Live" },
+        .{ .provider = "class Live {}\nexport { Live as PublicLive };\nclass decoy {}", .export_name = "PublicLive", .local_name = "Live", .import_name = "PublicLive" },
+        .{ .provider = "const source = 1;\nexport { source as live };\nconst decoy = 2;", .export_name = "live", .local_name = "source", .import_name = "live" },
+    };
+
+    for (cases, 0..) |case, case_index| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const entry_source = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "import {{ {s} as used }} from './provider.mjs'; import './foreign.mjs'; console.log(used);",
+            .{case.import_name},
+        );
+        defer std.testing.allocator.free(entry_source);
+        try test_helpers.writeFile(tmp.dir, "entry.mjs", entry_source);
+        try test_helpers.writeFile(tmp.dir, "provider.mjs", case.provider);
+        try test_helpers.writeFile(tmp.dir, "foreign.mjs", case.provider);
+
+        const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+        defer std.testing.allocator.free(dir_path);
+        const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dir_path, "entry.mjs" });
+        defer std.testing.allocator.free(entry_path);
+
+        var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        try graph.build(std.testing.io, &.{entry_path});
+        for (0..graph.moduleCount()) |module_index| {
+            const module = graph.moduleAtMut(ModuleIndex.fromUsize(module_index)) orelse continue;
+            if (std.mem.endsWith(u8, module.path, "provider.mjs") or
+                std.mem.endsWith(u8, module.path, "foreign.mjs")) module.side_effects = false;
+        }
+
+        var linker = Linker.init(std.testing.allocator, &graph, .esm);
+        defer linker.deinit();
+        try linker.link();
+        linker.populateImportSymbols();
+        linker.populateNamespaceAccesses();
+        var shaker = try TreeShaker.init(std.testing.allocator, &graph, &linker);
+        defer shaker.deinit();
+        try shaker.analyze(&.{entry_path});
+
+        const provider_index: u32 = blk: {
+            for (0..graph.moduleCount()) |module_index| {
+                const module = graph.getModule(ModuleIndex.fromUsize(module_index)) orelse continue;
+                if (std.mem.endsWith(u8, module.path, "provider.mjs")) break :blk @intCast(module_index);
+            }
+            return error.MissingProvider;
+        };
+        const foreign_index: u32 = blk: {
+            for (0..graph.moduleCount()) |module_index| {
+                const module = graph.getModule(ModuleIndex.fromUsize(module_index)) orelse continue;
+                if (std.mem.endsWith(u8, module.path, "foreign.mjs")) break :blk @intCast(module_index);
+            }
+            return error.MissingForeignModule;
+        };
+        const provider = graph.moduleAtMut(ModuleIndex.fromUsize(provider_index)) orelse return error.MissingProvider;
+        const foreign = graph.getModule(ModuleIndex.fromUsize(foreign_index)) orelse return error.MissingForeignModule;
+        const binding = @constCast(provider.findExportBinding(case.export_name) orelse return error.MissingExportBinding);
+        const semantic = if (provider.semantic) |*value| value else return error.MissingProviderSemantic;
+        const live_symbol = provider.exportBindingSemanticIndex(binding.*) orelse return error.MissingLiveExportSymbol;
+        const decoy_symbol = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoySymbol;
+        const foreign_decoy_symbol = foreign.semantic.?.scope_maps[0].get("decoy") orelse return error.MissingForeignDecoySymbol;
+        const infos = shaker.getModuleStmtInfos(provider_index) orelse return error.MissingProviderStmtInfos;
+        const decoy_stmt = infos.declaredStmtBySymbol(@intCast(decoy_symbol)) orelse return error.MissingDecoyStatement;
+        try std.testing.expect(!shaker.isStmtReachable(provider_index, decoy_stmt));
+        try std.testing.expectEqual(@as(?u32, live_symbol), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        const original_symbol = binding.symbol;
+        const original_anchor = binding.local_symbol_node;
+        const original_kind = binding.kind;
+        const original_symbol_ids = semantic.symbol_ids;
+        defer {
+            binding.symbol = original_symbol;
+            binding.local_symbol_node = original_anchor;
+            binding.kind = original_kind;
+            semantic.symbol_ids = original_symbol_ids;
+        }
+
+        const sorted = try std.testing.allocator.alloc(*const Module, graph.moduleCount());
+        defer std.testing.allocator.free(sorted);
+        var provider_slot: ?usize = null;
+        for (0..graph.moduleCount()) |module_index| {
+            const current = graph.getModule(ModuleIndex.fromUsize(module_index)) orelse return error.MissingModule;
+            sorted[module_index] = current;
+            if (current == provider) provider_slot = module_index;
+        }
+        const slot = provider_slot orelse return error.MissingProviderSlot;
+        {
+            const baseline = try computeAllUsedNames(std.testing.allocator, sorted, &graph, &shaker);
+            defer {
+                for (baseline) |entry| if (!entry.all_used) std.testing.allocator.free(entry.names);
+                std.testing.allocator.free(baseline);
+            }
+            try std.testing.expect(!baseline[slot].all_used);
+            var found_local_name = false;
+            for (baseline[slot].names) |name| {
+                if (std.mem.eql(u8, name, case.local_name)) found_local_name = true;
+            }
+            try std.testing.expect(found_local_name);
+        }
+
+        // A valid same-module SID is still the wrong export owner. The scanner's
+        // exact local node must stop this stale carrier from hiding a used name.
+        binding.symbol = SymbolRef.makeSemantic(provider.index, decoy_symbol);
+        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
+
+        // Equal scalar SIDs from another module must fail the module-owner check.
+        binding.symbol = SymbolRef.makeSemantic(foreign.index, live_symbol);
+        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
+
+        // A foreign decoy also cannot seed this module's statement reachability.
+        binding.symbol = SymbolRef.makeSemantic(foreign.index, foreign_decoy_symbol);
+        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
+
+        // A mismatched local AST anchor must not authorize the otherwise valid
+        // export SymbolRef either.
+        binding.symbol = original_symbol;
+        var decoy_binding_node: ?u32 = null;
+        for (semantic.symbol_ids, 0..) |maybe_symbol, raw| {
+            if (maybe_symbol != @as(?u32, @intCast(decoy_symbol)) or raw >= provider.ast.?.nodes.items.len) continue;
+            if (provider.ast.?.nodes.items[raw].tag == .binding_identifier) {
+                decoy_binding_node = @intCast(raw);
+                break;
+            }
+        }
+        binding.local_symbol_node = @fromBackingInt(decoy_binding_node orelse return error.MissingDecoyBindingNode);
+        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
+
+        binding.local_symbol_node = null;
+        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
+
+        binding.local_symbol_node = @as(NodeIndex, .none);
+        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
+
+        const ast = if (provider.ast) |*value| value else return error.MissingProviderAst;
+        const extended_symbol_ids = try std.testing.allocator.alloc(?u32, original_symbol_ids.len + 1);
+        defer std.testing.allocator.free(extended_symbol_ids);
+        @memcpy(extended_symbol_ids[0..original_symbol_ids.len], original_symbol_ids);
+        extended_symbol_ids[original_symbol_ids.len] = null;
+        semantic.symbol_ids = extended_symbol_ids;
+        binding.local_symbol_node = @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len))));
+        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
+        semantic.symbol_ids = original_symbol_ids;
+
+        binding.local_symbol_node = original_anchor;
+        binding.symbol = .invalid;
+        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
+
+        binding.symbol = original_symbol;
+        const anchor_raw = @backingInt(original_anchor orelse return error.MissingLiveExportAnchor);
+        semantic.symbol_ids = original_symbol_ids[0..anchor_raw];
+        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
+        semantic.symbol_ids = original_symbol_ids;
+
+        var non_identifier: ?NodeIndex = null;
+        for (ast.nodes.items, 0..) |node, raw| {
+            if (node.tag == .program) {
+                non_identifier = @fromBackingInt(@intCast(raw));
+                break;
+            }
+        }
+        const non_identifier_node = non_identifier orelse return error.MissingProgramNode;
+        const non_identifier_raw = @backingInt(non_identifier_node);
+        const mutable_symbol_ids = @constCast(semantic.symbol_ids);
+        const previous_non_identifier_sid = mutable_symbol_ids[non_identifier_raw];
+        mutable_symbol_ids[non_identifier_raw] = live_symbol;
+        binding.local_symbol_node = non_identifier_node;
+        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
+        mutable_symbol_ids[non_identifier_raw] = previous_non_identifier_sid;
+        binding.local_symbol_node = original_anchor;
+
+        // A semantic carrier remains identity-sensitive even if surrounding
+        // metadata has classified its export path as a re-export.
+        binding.symbol = SymbolRef.makeSemantic(provider.index, decoy_symbol);
+        binding.kind = .re_export;
+        try std.testing.expectEqual(@as(?u32, null), exactOutputLocalExportSemanticIndex(provider, binding.*));
+        try expectOutputNamesFailClosed(std.testing.allocator, sorted, &graph, &shaker, slot);
+        binding.kind = original_kind;
+        binding.symbol = original_symbol;
+        binding.local_symbol_node = original_anchor;
+
+        const used_names = try computeAllUsedNames(std.testing.allocator, sorted, &graph, &shaker);
+        defer {
+            for (used_names) |entry| if (!entry.all_used) std.testing.allocator.free(entry.names);
+            std.testing.allocator.free(used_names);
+        }
+        const entry = used_names[slot];
+        try std.testing.expect(!entry.all_used);
+        var restored_local_name = false;
+        for (entry.names) |name| {
+            if (std.mem.eql(u8, name, case.local_name)) restored_local_name = true;
+        }
+        try std.testing.expect(restored_local_name);
+        std.debug.print("used output export hostile case {d}: preserved {s} after stale SID {d}\n", .{ case_index + 1, case.local_name, decoy_symbol });
+    }
 }
 
 // ============================================================
