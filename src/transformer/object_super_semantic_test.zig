@@ -541,3 +541,32 @@ test "class key hoisting preserves exact external lookup provenance" {
         }
     }
 }
+
+test "computed class key short circuit preserves frozen SelfKey source lookup" {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const Bundler = @import("../bundler/bundler.zig").Bundler;
+    const source = "var SelfKey=class SelfKey{static[false&&SelfKey]=1};console.log(SelfKey.false);";
+    for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", source);
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", entry } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings("1\n", native.stdout);
+        var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .node, .format = .cjs, .unsupported = TransformOptions.compat.fromESTarget(.es5), .minify_identifiers = minify });
+        defer b.deinit();
+        const result = try b.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        if (result.diagnostics) |diagnostics| for (diagnostics) |diagnostic| std.debug.print("SELF_KEY diagnostic {s}\n", .{diagnostic.message});
+        try std.testing.expect(!result.hasErrors());
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+        if (actual.term != .exited or actual.term.exited != 0) std.debug.print("SELF_KEY code={s} stderr={s}\n", .{ result.output, actual.stderr });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    }
+}
