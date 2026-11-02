@@ -477,6 +477,28 @@ pub fn JsxLowering(comptime Transformer: type) type {
         /// - 소문자 시작 → string_literal ("div")
         /// - 대문자 시작 → identifier_reference (MyComp) — visitNode로 재귀
         /// - member expression → 그대로 visitNode
+        fn makeComponentReference(self: *Transformer, source: NodeIndex) Transformer.Error!NodeIndex {
+            const input = self.ast.getNode(source);
+            const ref = try self.makeIdentifierRefWithSymbolAt(input.data.string_ref, input.span, source);
+            const inherited = if (self.semantic_editor) |*editor|
+                editor.node_scope_provenance.get(ref)
+            else
+                self.transformed_node_scope_provenance.get(ref);
+            if (inherited) |before| if (before.source_external) |origin| {
+                if (origin.tag != .jsx_identifier or input.tag != .jsx_identifier or origin.jsx_reference != null or
+                    !origin.flags.read or origin.flags.write or origin.flags.declare or origin.flags.type_context or origin.flags.value_as_type or
+                    !std.meta.eql(input.span, origin.span) or !std.meta.eql(input.data.string_ref, origin.name))
+                    @panic("JSX component conversion lost its exact source lookup");
+                var entry = before;
+                entry.source_external.?.jsx_reference = (@import("../semantic/scope_frame_history.zig").Owner.capture(self.ast, before.source_node) catch @panic("JSX source lookup has no parser owner")) orelse @panic("JSX source lookup has no parser owner");
+                try self.transformed_node_scope_provenance.put(self.allocator, ref, entry);
+                if (self.semantic_editor) |*editor| try editor.node_scope_provenance.put(self.allocator, ref, entry);
+                self.node_scope_provenance_changed = true;
+            };
+            try self.replaceUserReference(source, ref);
+            return ref;
+        }
+
         fn lowerTagName(self: *Transformer, tag_name_idx: NodeIndex) Transformer.Error!NodeIndex {
             const tag_node = self.ast.getNode(tag_name_idx);
 
@@ -494,10 +516,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                         });
                     } else {
                         // 대문자 → identifier_reference (symbol_id 전파로 번들러 rename 반영)
-                        const id_span = try self.ast.addString(text);
-                        const ref = try self.makeIdentifierRefWithSymbolAt(id_span, tag_node.span, tag_name_idx);
-                        try self.replaceUserReference(tag_name_idx, ref);
-                        return ref;
+                        return makeComponentReference(self, tag_name_idx);
                     }
                 },
                 .jsx_member_expression => {
@@ -532,11 +551,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 try lowerJSXMemberExpr(self, left_node)
             else blk: {
                 // jsx_identifier → identifier_reference (symbol_id 전파로 번들러 rename 반영)
-                const text = self.ast.getText(left_node.span);
-                const id_span = try self.ast.addString(text);
-                const ref = try self.makeIdentifierRefWithSymbolAt(id_span, left_node.span, left_idx);
-                try self.replaceUserReference(left_idx, ref);
-                break :blk ref;
+                break :blk try makeComponentReference(self, left_idx);
             };
 
             // right: always jsx_identifier → identifier_reference

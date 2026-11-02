@@ -41,7 +41,7 @@ pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
 // v39: exact producer-owned static capture aliases retain their retirement proof.
 // v43: extracted await-loop source witnesses and function-name environment retirements.
 // v49: class-key, Worklet, enum-member and explicit-drop proofs share one wire layout.
-pub const FORMAT_VERSION: u32 = 49;
+pub const FORMAT_VERSION: u32 = 50;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -257,7 +257,7 @@ comptime {
     if (@typeInfo(NameElision.OwnerAlias).@"struct".field_names.len != alias_fields.len) @compileError("name owner alias wire fields changed; update codec/version");
     for (alias_fields, @typeInfo(NameElision.OwnerAlias).@"struct".field_names) |expected, actual| if (!std.mem.eql(u8, expected, actual)) @compileError("name owner alias wire order changed; update codec/version");
     const SourceExternal = @import("../semantic/source_external_origin.zig").Origin;
-    const source_external_fields = [_][]const u8{ "tag", "name", "span", "flags", "source_scope", "source_frame", "execution_scope", "execution_frame", "scope_moves" };
+    const source_external_fields = [_][]const u8{ "tag", "name", "span", "flags", "source_scope", "source_frame", "execution_scope", "execution_frame", "scope_moves", "jsx_reference" };
     if (@typeInfo(SourceExternal).@"struct".field_names.len != source_external_fields.len) @compileError("source external fields changed; update codec/version");
     for (source_external_fields, @typeInfo(SourceExternal).@"struct".field_names) |expected, actual| if (!std.mem.eql(u8, expected, actual)) @compileError("source external wire order changed; update codec/version");
     const ScopeMove = @import("../semantic/source_external_origin.zig").ScopeMove;
@@ -1047,6 +1047,7 @@ pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc:
             try putScope(&payload, alloc, origin.source_frame);
             try putU32(&payload, alloc, @backingInt(origin.execution_scope));
             try putScope(&payload, alloc, origin.execution_frame);
+            try putOptionalFrameOwner(&payload, alloc, origin.jsx_reference);
             try putU32(&payload, alloc, @intCast(origin.scope_moves.len));
             for (origin.scope_moves) |move| {
                 try putU32(&payload, alloc, @backingInt(move.node));
@@ -1457,6 +1458,8 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
             const source_frame = try readScope(&r);
             const execution_scope: scope_mod.ScopeId = @fromBackingInt(try r.u32v());
             const execution_frame = try readScope(&r);
+            const jsx_reference = try readOptionalFrameOwner(&r);
+            if (jsx_reference) |jsx| if (jsx.tag != .jsx_identifier or @backingInt(jsx.node) >= symbol_ids_len) return error.Truncated;
             const move_count = try r.u32v();
             if (move_count > scopes_len or move_count > r.remaining() / 20) return error.Truncated;
             const ScopeMove = @import("../semantic/source_external_origin.zig").ScopeMove;
@@ -1535,7 +1538,7 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
                 move.* = .{ .node = @fromBackingInt(moved_node), .source_node = @fromBackingInt(moved_source), .from = @fromBackingInt(from), .to = @fromBackingInt(to), .from_frame = from_frame, .to_frame = to_frame, .reason = reason, .elision = elision, .static_block = static_block, .generator = generator, .class_heritage = class_heritage, .class_initializer = class_initializer, .class_key = class_key, .frame_epoch = frame_epoch };
             }
             if (source_scope.isNone() or source_scope.toIndex() >= scopes_len or execution_scope.isNone() or execution_scope.toIndex() >= scopes_len) return error.Truncated;
-            break :external .{ .tag = tag, .name = name, .span = span, .flags = flags, .source_scope = source_scope, .source_frame = source_frame, .execution_scope = execution_scope, .execution_frame = execution_frame, .scope_moves = moves };
+            break :external .{ .tag = tag, .name = name, .span = span, .flags = flags, .source_scope = source_scope, .source_frame = source_frame, .execution_scope = execution_scope, .execution_frame = execution_frame, .scope_moves = moves, .jsx_reference = jsx_reference };
         } else null;
         node_scope_provenance.putAssumeCapacity(node, .{ .scope = @fromBackingInt(scope), .source_node = @fromBackingInt(source_node), .with_environment = with_environment != 0, .external_import = external_import, .source_external = source_external });
     }
