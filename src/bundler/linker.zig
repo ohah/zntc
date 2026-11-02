@@ -3982,23 +3982,23 @@ pub const Linker = struct {
                 // putCanonicalName's scope-map lookup. Cross-chunk consumers
                 // take the other branch and rename their exact nested SID.
                 if (target_module.wrap_kind == .cjs) continue;
-                const export_local = self.getExportLocalName(cmod, resolved.canonical.export_name) orelse resolved.canonical.export_name;
                 var suffix: u32 = 1;
                 const candidate = try self.findAvailableCandidate(ref_name, cmod, &suffix, name_to_owners);
-                if (!try self.putCanonicalNameForLocalExport(cmod, resolved.canonical.export_name, candidate)) {
-                    try self.putCanonicalName(cmod, export_local, candidate);
-                }
-            } else {
-                // (#4566) cross-chunk / preserve-modules: target(다른 청크·별도 출력 파일)의 canonical 을
-                // 못 건드린다 → 대신 **consumer 의 nested 바인딩**을 리네임(renameConsumerScopeBindings,
-                // resolveWrapperConsumerShadows 와 공유 기계). minify 는 mangler 가 유일명 부여해 shadow
-                // 원천 불가 → skip. direct eval/`with` 소비자는 동적 이름 참조라 리네임 시 ReferenceError
-                // → skip(resolveWrapperConsumerShadows 와 동일 가드, #1258).
-                if (self.manglerActive()) continue;
-                const csem = if (m.semantic) |*s| s else continue;
-                if (csem.scopes.len > 0 and csem.scopes[0].blocksMangling()) continue;
-                try self.renameConsumerScopeBindings(mod_i, m, csem, ref_name, name_to_owners, 1);
+                if (try self.putCanonicalNameForLocalExport(cmod, resolved.canonical.export_name, candidate)) continue;
+                // A non-local export (for example `export * as math`) has no lexical
+                // provider SID. Do not recover one from its public spelling; free the
+                // unused candidate and rename the consumer's exact nested binding below.
+                self.allocator.free(candidate);
             }
+
+            // (#4566) Cross-chunk/preserve-modules targets and non-local export aliases
+            // have no target lexical SID to rename. Rename the consumer's exact nested
+            // binding instead (same machine as resolveWrapperConsumerShadows). Minify
+            // supplies unique names; direct eval/`with` consumers keep dynamic spellings.
+            if (self.manglerActive()) continue;
+            const csem = if (m.semantic) |*s| s else continue;
+            if (csem.scopes.len > 0 and csem.scopes[0].blocksMangling()) continue;
+            try self.renameConsumerScopeBindings(mod_i, m, csem, ref_name, name_to_owners, 1);
         }
     }
 
