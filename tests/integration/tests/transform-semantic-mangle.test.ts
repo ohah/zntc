@@ -451,6 +451,12 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         expected: '44',
       },
       {
+        name: 'direct eval in an opaque replacement preserves ancestor locals',
+        defineValue: 'eval("shared")',
+        source: 'function read() { const shared = 46; return () => FLAG; }\nconsole.log(read()());',
+        expected: '46',
+      },
+      {
         name: 'with in an opaque function expression sees the original local name',
         defineValue: '(function () { with ({}) return shared; })()',
         source: 'const shared = 45; console.log(FLAG);',
