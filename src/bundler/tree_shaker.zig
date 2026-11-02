@@ -987,6 +987,20 @@ pub const TreeShaker = struct {
             if (!binding.local_symbol.eql(anchored)) return null;
             return index;
         }
+        if (binding.local_symbol_node != null) {
+            const ast = if (module.ast) |*value| value else return null;
+            const anchored = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{
+                .module_index = module.index,
+                .ast = ast,
+                .symbol_ids = semantic.symbol_ids,
+                .symbols = semantic.symbols.items,
+            });
+            if (!anchored.isValid() or anchored.moduleIndex() != module.index) return null;
+            const index = anchored.semanticIndex() orelse return null;
+            if (index >= semantic.symbols.items.len or semantic.symbols.items[index].kind != expected_kind) return null;
+            return index;
+        }
+        if (module.ast != null) return null;
         if (semantic.scope_maps.len == 0) return null;
         const index = semantic.scope_maps[0].get(binding.local_name) orelse return null;
         self.linker.validateMetadataScopeMapOwnerIdentity(module.*, semantic, binding.local_name, 0, index) catch return null;
