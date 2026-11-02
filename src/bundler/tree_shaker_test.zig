@@ -4,6 +4,8 @@ const TreeShaker = tree_shaker_mod.TreeShaker;
 const ALL_EXPORTS_SENTINEL = tree_shaker_mod.ALL_EXPORTS_SENTINEL;
 const Linker = @import("linker.zig").Linker;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
+const ImportBinding = @import("binding_scanner.zig").ImportBinding;
+const SymbolRef = @import("symbol.zig").SymbolRef;
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const resolve_cache_mod = @import("resolve_cache.zig");
@@ -782,8 +784,9 @@ test "refcount: partial usage — only actually used import marked" {
 test "import liveness keeps the captured SID when the root map is poisoned" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "entry.ts", "import { used } from './lib'; const decoy = 0; function nested(used) { return used; } console.log(used);");
+    try writeFile(tmp.dir, "entry.ts", "import { used } from './lib'; import { idle } from './idle'; const decoy = 0; function nested(used) { return used; } console.log(used);");
     try writeFile(tmp.dir, "lib.ts", "export const used = 1;");
+    try writeFile(tmp.dir, "idle.ts", "export const idle = 2;");
 
     var r = try buildAndShake(std.testing.allocator, &tmp, "entry.ts");
     defer r.deinit();
@@ -800,6 +803,12 @@ test "import liveness keeps the captured SID when the root map is poisoned" {
     const binding = &entry.import_bindings[binding_index];
     const binding_sid = binding.local_symbol.semanticIndex() orelse return error.MissingImportSymbol;
     const original_ref = binding.local_symbol;
+    const idle_binding = blk: {
+        for (entry.import_bindings) |*candidate| {
+            if (std.mem.eql(u8, candidate.local_name, "idle")) break :blk candidate;
+        }
+        return error.MissingIdleImportBinding;
+    };
     const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoySymbol;
     var nested_sid: ?usize = null;
     for (semantic.scope_maps[1..]) |scope_map| {
@@ -812,6 +821,31 @@ test "import liveness keeps the captured SID when the root map is poisoned" {
     }
     const actual_nested_sid = nested_sid orelse return error.MissingNestedImportName;
     const mutable_scope_maps = @constCast(semantic.scope_maps);
+
+    // A valid same-kind SID from a different import, another module, an
+    // out-of-range index, or an ordinary value is still not this import's
+    // identity. The exact declaration anchor must agree with the captured SID;
+    // otherwise liveness stays conservative instead of dropping the used edge.
+    binding.local_symbol = idle_binding.local_symbol;
+    try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
+    const other_module = ModuleIndex.fromUsize(r.findModule("lib.ts") orelse return error.MissingLibModule);
+    binding.local_symbol = SymbolRef.makeSemantic(other_module, binding_sid);
+    try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
+    binding.local_symbol = SymbolRef.makeSemantic(entry.index, semantic.symbols.items.len + 1);
+    try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
+    binding.local_symbol = SymbolRef.makeSemantic(entry.index, decoy_sid);
+    try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
+
+    // The capture is also invalid if it no longer matches the scanner anchor,
+    // even when the cached SymbolRef itself is unchanged and in range.
+    const original_anchor = binding.local_symbol_node;
+    binding.local_symbol = original_ref;
+    binding.local_symbol_node = idle_binding.local_symbol_node;
+    try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
+    binding.local_symbol_node = null;
+    try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
+    binding.local_symbol_node = original_anchor;
+    binding.local_symbol = original_ref;
 
     // An exact captured import remains live even when the spelling map points
     // at another valid SID or an out-of-range index.
@@ -844,6 +878,34 @@ test "import liveness keeps the captured SID when the root map is poisoned" {
     try mutable_scope_maps[0].put(std.testing.allocator, "used", binding_sid);
     try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
     binding.local_symbol = original_ref;
+}
+
+test "tree-shaker preserves a used import when its captured SID conflicts with its AST anchor" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { used } from './lib'; import { idle } from './lib'; console.log(used);");
+    try writeFile(tmp.dir, "lib.ts", "export const used = 1; export const idle = 2;");
+
+    var linked = try buildLinkedGraph(std.testing.allocator, &tmp, "entry.ts", &.{"lib.ts"});
+    defer linked.deinit();
+
+    const entry_index = linked.findModule("entry.ts") orelse return error.MissingEntry;
+    const entry = linked.graph.moduleAtMut(ModuleIndex.fromUsize(entry_index)) orelse return error.MissingEntry;
+    var used_binding: ?*ImportBinding = null;
+    var idle_binding: ?*ImportBinding = null;
+    for (entry.import_bindings) |*binding| {
+        if (std.mem.eql(u8, binding.local_name, "used")) used_binding = binding;
+        if (std.mem.eql(u8, binding.local_name, "idle")) idle_binding = binding;
+    }
+    const used = used_binding orelse return error.MissingUsedImportBinding;
+    used.local_symbol = (idle_binding orelse return error.MissingIdleImportBinding).local_symbol;
+
+    var shaker = try TreeShaker.init(std.testing.allocator, linked.graph, &linked.linker);
+    defer shaker.deinit();
+    try shaker.analyze(&.{linked.entry_path});
+
+    const lib_index = linked.findModule("lib.ts") orelse return error.MissingUsedProvider;
+    try std.testing.expect(shaker.isIncluded(lib_index));
 }
 
 test "tree-shaking fails closed when a local export root map points at a decoy" {
