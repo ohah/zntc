@@ -33,6 +33,29 @@ test "shared namespace output holder has a separate registered codegen identity"
         actual = module;
     };
     const owner = actual orelse return error.MissingNamespaceOwner;
+    {
+        // A same-SID foreign owner cannot be laundered by the store move.
+        var moved = owner.*;
+        moved.export_bindings = try std.testing.allocator.dupe(@import("../binding_scanner.zig").ExportBinding, owner.export_bindings);
+        defer std.testing.allocator.free(moved.export_bindings);
+        const target: @import("../types.zig").ModuleIndex = @fromBackingInt(owner.index.toU32() + 100);
+        const original = moved.export_bindings[0].symbol;
+        moved.export_bindings[0].symbol.semantic.module = target;
+        try std.testing.expectError(error.InvalidStoredBindingOwner, moved.relocateStoredSourceBindingRefs(target));
+        try std.testing.expectEqual(owner.index, moved.index);
+        try std.testing.expect(moved.export_bindings[0].symbol.semantic.module == target);
+        try std.testing.expect(moved.export_bindings[1].symbol.eql(owner.export_bindings[1].symbol));
+        moved.export_bindings[0].symbol = original;
+        try moved.relocateStoredSourceBindingRefs(target);
+        try std.testing.expectEqual(target, moved.index);
+        try std.testing.expectEqual(owner.codegen_output_owner, moved.codegen_output_owner);
+        try std.testing.expect(moved.codegen_output_domain == owner.codegen_output_domain);
+        for (moved.export_bindings, owner.export_bindings) |after, before| {
+            try std.testing.expectEqual(target, after.symbol.moduleIndex());
+            try std.testing.expectEqual(before.symbol.semanticIndex(), after.symbol.semanticIndex());
+            try std.testing.expectEqual(before.local_symbol_node, after.local_symbol_node);
+        }
+    }
     try std.testing.expect(!linker.ns_shared_inline_cache.contains(owner.index.toU32()));
     const ordinary = try @import("../cross_chunk_export.zig").Provider.capture(&linker, owner.index.toU32(), "a", .ordinary_export);
     const before_owner = owner.semantic.?.owner_token;
@@ -168,6 +191,9 @@ test "shared namespace output identity survives actual ModuleStore relocation wi
     try std.testing.expect(module.codegen_output_domain == saved_domain);
     try std.testing.expectEqual(saved_ref.owner, module.codegen_output_owner);
     try std.testing.expect(target != saved_ref.module);
+    for (module.export_bindings) |binding| {
+        if (binding.symbol.isValid()) try std.testing.expectEqual(target, binding.symbol.moduleIndex());
+    }
     const source_symbols = module.semantic.?.symbols.items;
     var linker = Linker.init(a, &graph, .esm);
     defer linker.deinit();

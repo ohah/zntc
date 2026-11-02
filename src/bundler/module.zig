@@ -1501,6 +1501,45 @@ pub const Module = struct {
         return sym_idx;
     }
 
+    /// A ModuleStore hit moves this same source graph to a new build index.
+    /// Validate all local carriers before publishing the index-only handoff;
+    /// source SymbolIds and the independent codegen output owner stay intact.
+    pub fn relocateStoredSourceBindingRefs(self: *Module, target: ModuleIndex) error{InvalidStoredBindingOwner}!void {
+        if (target.isNone() or self.index.isNone()) return error.InvalidStoredBindingOwner;
+        if (target == self.index) return;
+        for (self.export_bindings) |binding| {
+            if (!binding.symbol.isValid()) continue;
+            if (binding.symbol.moduleIndex() != self.index) return error.InvalidStoredBindingOwner;
+            switch (binding.symbol) {
+                .semantic => |known| {
+                    const sem = self.semantic orelse return error.InvalidStoredBindingOwner;
+                    if (@backingInt(known.symbol) >= sem.symbols.items.len) return error.InvalidStoredBindingOwner;
+                },
+                .alias => |known| {
+                    const table = self.alias_table orelse return error.InvalidStoredBindingOwner;
+                    if (@backingInt(known.symbol) >= table.aliases.items.len) return error.InvalidStoredBindingOwner;
+                },
+            }
+        }
+        for (self.import_bindings) |binding| {
+            if (!binding.local_symbol.isValid()) continue;
+            const actual = self.checkedSourceImportLocalSymbol(binding) catch return error.InvalidStoredBindingOwner;
+            if (!actual.eql(binding.local_symbol)) return error.InvalidStoredBindingOwner;
+        }
+        // All checks are complete. Foreign import targets are derived by the
+        // linker and deliberately do not participate in this local move.
+        for (self.export_bindings) |*binding| if (binding.symbol.isValid()) {
+            switch (binding.symbol) {
+                .semantic => |*known| known.module = target,
+                .alias => |*known| known.module = target,
+            }
+        };
+        for (self.import_bindings) |*binding| if (binding.local_symbol.isValid()) {
+            binding.local_symbol.semantic.module = target;
+        };
+        self.index = target;
+    }
+
     /// exported_name에 해당하는 SymbolRef 반환. 없으면 invalid.
     /// #1338 Phase 4c-1: 문자열 기반 lookup을 SymbolRef로 승격하기 위한 진입점.
     pub fn findExportSymbol(self: *const Module, exported_name: []const u8) symbol_mod.SymbolRef {
