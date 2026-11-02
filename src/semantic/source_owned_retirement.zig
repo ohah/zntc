@@ -18,12 +18,13 @@ pub const Witness = struct {
     source_name_symbol: symbols.SymbolId,
     closure_scope: ScopeId,
     closure_parent: ScopeId,
-    reason: enum { source_function_closure, erased_import_binding, erased_const_enum_binding, static_class_capture_alias, elided_function_name, erased_const_enum_environment, dropped_statement },
+    reason: enum { source_function_closure, erased_import_binding, erased_const_enum_binding, static_class_capture_alias, elided_function_name, erased_const_enum_environment, dropped_statement, inlined_local_binding },
     erased_import: ?@import("import_erasure.zig").Binding = null,
     static_capture_alias: ?@import("static_capture_retirement.zig").Witness = null,
     function_name_elision: ?@import("function_name_retirement.zig").Witness = null,
     enum_environment: ?@import("enum_environment_retirement.zig").Witness = null,
     dropped_statement: ?@import("drop_statement_retirement.zig").Witness = null,
+    inlined_binding: ?@import("inlined_binding_retirement.zig").Witness = null,
 };
 
 pub const Map = std.AutoHashMapUnmanaged(u32, Witness);
@@ -112,6 +113,14 @@ pub fn validateWithIndex(
     while (entries.next()) |entry| {
         const sid = entry.key_ptr.*;
         const witness = entry.value_ptr.*;
+        if (witness.reason == .inlined_local_binding) {
+            if (@backingInt(witness.symbol_id) != sid or !try @import("inlined_binding_retirement.zig").validate(allocator, witness, ast_ptr, reachable, symbol_rows, symbol_ids, scopes, scope_maps, references, roots, frame_index)) return false;
+            const raw = @backingInt(witness.source_name);
+            if (raw >= declaration_anchors.capacity() or declaration_anchors.isSet(raw)) return false;
+            declaration_anchors.set(raw);
+            continue;
+        }
+        if (witness.inlined_binding != null) return false;
         if (witness.reason == .dropped_statement) {
             if (@backingInt(witness.symbol_id) != sid or !@import("drop_statement_retirement.zig").validate(witness, ast_ptr, reachable, symbol_rows, symbol_ids, scopes, owners, frame_index orelse return false)) return false;
             if (!witness.closure_scope.isNone()) closure_roots.set(witness.closure_scope.toIndex());

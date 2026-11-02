@@ -1281,6 +1281,9 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
     // statement-root 위치 (return/expression_statement/variable_declarator init) 면
     // caller context 가 statement 라 precedence 무관 → paren skip.
     const at_stmt_root = read_ni < stmt_roots.capacity() and stmt_roots.isSet(read_ni);
+    if (ctx.semantic_journal) |journal| {
+        if (!journal.recordInlinedLocalBinding(ast, decl_stmt_idx, decl_raw, name_raw, init_ni, read_ni, sym_id, pure_compound and !at_stmt_root, ctx.symbol_ids)) return;
+    }
     if (pure_compound and !at_stmt_root) {
         ast.nodes.items[read_ni] = .{
             .tag = .parenthesized_expression,

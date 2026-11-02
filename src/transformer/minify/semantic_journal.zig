@@ -9,6 +9,7 @@ const SemanticEditor = @import("../../semantic/editor.zig").SemanticEditor;
 const reference_walk = @import("../../semantic/reference_walk.zig");
 const NodeProvenance = @import("../../semantic/node_scope_provenance.zig");
 const RetirementReceipt = @import("../../semantic/function_retirement_receipt.zig");
+const InlineBinding = @import("../../semantic/inlined_binding_retirement.zig");
 const statement_coordinates = @import("../../semantic/statement_coordinates.zig");
 
 pub const SemanticJournal = struct {
@@ -29,6 +30,7 @@ pub const SemanticJournal = struct {
         symbols: []const symbol_mod.Symbol,
         scopes: []const Scope,
         scope_maps: []const std.StringHashMapUnmanaged(usize),
+        source_epoch: u32 = 0,
     };
     pub const Event = struct {
         source: u32,
@@ -51,6 +53,9 @@ pub const SemanticJournal = struct {
     function_name_elisions: std.ArrayList(@import("../../semantic/function_name_retirement.zig").Elision) = .empty,
     references: std.AutoHashMapUnmanaged(u32, Reference) = .empty,
     targets: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    inlined_bindings: std.ArrayList(InlineBinding.Event) = .empty,
+    baseline_scopes: []const Scope = &.{},
+    source_epoch: u32 = 0,
     failure: ?Error = null,
     owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     expressions: NodeProvenance.Map = .empty,
@@ -91,12 +96,15 @@ pub const SemanticJournal = struct {
         self.expressions = try maps.expressions.clone(allocator);
         self.class_self = try maps.class_self.clone(allocator);
         try self.scopes.appendSlice(allocator, maps.scopes);
+        self.baseline_scopes = maps.scopes;
+        self.source_epoch = maps.source_epoch;
         self.symbols = maps.symbols;
         self.scope_maps = maps.scope_maps;
         return self;
     }
 
     pub fn deinit(self: *SemanticJournal) void {
+        self.inlined_bindings.deinit(self.allocator);
         self.events.deinit(self.allocator);
         self.function_name_elisions.deinit(self.allocator);
         self.allocator.free(self.source_references);
@@ -132,6 +140,59 @@ pub const SemanticJournal = struct {
             return false;
         };
         return true;
+    }
+
+    /// Capture only the declaration selected by tryInlineDecl, before either
+    /// the read or statement is overwritten. Later cleanup consumes this tuple.
+    pub fn recordInlinedLocalBinding(self: *SemanticJournal, ast: *const ast_mod.Ast, statement: u32, declarator: u32, binding: u32, initializer: u32, read: u32, sid: u32, wrapped: bool, ids: []const ?u32) bool {
+        if (self.failure != null) return false;
+        self.captureInlinedLocalBinding(ast, statement, declarator, binding, initializer, read, sid, wrapped, ids) catch |err| {
+            self.failure = err;
+            return false;
+        };
+        return true;
+    }
+
+    fn captureInlinedLocalBinding(self: *SemanticJournal, ast: *const ast_mod.Ast, statement: u32, declarator: u32, binding: u32, initializer: u32, read: u32, sid: u32, wrapped: bool, ids: []const ?u32) Error!void {
+        if (ast != self.domain or sid >= self.symbols.len) return error.InvalidReferenceIdentity;
+        for ([_]u32{ statement, declarator, binding, initializer, read }) |raw| if (raw >= ast.nodes.items.len) return error.InvalidReferenceIdentity;
+        if (binding >= ids.len or ids[binding] != sid or read >= ids.len or ids[read] != sid) return error.InvalidReferenceIdentity;
+        const before = self.symbols[sid];
+        if ((before.kind != .variable_let and before.kind != .variable_const) or before.isExported() or before.write_count != 0 or before.scope_id.isNone() or before.scope_id.toIndex() >= self.baseline_scopes.len) return error.InvalidReferenceIdentity;
+        const actual_read = self.references.get(read) orelse return error.InvalidReferenceIdentity;
+        if (@backingInt(actual_read.symbol_id) != sid or !actual_read.flags.read or actual_read.flags.write or actual_read.flags.declare or actual_read.scope_id.isNone() or actual_read.scope_id.toIndex() >= self.baseline_scopes.len or ast.nodes.items[read].tag != .identifier_reference) return error.InvalidReferenceIdentity;
+        var declaration: ?Reference = null;
+        for (self.source_references) |row| {
+            if (@backingInt(row.symbol_id) != sid or !row.flags.declare) continue;
+            if (declaration != null or !row.node_index.isNone() or @backingInt(row.declaration_node_index) != binding or row.scope_id != before.scope_id or !std.meta.eql(row.flags, @as(symbol_mod.ReferenceFlags, .{ .declare = true }))) return error.InvalidReferenceIdentity;
+            declaration = row;
+        }
+        const source_statement = ast.nodes.items[statement];
+        if (source_statement.tag != .variable_declaration or ast.nodes.items[declarator].tag != .variable_declarator or ast.nodes.items[binding].tag != .binding_identifier or !ast.hasExtra(source_statement.data.extra, 2)) return error.InvalidReferenceIdentity;
+        try self.inlined_bindings.append(self.allocator, .{
+            .domain = ast,
+            .symbol_id = @fromBackingInt(sid),
+            .before = before,
+            .statement = @fromBackingInt(statement),
+            .statement_node = source_statement,
+            .declaration = declaration orelse return error.InvalidReferenceIdentity,
+            .binding = @fromBackingInt(binding),
+            .binding_node = ast.nodes.items[binding],
+            .initializer_node = ast.nodes.items[initializer],
+            .wrapped_initializer = wrapped,
+            .witness = .{
+                .declarator = @fromBackingInt(declarator),
+                .declarator_node = ast.nodes.items[declarator],
+                .initializer = @fromBackingInt(initializer),
+                .read = @fromBackingInt(read),
+                .read_node = ast.nodes.items[read],
+                .read_reference = actual_read,
+                .statement_kind = ast.extra_data.items[source_statement.data.extra],
+                .source_epoch = self.source_epoch,
+                .source_frame = self.baseline_scopes[before.scope_id.toIndex()],
+                .read_frame = self.baseline_scopes[actual_read.scope_id.toIndex()],
+            },
+        });
     }
 
     /// Called before the AST and its attached ID are overwritten. The map is
@@ -248,6 +309,7 @@ pub const SemanticJournal = struct {
     pub fn apply(self: *const SemanticJournal, editor: *SemanticEditor, root: ast_mod.NodeIndex, origins: ?*std.AutoHashMapUnmanaged(u32, u32), class_self: ?*std.AutoHashMapUnmanaged(u32, u32)) !void {
         const receipt = try self.applyReferenceAndOwnerEdits(editor, root, origins, class_self);
         defer self.freeApplicationReceipt(receipt);
+        try self.retireInlinedBindings(editor, root, receipt);
         try self.retireDeadDeclarationAnchors(editor, root);
     }
 
@@ -391,7 +453,14 @@ pub const SemanticJournal = struct {
         const copies_owned = try copies.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(copies_owned);
         const names_owned = try self.allocator.dupe(@import("../../semantic/function_name_retirement.zig").Elision, self.function_name_elisions.items);
-        return .{ .domain = self.domain, .reference_changes = references_owned, .owner_changes = owners_owned, .provenance_changes = provenance_owned, .copies = copies_owned, .function_name_elisions = names_owned };
+        errdefer self.allocator.free(names_owned);
+        const inlined_owned = try self.allocator.dupe(InlineBinding.Event, self.inlined_bindings.items);
+        return .{ .inlined_bindings = inlined_owned, .domain = self.domain, .reference_changes = references_owned, .owner_changes = owners_owned, .provenance_changes = provenance_owned, .copies = copies_owned, .function_name_elisions = names_owned };
+    }
+
+    pub fn retireInlinedBindings(self: *const SemanticJournal, editor: *SemanticEditor, root: ast_mod.NodeIndex, receipt: RetirementReceipt.ApplicationReceipt) !void {
+        if (editor.ast != self.domain or receipt.domain != self.domain) return error.InvalidReferenceIdentity;
+        _ = try editor.retireInlinedLocalBindings(receipt.inlined_bindings, root, receipt);
     }
 
     pub fn retireDeadDeclarationAnchors(self: *const SemanticJournal, editor: *SemanticEditor, root: ast_mod.NodeIndex) !void {
@@ -416,6 +485,7 @@ pub const SemanticJournal = struct {
         self.allocator.free(receipt.provenance_changes);
         self.allocator.free(receipt.copies);
         self.allocator.free(receipt.function_name_elisions);
+        self.allocator.free(receipt.inlined_bindings);
     }
 
     /// An old aggregate is consumable only when every counted old edge has

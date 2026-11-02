@@ -52,6 +52,7 @@ pub const ApplicationReceipt = struct {
     owner_changes: []const OwnerChange,
     provenance_changes: []const ProvenanceChange,
     copies: []const Copy,
+    inlined_bindings: []const @import("inlined_binding_retirement.zig").Event = &.{},
     materialized_reads: []const MaterializedRead = &.{},
     function_name_elisions: []const @import("function_name_retirement.zig").Elision = &.{},
 };
