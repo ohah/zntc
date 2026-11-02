@@ -151,8 +151,9 @@ pub const ImportLocalSymbolContext = struct {
 };
 
 /// Resolve the current-side import binding from its scanner-owned AST anchor.
-/// The node map is authoritative; spelling is never used to repair an analyzed
-/// graph. Low-level callers can explicitly omit the ID map and provide scopes.
+/// The node map is authoritative and must still spell the captured local name;
+/// spelling is never used to repair an analyzed graph. Low-level callers can
+/// explicitly omit the ID map and provide scopes.
 pub fn resolveImportLocalSymbol(binding: ImportBinding, context: ImportLocalSymbolContext) symbol_mod.SymbolRef {
     if (context.symbol_ids) |ids| {
         const ast = context.ast orelse return symbol_mod.SymbolRef.invalid;
@@ -164,6 +165,8 @@ pub fn resolveImportLocalSymbol(binding: ImportBinding, context: ImportLocalSymb
             .identifier_reference, .binding_identifier, .import_default_specifier, .import_namespace_specifier => {},
             else => return symbol_mod.SymbolRef.invalid,
         }
+        const node_name = ast.getText(ast.identifierNameSpan(ast.nodes.items[raw]));
+        if (!Scanner.identifierNamesEqual(node_name, binding.local_name)) return symbol_mod.SymbolRef.invalid;
         const sid = ids[raw] orelse return symbol_mod.SymbolRef.invalid;
         const expected_kind: semantic_symbol.SymbolKind = switch (binding.local_role) {
             .import_binding => .import_binding,

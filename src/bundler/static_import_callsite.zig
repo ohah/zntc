@@ -422,7 +422,7 @@ test "static named callsites trust exact anchors across ten poisoned source stat
         }
         var linker = @import("linker.zig").Linker.init(std.testing.allocator, &graph, .esm);
         defer linker.deinit();
-        if (corruption == 1 or corruption == 2 or corruption == 3 or corruption == 6) {
+        if (corruption == 1 or corruption == 2 or corruption == 3 or corruption == 5 or corruption == 6) {
             try std.testing.expectError(error.InvalidCallsiteBinding, lower(&graph, &linker));
         } else {
             try lower(&graph, &linker);

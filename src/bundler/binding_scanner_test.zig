@@ -943,7 +943,7 @@ test "#4819 import local identity rejects malformed exact anchors without name r
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
-    const source = "import { value as local, extra } from './dep'; const decoy = 1; console.log(local, extra, decoy);";
+    const source = "import { value as l\\u006fcal, extra } from './dep'; const decoy = 1; console.log(local, extra, decoy);";
     var scanner = try Scanner.init(arena_alloc, source);
     scanner.is_module = true;
     var parser = Parser.init(arena_alloc, &scanner);
@@ -972,6 +972,12 @@ test "#4819 import local identity rejects malformed exact anchors without name r
     const resolved = binding_scanner.resolveImportLocalSymbol(binding, context);
     try std.testing.expectEqual(expected, resolved.semanticIndex().?);
     try std.testing.expectEqual(context.module_index, resolved.moduleIndex());
+
+    // A sibling import's valid anchor and same-kind SID cannot be borrowed by
+    // a binding whose captured local spelling is different.
+    var wrong_name_anchor = binding;
+    wrong_name_anchor.local_symbol_node = imports[1].local_symbol_node;
+    try std.testing.expect(!binding_scanner.resolveImportLocalSymbol(wrong_name_anchor, context).isValid());
 
     // A same-kind, in-range wrong SID corrupts the authoritative producer map.
     // Consumers must not guess a repair from spelling; the existing exact
