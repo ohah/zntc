@@ -6211,6 +6211,36 @@ test "missing export diagnostics select exact import identity across ten poisone
     try std.testing.expectEqual(@as(usize, 0), conservative_mismatches);
 }
 
+test "#4819: export presence fallback treats poisoned root owners as uncertain" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "export const good = 1; const decoy = 2; const missing = 3;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const index = findModuleIdx(r.graph, "entry.mjs") orelse return error.TestUnexpectedResult;
+    const module = r.graph.moduleAtMut(index) orelse return error.TestUnexpectedResult;
+    const semantic = module.semantic orelse return error.TestUnexpectedResult;
+    try std.testing.expect(semantic.exported_names.count() > 0);
+    try std.testing.expect(r.linker.moduleHasExportName(index, "good", 0));
+    try std.testing.expect(!r.linker.moduleHasExportName(index, "decoy", 0));
+    try std.testing.expect(!r.linker.moduleHasExportName(index, "missing", 0));
+
+    const decoy = semantic.scope_maps[0].get("decoy") orelse return error.TestUnexpectedResult;
+    const missing = semantic.scope_maps[0].get("missing") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(decoy != missing);
+    const root_map = @constCast(&semantic.scope_maps[0]);
+    root_map.getPtr("missing").?.* = decoy;
+    // An invalid row cannot prove absence: the fallback export set may be
+    // incomplete, so the diagnostic gate must remain conservative.
+    try std.testing.expect(r.linker.moduleHasExportName(index, "missing", 0));
+    root_map.getPtr("missing").?.* = semantic.symbols.items.len;
+    try std.testing.expect(r.linker.moduleHasExportName(index, "missing", 0));
+}
+
 test "reuse exact owner IDs survive ten poisoned scope maps without spelling recovery" {
     const Case = struct { declaration: []const u8, astless: bool = false };
     const cases = [_]Case{
