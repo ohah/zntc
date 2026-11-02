@@ -29,6 +29,7 @@ const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
+const Scanner = @import("../lexer/scanner.zig").Scanner;
 const stmt_info_mod = @import("stmt_info.zig");
 const StmtInfos = stmt_info_mod.ModuleStmtInfos;
 const runtime_helper_modules = @import("../runtime_helper_modules.zig");
@@ -926,17 +927,66 @@ pub const TreeShaker = struct {
         else
             return true;
         const m = self.getModule(module_index) orelse return true;
-        const sem = m.semantic orelse return true;
-        if (sem.scope_maps.len == 0) return true;
-        const sym_idx = sem.scope_maps[0].get(local_name) orelse return false;
+        const semantic = m.semantic orelse return true;
+        if (semantic.scope_maps.len == 0) return true;
+
+        // This API receives a spelling from reverse-import metadata, so bind it
+        // back to the module's captured ImportBinding identity before consulting
+        // statement reachability. An ambiguous or incomplete low-level record
+        // stays live rather than risking a false-negative tree-shake.
+        var symbol_index: ?u32 = null;
+        var found_binding = false;
+        for (m.import_bindings) |binding| {
+            if (!Scanner.identifierNamesEqual(binding.local_name, local_name)) continue;
+            found_binding = true;
+            const candidate = self.importBindingSemanticIndex(m, &semantic, binding) orelse return true;
+            if (symbol_index) |existing| {
+                if (existing != candidate) return true;
+            } else {
+                symbol_index = candidate;
+            }
+        }
+        if (!found_binding) return true;
+        const sym_idx = symbol_index orelse return true;
 
         // 역인덱스로 이 심볼을 참조하는 statement 중 reachable한 것이 있는지 확인
-        for (infos.referencingStmts(@intCast(sym_idx))) |si| {
+        for (infos.referencingStmts(sym_idx)) |si| {
             if (!reachable.isSet(si)) continue;
             if (import_records.isImportDeclarationStmt(m, infos, @intCast(si))) continue;
             return true;
         }
         return false;
+    }
+
+    fn importBindingSemanticIndex(
+        self: *const TreeShaker,
+        module: *const Module,
+        semantic: *const module_mod.ModuleSemanticData,
+        binding: ImportBinding,
+    ) ?u32 {
+        const expected_kind = switch (binding.local_role) {
+            .import_binding => @import("../semantic/symbol.zig").SymbolKind.import_binding,
+            .materialized_var => @import("../semantic/symbol.zig").SymbolKind.variable_var,
+            .materialized_const => @import("../semantic/symbol.zig").SymbolKind.variable_const,
+        };
+        if (binding.local_symbol.isValid()) {
+            if (binding.local_symbol.moduleIndex() != module.index) return null;
+            const index = binding.local_symbol.semanticIndex() orelse return null;
+            if (index >= semantic.symbols.items.len or semantic.symbols.items[index].kind != expected_kind) return null;
+            return index;
+        }
+        if (semantic.scope_maps.len == 0) return null;
+        const index = semantic.scope_maps[0].get(binding.local_name) orelse return null;
+        self.linker.validateMetadataScopeMapOwnerIdentity(module.*, semantic, binding.local_name, 0, index) catch return null;
+        if (semantic.symbols.items[index].kind != expected_kind) return null;
+        return @intCast(index);
+    }
+
+    fn isImportBindingLive(self: *const TreeShaker, module_index: u32, binding: ImportBinding) bool {
+        const module = self.getModule(module_index) orelse return true;
+        const semantic = module.semantic orelse return true;
+        const index = self.importBindingSemanticIndex(module, &semantic, binding) orelse return true;
+        return self.isImportSymbolLive(module_index, bundler_symbol.SymbolRef.makeSemantic(module.index, index));
     }
 
     // ============================================================
@@ -1933,7 +1983,7 @@ pub const TreeShaker = struct {
             // StmtInfo/reachability가 있으면 dead statement의 import는 배제.
             // 없으면(wrapped 등) 보수적으로 모두 시드 — 모듈 전체 포함되는 경로.
             if (mod_idx < self.reachable_stmts.len and self.reachable_stmts[mod_idx] != null) {
-                if (!self.isImportLiveInModule(mod_idx, ib.local_name)) continue;
+                if (!self.isImportBindingLive(mod_idx, ib)) continue;
             }
             if (self.canSkipCompletedForeignNamespace(mod_idx, ib_idx)) continue;
             if (ib.import_record_index >= m.import_records.len) continue;
@@ -2426,12 +2476,10 @@ pub const TreeShaker = struct {
 
             if (live_mod_idx) |idx| {
                 // Transformer 가 graph parse 단계에서 inject 한 runtime helper import 는
-                // semantic 의 scope_maps 에 등록되지 않아 isImportLiveInModule 가 항상
-                // false 를 반환 — cjs-wrap 모듈에서 이 분기에 걸리면 helper module 이
-                // included 되지 못하고 dist preamble 에서 사라진다 (`__read is not defined`).
-                // helper 는 transformer 가 명시 inject 한 것이므로 무조건 live 로 처리.
+                // source semantic binding이 없으므로 captured-ID liveness가 보수적으로 live를
+                // 돌려야 한다. Helper 주입 자체가 필요성을 증명하므로 여기서도 명시적으로 유지.
                 const is_runtime_helper = runtime_helper_modules.isVirtualId(target_module.path);
-                if (!is_runtime_helper and !self.isImportLiveInModule(idx, ib.local_name)) continue;
+                if (!is_runtime_helper and !self.isImportBindingLive(idx, ib)) continue;
             }
 
             if (target_module.wrap_kind == .cjs) {

@@ -708,6 +708,73 @@ test "refcount: partial usage — only actually used import marked" {
     try std.testing.expect(!r.shaker.isExportUsed(lib, "notUsed"));
 }
 
+test "import liveness keeps the captured SID when the root map is poisoned" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { used } from './lib'; const decoy = 0; function nested(used) { return used; } console.log(used);");
+    try writeFile(tmp.dir, "lib.ts", "export const used = 1;");
+
+    var r = try buildAndShake(std.testing.allocator, &tmp, "entry.ts");
+    defer r.deinit();
+
+    const entry_index = r.findModule("entry.ts") orelse return error.MissingEntry;
+    const entry = @constCast(r.graph.getModule(ModuleIndex.fromUsize(entry_index)) orelse return error.MissingEntry);
+    const semantic = if (entry.semantic) |*value| value else return error.MissingEntrySemantic;
+    const binding_index = blk: {
+        for (entry.import_bindings, 0..) |binding, index| {
+            if (std.mem.eql(u8, binding.local_name, "used")) break :blk index;
+        }
+        return error.MissingImportBinding;
+    };
+    const binding = &entry.import_bindings[binding_index];
+    const binding_sid = binding.local_symbol.semanticIndex() orelse return error.MissingImportSymbol;
+    const original_ref = binding.local_symbol;
+    const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoySymbol;
+    var nested_sid: ?usize = null;
+    for (semantic.scope_maps[1..]) |scope_map| {
+        if (scope_map.get("used")) |index| {
+            if (index != binding_sid) {
+                nested_sid = index;
+                break;
+            }
+        }
+    }
+    const actual_nested_sid = nested_sid orelse return error.MissingNestedImportName;
+    const mutable_scope_maps = @constCast(semantic.scope_maps);
+
+    // An exact captured import remains live even when the spelling map points
+    // at another valid SID or an out-of-range index.
+    try mutable_scope_maps[0].put(std.testing.allocator, "used", decoy_sid);
+    try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
+    try mutable_scope_maps[0].put(std.testing.allocator, "used", semantic.symbols.items.len + 7);
+    try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
+
+    // Anchorless low-level bindings fail closed on a decoy map row, while an
+    // exact, correctly typed compatibility row remains supported.
+    binding.local_symbol = .invalid;
+    try mutable_scope_maps[0].put(std.testing.allocator, "used", decoy_sid);
+    try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
+    try mutable_scope_maps[0].put(std.testing.allocator, "used", semantic.symbols.items.len + 7);
+    try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
+    try mutable_scope_maps[0].put(std.testing.allocator, "used", actual_nested_sid);
+    try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
+
+    // A forged same-spelling row still fails the role check when its owner is
+    // an ordinary const rather than the import binding.
+    const mutable_symbols = @constCast(semantic.symbols.items);
+    const original_decoy_name = mutable_symbols[decoy_sid].name;
+    mutable_symbols[decoy_sid].name = mutable_symbols[binding_sid].name;
+    _ = mutable_scope_maps[0].remove("decoy");
+    try mutable_scope_maps[0].put(std.testing.allocator, "used", decoy_sid);
+    try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
+    mutable_symbols[decoy_sid].name = original_decoy_name;
+    try mutable_scope_maps[0].put(std.testing.allocator, "decoy", decoy_sid);
+
+    try mutable_scope_maps[0].put(std.testing.allocator, "used", binding_sid);
+    try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
+    binding.local_symbol = original_ref;
+}
+
 test "refcount: unused default import not marked as used" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
