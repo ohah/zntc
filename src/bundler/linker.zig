@@ -1171,6 +1171,63 @@ pub const Linker = struct {
         return .{ .symbol_id = symbol_id };
     }
 
+    /// CJS `var`/function redeclarations can be the exact callback parameter
+    /// binding while retaining a source-owned, non-synthetic SymbolId. They
+    /// live in the wrapper scope but also have compatibility rows in scope 0,
+    /// so validate that narrow graph-finalization witness separately from
+    /// generated wrapper symbols.
+    fn isCjsWrapperSourceRootOwner(
+        self: *const Linker,
+        m: Module,
+        sem: *const ModuleSemanticData,
+        name: []const u8,
+        symbol_index: usize,
+    ) bool {
+        if (m.wrap_kind != .cjs or symbol_index >= sem.symbols.items.len or
+            sem.scopes.len == 0 or sem.scope_maps.len != sem.scopes.len)
+            return false;
+        const expected_id = if (Scanner.identifierNamesEqual(name, "exports"))
+            m.cjs_wrapper_exports_parameter_symbol
+        else if (Scanner.identifierNamesEqual(name, "module"))
+            m.cjs_wrapper_module_parameter_symbol
+        else
+            null;
+        const expected = expected_id orelse return false;
+        if (@as(usize, @backingInt(expected)) != symbol_index) return false;
+
+        const wrapper_scope = sem.scopes[0].parent;
+        if (wrapper_scope.isNone() or wrapper_scope.toIndex() >= sem.scopes.len or
+            sem.symbols.items[symbol_index].scope_id != wrapper_scope)
+            return false;
+        const symbol = sem.symbols.items[symbol_index];
+        if (symbol.synthetic_kind != null or
+            (symbol.kind != .variable_var and !symbol.kind.isFunctionLike()))
+            return false;
+        self.validateTopLevelOwnerSpelling(m, sem, name, symbol_index) catch return false;
+        if (sem.scope_maps[0].get(name) != symbol_index or
+            cjsWrapperParameterConflictsWithRoot(&m, symbol_index, name))
+            return false;
+
+        var wrapper_rows = sem.scope_maps[wrapper_scope.toIndex()].iterator();
+        while (wrapper_rows.next()) |entry| {
+            if (entry.value_ptr.* == symbol_index and Scanner.identifierNamesEqual(entry.key_ptr.*, name)) return true;
+        }
+        return false;
+    }
+
+    fn validateManglerRootMapOwner(
+        self: *const Linker,
+        m: Module,
+        sem: *const ModuleSemanticData,
+        name: []const u8,
+        symbol_index: usize,
+    ) !void {
+        _ = self.topLevelOwnerIdentity(m, sem, name, symbol_index) catch |err| {
+            if (self.isCjsWrapperSourceRootOwner(m, sem, name, symbol_index)) return;
+            return err;
+        };
+    }
+
     // Private identity capture and canonical sink need direct white-box coverage.
     test "synthetic top-level owners keep exact SIDs after scope-map redirection" {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -4571,6 +4628,11 @@ pub const Linker = struct {
                     while (sit.next()) |entry| {
                         const sym_name = entry.key_ptr.*;
                         const sym_idx_usize = entry.value_ptr.*;
+                        // Root-map entries select the exact SID passed to the
+                        // mangler. Prove that the row spelling and semantic
+                        // owner agree before using it as a candidate or bitset
+                        // index; stale aliases must fail closed.
+                        try self.validateManglerRootMapOwner(m.*, &sem, sym_name, sym_idx_usize);
                         if (sym_idx_usize >= sym_count) continue;
                         const sym_idx: u32 = @intCast(sym_idx_usize);
 
