@@ -16,6 +16,25 @@ const EmitOptions = parent.EmitOptions;
 
 /// The initial candidate is disconnected. Only included live use-sites add
 /// dependency edges and exact declaration seeds after ordinary tree-shaking.
+/// Candidate-only demand from actual async provider export records. Final
+/// output demand is checked again against FinalExportEntries at the writer.
+pub fn asyncReadyMarkerCandidate(graph: *const ModuleGraph, module: *const Module) !bool {
+    if (!graph.transform_options_base.tla_entry_exports_awaited) return false;
+    if (!module.uses_top_level_await and !module.in_async_cone and module.tla_iife_stmt == null) return false;
+    var has_default = false;
+    for (module.export_bindings) |binding| {
+        const keys = @import("../public_export_key.zig");
+        const key = if (binding.public_key_literal) |literal|
+            try keys.fromLiteralSyntax(graph.allocator, literal)
+        else
+            try keys.fromSyntax(graph.allocator, binding.exported_name);
+        defer key.deinit(graph.allocator);
+        if (std.mem.eql(u8, key.text, "__esModule")) return false;
+        if (std.mem.eql(u8, key.text, "default")) has_default = true;
+    }
+    return has_default;
+}
+
 pub fn activateSingleBundleInterop(graph: *ModuleGraph, linker: *Linker, shaker: ?*@import("../tree_shaker.zig").TreeShaker) !void {
     const provider = graph.interop_ast_provider orelse return;
     const old_shaker = linker.tree_shaker;
@@ -44,7 +63,8 @@ pub fn activateSingleBundleInterop(graph: *ModuleGraph, linker: *Linker, shaker:
             }
         }
         const module_needs = module_wrapped or moduleNeedsToEsmInterop(module, graph, linker) or
-            moduleReExportsCjsDefaultNeedsToEsm(module, graph, linker) or live_dynamic;
+            moduleReExportsCjsDefaultNeedsToEsm(module, graph, linker) or live_dynamic or
+            try asyncReadyMarkerCandidate(graph, module);
         if (!module_needs) continue;
         needs = true;
         wrapped = wrapped or module_wrapped;
@@ -433,7 +453,9 @@ pub fn emitChunkRuntimeHelpers(
     linker: ?*const Linker,
     options: *const EmitOptions,
     collected_helpers: ?RuntimeHelpers,
+    interop_emitted: *bool,
 ) !void {
+    interop_emitted.* = false;
     var needs_cjs_runtime = false;
     var needs_esm_wrap_runtime = false;
     var needs_to_common_js_runtime = false;
@@ -518,7 +540,7 @@ pub fn emitChunkRuntimeHelpers(
                 .{};
             try rt.appendCommonJsFactoryRuntimeWithNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, internal_names);
         }
-        if (needs_to_esm_runtime or needs_esm_wrap_runtime or needs_to_common_js_runtime) {
+        if ((needs_to_esm_runtime or needs_esm_wrap_runtime or needs_to_common_js_runtime) and graph.interop_ast_provider == null) {
             const helper_names = if (linker) |l|
                 try l.esmInteropRuntimeNames()
             else
@@ -528,8 +550,9 @@ pub fn emitChunkRuntimeHelpers(
             else
                 rt_names.EsmInteropRuntimeInternalNames{};
             try rt.appendToEsmRuntimeWithInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, helper_names, internal_names);
+            interop_emitted.* = true;
         }
-    } else if (options.preserve_modules and needs_to_esm_runtime) {
+    } else if (options.preserve_modules and needs_to_esm_runtime and graph.interop_ast_provider == null) {
         // (#4524) preserve-modules 의 소비자 청크는 CJS 도 ESM-wrap 도 없는 **순수 ESM 파일**
         // 인데, 다른 파일의 CJS 를 동적 import 하면 자기가 `__toESM(m.default)` 로 namespace 를
         // 합성한다 — 위 게이트만으론 그 청크를 통째로 건너뛰어 `__toESM is not defined` 다.
@@ -547,6 +570,14 @@ pub fn emitChunkRuntimeHelpers(
         else
             rt_names.EsmInteropRuntimeInternalNames{};
         try rt.appendToEsmRuntimeWithInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, helper_names, internal_names);
+        interop_emitted.* = true;
+    }
+    if (graph.interop_ast_provider) |provider| {
+        if (needs_to_esm_runtime or needs_esm_wrap_runtime or needs_to_common_js_runtime) {
+            if (!provider.active) return error.InteropAstProviderNotActivated;
+            try @import("../runtime_interop_ast.zig").emit(output, allocator, graph, linker orelse return error.InteropAstProviderMissingLinker, options);
+            interop_emitted.* = true;
+        }
     }
     if (needs_esm_wrap_runtime) {
         const factory_name = if (linker) |l|
@@ -563,13 +594,14 @@ pub fn emitChunkRuntimeHelpers(
             try l.esmFactoryRuntimeInternalNames()
         else
             rt_names.EsmRuntimeInternalNames{};
-        const interop_internal_names = if (linker) |l|
-            try l.esmInteropRuntimeInternalNames()
-        else
-            rt_names.EsmInteropRuntimeInternalNames{};
-        try rt.appendEsmWrapRuntimeWithGraphInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, helper_names, internal_names, interop_internal_names);
+        if (graph.interop_ast_provider != null) {
+            try rt.appendEsmFactoryRuntimeWithNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, internal_names);
+        } else {
+            const interop_internal_names = if (linker) |l| try l.esmInteropRuntimeInternalNames() else rt_names.EsmInteropRuntimeInternalNames{};
+            try rt.appendEsmWrapRuntimeWithGraphInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, helper_names, internal_names, interop_internal_names);
+        }
     }
-    if (needs_to_common_js_runtime and !needs_esm_wrap_runtime) {
+    if (needs_to_common_js_runtime and !needs_esm_wrap_runtime and graph.interop_ast_provider == null) {
         const names = if (linker) |l| try l.esmInteropRuntimeNames() else rt_names.defaultEsmInteropRuntimeNames(options.minify_whitespace);
         const internal = if (linker) |l| try l.esmInteropRuntimeInternalNames() else rt_names.EsmInteropRuntimeInternalNames{};
         try rt.appendEsmInteropWrappersWithGraphInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, names, internal);

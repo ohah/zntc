@@ -486,14 +486,9 @@ fn moveDefaultExport(comptime Transformer: type, self: *Transformer, stmt: NodeI
     const name_span = try self.ast.addString(name);
     const binding = try es_helpers.makeSyntheticBinding(self, name_span);
     if (self.semantic_edit_enabled) {
-        if (std.mem.eql(u8, name, "_default")) {
-            const raw_id = self.getSymbolIdAt(stmt) orelse std.debug.panic("default export facade has no SymbolId", .{});
-            try self.setGeneratedSymbolId(binding, raw_id);
-            try self.ensureSymbolDeclarationAtNode(raw_id, program_scope, binding);
-        } else {
-            _ = try self.declareSyntheticInScope(binding, node.span, .variable_var, program_scope);
-        }
+        try self.materializeDefaultExportFacade(stmt, binding, program_scope);
     }
+
     const binding_span = self.ast.getNode(binding).data.string_ref;
 
     const pt = self.pending_nodes.items.len;
@@ -533,6 +528,38 @@ fn appendHoistedDeclarations(comptime Transformer: type, self: *Transformer, bin
         }
         const none = @backingInt(NodeIndex.none);
         try out.append(self.allocator, try self.addExtraNode(.export_named_declaration, span, &.{ @backingInt(decl), 0, 0, none, 0, 0 }));
+    }
+}
+
+/// The actual TLA body has moved before its ES5 revisit. Keep existing
+/// reference rows in the exact output owner so a renamed copy does not clone
+/// a stale program-scope use after its binding moves into this function.
+fn moveWrappedReferenceScopes(comptime Transformer: type, self: *Transformer, body: NodeIndex, scope: ScopeId) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const Work = struct { node: NodeIndex, scope: ScopeId };
+    var stack: std.ArrayList(Work) = .empty;
+    defer stack.deinit(self.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+    try stack.append(self.allocator, .{ .node = body, .scope = scope });
+    while (stack.pop()) |work| {
+        if (work.node.isNone()) continue;
+        const slot = try seen.getOrPut(self.allocator, @backingInt(work.node));
+        if (slot.found_existing) continue;
+        const output_scope = self.outputOwnedScope(work.node) orelse work.scope;
+        const editor = &self.semantic_editor.?;
+        const reference = editor.referenceForNode(work.node) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            std.debug.panic("TLA body reference lookup failed: {s}", .{@errorName(err)});
+        };
+        if (reference) |row| {
+            if (row.scope_id != output_scope) editor.moveReference(work.node, output_scope, row.stmt_idx, row.scope_stmt_idx) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                std.debug.panic("TLA body reference scope handoff failed: {s}", .{@errorName(err)});
+            };
+        }
+        var children = ast_walk.children(self.ast, self.ast.getNode(work.node));
+        while (children.next()) |child| try stack.append(self.allocator, .{ .node = child, .scope = output_scope });
     }
 }
 
@@ -716,6 +743,7 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     // the wrapper; left under the program scope, an arrow's parameter
     // initializer lost the wrapped declarations it reads (#5562).
     if (self.semantic_edit_enabled) try self.reparentGeneratedBodyScopes(self.programScope(), arrow_scope, body_block);
+    try moveWrappedReferenceScopes(Transformer, self, body_block, arrow_scope);
 
     // (arrow)() — 호출 (arrow 는 call-target 위치에서 codegen 이 자동 wrap)
     const call = try es_helpers.makeCallExpr(self, arrow, &.{}, node.span);

@@ -795,6 +795,23 @@ pub fn generateChunks(
         }
     }
 
+    // A readiness provider must never share an async common chunk: its
+    // synchronous registered function is needed to construct that chunk's
+    // promise. Reuse the compiler-generated entry boundary, without adding a
+    // user entry or changing the provider's source identities.
+    if (graph.tla_readiness_all) |helper| {
+        const provider = graph.getModule(helper.module_index) orelse return error.InvalidTlaReadinessHelper;
+        const semantic = provider.semantic orelse return error.InvalidTlaReadinessHelper;
+        if (semantic.owner_token != helper.owner_token or helper.owner_token == .unassigned or
+            !std.mem.eql(u8, provider.path, "\x00zntc:runtime/readiness-all") or
+            helper.export_index >= provider.export_bindings.len) return error.InvalidTlaReadinessHelper;
+        const binding = provider.export_bindings[helper.export_index];
+        const sid = provider.exportBindingSemanticIndex(binding) orelse return error.InvalidTlaReadinessHelper;
+        if (sid != @backingInt(helper.symbol_id) or !std.mem.eql(u8, binding.exported_name, "__tlaReadyAll"))
+            return error.InvalidTlaReadinessHelper;
+        try addDynamicEntry(allocator, &entries, &dynamic_seen, graph, helper.module_index, true);
+    }
+
     const entry_count = entries.items.len;
     if (entry_count == 0) {
         return ChunkGraph.init(allocator, module_count);

@@ -1237,8 +1237,16 @@ pub fn emitEsmWrappedModule(
     // ⚠️ async 문법이 없는 타겟(es5)은 제외 — 상태머신 낮추기가 선행돼야 한다(3d).
     // 이 단계만으로는 동작이 바뀌면 안 된다: `init_X()` 반환이 undefined → promise 로
     // 바뀌지만 소비자는 아직 `(init_X(), exports_X)` 로 무시한다.
-    const is_async = module.uses_top_level_await or
-        (module.in_async_cone and options.transform_options_base.asyncInitWrappersAllowed());
+    const pm_sync_outer = (options.preserve_modules or options.deferred_module_exports != null) and options.format != .esm and
+        options.unsupported.async_await and if (options.defer_async_entry_exports) |context|
+        (context.pm_protocol or context.internal_module) and context.module_index == module.index.toU32()
+    else
+        false;
+    // PM publish() already awaits its owned dependency states. On an engine
+    // without async syntax this factory only returns the lowered inner promise;
+    // it does not need a second, native-async environment.
+    const is_async = !pm_sync_outer and (module.uses_top_level_await or
+        (module.in_async_cone and options.transform_options_base.asyncInitWrappersAllowed()));
 
     // entry dependency chain은 entry factory 안의 nested require로 남긴다.
     // dependency를 top-level 개별 guard로 풀면 ErrorUtils 설치 후 throw가 swallow되어

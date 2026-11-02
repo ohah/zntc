@@ -1422,6 +1422,39 @@ pub const SemanticEditor = struct {
         self.addCounts(current.symbol_id, flags);
     }
 
+    /// Materialize the analyzer's exact default-export facade. A user's
+    /// `_default` may own the lexical map entry; that binding is never moved.
+    pub fn materializeDefaultExportFacade(self: *SemanticEditor, source: NodeIndex, binding: NodeIndex, scope: ScopeId) Error!void {
+        if (!self.validScope(scope) or source.isNone() or binding.isNone() or
+            @backingInt(source) >= self.ast.nodes.items.len or @backingInt(binding) >= self.ast.nodes.items.len or
+            @backingInt(source) >= self.symbol_ids.items.len) return error.InvalidNode;
+        const original = self.ast.getNode(source);
+        const output = self.ast.getNode(binding);
+        if (original.tag != .export_default_declaration or output.tag != .binding_identifier) return error.InvalidNode;
+        const raw = self.symbol_ids.items[@backingInt(source)] orelse return error.InvalidSymbol;
+        const id: SymbolId = @fromBackingInt(@intCast(raw));
+        if (!self.validSymbol(id)) return error.InvalidSymbol;
+        const symbol = self.symbols.items[raw];
+        if (symbol.scope_id != scope or symbol.origin_scope != scope or symbol.kind != .variable_const or
+            !symbol.decl_flags.is_default_export or !symbol.decl_flags.is_exported or
+            symbol.declaration_span.start != original.span.start or symbol.declaration_span.end != original.span.end or
+            !std.mem.eql(u8, symbol.synthetic_name, "_default") or symbol.reference_count != 0 or
+            !self.validTextSpan(output.data.string_ref)) return error.InvalidSymbol;
+        const name = self.ast.getText(output.data.string_ref);
+        if (name.len == 0) return error.InvalidNode;
+        const map = &self.scope_maps.items[scope.toIndex()];
+        if (map.get(name)) |existing| if (existing != raw) return error.DuplicateBinding;
+        for (self.references.items) |reference| {
+            if (reference.symbol_id == id and !reference.flags.declare) return error.InvalidSymbol;
+        }
+        const stable = try self.allocator.dupe(u8, name);
+        try map.put(self.allocator, stable, raw);
+        if (!std.mem.eql(u8, name, "_default") and map.get("_default") == @as(?usize, raw)) _ = map.remove("_default");
+        self.symbols.items[raw].synthetic_name = stable;
+        try self.attachExistingBinding(binding, id);
+        try self.ensureDeclarationAtNode(id, scope, binding);
+    }
+
     /// Preserve declaration evidence when a transform materializes an AST
     /// binding for a symbol that already exists (for example an export facade).
     /// The legacy declaration row stays node-less for stmt-info consumers, and
@@ -5412,4 +5445,50 @@ test "source function retirement includes only its actual named expression self 
             }
         }
     }
+}
+
+test "default facade materialization preserves the source SID beside a user default binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const _default = 'user'; export default _default + '!';");
+    defer scanner.deinit();
+    var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.is_module = true;
+    defer parser.deinit();
+    _ = try parser.parse();
+    var analyzer = @import("analyzer.zig").SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    defer analyzer.deinit();
+    try analyzer.analyze();
+    var source: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .export_default_declaration) source = @fromBackingInt(@intCast(raw));
+    }
+    try std.testing.expect(!source.isNone());
+    const raw = analyzer.symbol_ids.items[@backingInt(source)].?;
+    const scope = analyzer.symbols.items[raw].scope_id;
+    var editor = try analyzer.beginEdit();
+    defer editor.deinit();
+    const user = editor.scope_maps.items[scope.toIndex()].get("_default").?;
+    try std.testing.expect(user != raw);
+    const collision_name = try parser.ast.addString("_default");
+    const collision = try parser.ast.addNode(.{ .tag = .binding_identifier, .span = collision_name, .data = .{ .string_ref = collision_name } });
+    try std.testing.expectError(error.DuplicateBinding, editor.materializeDefaultExportFacade(source, collision, scope));
+    const name = try parser.ast.addString("_default2");
+    const binding = try parser.ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    editor.symbol_ids.items[@backingInt(source)] = @intCast(user);
+    try std.testing.expectError(error.InvalidSymbol, editor.materializeDefaultExportFacade(source, binding, scope));
+    editor.symbol_ids.items[@backingInt(source)] = raw;
+    try editor.materializeDefaultExportFacade(source, binding, scope);
+    try std.testing.expectEqual(@as(?u32, raw), editor.symbol_ids.items[@backingInt(binding)]);
+    try std.testing.expectEqual(@as(?usize, user), editor.scope_maps.items[scope.toIndex()].get("_default"));
+    try std.testing.expectEqual(@as(?usize, raw), editor.scope_maps.items[scope.toIndex()].get("_default2"));
+    var anchored: usize = 0;
+    for (editor.references.items) |row| {
+        if (@backingInt(row.symbol_id) == raw and row.flags.declare and row.declaration_node_index == binding) anchored += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), anchored);
 }

@@ -1105,9 +1105,35 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         }
 
         fn isNativeSourceVar(self: *Transformer, index: NodeIndex) bool {
-            if (index.isNone() or @backingInt(index) >= self.parser_node_count) return false;
+            if (index.isNone()) return false;
             const node = self.ast.getNode(index);
-            return node.tag == .variable_declaration and self.ast.variableDeclarationKind(node) == .@"var";
+            if (node.tag != .variable_declaration or self.ast.variableDeclarationKind(node) != .@"var") return false;
+            if (@backingInt(index) < self.parser_node_count) return true;
+            // TLA visits this source header before the generator revisits it.
+            // The declaration node is new, but its actual parser binding and
+            // declaration row still prove the same source-var storage.
+            if (!self.semantic_edit_enabled or self.readU32(node.data.extra, 2) != 1) return false;
+            const item = self.ast.getNode(@fromBackingInt(self.ast.extra_data.items[self.readU32(node.data.extra, 1)]));
+            if (item.tag != .variable_declarator) return false;
+            const binding = self.readNodeIdx(item.data.extra, 0);
+            if (binding.isNone() or @backingInt(binding) >= self.parser_node_count or
+                self.ast.getNode(binding).tag != .binding_identifier) return false;
+            const id = self.getSymbolIdAt(binding) orelse return false;
+            const editor = &self.semantic_editor.?;
+            if (id >= editor.symbols.items.len or editor.symbols.items[id].kind != .variable_var or
+                @backingInt(binding) >= editor.symbol_ids.items.len or editor.symbol_ids.items[@backingInt(binding)] != id) return false;
+            var declared = false;
+            for (editor.references.items) |row| {
+                if (row.flags.declare and row.declaration_node_index == binding and @backingInt(row.symbol_id) == id) declared = true;
+            }
+            if (!declared) return false;
+            for (self.ast.nodes.items[0..self.parser_node_count]) |source| {
+                if (source.tag != .variable_declaration or source.span.start != node.span.start or source.span.end != node.span.end or
+                    self.ast.variableDeclarationKind(source) != .@"var" or self.readU32(source.data.extra, 2) != 1) continue;
+                const source_item = self.ast.getNode(@fromBackingInt(self.ast.extra_data.items[self.readU32(source.data.extra, 1)]));
+                if (source_item.tag == .variable_declarator and self.readNodeIdx(source_item.data.extra, 0) == binding) return true;
+            }
+            return false;
         }
 
         /// The wrapper already owns this exact outer declaration binding.
@@ -5852,4 +5878,50 @@ test "native generator var header store follows forced extra data relocation" {
         try std.testing.expectEqual(use_scope, reference.scope_id);
         try std.testing.expectEqual(wrapper_scope, editor.symbols.items[id].scope_id);
     }
+}
+
+test "TLA revisited native var header retains one physical storage and its exact initializer write" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "entry.mjs", .data = "await 0;for(var i=(globalThis.__init=(globalThis.__init||0)+1)-1;i<3;i++){}function local(){return i;}console.log(local(),globalThis.__init);" });
+    const path = try @import("../bundler/test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = @import("../bundler/resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = @import("../bundler/graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.unsupported = @import("compat.zig").fromESTarget(.es5);
+    graph.transform_options_base.tla_module_awaited = true;
+    try graph.build(std.testing.io, &.{path});
+    const index = graph.path_to_module.get(path).?;
+    const module = graph.modules.at(@backingInt(index));
+    try std.testing.expect(module.transform_cache != null);
+    const ast = &module.ast.?;
+    const semantic = &module.semantic.?;
+    const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(std.testing.allocator, ast);
+    defer std.testing.allocator.free(reachable);
+    var loop_count: usize = 0;
+    var storage_id: ?u32 = null;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag != .for_statement) continue;
+        loop_count += 1;
+        const init: NodeIndex = @fromBackingInt(ast.extra_data.items[node.data.extra]);
+        try std.testing.expect(!init.isNone());
+        const expression = ast.getNode(init);
+        try std.testing.expectEqual(ast_mod.Node.Tag.assignment_expression, expression.tag);
+        storage_id = semantic.symbol_ids[@backingInt(expression.data.binary.left)];
+    }
+    try std.testing.expectEqual(@as(usize, 1), loop_count);
+    const id = storage_id orelse return error.MissingNativeVarStorage;
+    var bindings: usize = 0;
+    for (reachable) |raw| {
+        if (ast.nodes.items[raw].tag == .binding_identifier and raw < semantic.symbol_ids.len and semantic.symbol_ids[raw] == id) bindings += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), bindings);
+    var declarations: usize = 0;
+    for (semantic.references) |row| {
+        if (@backingInt(row.symbol_id) == id and row.flags.declare) declarations += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), declarations);
 }

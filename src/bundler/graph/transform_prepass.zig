@@ -18262,6 +18262,16 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
 
     var opts = self.transform_options_base;
     opts.unsupported = moduleUnsupported(opts.unsupported, module);
+    // PM files and split modules have their own actual namespace/init
+    // protocol, including common modules and late-discovered dynamic targets.
+    // Do not infer this role from a transient dynamic-import discovery order.
+    // Delegated chunk factories retain their existing evaluation path.
+    if (opts.tla_entry_exports_awaited and
+        (module.is_entry_point or self.preserve_modules or self.code_splitting) and
+        module.export_bindings.len > 0 and !opts.tla_chunk_wrapped)
+    {
+        opts.tla_module_awaited = true;
+    }
     const computed_accessor_super_requires_exact = if (opts.unsupported.object_extensions)
         hasComputedObjectAccessorSuper(arena_alloc, ast_ptr) catch true
     else
