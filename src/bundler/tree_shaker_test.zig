@@ -839,6 +839,12 @@ test "import liveness keeps the captured SID when the root map is poisoned" {
     // The capture is also invalid if it no longer matches the scanner anchor,
     // even when the cached SymbolRef itself is unchanged and in range.
     const original_anchor = binding.local_symbol_node;
+    binding.local_symbol = idle_binding.local_symbol;
+    binding.local_symbol_node = idle_binding.local_symbol_node;
+    try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
+    binding.local_symbol = original_ref;
+    binding.local_symbol_node = original_anchor;
+
     binding.local_symbol = original_ref;
     binding.local_symbol_node = idle_binding.local_symbol_node;
     try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
