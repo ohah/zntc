@@ -254,7 +254,7 @@ fn recordReferenceOrigin(self: anytype, source: NodeIndex, clone: NodeIndex) Err
     if (!self.semantic_edit_enabled or source.isNone() or clone.isNone() or source == clone) return;
     const source_tag = self.ast.getNode(source).tag;
     const clone_tag = self.ast.getNode(clone).tag;
-    const source_is_ref = source_tag == .identifier_reference or source_tag == .assignment_target_identifier;
+    const source_is_ref = source_tag == .identifier_reference or source_tag == .assignment_target_identifier or source_tag == .jsx_identifier;
     const clone_is_ref = clone_tag == .identifier_reference or clone_tag == .assignment_target_identifier;
     if (!source_is_ref or !clone_is_ref) return;
     const has_symbol = self.getSymbolIdAt(source) != null;

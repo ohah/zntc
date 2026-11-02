@@ -16019,3 +16019,21 @@ test "explicit statement drops compose with actual named function retirement" {
         try std.testing.expectEqualStrings("42\n", actual.stdout);
     }
 }
+
+test "lowered JSX component lookups preserve source globals in plain and identifiers output" {
+    const cases = [_]struct { source: []const u8, expected: []const u8 }{
+        .{ .source = "const React={createElement:type=>type()};globalThis.Comp=()=>42;console.log(<Comp/>);", .expected = "42\n" },
+        .{ .source = "const React={createElement:type=>type()};globalThis.Comp={Inner:()=>43};console.log(<Comp.Inner/>);", .expected = "43\n" },
+        .{ .source = "const React={createElement:type=>type};console.log(<span/>);", .expected = "span\n" },
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for (cases) |case| for ([_]bool{ false, true }) |minify| {
+        const result = try transpile(a, case.source, "input.tsx", .{ .jsx_runtime = .classic, .minify_identifiers = minify });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, case.expected, actual.stdout)) std.debug.print("JSX source lookup runtime code={s} stderr={s}\n", .{ result.code, actual.stderr });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(case.expected, actual.stdout);
+    };
+}

@@ -16403,6 +16403,7 @@ fn auditPrepassExactIfEnabled(
             parser_node_count,
             semantic.symbol_ids,
             &semantic.unresolved_references,
+            &semantic.node_scope_provenance,
             &reanalyzed_unresolved_nodes,
         ) catch |err| {
             std.debug.print("zntc: symbol-identity-prepass-error {s}: {s}\n", .{ module.path, @errorName(err) });
@@ -16432,11 +16433,16 @@ fn collectParserUnresolvedNodes(
     parser_node_count: u32,
     symbol_ids: []const ?u32,
     unresolved_references: *const std.StringHashMapUnmanaged(void),
+    provenance: *const @import("../../semantic/node_scope_provenance.zig").Map,
     unresolved_nodes: *std.AutoHashMapUnmanaged(u32, void),
 ) !void {
     const parser_len = @min(@as(usize, parser_node_count), ast.nodes.items.len);
     for (ast.nodes.items[0..parser_len], 0..) |node, raw| {
-        if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+        if (node.tag == .jsx_identifier) {
+            const source = provenance.get(@fromBackingInt(@as(u32, @intCast(raw)))) orelse continue;
+            const origin = source.source_external orelse continue;
+            if (origin.tag != .jsx_identifier or !origin.flags.read or origin.flags.write or origin.flags.declare or origin.flags.type_context or origin.flags.value_as_type) continue;
+        } else if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
         if (raw >= symbol_ids.len or symbol_ids[raw] != null) continue;
         const raw_name = ast.getText(node.span);
         if (!unresolved_references.contains(raw_name)) {
@@ -18603,7 +18609,7 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
 
     var unresolved_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     if (module.semantic) |*sem| {
-        collectParserUnresolvedNodes(arena_alloc, ast_ptr, parser_node_count, sem.symbol_ids, &sem.unresolved_references, &unresolved_nodes) catch return;
+        collectParserUnresolvedNodes(arena_alloc, ast_ptr, parser_node_count, sem.symbol_ids, &sem.unresolved_references, &sem.node_scope_provenance, &unresolved_nodes) catch return;
         transformer.unresolved_reference_nodes = &unresolved_nodes;
     }
     if (debug_symbol_coverage) transformer.synthetic_idents = .empty;
@@ -19817,6 +19823,9 @@ fn jsxSpreadChildTestFixture(
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
     analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
+    analyzer.collect_unresolved_reference_nodes = true;
     try analyzer.analyze();
 
     return .{
@@ -19827,6 +19836,8 @@ fn jsxSpreadChildTestFixture(
             .scope_maps = analyzer.scope_maps.items,
             .scope_owner_map = analyzer.scope_owner_map,
             .node_scope_provenance = analyzer.node_scope_provenance,
+            .scope_history = analyzer.scope_history,
+            .source_owned_retirements = analyzer.source_owned_retirements,
             .class_self_symbol_map = analyzer.class_self_symbol_map,
             .namespace_member_owners = analyzer.namespace_member_owners,
             .namespace_declaration_owners = analyzer.namespace_declaration_owners,

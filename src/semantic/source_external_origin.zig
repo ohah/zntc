@@ -54,6 +54,7 @@ pub const Origin = struct {
     execution_scope: scope.ScopeId,
     execution_frame: scope.Scope,
     scope_moves: []const ScopeMove = &.{},
+    jsx_reference: ?@import("scope_frame_history.zig").Owner = null,
 };
 
 pub fn sameFrame(a: scope.Scope, b: scope.Scope) bool {
@@ -87,7 +88,14 @@ pub fn validate(
             .identifier_reference, .assignment_target_identifier, .jsx_identifier => {},
             else => return false,
         }
-        if (node.tag != origin.tag or !std.meta.eql(node.data.string_ref, origin.name) or !std.meta.eql(node.span, origin.span)) return false;
+        if (origin.jsx_reference) |source_jsx| {
+            if (origin.tag != .jsx_identifier or node.tag != .identifier_reference or source_jsx.node != entry.value_ptr.source_node or source_jsx.tag != .jsx_identifier or
+                !std.meta.eql(source_jsx.span, origin.span) or source_jsx.words[0] != origin.name.start or source_jsx.words[1] != origin.name.end or
+                !origin.flags.read or origin.flags.write or origin.flags.declare or origin.flags.type_context or origin.flags.value_as_type) return false;
+            const actual_source = (@import("scope_frame_history.zig").Owner.capture(tree, source_jsx.node) catch return false) orelse return false;
+            if (!std.meta.eql(actual_source, source_jsx)) return false;
+        } else if (node.tag != origin.tag) return false;
+        if (!std.meta.eql(node.data.string_ref, origin.name) or !std.meta.eql(node.span, origin.span)) return false;
         const execution = enclosingAt(history, origin.source_scope, 0, scopes.len) orelse return false;
         if (execution != origin.execution_scope) return false;
         var current = origin.source_scope;
@@ -1132,4 +1140,83 @@ test "generator loop handoffs authenticate actual source bodies births and compu
     };
     try std.testing.checkAllAllocationFailures(std.testing.allocator, Oom.run, .{data.scope_history});
     try std.testing.checkAllAllocationFailures(std.testing.allocator, Oom.capture, .{ &initial_tree, initial_scopes, &initial_owners });
+}
+
+test "JSX component conversion retains the exact initial lookup and rejects forged headers" {
+    const std = @import("std");
+    const Parser = @import("../parser/parser.zig").Parser;
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Analyzer = @import("analyzer.zig").SemanticAnalyzer;
+    const Transformer = @import("../transformer/transformer.zig").Transformer;
+    const H = @import("scope_frame_history.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "const first=<Comp/>;const second=<Other.Member/>;const intrinsic=<span/>;");
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    const parser_count: u32 = @intCast(parser.ast.nodes.items.len);
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.is_module = parser.is_module;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    var t = try Transformer.initFromOwnedAst(a, &parser.ast, .{ .jsx_transform = true, .jsx_runtime = .classic });
+    try t.initSymbolIdsOwned(analyzer.ast, analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.helper_scope_map = analyzer.helper_scope_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.scope_history = analyzer.scope_history;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    t.semantic_edit_enabled = true;
+    t.record_explicit_global_references = true;
+    _ = try t.transform();
+    const result = (try t.finishSemanticEdit()).?;
+    const indexed = try H.validateAndIndex(a, t.ast, result.scopes, &result.scope_owner_map, &result.scope_history, null);
+    try std.testing.expect(indexed.valid);
+    try std.testing.expect(validate(t.ast, parser_count, result.symbol_ids, result.scopes, &analyzer.unresolved_reference_nodes, &result.node_scope_provenance, &indexed));
+    var entries = result.node_scope_provenance.iterator();
+    var count: usize = 0;
+    while (entries.next()) |entry| {
+        const original = entry.value_ptr.*;
+        const origin = original.source_external orelse continue;
+        const conversion = origin.jsx_reference orelse continue;
+        try std.testing.expectEqual(ast.Node.Tag.jsx_identifier, conversion.tag);
+        try std.testing.expectEqual(ast.Node.Tag.identifier_reference, t.ast.getNode(entry.key_ptr.*).tag);
+        for (0..7) |poison| {
+            var bad = original;
+            switch (poison) {
+                0 => bad.source_external.?.jsx_reference = null,
+                1 => bad.source_external.?.jsx_reference.?.node = .none,
+                2 => bad.source_external.?.jsx_reference.?.tag = .identifier_reference,
+                3 => bad.source_external.?.jsx_reference.?.span.start +%= 1,
+                4 => bad.source_external.?.jsx_reference.?.words[0] ^= 1,
+                5 => bad.source_external.?.flags.write = true,
+                6 => bad.source_external.?.tag = .identifier_reference,
+                else => unreachable,
+            }
+            entry.value_ptr.* = bad;
+            try std.testing.expect(!validate(t.ast, parser_count, result.symbol_ids, result.scopes, &analyzer.unresolved_reference_nodes, &result.node_scope_provenance, &indexed));
+            entry.value_ptr.* = original;
+        }
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+    const Data = @import("../bundler/module.zig").ModuleSemanticData;
+    const data: Data = .{ .symbols = result.symbols, .scopes = result.scopes, .scope_maps = result.scope_maps, .scope_owner_map = result.scope_owner_map, .symbol_ids = result.symbol_ids, .references = result.references, .exported_names = analyzer.exported_names, .unresolved_references = analyzer.unresolved_references, .helper_scope_map = result.helper_scope_map, .node_scope_provenance = result.node_scope_provenance, .scope_history = result.scope_history, .source_owned_retirements = result.source_owned_retirements };
+    var wire: std.ArrayList(u8) = .empty;
+    const Codec = @import("../bundler/semantic_codec.zig");
+    try Codec.serialize(&data, &wire, a);
+    const decoded = try Codec.deserialize(wire.items, a);
+    const decoded_index = try H.validateAndIndex(a, t.ast, decoded.scopes, &decoded.scope_owner_map, &decoded.scope_history, null);
+    try std.testing.expect(decoded_index.valid);
+    try std.testing.expect(validate(t.ast, parser_count, decoded.symbol_ids, decoded.scopes, &analyzer.unresolved_reference_nodes, &decoded.node_scope_provenance, &decoded_index));
 }
