@@ -219,6 +219,8 @@ pub fn print(allocator: std.mem.Allocator, file_path: []const u8, report: *const
 /// Exact post-transform semantic identity audit. This deliberately includes
 /// synthetic identifiers; spelling and `synthetic_idents` are not evidence of
 /// which binding a node denotes.
+const no_legacy_debt_fingerprint: u64 = 0xcbf29ce484222325;
+
 pub const ExactReport = struct {
     generated_bindings: usize = 0,
     generated_references: usize = 0,
@@ -264,7 +266,7 @@ pub const ExactReport = struct {
     unclassified_reference: usize = 0,
     reference_count_mismatch: usize = 0,
     write_count_mismatch: usize = 0,
-    legacy_debt_fingerprint: u64 = 0xcbf29ce484222325,
+    legacy_debt_fingerprint: u64 = no_legacy_debt_fingerprint,
     first_missing_binding: ?ExactFinding = null,
     first_missing_reference: ?ExactFinding = null,
     first_declaration_anchor_mismatch: ?ExactFinding = null,
@@ -372,8 +374,9 @@ pub const ExactReport = struct {
     /// Output graph identity precedes physical emitted-name allocation. Keep
     /// a lexical collision observable here: it must be resolved by the final
     /// name consumer, not turned into a missing or different binding identity.
-    /// This never changes isClean(), counters, details, or report printing.
+    /// This exception does not change isClean(), counters, details, or report printing.
     pub fn hasCompleteOutputIdentityBeforeNames(self: ExactReport) bool {
+        if (self.legacy_debt_fingerprint != no_legacy_debt_fingerprint) return false;
         if ((self.shadowed_external_reference == 0) != (self.first_shadowed_external_reference == null)) return false;
         const info = @typeInfo(ExactReport).@"struct";
         inline for (info.field_names, info.field_types) |name, field_type| {
@@ -394,6 +397,7 @@ pub const ExactReport = struct {
     /// an invariant counter and fails closed by default, so adding a new
     /// counter cannot silently leave the aggregate exact-coverage gate green.
     pub fn isClean(self: ExactReport) bool {
+        if (self.legacy_debt_fingerprint != no_legacy_debt_fingerprint) return false;
         const info = @typeInfo(ExactReport).@"struct";
         inline for (info.field_names, info.field_types) |name, field_type| {
             if (comptime isObservationField(name)) continue;
@@ -6896,9 +6900,60 @@ test "exact coverage cleanliness fails closed for every invariant counter" {
         .external_references = 1,
         .namespace_iife_params = 1,
         .enum_iife_params = 1,
-        .legacy_debt_fingerprint = 0x1234,
     };
     try std.testing.expect(observations.isClean());
+}
+
+test "output identity gate fails closed for every invariant counter" {
+    const exact_info = @typeInfo(ExactReport).@"struct";
+    inline for (exact_info.field_names) |name| {
+        if (comptime ExactReport.isObservationField(name) or ExactReport.isDiagnosticField(name) or
+            std.mem.eql(u8, name, "shadowed_external_reference")) continue;
+        var report: ExactReport = .{};
+        @field(report, name) = 1;
+        try std.testing.expect(!report.hasCompleteOutputIdentityBeforeNames());
+    }
+
+    const observations: ExactReport = .{
+        .generated_bindings = 1,
+        .generated_references = 2,
+        .generated_scope_owners_checked = 3,
+        .external_references = 4,
+        .declaration_anchors_checked = 5,
+        .namespace_iife_params = 6,
+        .enum_iife_params = 7,
+    };
+    try std.testing.expect(observations.hasCompleteOutputIdentityBeforeNames());
+}
+
+test "output identity gate rejects legacy debt fingerprints" {
+    var report: ExactReport = .{};
+    try std.testing.expect(report.hasCompleteOutputIdentityBeforeNames());
+    report.legacy_debt_fingerprint = 0x1234;
+    try std.testing.expect(!report.hasCompleteOutputIdentityBeforeNames());
+    try std.testing.expect(!report.isClean());
+}
+
+test "output identity gate requires a paired shadowed external finding" {
+    const finding: ExactFinding = .{
+        .name = "externalName",
+        .tag = .identifier_reference,
+        .node_index = 1,
+        .span_start = 0,
+    };
+
+    var unpaired_count: ExactReport = .{};
+    unpaired_count.shadowed_external_reference = 1;
+    try std.testing.expect(!unpaired_count.hasCompleteOutputIdentityBeforeNames());
+
+    var unpaired_finding: ExactReport = .{};
+    unpaired_finding.first_shadowed_external_reference = finding;
+    try std.testing.expect(!unpaired_finding.hasCompleteOutputIdentityBeforeNames());
+
+    var paired: ExactReport = .{};
+    paired.shadowed_external_reference = 1;
+    paired.first_shadowed_external_reference = finding;
+    try std.testing.expect(paired.hasCompleteOutputIdentityBeforeNames());
 }
 
 test "exact coverage diagnostic findings cannot disagree with a clean report" {
@@ -6947,7 +7002,10 @@ test "exact coverage diagnostic findings cannot disagree with a clean report" {
         .{ .first_shadowed_external_reference = finding },
     };
     try std.testing.expectEqual(@as(usize, reports.len), ExactReport.schemaCounts().diagnostic_fields);
-    for (reports) |report| try std.testing.expect(!report.isClean());
+    for (reports) |report| {
+        try std.testing.expect(!report.isClean());
+        try std.testing.expect(!report.hasCompleteOutputIdentityBeforeNames());
+    }
 }
 
 test "post-minify coverage cleanliness includes every invariant counter" {
