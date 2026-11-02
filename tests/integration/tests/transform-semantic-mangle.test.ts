@@ -721,7 +721,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(execution.stdout.trim()).toBe('40:5');
   });
 
-  test('compound define in a direct-eval scope keeps the reanalysis fallback', async () => {
+  test('compound define in a direct-eval scope preserves dynamic names with exact identity', async () => {
     const fixture = await createFixture({
       'input.js': [
         'globalThis.reader = { flag(value) { return value; } };',
@@ -750,12 +750,14 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     const identity = expectPrepassGraph(
       `${result.stdout}\n${result.stderr}`,
       'input.js',
-      'reanalyzed',
+      'retained',
     );
     expect(identity).toMatch(/clean=1(?:\s|$)/);
+    expect(identity).toMatch(/generated_references=1(?:\s|$)/);
     for (const counter of EXACT_ZERO_COUNTERS) {
       expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
     }
+    expect(readFileSync(output, 'utf8')).toContain('function read(input)');
     const execution = await runNode(output);
     expect(execution.stderr).toBe('');
     expect(execution.stdout.trim()).toBe('42');
