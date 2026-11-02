@@ -36,3 +36,9 @@ Namespace preamble처럼 source AST에 선언이 없는 출력 binding은 `codeg
 ## 검증 기록의 구분
 
 집중 native 시험, 전체 native 시험, 같은 HEAD의 CLI/NAPI 실제 출력, cache cold/warm, 적대 입력, 컴파일 가능한 구현 변이, 정상 Git hook, PR merge 및 merged-main 확인은 서로 다른 근거다. 최종 PR에는 실제 실행 결과와 HEAD를 기록한다. 이 문서의 구조 설명만으로 전체 검사 통과나 이슈 완료를 주장하지 않는다. CI는 사용자가 비활성화를 지시한 기간에는 켜지 않으며 로컬 검증 결과를 CI 결과로 표기하지 않는다.
+
+## Linker 이름-keyed canonical assignment 경계
+
+변환 후 재분석을 제거했다는 것은 production의 모든 문자열→SID lookup이 사라졌다는 뜻이 아니다. naming pass의 최초 deconflict 시점에는 retained semantic graph가 이미 존재한다. 일반 module-scope 이름은 scope-map iterator에서 수집되지만, 일부 NameOwner는 SID를 직접 전달하지 않아 같은 모듈의 scope-map/synthetic-name lookup으로 canonical assignment 대상 SID를 선택한다. owner는 Linker의 forEachTopLevelOwnerName/collectModuleNames/calculateRenames이다. 이것은 사라진 source identity의 복원이나 AST.symbol_ids 재게시가 아니라 output rename_table의 최초 이름 할당이다. 이 경로를 없애려면 iterator가 이미 가진 actual SID를 NameOwner부터 assignSymbolCanonical까지 직접 전달하고 graphless/등록된 output-domain 역할을 구분해야 한다.
+
+resolveNestedShadowForModule과 lazy-only computeRenamesForModules에는 local export가 아닌 경우의 호환 name lookup도 남는다. local export는 실제 ExportBinding SID를 사용한다. lazy 경로의 CJS와 typed shared-namespace assignment는 별도 처리한다. 이 nonlocal 경계를 제거하려면 실제 alias/output Ref 소유권을 canonical assignment까지 운반하고 기존 lazy 공개 alias 및 nested shadow 동작을 보존해야 한다. public export key로 private lexical binding을 선택하는 대안을 만들지 않는다. 현재 읽기 조사에서 이 조건부 분기의 동명 충돌 실행이나 실제 runtime mismatch를 측정한 것은 아니므로, 문자열 lookup의 존재만으로 새 결함 또는 완료 차단 항목으로 단정하지 않는다.
