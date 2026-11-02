@@ -205,6 +205,9 @@ pub const Linker = struct {
     pub const ConsumerImportTarget = struct { text: []const u8, role: ConsumerImportRole };
 
     allocator: std.mem.Allocator,
+    /// Canonical receipt storage belongs to the initial Linker allocation
+    /// domain, independently of optional query-memo fault/recovery policy.
+    canonical_export_allocator: std.mem.Allocator,
     /// Module storage 접근 포인터 (#1779 PR #2). 기존 `[]const Module` slice
     /// 필드를 대체. populate* 계열이 `moduleAtMut` 로 mutate 하므로 non-const.
     /// SegmentedList 교체 (#1779 PR #3) 시 Linker 는 건드리지 않아도 된다.
@@ -539,6 +542,7 @@ pub const Linker = struct {
     pub fn initWithGlobalIdentifiers(allocator: std.mem.Allocator, graph: *ModuleGraph, format: types.Format, global_identifiers: []const []const u8) Linker {
         return .{
             .allocator = allocator,
+            .canonical_export_allocator = allocator,
             .graph = graph,
             .format = format,
             .export_map = .empty,
@@ -584,7 +588,7 @@ pub const Linker = struct {
         // 키 name 은 borrow(export_bindings 소유) → 개별 free 불필요.
         self.export_map.deinit(self.allocator);
         self.semantic_import_fanout.deinit(self.allocator);
-        self.canonical_export_receipts.deinit(self.allocator);
+        self.canonical_export_receipts.deinit(self.canonical_export_allocator);
         self.resolved_bindings.deinit(self.allocator);
         for (self.canonical_strings.items) |s| self.allocator.free(s);
         self.canonical_strings.deinit(self.allocator);
@@ -5173,7 +5177,7 @@ pub const Linker = struct {
                 if (std.mem.eql(u8, eb.exported_name, "*")) continue;
                 if (!m.ts_type_export_names.contains(eb.exported_name)) {
                     const receipt = try @import("canonical_export.zig").Receipt.capture(self, m, binding);
-                    try self.canonical_export_receipts.put(self.allocator, @intFromPtr(binding), receipt);
+                    try self.canonical_export_receipts.put(self.canonical_export_allocator, @intFromPtr(binding), receipt);
                 }
                 // 키는 name borrow → 중복 키는 put 이 value 만 덮어씀(free 불필요).
                 try self.export_map.put(self.allocator, .{ .module_index = @intCast(i), .name = eb.exported_name }, .{
@@ -5182,6 +5186,72 @@ pub const Linker = struct {
                 });
             }
         }
+    }
+
+    pub const PreparedCanonicalExports = struct {
+        const Receipt = @import("canonical_export.zig").Receipt;
+        const Update = struct { old_key: usize, source: Receipt, candidate_before: ExportBinding, value: Receipt };
+        linker: *Linker,
+        source: *const Module,
+        candidate: *const Module,
+        source_bindings: []const ExportBinding,
+        storage: []Update,
+        count: usize,
+        allocator: std.mem.Allocator,
+
+        pub fn deinit(self: *PreparedCanonicalExports) void {
+            self.allocator.free(self.storage);
+        }
+        pub fn isCurrent(self: *const PreparedCanonicalExports) bool {
+            if (self.linker.getModule(self.source.index.toU32()) != self.source or
+                self.source.export_bindings.ptr != self.source_bindings.ptr or self.source.export_bindings.len != self.source_bindings.len) return false;
+            for (self.storage[0..self.count]) |update| {
+                const actual = self.linker.canonical_export_receipts.get(update.old_key) orelse return false;
+                if (!std.meta.eql(actual, update.source) or !std.meta.eql(update.source.binding.*, update.source.before) or
+                    !std.meta.eql(update.value.binding.*, update.candidate_before)) return false;
+                if (self.source.semantic == null or self.source.semantic.?.owner_token != update.source.owner_token or
+                    self.candidate.semantic == null or self.candidate.semantic.?.owner_token != update.value.owner_token or
+                    self.candidate.index != self.source.index or self.candidate.codegen_output_owner != self.source.codegen_output_owner) return false;
+            }
+            return true;
+        }
+        /// Module publication has installed these exact prepared target rows.
+        pub fn publishAssumePrepared(self: *const PreparedCanonicalExports) void {
+            for (self.storage[0..self.count]) |update| std.debug.assert(self.linker.canonical_export_receipts.remove(update.old_key));
+            for (self.storage[0..self.count]) |update| {
+                std.debug.assert(@import("cross_chunk_export.zig").registered(self.source, update.value.binding));
+                self.linker.canonical_export_receipts.putAssumeCapacity(@intFromPtr(update.value.binding), update.value);
+            }
+        }
+    };
+
+    /// Preserve export-map authority across the producer's detached COW rows.
+    /// Each target is paired by its original row position and exact carrier/SID;
+    /// public spelling is only compared, never used to rediscover an identity.
+    pub fn prepareCanonicalModulePublication(self: *Linker, source: *const Module, candidate: *const Module) !PreparedCanonicalExports {
+        if (self.getModule(source.index.toU32()) != source or source == candidate or candidate.index != source.index or
+            source.export_bindings.len != candidate.export_bindings.len or source.ast == null or candidate.ast == null or
+            source.ast.?.source.ptr != candidate.ast.?.source.ptr or source.ast.?.source.len != candidate.ast.?.source.len) return error.InvalidCrossChunkExport;
+        const allocator = self.canonical_export_allocator;
+        const storage = try allocator.alloc(PreparedCanonicalExports.Update, source.export_bindings.len);
+        errdefer allocator.free(storage);
+        var count: usize = 0;
+        for (source.export_bindings, candidate.export_bindings) |*before, *after| {
+            const key = @intFromPtr(before);
+            const receipt = self.canonical_export_receipts.get(key) orelse {
+                if (std.mem.eql(u8, before.exported_name, "*") or source.ts_type_export_names.contains(before.exported_name)) continue;
+                return error.InvalidCrossChunkExport;
+            };
+            if (receipt.owner != source or receipt.binding != before) return error.InvalidCrossChunkExport;
+            // A target row cannot take another registered carrier's address.
+            if (@intFromPtr(after) != key and self.canonical_export_receipts.contains(@intFromPtr(after))) return error.InvalidCrossChunkExport;
+            storage[count] = .{ .old_key = key, .source = receipt, .candidate_before = after.*, .value = try receipt.preparePublication(self, candidate, after, allocator) };
+            count += 1;
+        }
+        // Publication first removes these exact old keys, then inserts the
+        // same number of distinct target rows. Existing capacity is sufficient;
+        // preparation never reallocates or mutates the live receipt cache.
+        return .{ .linker = self, .source = source, .candidate = candidate, .source_bindings = source.export_bindings, .storage = storage, .count = count, .allocator = allocator };
     }
 
     /// Strict output lowering happens after the initial link. Publish only
