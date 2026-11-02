@@ -5278,7 +5278,7 @@ fn transpileWithCallbackInternal(
         };
         var candidate_origins = try transformer.reference_origin_map.clone(arena_alloc);
         var candidate_class_self = try transformer.class_self_symbol_map.clone(arena_alloc);
-        var journal = minify_mod.SemanticJournal.init(arena_alloc, analyzer.references.items, .{ .domain = transformer.ast, .root = root, .symbol_ids = transformer.symbol_ids.items, .owners = &analyzer.scope_owner_map, .expressions = &analyzer.node_scope_provenance, .class_self = &transformer.class_self_symbol_map, .symbols = analyzer.symbols.items, .scopes = analyzer.scopes.items, .scope_maps = analyzer.scope_maps.items }) catch |err| switch (err) {
+        var journal = minify_mod.SemanticJournal.init(arena_alloc, analyzer.references.items, .{ .domain = transformer.ast, .root = root, .symbol_ids = transformer.symbol_ids.items, .owners = &analyzer.scope_owner_map, .expressions = &analyzer.node_scope_provenance, .class_self = &transformer.class_self_symbol_map, .symbols = analyzer.symbols.items, .scopes = analyzer.scopes.items, .source_epoch = @intCast(analyzer.scope_history.events.len), .scope_maps = analyzer.scope_maps.items }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.TransformError,
         };
@@ -5364,6 +5364,10 @@ fn transpileWithCallbackInternal(
             .namespace_member_owners = &analyzer.namespace_member_owners,
             .namespace_declaration_owners = &analyzer.namespace_declaration_owners,
         }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction,
+        };
+        journal.retireInlinedBindings(&editor, root, receipt) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => break :minify_transaction,
         };
@@ -15748,7 +15752,7 @@ test "static capture alias retirement consumes actual producer journal and prese
     const sid = @backingInt(original.symbol_id);
     const old_count = editor.scopes.items[original.before.scope_id.toIndex()].symbol_count;
     const minify = @import("transformer/minify.zig");
-    var journal = try minify.SemanticJournal.init(a, editor.references.items, .{ .domain = t.ast, .root = root, .symbol_ids = editor.symbol_ids.items, .owners = &editor.scope_owner_map, .expressions = &editor.node_scope_provenance, .class_self = &analyzer.class_self_symbol_map, .symbols = editor.symbols.items, .scopes = editor.scopes.items, .scope_maps = editor.scope_maps.items });
+    var journal = try minify.SemanticJournal.init(a, editor.references.items, .{ .domain = t.ast, .root = root, .symbol_ids = editor.symbol_ids.items, .owners = &editor.scope_owner_map, .expressions = &editor.node_scope_provenance, .class_self = &analyzer.class_self_symbol_map, .symbols = editor.symbols.items, .scopes = editor.scopes.items, .scope_maps = editor.scope_maps.items, .source_epoch = @intCast(t.scope_history.events.len) });
     minify.minify(t.ast, .{ .symbols = editor.symbols.items, .symbol_ids = editor.symbol_ids.items, .symbol_ids_mut = editor.symbol_ids.items, .semantic_journal = &journal, .scopes = editor.scopes.items, .references = editor.references.items, .unresolved_globals = null, .allow_top_level_inline = true, .preserve_inferred_names = false }, a, root);
     var origins = t.reference_origin_map;
     var class_self = analyzer.class_self_symbol_map;
@@ -15886,7 +15890,7 @@ test "function name elision retires exact empty environments with journal histor
     try std.testing.expect(!original.witness.parameter_scope.isNone());
     const old_count = editor.scopes.items[original.before.scope_id.toIndex()].symbol_count;
     const minify = @import("transformer/minify.zig");
-    var journal = try minify.SemanticJournal.init(a, editor.references.items, .{ .domain = t.ast, .root = root, .symbol_ids = editor.symbol_ids.items, .owners = &editor.scope_owner_map, .expressions = &editor.node_scope_provenance, .class_self = &analyzer.class_self_symbol_map, .symbols = editor.symbols.items, .scopes = editor.scopes.items, .scope_maps = editor.scope_maps.items });
+    var journal = try minify.SemanticJournal.init(a, editor.references.items, .{ .domain = t.ast, .root = root, .symbol_ids = editor.symbol_ids.items, .owners = &editor.scope_owner_map, .expressions = &editor.node_scope_provenance, .class_self = &analyzer.class_self_symbol_map, .symbols = editor.symbols.items, .scopes = editor.scopes.items, .scope_maps = editor.scope_maps.items, .source_epoch = @intCast(t.scope_history.events.len) });
     minify.minify(t.ast, .{ .symbols = editor.symbols.items, .symbol_ids = editor.symbol_ids.items, .symbol_ids_mut = editor.symbol_ids.items, .semantic_journal = &journal, .scopes = editor.scopes.items, .references = editor.references.items, .unresolved_globals = null, .allow_top_level_inline = true, .preserve_inferred_names = false }, a, root);
     var origins = t.reference_origin_map;
     var class_self = analyzer.class_self_symbol_map;
@@ -16038,4 +16042,134 @@ test "lowered JSX component lookups preserve source globals in plain and identif
         try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
         try std.testing.expectEqualStrings(case.expected, actual.stdout);
     };
+}
+
+test "standalone combined minify preserves original Flow match and synthetic collision oracle graphs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const flow_source =
+        \\// @flow
+        \\function classify(_a, input, expected) {
+        \\  return match (input) {
+        \\    { kind: expected, payload: const payload } if (payload > 0) => payload,
+        \\    [const first, ...const rest] => first + rest.length,
+        \\    const item if (item > 2) => item,
+        \\    { fallback: const item } => item,
+        \\    _ => _a,
+        \\  };
+        \\}
+        \\
+        \\console.log([
+        \\  classify(99, { kind: 1, payload: 4 }, 1),
+        \\  classify(99, [2, 3], 1),
+        \\  classify(99, 5, 1),
+        \\  classify(99, 1, 1),
+        \\].join(','));
+        \\
+    ;
+    const flow_reference =
+        \\// Independently implement the fixture's match arms in standard JavaScript.
+        \\// This reference must run directly in Node, without passing through ZNTC.
+        \\function classify(_a, input, expected) {
+        \\  if (
+        \\    input !== null &&
+        \\    typeof input === 'object' &&
+        \\    'kind' in input &&
+        \\    input.kind === expected &&
+        \\    'payload' in input &&
+        \\    input.payload > 0
+        \\  ) {
+        \\    return input.payload;
+        \\  }
+        \\  if (Array.isArray(input) && input.length > 0) {
+        \\    const [first, ...rest] = input;
+        \\    return first + rest.length;
+        \\  }
+        \\  if (input > 2) return input;
+        \\  if (input !== null && typeof input === 'object' && 'fallback' in input) {
+        \\    return input.fallback;
+        \\  }
+        \\  return _a;
+        \\}
+        \\
+        \\console.log(
+        \\  [
+        \\    classify(99, { kind: 1, payload: 4 }, 1),
+        \\    classify(99, [2, 3], 1),
+        \\    classify(99, 5, 1),
+        \\    classify(99, 1, 1),
+        \\  ].join(','),
+        \\);
+        \\
+    ;
+    const collision_source =
+        \\// 사용자 변수 이름이 변환의 합성 이름(_this·_arguments·_loop·_ret·_state·_step)과 같아도 서로 가리지 않는다
+        \\const out = [];
+        \\function outer() {
+        \\  const _this = 'user-this',
+        \\    _arguments = 'user-args',
+        \\    _loop = 'user-loop',
+        \\    _ret = 'user-ret';
+        \\  const f = () => [this && this.tag, _this, arguments[0], _arguments].join('|');
+        \\  const fns = [];
+        \\  for (let i = 0; i < 2; i++) {
+        \\    fns.push(() => i + _loop);
+        \\    if (i > 5) return _ret;
+        \\  }
+        \\  return f() + '#' + fns.map((g) => g()).join(',');
+        \\}
+        \\out.push(outer.call({ tag: 'T' }, 'A0'));
+        \\function* gen() {
+        \\  const _state = 'user-state',
+        \\    _step = 'user-step',
+        \\    _iterator = 'it';
+        \\  for (const x of [1]) {
+        \\    yield x + _state + _step + _iterator;
+        \\  }
+        \\}
+        \\out.push([...gen()].join());
+        \\async function am() {
+        \\  const _this = 'u2';
+        \\  await null;
+        \\  return (() => _this)();
+        \\}
+        \\class K {
+        \\  m() {
+        \\    const _this = 'u3';
+        \\    return [() => this.v, () => _this].map((g) => g()).join();
+        \\  }
+        \\}
+        \\K.prototype.v = 'kv';
+        \\am().then((v) => {
+        \\  out.push(v, new K().m());
+        \\  console.log(out.join(' / '));
+        \\});
+        \\
+    ;
+    const cases = [_]struct { name: []const u8, source: []const u8, reference: []const u8, flow: bool, target: @import("transformer/compat.zig").ESTarget, hermes: bool = false }{
+        .{ .name = "flow-match-symbols.flow.mjs", .source = flow_source, .reference = flow_reference, .flow = true, .target = .es5 },
+        .{ .name = "flow-match-symbols.flow.mjs", .source = flow_source, .reference = flow_reference, .flow = true, .target = .es2015 },
+        .{ .name = "flow-match-symbols.flow.mjs", .source = flow_source, .reference = flow_reference, .flow = true, .target = .es2017 },
+        .{ .name = "flow-match-symbols.flow.mjs", .source = flow_source, .reference = flow_reference, .flow = true, .target = .es2022 },
+        .{ .name = "flow-match-symbols.flow.mjs", .source = flow_source, .reference = flow_reference, .flow = true, .target = .esnext },
+        .{ .name = "flow-match-symbols.flow.mjs", .source = flow_source, .reference = flow_reference, .flow = true, .target = .esnext, .hermes = true },
+        .{ .name = "synthetic-name-collision-this-loop.mjs", .source = collision_source, .reference = collision_source, .flow = false, .target = .es2015 },
+    };
+    var failures: usize = 0;
+    for (cases) |case| {
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", case.reference }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        const result = transpile(a, case.source, case.name, .{ .flow = case.flow, .unsupported = if (case.hermes) @import("transformer/compat.zig").fromHermesPreset() else @import("transformer/compat.zig").fromESTarget(case.target), .minify_syntax = true, .minify_identifiers = true }) catch |err| {
+            std.debug.print("COMBINED_ORACLE name={s} target={s} error={s}\n", .{ case.name, @tagName(case.target), @errorName(err) });
+            failures += 1;
+            continue;
+        };
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) {
+            std.debug.print("COMBINED_ORACLE name={s} expected={s} actual={s} stderr={s}\n", .{ case.name, native.stdout, actual.stdout, actual.stderr });
+            failures += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), failures);
 }

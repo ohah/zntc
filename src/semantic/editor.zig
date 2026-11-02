@@ -59,6 +59,20 @@ fn sameRetirementNodePayload(a: ast_mod.Node, b: ast_mod.Node) bool {
     return std.mem.eql(u8, std.mem.asBytes(&a.data)[0..width], std.mem.asBytes(&b.data)[0..width]);
 }
 
+fn sameInlineBindingEvent(a: @import("inlined_binding_retirement.zig").Event, b: @import("inlined_binding_retirement.zig").Event) bool {
+    if (a.domain != b.domain or a.symbol_id != b.symbol_id or !@import("source_owned_retirement.zig").equalSymbol(a.before, b.before) or
+        !std.meta.eql(a.declaration, b.declaration) or a.statement != b.statement or a.binding != b.binding or
+        !sameRetirementNodePayload(a.statement_node, b.statement_node) or !sameRetirementNodePayload(a.binding_node, b.binding_node) or
+        !sameRetirementNodePayload(a.initializer_node, b.initializer_node) or a.wrapped_initializer != b.wrapped_initializer) return false;
+    const x = a.witness;
+    const y = b.witness;
+    return x.declarator == y.declarator and x.initializer == y.initializer and x.read == y.read and
+        sameRetirementNodePayload(x.declarator_node, y.declarator_node) and
+        sameRetirementNodePayload(x.read_node, y.read_node) and std.meta.eql(x.read_reference, y.read_reference) and
+        x.statement_kind == y.statement_kind and x.source_epoch == y.source_epoch and std.meta.eql(x.source_frame, y.source_frame) and
+        std.meta.eql(x.read_frame, y.read_frame);
+}
+
 /// 기존 analyzer 결과를 복사해 가변 상태로 보관한다. 원본 slice는 변경하지 않는다.
 /// allocator는 모듈 arena여야 한다. 생성한 이름은 최종 출력까지 살아 있어야 한다.
 pub const SemanticEditor = struct {
@@ -2305,6 +2319,125 @@ pub const SemanticEditor = struct {
 
     /// Prepare the complete graph privately, including reparent History. No
     /// original row/map/history mutation occurs on rejection or allocation fail.
+    /// Consume only the declaration selected by the minifier's actual inline
+    /// event. The candidate owns all graph edits; the AST is read-only here.
+    pub fn retireInlinedLocalBindings(self: *SemanticEditor, events: []const @import("inlined_binding_retirement.zig").Event, root: NodeIndex, receipt: @import("function_retirement_receipt.zig").ApplicationReceipt) Error!usize {
+        if (events.len == 0) return 0;
+        const Retirement = @import("source_owned_retirement.zig");
+        if (receipt.domain != self.ast or root.isNone() or @backingInt(root) >= self.ast.nodes.items.len) return error.InvalidNode;
+        const nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(self.allocator, self.ast, root);
+        defer self.allocator.free(nodes);
+        var live = try std.DynamicBitSet.initEmpty(self.allocator, self.ast.nodes.items.len);
+        defer live.deinit();
+        for (nodes) |raw| live.set(raw);
+        var candidate = try SemanticEditor.init(self.allocator, self.ast, self.symbols.items, self.scopes.items, self.scope_maps.items, self.scope_owner_map, self.references.items, self.symbol_ids.items, self.helper_scope_map);
+        defer candidate.deinit();
+        try candidate.importScopeHistory(self.scopeHistoryView());
+        try candidate.importNodeScopeProvenance(self.node_scope_provenance);
+        try candidate.importSourceOwnedRetirements(self.source_owned_retirements);
+        var count: usize = 0;
+        for (events, 0..) |event, event_index| {
+            const payload = event.witness;
+            const sid = @backingInt(event.symbol_id);
+            if (event.domain != self.ast or !candidate.validSymbol(event.symbol_id) or !candidate.validScope(event.before.scope_id)) return error.InvalidSymbol;
+            for (events[0..event_index]) |previous| if (previous.symbol_id == event.symbol_id or previous.binding == event.binding) return error.DuplicateBinding;
+            // The existing whole-function proof remains authoritative when the
+            // containing closure was removed before local inline consumption.
+            if (candidate.source_owned_retirements.get(sid)) |known| {
+                if (known.reason == .source_function_closure) continue;
+                return error.DuplicateBinding;
+            }
+            var attestations: usize = 0;
+            for (receipt.inlined_bindings) |known| if (known.symbol_id == event.symbol_id) {
+                if (!sameInlineBindingEvent(known, event)) return error.InvalidNode;
+                attestations += 1;
+            };
+            if (attestations != 1) return error.InvalidNode;
+            inline for (.{ event.statement, event.binding, payload.declarator, payload.initializer, payload.read }) |node| {
+                if (node.isNone() or @backingInt(node) >= candidate.ast.nodes.items.len) return error.InvalidNode;
+            }
+            if (event.statement_node.tag != .variable_declaration or candidate.ast.getNode(event.statement).tag != .empty_statement or
+                !std.meta.eql(candidate.ast.getNode(event.statement).span, event.statement_node.span) or live.isSet(@backingInt(event.binding)) or live.isSet(@backingInt(payload.declarator)) or
+                !sameRetirementNodePayload(candidate.ast.getNode(event.binding), event.binding_node)) return error.InvalidNode;
+            var removals: usize = 0;
+            for (receipt.reference_changes) |change| {
+                const before = change.before orelse continue;
+                if (!std.meta.eql(before, payload.read_reference)) continue;
+                if (change.after) |after| if (after.symbol_id == event.symbol_id) return error.InvalidSymbol;
+                removals += 1;
+            }
+            if (removals != 1) return error.ReferenceNotFound;
+            var copies: usize = 0;
+            for (receipt.copies) |copy| if (copy.source == payload.initializer and copy.target == payload.read and
+                sameRetirementNodePayload(copy.source_node, event.initializer_node) and sameRetirementNodePayload(copy.target_node, payload.read_node))
+            {
+                copies += 1;
+            };
+            if (copies != @as(usize, if (event.wrapped_initializer) 0 else 1)) return error.InvalidNode;
+            var expected = event.before;
+            expected.reference_count = 0;
+            expected.write_count = 0;
+            if (!Retirement.equalSymbol(expected, candidate.symbols.items[sid])) return error.InvalidSymbol;
+            var declarations: usize = 0;
+            for (candidate.references.items) |row| if (row.symbol_id == event.symbol_id) {
+                if (!std.meta.eql(row, event.declaration)) return error.InvalidSymbol;
+                declarations += 1;
+            };
+            if (declarations != 1 or event.binding != event.declaration.declaration_node_index) return error.ReferenceNotFound;
+            var protected = candidate.helper_scope_map.valueIterator();
+            while (protected.next()) |id| if (id.* == sid) return error.InvalidSymbol;
+            if (candidate.scope_owner_map.contains(@backingInt(event.binding))) return error.InvalidScope;
+            var aliases: std.ArrayList(struct { scope: usize, key: []const u8 }) = .empty;
+            defer aliases.deinit(candidate.allocator);
+            for (candidate.scope_maps.items, 0..) |map, scope_index| {
+                var rows = map.iterator();
+                while (rows.next()) |row| if (row.value_ptr.* == sid) {
+                    if (scope_index != event.before.scope_id.toIndex()) return error.InvalidScope;
+                    try aliases.append(candidate.allocator, .{ .scope = scope_index, .key = row.key_ptr.* });
+                };
+            }
+            if (aliases.items.len == 0 or candidate.scopes.items[event.before.scope_id.toIndex()].symbol_count == 0) return error.InvalidScope;
+            for (candidate.symbol_ids.items, 0..) |id, raw| if (id == sid and raw != @backingInt(event.binding)) {
+                if (raw != @backingInt(payload.read)) return error.InvalidSymbol;
+                const tag = candidate.ast.nodes.items[raw].tag;
+                if (tag == .identifier_reference or tag == .assignment_target_identifier or tag == .binding_identifier) return error.InvalidSymbol;
+            };
+            try candidate.source_owned_retirements.put(candidate.allocator, sid, .{
+                .symbol_id = event.symbol_id,
+                .before = event.before,
+                .declaration = event.declaration,
+                .declaration_node = event.binding_node,
+                .source_owner = event.statement,
+                .source_owner_node = event.statement_node,
+                .source_scope = event.before.scope_id,
+                .source_parent = payload.source_frame.parent,
+                .source_name = event.binding,
+                .source_name_symbol = event.symbol_id,
+                .closure_scope = .none,
+                .closure_parent = .none,
+                .reason = .inlined_local_binding,
+                .inlined_binding = payload,
+            });
+            _ = try candidate.removeDeclarationAtNode(event.binding, event.symbol_id);
+            for (aliases.items) |alias| _ = candidate.scope_maps.items[alias.scope].remove(alias.key);
+            candidate.scopes.items[event.before.scope_id.toIndex()].symbol_count -= 1;
+            for (candidate.symbol_ids.items, 0..) |id, raw| if (id == sid) {
+                candidate.symbol_ids.items[raw] = null;
+            };
+            _ = candidate.node_scope_provenance.remove(event.binding);
+            count += 1;
+        }
+        if (count == 0) return 0;
+        const history = candidate.scopeHistoryView();
+        var arena = std.heap.ArenaAllocator.init(candidate.allocator);
+        defer arena.deinit();
+        const frame_index = try @import("scope_frame_history.zig").validateAndIndex(arena.allocator(), candidate.ast, candidate.scopes.items, &candidate.scope_owner_map, &history, null);
+        const roots: Retirement.Roots = .{ .node_scope_provenance = &candidate.node_scope_provenance, .scope_history = &history };
+        if (!frame_index.valid or !try Retirement.validateWithIndex(candidate.allocator, candidate.ast, &candidate.source_owned_retirements, &live, candidate.symbols.items, candidate.symbol_ids.items, candidate.scopes.items, candidate.scope_maps.items, &candidate.scope_owner_map, candidate.references.items, &candidate.helper_scope_map, roots, &frame_index)) return error.InvalidSymbol;
+        std.mem.swap(SemanticEditor, self, &candidate);
+        return count;
+    }
+
     pub fn retireFunctionNameEnvironments(self: *SemanticEditor, sources: []const @import("function_name_retirement.zig").Source, receipt: @import("function_retirement_receipt.zig").ApplicationReceipt, roots: @import("source_owned_retirement.zig").Roots) Error!usize {
         if (sources.len == 0) return 0;
         const Names = @import("function_name_retirement.zig");

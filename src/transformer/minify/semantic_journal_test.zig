@@ -17,6 +17,10 @@ const Fixture = struct {
     }
 
     fn initWithStatements(a: std.mem.Allocator, source: []const u8, statement_info: bool) !*Fixture {
+        return initWithSourceOrigins(a, source, statement_info, false);
+    }
+
+    fn initWithSourceOrigins(a: std.mem.Allocator, source: []const u8, statement_info: bool, source_origins: bool) !*Fixture {
         const f = try a.create(Fixture);
         const scanner = try a.create(Scanner);
         scanner.* = try Scanner.init(a, source);
@@ -25,6 +29,7 @@ const Fixture = struct {
         f.root = try f.parser.parse();
         f.analyzer = Analyzer.init(a, &f.parser.ast);
         f.analyzer.collect_unresolved_reference_nodes = true;
+        f.analyzer.enable_source_external_origins = source_origins;
         f.analyzer.enable_stmt_info = statement_info;
         f.analyzer.enable_exact_declaration_anchors = true;
         try f.analyzer.analyze();
@@ -43,6 +48,7 @@ const Fixture = struct {
             .symbols = f.analyzer.symbols.items,
             .scopes = f.analyzer.scopes.items,
             .scope_maps = f.analyzer.scope_maps.items,
+            .source_epoch = @intCast(f.analyzer.scope_history.events.len),
         });
     }
 
@@ -329,4 +335,201 @@ test "minifier semantic journal accounts only source backed historical delta edg
     try std.testing.expect(!try journal.accountsForBaselineDeltas(receipt, old_deltas));
     old_deltas[sid] = 0;
     try std.testing.expect(!try journal.accountsForBaselineDeltas(receipt, old_deltas));
+}
+
+const InlineReceipt = @import("../../semantic/function_retirement_receipt.zig").ApplicationReceipt;
+const InlineRetirement = @import("../../semantic/source_owned_retirement.zig");
+
+const ActualInlineFixture = struct {
+    fixture: *Fixture,
+    journal: Journal,
+    receipt: InlineReceipt,
+
+    fn init(a: std.mem.Allocator) !ActualInlineFixture {
+        return initSource(a, "function run(value){let item=value;return item;}console.log(run(42));");
+    }
+
+    fn initSource(a: std.mem.Allocator, source: []const u8) !ActualInlineFixture {
+        const f = try Fixture.initWithSourceOrigins(a, source, true, true);
+        var journal = try f.createJournal(a);
+        const deltas = try a.alloc(u32, f.analyzer.symbols.items.len);
+        @memset(deltas, 0);
+        @import("../minify.zig").minify(&f.parser.ast, .{
+            .symbols = f.analyzer.symbols.items,
+            .symbol_ids = f.editor.symbol_ids.items,
+            .symbol_ids_mut = f.editor.symbol_ids.items,
+            .semantic_journal = &journal,
+            .scopes = f.analyzer.scopes.items,
+            .references = f.analyzer.references.items,
+            .unresolved_globals = &f.analyzer.unresolved_references,
+            .ref_deltas = deltas,
+            .allow_top_level_inline = true,
+        }, a, f.root);
+        try std.testing.expect(journal.failure == null);
+        try std.testing.expectEqual(@as(usize, 1), journal.inlined_bindings.items.len);
+        const receipt = try journal.applyReferenceAndOwnerEdits(&f.editor, f.root, null, null);
+        return .{ .fixture = f, .journal = journal, .receipt = receipt };
+    }
+};
+
+fn inlineStateValid(a: std.mem.Allocator, tree: *const ast_mod.Ast, root: ast_mod.NodeIndex, editor: *const SemanticEditor) !bool {
+    const nodes = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, tree, root);
+    defer a.free(nodes);
+    var live = try std.DynamicBitSet.initEmpty(a, tree.nodes.items.len);
+    defer live.deinit();
+    for (nodes) |raw| live.set(raw);
+    const history = editor.scopeHistoryView();
+    var scratch = std.heap.ArenaAllocator.init(a);
+    defer scratch.deinit();
+    const index = try @import("../../semantic/scope_frame_history.zig").validateAndIndex(scratch.allocator(), tree, editor.scopes.items, &editor.scope_owner_map, &history, null);
+    return index.valid and try InlineRetirement.validateWithIndex(a, tree, &editor.source_owned_retirements, &live, editor.symbols.items, editor.symbol_ids.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &editor.helper_scope_map, .{ .scope_history = &history, .node_scope_provenance = &editor.node_scope_provenance }, &index);
+}
+
+test "minifier actual local inline retirement rejects ten paired producer receipts" {
+    for (0..10) |poison| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const actual = try ActualInlineFixture.init(a);
+        const f = actual.fixture;
+        const original = actual.receipt.inlined_bindings[0];
+        const before_ids = try a.dupe(?u32, f.editor.symbol_ids.items);
+        const before_refs = try a.dupe(@import("../../semantic/symbol.zig").Reference, f.editor.references.items);
+        const before_symbols = try a.dupe(@import("../../semantic/symbol.zig").Symbol, f.editor.symbols.items);
+        const events = try a.dupe(@import("../../semantic/inlined_binding_retirement.zig").Event, actual.receipt.inlined_bindings);
+        var foreign_ast = f.parser.ast;
+        switch (poison) {
+            0 => events[0].domain = &foreign_ast,
+            1 => events[0].symbol_id = @fromBackingInt(@as(u32, @intCast(f.editor.symbols.items.len))),
+            2 => events[0].declaration.flags.write = true,
+            3 => events[0].witness.read_reference.node_index = original.witness.initializer,
+            4 => events[0].initializer_node.tag = .empty_statement,
+            5 => events[0].wrapped_initializer = !original.wrapped_initializer,
+            6 => events[0].witness.source_epoch = std.math.maxInt(u32),
+            7 => events[0].before.scope_id = .none,
+            8 => events[0].statement_node.tag = .empty_statement,
+            9 => events[0].witness.declarator = original.binding,
+            else => unreachable,
+        }
+        var poisoned = actual.receipt;
+        poisoned.inlined_bindings = events;
+        if (f.editor.retireInlinedLocalBindings(events, f.root, poisoned)) |_| {
+            std.debug.print("inline producer poison accepted={d}\n", .{poison});
+            return error.TestExpectedError;
+        } else |_| {}
+        try std.testing.expectEqual(@as(u32, 0), f.editor.source_owned_retirements.count());
+        try std.testing.expectEqualSlices(?u32, before_ids, f.editor.symbol_ids.items);
+        try std.testing.expectEqualDeep(before_refs, f.editor.references.items);
+        for (before_symbols, f.editor.symbols.items) |before, after| try std.testing.expect(InlineRetirement.equalSymbol(before, after));
+        try actual.journal.retireInlinedBindings(&f.editor, f.root, actual.receipt);
+        try std.testing.expectEqual(@as(u32, 1), f.editor.source_owned_retirements.count());
+        try std.testing.expect(try inlineStateValid(a, &f.parser.ast, f.root, &f.editor));
+    }
+}
+
+test "minifier actual local inline retirement survives fresh AST semantic codec and rejects persistent tuple poison" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const actual = try ActualInlineFixture.init(a);
+    const f = actual.fixture;
+    try actual.journal.retireInlinedBindings(&f.editor, f.root, actual.receipt);
+    try std.testing.expect(try inlineStateValid(a, &f.parser.ast, f.root, &f.editor));
+    const sem = @import("../../bundler/module.zig").ModuleSemanticData{
+        .symbols = f.editor.symbols,
+        .scopes = f.editor.scopes.items,
+        .scope_maps = f.editor.scope_maps.items,
+        .scope_owner_map = f.editor.scope_owner_map,
+        .class_self_symbol_map = f.analyzer.class_self_symbol_map,
+        .exported_names = f.analyzer.exported_names,
+        .symbol_ids = f.editor.symbol_ids.items,
+        .unresolved_references = f.analyzer.unresolved_references,
+        .references = f.editor.references.items,
+        .helper_scope_map = f.editor.helper_scope_map,
+        .node_scope_provenance = f.editor.node_scope_provenance,
+        .source_owned_retirements = f.editor.source_owned_retirements,
+        .scope_history = f.editor.scopeHistoryView(),
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    try @import("../../bundler/semantic_codec.zig").serialize(&sem, &bytes, a);
+    const restored = try @import("../../bundler/semantic_codec.zig").deserialize(bytes.items, a);
+    var fresh = try ast_mod.Ast.cloneForTransformer(&f.parser.ast, a);
+    try std.testing.expect(&fresh != &f.parser.ast);
+    var editor = try restored.beginEdit(a, &fresh);
+    try std.testing.expect(try inlineStateValid(a, &fresh, f.root, &editor));
+    const sid = @backingInt(actual.receipt.inlined_bindings[0].symbol_id);
+    const witness = editor.source_owned_retirements.getPtr(sid).?;
+    const original = witness.*;
+    witness.inlined_binding.?.read_reference.flags.write = true;
+    try std.testing.expect(!try inlineStateValid(a, &fresh, f.root, &editor));
+    witness.* = original;
+    witness.inlined_binding.?.source_frame.parent = original.source_scope;
+    try std.testing.expect(!try inlineStateValid(a, &fresh, f.root, &editor));
+    witness.* = original;
+    try std.testing.expect(try inlineStateValid(a, &fresh, f.root, &editor));
+    for (0..3) |poison| {
+        switch (poison) {
+            0 => witness.inlined_binding.?.read_node.data.string_ref = .{ .start = 5, .end = 4 },
+            1 => witness.inlined_binding.?.read_node.data.string_ref = .{ .start = 0, .end = @intCast(fresh.source.len + 1) },
+            2 => witness.inlined_binding.?.read_node.data.string_ref = .{ .start = ast_mod.Ast.STRING_TABLE_BIT, .end = 0 },
+            else => unreachable,
+        }
+        try std.testing.expect(!try inlineStateValid(a, &fresh, f.root, &editor));
+        witness.* = original;
+        try std.testing.expect(try inlineStateValid(a, &fresh, f.root, &editor));
+    }
+}
+
+test "minifier actual local inline retirement preserves escaped declaration and read StringValues" {
+    for ([_][]const u8{
+        "function run(value){let \\u0069tem=value;return item;}console.log(run(42));",
+        "function run(value){let item=value;return \\u0069tem;}console.log(run(42));",
+    }) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const actual = try ActualInlineFixture.initSource(a, source);
+        const f = actual.fixture;
+        try actual.journal.retireInlinedBindings(&f.editor, f.root, actual.receipt);
+        try std.testing.expectEqual(@as(u32, 1), f.editor.source_owned_retirements.count());
+        try std.testing.expect(try inlineStateValid(a, &f.parser.ast, f.root, &f.editor));
+    }
+}
+
+test "minifier actual local inline retirement heap OOM preserves source graph and retries" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const actual = try ActualInlineFixture.init(a);
+    const f = actual.fixture;
+    var failures: usize = 0;
+    var succeeded = false;
+    for (0..512) |fail_index| {
+        var editor = try SemanticEditor.init(std.testing.allocator, &f.parser.ast, f.editor.symbols.items, f.editor.scopes.items, f.editor.scope_maps.items, f.editor.scope_owner_map, f.editor.references.items, f.editor.symbol_ids.items, f.editor.helper_scope_map);
+        defer editor.deinit();
+        try editor.importScopeHistory(f.editor.scopeHistoryView());
+        try editor.importNodeScopeProvenance(f.editor.node_scope_provenance);
+        const refs_ptr = editor.references.items.ptr;
+        const ids_ptr = editor.symbol_ids.items.ptr;
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
+        editor.allocator = failing.allocator();
+        const result = editor.retireInlinedLocalBindings(actual.receipt.inlined_bindings, f.root, actual.receipt);
+        editor.allocator = std.testing.allocator;
+        if (result) |count| {
+            try std.testing.expectEqual(@as(usize, 1), count);
+            try std.testing.expect(try inlineStateValid(a, &f.parser.ast, f.root, &editor));
+            succeeded = true;
+            break;
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            failures += 1;
+            try std.testing.expectEqual(@intFromPtr(refs_ptr), @intFromPtr(editor.references.items.ptr));
+            try std.testing.expectEqual(@intFromPtr(ids_ptr), @intFromPtr(editor.symbol_ids.items.ptr));
+            try std.testing.expectEqual(@as(u32, 0), editor.source_owned_retirements.count());
+            try std.testing.expectEqualDeep(f.editor.references.items, editor.references.items);
+            try std.testing.expectEqualSlices(?u32, f.editor.symbol_ids.items, editor.symbol_ids.items);
+        }
+    }
+    try std.testing.expect(succeeded and failures > 0);
+    std.debug.print("actual inline retirement heap OOM failures={d} success=1\n", .{failures});
 }

@@ -678,6 +678,7 @@ fn prepareJournalConstMinification(
         .symbols = sem.symbols.items,
         .scopes = sem.scopes,
         .scope_maps = sem.scope_maps,
+        .source_epoch = @intCast(sem.scope_history.events.len),
     });
     defer journal.deinit();
     var ctx = minify_mod.MinifyCtx.fromSemantic(sem, sem.symbol_ids, self.graph.transform_options_base.minify_syntax);
@@ -708,6 +709,7 @@ fn prepareJournalConstMinification(
         const selected = try selectRetiredConstFunctions(a, source, ast, receipt);
         if (selected.len != 0 and !try editor.retireSelectedSourceOwnedFunctions(source, selected, receipt)) return false;
     }
+    try journal.retireInlinedBindings(&editor, root, receipt);
     try journal.retireDeadDeclarationAnchors(&editor, root);
     sem.applyEdit(try editor.finish());
     if (m.transform_cache) |*cache| {

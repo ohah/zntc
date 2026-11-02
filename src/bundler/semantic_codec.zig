@@ -41,7 +41,7 @@ pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
 // v39: exact producer-owned static capture aliases retain their retirement proof.
 // v43: extracted await-loop source witnesses and function-name environment retirements.
 // v49: class-key, Worklet, enum-member and explicit-drop proofs share one wire layout.
-pub const FORMAT_VERSION: u32 = 50;
+pub const FORMAT_VERSION: u32 = 51;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -232,14 +232,18 @@ comptime {
         @backingInt(StrictName.binding) != 0 or @backingInt(StrictName.anonymous_default) != 1)
         @compileError("strict role wire tags changed; update codec/version");
     const Retirement = @import("../semantic/source_owned_retirement.zig").Witness;
-    const retirement_fields = [_][]const u8{ "symbol_id", "before", "declaration", "declaration_node", "source_owner", "source_owner_node", "source_scope", "source_parent", "source_name", "source_name_symbol", "closure_scope", "closure_parent", "reason", "erased_import", "static_capture_alias", "function_name_elision", "enum_environment", "dropped_statement" };
+    const retirement_fields = [_][]const u8{ "symbol_id", "before", "declaration", "declaration_node", "source_owner", "source_owner_node", "source_scope", "source_parent", "source_name", "source_name_symbol", "closure_scope", "closure_parent", "reason", "erased_import", "static_capture_alias", "function_name_elision", "enum_environment", "dropped_statement", "inlined_binding" };
     if (@typeInfo(Retirement).@"struct".field_names.len != retirement_fields.len) @compileError("source retirement wire fields changed; update codec/version");
     for (retirement_fields, @typeInfo(Retirement).@"struct".field_names) |expected, actual| if (!std.mem.eql(u8, expected, actual)) @compileError("source retirement wire order changed; update codec/version");
+    const InlineBinding = @import("../semantic/inlined_binding_retirement.zig").Witness;
+    const inline_fields = [_][]const u8{ "declarator", "declarator_node", "initializer", "read", "read_node", "read_reference", "statement_kind", "source_epoch", "source_frame", "read_frame" };
+    if (@typeInfo(InlineBinding).@"struct".field_names.len != inline_fields.len) @compileError("inline binding wire fields changed; update codec/version");
+    for (inline_fields, @typeInfo(InlineBinding).@"struct".field_names) |expected, actual| if (!std.mem.eql(u8, expected, actual)) @compileError("inline binding wire order changed; update codec/version");
     const StaticAlias = @import("../semantic/static_capture_retirement.zig").Witness;
     const static_alias_fields = [_][]const u8{ "statement", "statement_node", "declarator", "declarator_node", "initializer", "initializer_node", "read", "read_node", "class_binding_node", "class_before", "class_scope", "replacement" };
     if (@typeInfo(StaticAlias).@"struct".field_names.len != static_alias_fields.len) @compileError("static capture wire fields changed; update codec/version");
     for (static_alias_fields, @typeInfo(StaticAlias).@"struct".field_names) |expected, actual| if (!std.mem.eql(u8, expected, actual)) @compileError("static capture wire order changed; update codec/version");
-    if (std.enums.values(@FieldType(Retirement, "reason")).len != 7) @compileError("source retirement reason tags changed; update codec/version");
+    if (std.enums.values(@FieldType(Retirement, "reason")).len != 8) @compileError("source retirement reason tags changed; update codec/version");
     const NameElision = @import("../semantic/function_name_retirement.zig");
     const name_witness_fields = [_][]const u8{ "event", "name_scope", "parameter_scope", "retire_parameters", "body_scope", "outer_scope", "name_frame", "parameter_frame", "body_frame", "formals", "engine", "owners" };
     if (@typeInfo(NameElision.Witness).@"struct".field_names.len != name_witness_fields.len) @compileError("name retirement wire fields changed; update codec/version");
@@ -504,6 +508,87 @@ fn readRetirementNode(r: *Reader, declaration: bool) Error!@import("../parser/as
         else => node.data.extra = try r.u32v(),
     }
     return node;
+}
+
+fn putInlineNode(buf: *std.ArrayList(u8), a: std.mem.Allocator, node: @import("../parser/ast.zig").Node) !void {
+    try putU32(buf, a, @backingInt(node.tag));
+    try putU32(buf, a, node.span.start);
+    try putU32(buf, a, node.span.end);
+    switch (@import("../parser/ast.zig").Node.Tag.dataKind(node.tag)) {
+        .extra => try putU32(buf, a, node.data.extra),
+        .list => {
+            try putU32(buf, a, node.data.list.start);
+            try putU32(buf, a, node.data.list.len);
+        },
+        .unary => {
+            try putU32(buf, a, @backingInt(node.data.unary.operand));
+            try putU32(buf, a, node.data.unary.flags);
+        },
+        .binary => {
+            try putU32(buf, a, @backingInt(node.data.binary.left));
+            try putU32(buf, a, @backingInt(node.data.binary.right));
+            try putU32(buf, a, node.data.binary.flags);
+        },
+        .ternary => {
+            try putU32(buf, a, @backingInt(node.data.ternary.a));
+            try putU32(buf, a, @backingInt(node.data.ternary.b));
+            try putU32(buf, a, @backingInt(node.data.ternary.c));
+        },
+        .leaf => {
+            try putU32(buf, a, node.data.none);
+            if (@import("../parser/ast.zig").Node.Tag.dataWidth(node.tag) == 8) try putU32(buf, a, node.data.string_ref.end);
+        },
+    }
+}
+fn readInlineNode(r: *Reader) Error!@import("../parser/ast.zig").Node {
+    const Node = @import("../parser/ast.zig").Node;
+    const tag = std.enums.fromInt(Node.Tag, try r.u32v()) orelse return error.Truncated;
+    var node: Node = .{ .tag = tag, .span = .{ .start = try r.u32v(), .end = try r.u32v() }, .data = std.mem.zeroes(Node.Data) };
+    if (node.span.start > node.span.end) return error.Truncated;
+    switch (Node.Tag.dataKind(tag)) {
+        .extra => node.data.extra = try r.u32v(),
+        .list => node.data.list = .{ .start = try r.u32v(), .len = try r.u32v() },
+        .unary => node.data.unary = .{ .operand = @fromBackingInt(try r.u32v()), .flags = std.math.cast(u16, try r.u32v()) orelse return error.Truncated },
+        .binary => node.data.binary = .{ .left = @fromBackingInt(try r.u32v()), .right = @fromBackingInt(try r.u32v()), .flags = std.math.cast(u16, try r.u32v()) orelse return error.Truncated },
+        .ternary => node.data.ternary = .{ .a = @fromBackingInt(try r.u32v()), .b = @fromBackingInt(try r.u32v()), .c = @fromBackingInt(try r.u32v()) },
+        .leaf => {
+            node.data.none = try r.u32v();
+            if (Node.Tag.dataWidth(tag) == 8) node.data.string_ref.end = try r.u32v();
+        },
+    }
+    return node;
+}
+fn putInlinedBinding(buf: *std.ArrayList(u8), a: std.mem.Allocator, value: @import("../semantic/inlined_binding_retirement.zig").Witness) !void {
+    try putU32(buf, a, @backingInt(value.declarator));
+    try putInlineNode(buf, a, value.declarator_node);
+    try putU32(buf, a, @backingInt(value.initializer));
+    try putU32(buf, a, @backingInt(value.read));
+    try putInlineNode(buf, a, value.read_node);
+    try putReference(buf, a, value.read_reference);
+    try putU32(buf, a, value.statement_kind);
+    try putU32(buf, a, value.source_epoch);
+    try putScope(buf, a, value.source_frame);
+    try putScope(buf, a, value.read_frame);
+}
+fn readInlinedBinding(r: *Reader, node_count: usize, scope_count: usize, symbol_count: usize, epoch: usize) Error!@import("../semantic/inlined_binding_retirement.zig").Witness {
+    const value: @import("../semantic/inlined_binding_retirement.zig").Witness = .{
+        .declarator = @fromBackingInt(try r.u32v()),
+        .declarator_node = try readInlineNode(r),
+        .initializer = @fromBackingInt(try r.u32v()),
+        .read = @fromBackingInt(try r.u32v()),
+        .read_node = try readInlineNode(r),
+        .read_reference = try readReference(r),
+        .statement_kind = try r.u32v(),
+        .source_epoch = try r.u32v(),
+        .source_frame = try readScope(r),
+        .read_frame = try readScope(r),
+    };
+    inline for (.{ value.declarator, value.initializer, value.read }) |node| if (node.isNone() or @backingInt(node) >= node_count) return error.Truncated;
+    if (value.declarator_node.tag != .variable_declarator or value.read_node.tag != .identifier_reference or
+        value.source_epoch > epoch or value.read_reference.scope_id.isNone() or value.read_reference.scope_id.toIndex() >= scope_count or
+        value.read_reference.symbol_id.isNone() or @backingInt(value.read_reference.symbol_id) >= symbol_count) return error.Truncated;
+    inline for (.{ value.source_frame, value.read_frame }) |frame| if (!frame.parent.isNone() and frame.parent.toIndex() >= scope_count) return error.Truncated;
+    return value;
 }
 
 fn putStaticCaptureAlias(buf: *std.ArrayList(u8), a: std.mem.Allocator, value: @import("../semantic/static_capture_retirement.zig").Witness) !void {
@@ -1226,6 +1311,8 @@ pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc:
             try putU32(&payload, alloc, drop.statement);
             try putU32(&payload, alloc, drop.scope_owner orelse std.math.maxInt(u32));
         }
+        try putU32(&payload, alloc, @intFromBool(witness.inlined_binding != null));
+        if (witness.inlined_binding) |inlined| try putInlinedBinding(&payload, alloc, inlined);
     }
 
     const checksum = wyhash.hashU64(payload.items);
@@ -1656,6 +1743,10 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
                 (owner_index != std.math.maxInt(u32) and owner_index >= scope_history.source_owners.len)) return error.Truncated;
             break :drop .{ .statement = statement, .scope_owner = if (owner_index == std.math.maxInt(u32)) null else owner_index };
         } else null;
+        const has_inlined = try r.u32v();
+        if (has_inlined > 1) return error.Truncated;
+        const inlined_binding = if (has_inlined == 1) try readInlinedBinding(&r, symbol_ids.len, scopes.len, symbols_len, scope_history.events.len) else null;
+        if ((reason == .inlined_local_binding) != (inlined_binding != null)) return error.Truncated;
         if ((reason == .dropped_statement) != (dropped_statement != null)) return error.Truncated;
         if ((reason == .erased_const_enum_environment) != (enum_environment != null)) return error.Truncated;
         if (enum_environment) |environment| if (@backingInt(environment.parameter_symbol) >= symbols_len) return error.Truncated;
@@ -1686,6 +1777,7 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
             .function_name_elision = name_elision,
             .enum_environment = enum_environment,
             .dropped_statement = dropped_statement,
+            .inlined_binding = inlined_binding,
         });
     }
     if (r.remaining() != 0) return error.Truncated;
