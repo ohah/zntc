@@ -2371,10 +2371,11 @@ fn isRetainableJsxSpreadChild(
 /// Keep identifier operands only with their exact source binding. Inline
 /// object literals are limited to static data properties with primitive
 /// literals (including no-substitution templates), exact bound reads, member
-/// chains rooted in a bound identifier,
-/// the unresolved global undefined, or void over primitive literals. Member
-/// chains allow dot names, primitive literal bracket keys, void over primitive
-/// literals, exact bound identifier keys, or the unresolved global undefined.
+/// chains rooted in a bound identifier, the unresolved global undefined, or
+/// void over primitive literals or the exact unresolved global undefined.
+/// Member chains allow dot names, primitive literal bracket keys, void over
+/// primitive literals or the exact unresolved global undefined, exact bound
+/// identifier keys, or the unresolved global undefined.
 /// A bound bracket key keeps its own source binding; other computed-key effects,
 /// new scopes, and nested spreads are not admitted.
 fn isRetainableJsxMemberChain(
@@ -2405,7 +2406,7 @@ fn isRetainableJsxMemberChain(
                 .template_literal => isExactJsxNoSubstitutionTemplateLiteral(ast, property_idx),
                 .identifier_reference => isBoundSourceIdentifierReference(ast, semantic, property_idx) or
                     isUnresolvedGlobalUndefinedReference(ast, semantic, property_idx),
-                .unary_expression => isRetainableJsxVoidPrimitiveValue(ast, property_idx),
+                .unary_expression => isRetainableJsxVoidValue(ast, semantic, property_idx),
                 else => false,
             },
             else => false,
@@ -2462,7 +2463,7 @@ fn isRetainableJsxSpreadPropsOperand(
                 if (!isRetainableJsxMemberChain(ast, semantic, value_idx)) return false;
             },
             .unary_expression => {
-                if (!isRetainableJsxVoidPrimitiveValue(ast, value_idx)) return false;
+                if (!isRetainableJsxVoidValue(ast, semantic, value_idx)) return false;
             },
             else => return false,
         }
@@ -3138,9 +3139,15 @@ fn isExactJsxNoSubstitutionTemplateLiteral(ast: *const ast_mod.Ast, node_idx: as
 }
 
 /// `void` over a parenthesized chain ending in a primitive literal has no
-/// identifier reads or operand effects. A no-substitution template is also a
-/// side-effect-free string value. Other operands remain fallback.
-fn isRetainableJsxVoidPrimitiveValue(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
+/// identifier reads or operand effects. The exact unresolved global
+/// `undefined` is also safe: it has no SymbolId to move, and modules containing
+/// `with` or direct eval are rejected by the enclosing retained-graph gate.
+/// Bound identifiers and every other operand remain fallback.
+fn isRetainableJsxVoidValue(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+) bool {
     if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
     const node = ast.nodes.items[@backingInt(node_idx)];
     if (node.tag != .unary_expression) return false;
@@ -3162,6 +3169,7 @@ fn isRetainableJsxVoidPrimitiveValue(ast: *const ast_mod.Ast, node_idx: ast_mod.
         return switch (operand.tag) {
             .string_literal, .numeric_literal, .bigint_literal, .boolean_literal, .null_literal => true,
             .template_literal => isExactJsxNoSubstitutionTemplateLiteral(ast, operand_idx),
+            .identifier_reference => isUnresolvedGlobalUndefinedReference(ast, semantic, operand_idx),
             else => false,
         };
     }
@@ -17605,8 +17613,9 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
             source_dev_undefined_spans[source_dev_undefined_span_count] = node.span;
             source_dev_undefined_span_count += 1;
         }
-        if (node.tag == .unary_expression and isRetainableJsxVoidPrimitiveValue(
+        if (node.tag == .unary_expression and isRetainableJsxVoidValue(
             &dev_fixture.ast,
+            &dev_fixture.semantic,
             @fromBackingInt(@intCast(raw)),
         )) source_dev_void_primitive_span = node.span;
     }
@@ -17688,8 +17697,9 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
             );
             dev_member_key_read_count += 1;
         }
-        if (node.tag == .unary_expression and isRetainableJsxVoidPrimitiveValue(
+        if (node.tag == .unary_expression and isRetainableJsxVoidValue(
             &dev_module.ast.?,
+            &dev_module.semantic.?,
             @fromBackingInt(@intCast(raw)),
         ) and node.span.start == dev_void_primitive_span.start and node.span.end == dev_void_primitive_span.end)
             dev_source_void_primitive_count += 1;
@@ -19673,15 +19683,30 @@ fn jsxSpreadChildTestFixture(
     allocator: std.mem.Allocator,
     source: []const u8,
 ) !RuntimeHelperReanalysisTestFixture {
+    return jsxSpreadChildTestFixtureWithModuleMode(allocator, source, true);
+}
+
+fn jsxSpreadChildScriptTestFixture(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+) !RuntimeHelperReanalysisTestFixture {
+    return jsxSpreadChildTestFixtureWithModuleMode(allocator, source, false);
+}
+
+fn jsxSpreadChildTestFixtureWithModuleMode(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    is_module: bool,
+) !RuntimeHelperReanalysisTestFixture {
     var scanner = try Scanner.init(allocator, source);
-    scanner.is_module = true;
+    scanner.is_module = is_module;
     var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
-    parser.is_module = true;
+    parser.is_module = is_module;
     parser.configureFromExtension(".tsx");
     _ = try parser.parse();
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
-    analyzer.is_module = true;
+    analyzer.is_module = is_module;
     analyzer.enable_stmt_info = true;
     analyzer.enable_exact_declaration_anchors = true;
     analyzer.enable_source_external_origins = true;
@@ -25066,6 +25091,39 @@ fn auditedJsxSpreadChildAdmissionForTest(
     );
 }
 
+fn fullPrepassAuditedJsxGraphAdmissionForTest(
+    fixture: *const RuntimeHelperReanalysisTestFixture,
+    runtime: @import("../../codegen/codegen.zig").JsxRuntime,
+) bool {
+    const Plugin = @import("../plugin.zig").Plugin;
+    const plugins: []const Plugin = &.{};
+    const is_strict = fixture.semantic.scopes.len == 0 or fixture.semantic.scopes[0].is_strict;
+    var module = Module.init(
+        @fromBackingInt(0),
+        if (is_strict) "jsx-retention.tsx" else "jsx-retention.cjs",
+    );
+    module.module_type = if (is_strict) .ts else .js;
+    module.ast = fixture.ast;
+    module.semantic = fixture.semantic;
+    const context = .{
+        .allocator = std.testing.allocator,
+        .flow = false,
+        .worklet_transform = false,
+        .plugins = plugins,
+        .styled_components = false,
+        .emotion = false,
+    };
+    var allow_get = false;
+    var allow_set = false;
+    return canKeepPrepassSemanticGraph(&context, &module, .{
+        .strip_types = true,
+        .emit_runtime_helper_imports = true,
+        .jsx_transform = true,
+        .jsx_runtime = runtime,
+        .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+    }, plugins, &allow_get, &allow_set, null);
+}
+
 fn auditedJsxSpreadPropsOperandForTest(fixture: *const RuntimeHelperReanalysisTestFixture) bool {
     for (fixture.ast.nodes.items) |node| {
         if (node.tag != .jsx_spread_attribute) continue;
@@ -25088,24 +25146,24 @@ test "#6193 automatic key fallback props rejects malformed no-substitution templ
     for (fixture.ast.nodes.items, 0..) |node, raw| {
         const node_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
         if (node.tag == .template_literal and template_idx == null) template_idx = node_idx;
-        if (node.tag == .unary_expression and isRetainableJsxVoidPrimitiveValue(&fixture.ast, node_idx))
+        if (node.tag == .unary_expression and isRetainableJsxVoidValue(&fixture.ast, &fixture.semantic, node_idx))
             void_idx = node_idx;
     }
     const template = template_idx orelse return error.MissingJsxNoSubstitutionTemplate;
     const void_value = void_idx orelse return error.MissingJsxVoidTemplateValue;
     try std.testing.expect(isExactJsxNoSubstitutionTemplateLiteral(&fixture.ast, template));
-    try std.testing.expect(isRetainableJsxVoidPrimitiveValue(&fixture.ast, void_value));
+    try std.testing.expect(isRetainableJsxVoidValue(&fixture.ast, &fixture.semantic, void_value));
 
     const template_raw: usize = @intCast(@backingInt(template));
     const saved_list = fixture.ast.nodes.items[template_raw].data.list;
     fixture.ast.nodes.items[template_raw].data.list.start = std.math.maxInt(u32);
     try std.testing.expect(!isExactJsxNoSubstitutionTemplateLiteral(&fixture.ast, template));
-    try std.testing.expect(!isRetainableJsxVoidPrimitiveValue(&fixture.ast, void_value));
+    try std.testing.expect(!isRetainableJsxVoidValue(&fixture.ast, &fixture.semantic, void_value));
     fixture.ast.nodes.items[template_raw].data.list = saved_list;
 
     fixture.ast.nodes.items[template_raw].data.list.len = 1;
     try std.testing.expect(!isExactJsxNoSubstitutionTemplateLiteral(&fixture.ast, template));
-    try std.testing.expect(!isRetainableJsxVoidPrimitiveValue(&fixture.ast, void_value));
+    try std.testing.expect(!isRetainableJsxVoidValue(&fixture.ast, &fixture.semantic, void_value));
 }
 
 test "#6193 automatic key fallback props accepts only exact no-substitution template values" {
@@ -25173,6 +25231,9 @@ test "#6193 automatic key fallback props spread admits static data and bound val
         "const member = { \"undefined\": \"x\" }; const items = [1]; const result = <Comp {...{ id: member[`undefined`] }} key=\"k\">{...items}</Comp>;",
         "const member = { \"undefined\": \"x\" }; const items = [1]; const result = <Comp {...{ id: member[void (`unused`)] }} key=\"k\">{...items}</Comp>;",
         "const member = { \"undefined\": \"x\" }; const items = [1]; const result = <Comp {...{ id: member[void (`0`)] }} key=\"k\">{...items}</Comp>;",
+        "const member = { \"undefined\": \"x\" }; const items = [1]; const result = <Comp {...{ id: member[void undefined] }} key=\"k\">{...items}</Comp>;",
+        "const member = { \"undefined\": \"x\" }; const items = [1]; const result = <Comp {...{ id: member[void (undefined)] }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ optional: void ((undefined)) }} key=\"k\">{...items}</Comp>;",
         "const member = { \"undefined\": \"x\" }; const items = [1]; const result = <Comp {...{ id: member[undefined] }} key=\"k\">{...items}</Comp>;",
         "const member = { nested: { \"undefined\": \"x\" } }; const items = [1]; const result = <Comp {...{ id: member.nested[undefined] }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ optional: undefined }} key=\"k\">{...items}</Comp>;",
@@ -25219,7 +25280,9 @@ test "#6193 automatic key fallback props spread admits static data and bound val
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[(undefined)] }} key=\"k\">{...items}</Comp>;",
         "const member = {}; const suffix = \"x\"; const items = [1]; const result = <Comp {...{ id: member[`undefined${suffix}`] }} key=\"k\">{...items}</Comp>;",
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[/undefined/] }} key=\"k\">{...items}</Comp>;",
-        "const member = {}; const items = [1]; const result = <Comp {...{ id: member[void undefined] }} key=\"k\">{...items}</Comp>;",
+        "const undefined = 0; const member = { undefined: \"x\" }; const items = [1]; const result = <Comp {...{ id: member[void undefined] }} key=\"k\">{...items}</Comp>;",
+        "const member = { undefined: \"x\" }; const items = [1]; const result = <Comp {...{ id: member[void \\u0075ndefined] }} key=\"k\">{...items}</Comp>;",
+        "const member = { undefined: \"x\" }; const result = <Comp {...{ id: member[void undefined] }} key=\"k\">{...items}</Comp>; let undefined = 0;",
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[!0] }} key=\"k\">{...items}</Comp>;",
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[void (!0)] }} key=\"k\">{...items}</Comp>;",
         "const member = {}; const items = [1]; const result = <Comp {...{ id: member[void (-0)] }} key=\"k\">{...items}</Comp>;",
@@ -25488,6 +25551,47 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
         try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&fixture, .classic, true));
     }
+}
+
+test "#6193 unresolved void undefined graph admission rejects local and dynamic names" {
+    const allocator = std.testing.allocator;
+    const source = "const member = { undefined: \"value\" }; const items = [1]; const result = <Comp {...{ id: member[void undefined] }} key=\"k\">{...items}</Comp>;";
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+    try std.testing.expect(auditedJsxSpreadPropsOperandForTest(&fixture));
+    try std.testing.expect(auditedJsxSpreadChildAdmissionForTest(&fixture, .classic, true));
+    try std.testing.expect(auditedJsxSpreadChildAdmissionForTest(&fixture, .automatic, true));
+    try std.testing.expect(auditedJsxSpreadChildAdmissionForTest(&fixture, .automatic_dev, true));
+    try std.testing.expect(fullPrepassAuditedJsxGraphAdmissionForTest(&fixture, .classic));
+    try std.testing.expect(fullPrepassAuditedJsxGraphAdmissionForTest(&fixture, .automatic));
+    try std.testing.expect(fullPrepassAuditedJsxGraphAdmissionForTest(&fixture, .automatic_dev));
+
+    var local_arena = std.heap.ArenaAllocator.init(allocator);
+    defer local_arena.deinit();
+    var local_fixture = try jsxSpreadChildTestFixture(
+        local_arena.allocator(),
+        "const undefined = 0; const member = { undefined: \"value\" }; const items = [1]; const result = <Comp {...{ id: member[void undefined] }} key=\"k\">{...items}</Comp>;",
+    );
+    try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&local_fixture, .automatic, true));
+    try std.testing.expect(!auditedJsxSpreadPropsOperandForTest(&local_fixture));
+    try std.testing.expect(!fullPrepassAuditedJsxGraphAdmissionForTest(&local_fixture, .automatic));
+
+    var eval_arena = std.heap.ArenaAllocator.init(allocator);
+    defer eval_arena.deinit();
+    var eval_fixture = try jsxSpreadChildTestFixture(
+        eval_arena.allocator(),
+        "const member = { undefined: \"value\" }; const items = [1]; function dynamic() { eval(\"\"); } const result = <Comp {...{ id: member[void undefined] }} key=\"k\">{...items}</Comp>;",
+    );
+    try std.testing.expect(!fullPrepassAuditedJsxGraphAdmissionForTest(&eval_fixture, .automatic));
+
+    var with_arena = std.heap.ArenaAllocator.init(allocator);
+    defer with_arena.deinit();
+    var with_fixture = try jsxSpreadChildScriptTestFixture(
+        with_arena.allocator(),
+        "with ({ undefined: 0 }) { const member = { undefined: \"value\" }; const items = [1]; const result = <Comp {...{ id: member[void undefined] }} key=\"k\">{...items}</Comp>; }",
+    );
+    try std.testing.expect(!fullPrepassAuditedJsxGraphAdmissionForTest(&with_fixture, .automatic));
 }
 
 test "#6193 classic JSX spread child retains only audited factory-call operands" {
