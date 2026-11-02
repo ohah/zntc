@@ -280,6 +280,53 @@ test "#4819 moved static eval guards builtin identity and inherited strictness" 
     }
 }
 
+test "#4819 private factory eval lookup rejects a foreign-scope map owner" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "var local=1; class Box { static #read(){ const local=7; return eval('local'); } }");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var outer_id: ?usize = null;
+    var local_id: ?usize = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (!std.mem.eql(u8, symbol.nameText(parser.ast.source), "local")) continue;
+        if (symbol.kind == .variable_var and symbol.scope_id.toIndex() == 0) outer_id = raw;
+        if (symbol.kind == .variable_const) local_id = raw;
+    }
+    const outer_symbol = outer_id orelse return error.MissingOuterLocal;
+    const local_symbol = local_id orelse return error.MissingInnerLocal;
+    const local_scope = analyzer.symbols.items[local_symbol].scope_id;
+    try std.testing.expectEqual(@as(?usize, local_symbol), analyzer.scope_maps.items[local_scope.toIndex()].get("local"));
+
+    var class_self_id: ?u32 = null;
+    var eval_call: ?@import("../parser/ast.zig").Node = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_declaration) class_self_id = analyzer.class_self_symbol_map.get(@intCast(raw));
+        if (node.tag == .call_expression and std.mem.indexOf(u8, parser.ast.getText(node.span), "eval('local')") != null)
+            eval_call = node;
+    }
+    const class_symbol = class_self_id orelse return error.MissingClassSelfSymbol;
+    const call = eval_call orelse return error.MissingDirectEvalCall;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+
+    const unsafe_private_factory_eval = @import("static_class_capture.zig").unsafePrivateFactoryEval;
+    try std.testing.expect(unsafe_private_factory_eval(&transformer, call, local_scope, class_symbol, false));
+
+    // This outer var remains visible from the method scope, so an ancestry-only
+    // lookup incorrectly treats eval('local') as safe to move.
+    try analyzer.scope_maps.items[local_scope.toIndex()].put(allocator, "local", outer_symbol);
+    try std.testing.expect(unsafe_private_factory_eval(&transformer, call, local_scope, class_symbol, false));
+}
+
 test "#4819 static class capture private post descriptor has exact live reference and lexical storage" {
     const source = "for (let i=0;i<3;i++) { class Box { static #value=i; static read=Box=>this.#value; } Box.read({}); }";
     try expectStaticCaptureIdentity(source, false, 1);
