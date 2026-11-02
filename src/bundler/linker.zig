@@ -735,7 +735,7 @@ pub const Linker = struct {
     /// Top-level owner enumeration keeps exact lexical identity separate from
     /// the older preferred-spelling rule used by generated output owners.
     const TopLevelOwnerIdentity = struct {
-        symbol_id: ?bundler_symbol.SymbolID = null,
+        symbol_id: bundler_symbol.SymbolID,
         preserve_preferred_spelling: bool = false,
     };
 
@@ -885,6 +885,27 @@ pub const Linker = struct {
         if (sem.scope_maps.len == 0) return;
         const module_scope = sem.scope_maps[0];
 
+        const DefaultLocalOwner = struct {
+            name: []const u8,
+            symbol_id: bundler_symbol.SymbolID,
+        };
+        var default_local_owner: ?DefaultLocalOwner = null;
+        var default_local_owner_map_rows: usize = 0;
+        for (m.export_bindings) |eb| {
+            if (eb.kind != .local or !std.mem.eql(u8, eb.exported_name, "default") or
+                eb.has_default_export_facade or eb.hasSyntheticDefault(sem.symbols.items)) continue;
+            const local = m.exportBindingLocalName(eb);
+            const symbol_id = (try self.exactLocalExportOwnerForName(m, &sem, local)) orelse
+                return error.MissingDefaultExportCompatibilityOwnerSymbolId;
+            if (default_local_owner) |previous| {
+                if (!Scanner.identifierNamesEqual(previous.name, local) or
+                    !bundler_symbol.SymbolID.eql(previous.symbol_id, symbol_id))
+                    return error.AmbiguousDefaultExportCompatibilityOwner;
+            } else {
+                default_local_owner = .{ .name = local, .symbol_id = symbol_id };
+            }
+        }
+
         // 대형 fan-out(배럴/mega-entry): 아래 루프가 import 심볼마다 `import_bindings` 전체를
         // local_name 으로 스캔하면 O(symbols×bindings)=O(N²). bindings 가 많을 때만 local_name→
         // 첫 binding 인덱스를 1회 구축해 O(1) 조회로 전환. 작은 모듈은 맵 alloc 비용을 피하려
@@ -909,6 +930,11 @@ pub const Linker = struct {
         while (scope_it.next()) |scope_entry| {
             const sym_name = scope_entry.key_ptr.*;
             const map_sym_idx = scope_entry.value_ptr.*;
+            const default_export_owner = if (default_local_owner) |default_owner| blk: {
+                if (!Scanner.identifierNamesEqual(sym_name, default_owner.name)) break :blk null;
+                default_local_owner_map_rows += 1;
+                break :blk default_owner;
+            } else null;
             var sym_idx = map_sym_idx;
             if (sym_idx >= sem.symbols.items.len) {
                 const exact_export = try self.exactLocalExportOwnerForName(m, &sem, sym_name) orelse
@@ -967,15 +993,29 @@ pub const Linker = struct {
                 if (!generates_top_level_var) continue;
             }
 
-            const identity: TopLevelOwnerIdentity = self.topLevelOwnerIdentity(m, &sem, sym_name, map_sym_idx) catch blk: {
-                // An exact local-export SymbolId is an independent producer
-                // witness. If the scope map was redirected to another name
-                // or scope, discard that row and keep the exported source
-                // binding as the owner for its actual spelling.
-                const exact_export = try self.exactLocalExportOwnerForName(m, &sem, sym_name) orelse
-                    return error.InvalidTopLevelOwnerSymbolIdentity;
-                break :blk .{ .symbol_id = exact_export };
+            const identity: TopLevelOwnerIdentity = blk: {
+                if (default_export_owner) |default_owner| {
+                    const mapped_owner = self.topLevelOwnerIdentity(m, &sem, sym_name, map_sym_idx) catch {
+                        break :blk .{ .symbol_id = default_owner.symbol_id };
+                    };
+                    if (!bundler_symbol.SymbolID.eql(mapped_owner.symbol_id, default_owner.symbol_id))
+                        return error.InvalidTopLevelOwnerSymbolIdentity;
+                    break :blk .{ .symbol_id = default_owner.symbol_id };
+                }
+                break :blk self.topLevelOwnerIdentity(m, &sem, sym_name, map_sym_idx) catch {
+                    // An exact local-export SymbolId is an independent producer
+                    // witness. If the scope map was redirected to another name
+                    // or scope, discard that row and keep the exported source
+                    // binding as the owner for its actual spelling.
+                    const exact_export = try self.exactLocalExportOwnerForName(m, &sem, sym_name) orelse
+                        return error.InvalidTopLevelOwnerSymbolIdentity;
+                    break :blk .{ .symbol_id = exact_export };
+                };
             };
+            // Escaped and cooked identifier spellings may both appear as root
+            // map keys for the same binding. Validate every row above, then
+            // register the exact default-export owner only once.
+            if (default_export_owner != null and default_local_owner_map_rows > 1) continue;
             try cb(ctx, sym_name, identity);
         }
 
@@ -1006,14 +1046,11 @@ pub const Linker = struct {
             if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
                 // export default function foo → foo 이름으로 등록
                 const local = m.exportBindingLocalName(eb);
-                if (module_scope.get(local) == null) {
-                    // The compatibility owner has no root-map row, but the
-                    // export scanner may still carry an exact local SID.
-                    const symbol_id = if (sem.scopes.len > 0)
-                        try self.exactLocalExportOwnerForName(m, &sem, local)
-                    else
-                        null;
-                    try cb(ctx, local, .{ .symbol_id = symbol_id });
+                if (default_local_owner_map_rows == 0) {
+                    const owner = default_local_owner orelse
+                        return error.MissingDefaultExportCompatibilityOwnerSymbolId;
+                    if (!Scanner.identifierNamesEqual(owner.name, local)) return error.AmbiguousDefaultExportCompatibilityOwner;
+                    try cb(ctx, local, .{ .symbol_id = owner.symbol_id });
                 }
             }
         }
@@ -1159,8 +1196,8 @@ pub const Linker = struct {
         // spelling map now points at a different, same-named source binding.
         try scope_maps[0].put(arena_allocator, "synthetic_none", 2);
         try scope_maps[0].put(arena_allocator, "synthetic_wrapper", 3);
-        try linker.putCanonicalNameForOwner(no_scope_owner, "synthetic_none", try std.testing.allocator.dupe(u8, "synthetic_none$1"));
-        try linker.putCanonicalNameForOwner(wrapper_owner, "synthetic_wrapper", try std.testing.allocator.dupe(u8, "synthetic_wrapper$1"));
+        try linker.putCanonicalNameForOwner(no_scope_owner, try std.testing.allocator.dupe(u8, "synthetic_none$1"));
+        try linker.putCanonicalNameForOwner(wrapper_owner, try std.testing.allocator.dupe(u8, "synthetic_wrapper$1"));
 
         try std.testing.expectEqualStrings("synthetic_none$1", linker.rename_table.get(no_scope_id) orelse return error.MissingNoScopeSyntheticOwnerRename);
         try std.testing.expectEqualStrings("synthetic_wrapper$1", linker.rename_table.get(wrapper_id) orelse return error.MissingWrapperSyntheticOwnerRename);
@@ -1236,7 +1273,7 @@ pub const Linker = struct {
 
         // A late same-spelling map row must not redirect the captured export owner.
         try scope_maps[0].put(arena_allocator, "foo", 1);
-        try linker.putCanonicalNameForOwner(owner, "foo", try std.testing.allocator.dupe(u8, "foo$1"));
+        try linker.putCanonicalNameForOwner(owner, try std.testing.allocator.dupe(u8, "foo$1"));
 
         try std.testing.expectEqualStrings("foo$1", linker.rename_table.get(exact_id) orelse return error.MissingDefaultExportOwnerRename);
         const decoy_id = bundler_symbol.SymbolID.make(module.index, @as(u32, 1));
@@ -1554,16 +1591,19 @@ pub const Linker = struct {
             // 단일 소유자라도 예약어/글로벌을 shadowing하면 리네임 필요.
             // scope hoisting 후 const/let 선언이 TDZ를 만들어 다른 모듈의 전역 참조가 실패.
             if (owners.len == 1) {
+                // A cross-chunk marker reserves a spelling but never owns a
+                // semantic symbol, even when that spelling is otherwise reserved.
+                if (owners[0].module_index == std.math.maxInt(u32)) continue;
                 if (self.isReservedOrGlobal(name)) {
                     const owner = owners[0];
                     // 후보 이름도 예약어/다른 top-level/nested scope와 충돌할 수 있으므로 검증.
                     var suffix: u32 = 1;
                     const candidate = try self.findAvailableCandidate(name, owner.module_index, &suffix, name_to_owners);
-                    try self.putCanonicalNameForOwner(owner, name, candidate);
+                    try self.putCanonicalNameForOwner(owner, candidate);
                 } else if (owners[0].preserve_preferred_spelling) {
                     // Output-owned symbols need an explicit final name mapping
                     // even when their preferred spelling stays unchanged.
-                    try self.putCanonicalNameForOwner(owners[0], name, try self.allocator.dupe(u8, name));
+                    try self.putCanonicalNameForOwner(owners[0], try self.allocator.dupe(u8, name));
                 }
                 continue;
             }
@@ -1598,14 +1638,14 @@ pub const Linker = struct {
                 // 충돌 없는 후보 이름 검색
                 const candidate = try self.findAvailableCandidate(name, owner.module_index, &suffix, name_to_owners);
 
-                try self.putCanonicalNameForOwner(owner, name, candidate);
+                try self.putCanonicalNameForOwner(owner, candidate);
                 suffix += 1;
             }
             if (!name_is_reserved and owners[0].preserve_preferred_spelling) {
                 // The runtime identity sorts ahead of source declarations for
                 // the same spelling and keeps the preferred name. Persist that
                 // unchanged spelling and reserve it for subsequent mangle.
-                try self.putCanonicalNameForOwner(owners[0], name, try self.allocator.dupe(u8, name));
+                try self.putCanonicalNameForOwner(owners[0], try self.allocator.dupe(u8, name));
             }
         }
     }
@@ -3812,7 +3852,7 @@ pub const Linker = struct {
             fn add(c: @This(), name: []const u8, identity: TopLevelOwnerIdentity) anyerror!void {
                 // order-independent: 각 이름 해시를 wrapping-add. 같은 집합 → 같은 합.
                 c.acc.* +%= std.hash.Wyhash.hash(0xc0, name);
-                if (identity.symbol_id) |id| c.acc.* +%= std.hash.Wyhash.hash(0xc2, std.mem.asBytes(&id));
+                c.acc.* +%= std.hash.Wyhash.hash(0xc2, std.mem.asBytes(&identity.symbol_id));
             }
         };
         try self.forEachTopLevelOwnerName(m, Ctx, .{ .acc = &fp.toplevel_name_set_hash }, Ctx.add);
@@ -4153,9 +4193,9 @@ pub const Linker = struct {
                 // local carrying this public name. In a single bundle the
                 // property read cannot be captured by a consumer's nested
                 // binding, and the CJS module may contain an unrelated local
-                // with the same spelling. Never route that name through
-                // putCanonicalName's scope-map lookup. Cross-chunk consumers
-                // take the other branch and rename their exact nested SID.
+                // with the same spelling. Never resolve a lexical SID from
+                // the public property name. Cross-chunk consumers take the
+                // other branch and rename their exact nested SID.
                 if (target_module.wrap_kind == .cjs) continue;
                 var suffix: u32 = 1;
                 const candidate = try self.findAvailableCandidate(ref_name, cmod, &suffix, name_to_owners);
@@ -5026,18 +5066,6 @@ pub const Linker = struct {
         self.cross_chunk_global_names.clearRetainingCapacity();
     }
 
-    /// (module_index, local_name)의 최종 이름(`rename_table`)을 설정. value 소유권은
-    /// canonical_strings로 이전 (caller가 미리 dupe해서 넘김). Symbol을 못 찾으면
-    /// value를 free하고 silently noop.
-    fn putCanonicalName(self: *Linker, module_index: u32, name: []const u8, value: []const u8) !void {
-        const idx = self.findSymbolIdx(module_index, name) orelse {
-            self.allocator.free(value);
-            return;
-        };
-        const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(module_index))), idx);
-        try self.assignSymbolCanonical(id, value);
-    }
-
     /// Assign an export's canonical spelling from its scanner-owned SymbolRef.
     /// Return false only for a non-local export, whose alias identity is owned by
     /// the export-chain path and may still use the legacy name contract.
@@ -5062,13 +5090,13 @@ pub const Linker = struct {
         return true;
     }
 
-    fn putCanonicalNameForOwner(self: *Linker, owner: NameOwner, name: []const u8, value: []const u8) !void {
-        if (owner.symbol_id) |symbol_id| {
-            try self.assignSymbolCanonical(symbol_id, value);
-            try self.reserved_globals.put(self.allocator, value, {});
-            return;
-        }
-        try self.putCanonicalName(owner.module_index, name, value);
+    fn putCanonicalNameForOwner(self: *Linker, owner: NameOwner, value: []const u8) !void {
+        const symbol_id = owner.symbol_id orelse {
+            self.allocator.free(value);
+            return error.MissingCanonicalNameOwnerSymbolId;
+        };
+        try self.assignSymbolCanonical(symbol_id, value);
+        try self.reserved_globals.put(self.allocator, value, {});
     }
 
     /// SymbolID 에 최종 이름(canonical)을 할당하는 단일 write sink. value 소유권을
@@ -5076,7 +5104,7 @@ pub const Linker = struct {
     /// used set에서만 제거 후 `rename_table` 에 재기록한다.
     ///
     /// RFC #3940 Sub-PR-L.5c — `Symbol.canonical_name` field 제거 후 rename_table 이 유일 store.
-    /// 호출처(`putCanonicalName`/`computeMangling`)는 모두 valid id(`SymbolID.make(real,real)`).
+    /// 호출처(owner의 exact SymbolId/computeMangling)는 모두 valid id(`SymbolID.make(real,real)`).
     fn assignSymbolCanonical(self: *Linker, id: bundler_symbol.SymbolID, value: []const u8) !void {
         if (id.isValid()) {
             if (self.rename_table.get(id)) |prior| _ = self.canonical_names_used.fetchRemove(prior);
@@ -5103,7 +5131,8 @@ pub const Linker = struct {
     }
 
     /// scope_maps[0] → synthetic_name fallback으로 symbol 의 module-local index 찾기.
-    /// `putCanonicalName`/`lookupSymbolCanonical` 이 SymbolID 구성에 idx 만 사용한다.
+    /// Legacy output-name lookup uses this only to read a canonical name; canonical
+    /// assignments require the exact SymbolId captured in NameOwner.
     fn findSymbolIdx(self: *const Linker, module_index: u32, name: []const u8) ?u32 {
         const m = self.getModule(module_index) orelse return null;
         const sem = m.semantic orelse return null;
@@ -7438,8 +7467,8 @@ pub const Linker = struct {
         // 2.5 #4101 cross-chunk 전역 네이밍 override — 이 청크가 export 하는 cross-chunk 심볼을
         // 전역 이름으로 고정. calculateRenames 의 per-chunk deconflict 순서(exec_index)가 전역
         // 순서(mod,name)와 어긋나면 어느 심볼이 `v`/`v$1` 을 갖는지 달라진다 → override 로 전역
-        // 맵과 일치시켜 provider/consumer 가 같은 이름을 본다. dupe → putCanonicalName 이
-        // canonical_strings 로 소유권 이전. (전역명==per-chunk 결과면 no-op. reserve 마커는 안 둔다
+        // 맵과 일치시켜 provider/consumer 가 같은 이름을 본다. dupe → exact local export
+        // SymbolId가 확인된 경우에만 canonical_strings로 소유권 이전. (전역명==per-chunk 결과면 no-op. reserve 마커는 안 둔다
         // — non-cross-chunk 동명 심볼(dup.v)까지 밀어내 `v$2` 가 되는 부작용 때문. calculateRenames
         // 자연 순서가 cross-chunk owner 에게 preferred 를 주므로 override 는 divergence 만 교정.)
         // ⚠️ **lazy(dev_split) 전용** — production 은 `export { local as public }` 브리지가
@@ -7449,11 +7478,8 @@ pub const Linker = struct {
         if (self.graph.lazy_compilation) {
             for (module_indices) |mod_idx| {
                 const inner = self.cross_chunk_global_names.get(mod_idx.toU32()) orelse continue;
-                // (#4494) CJS-wrapped owner 는 제외. CJS 는 export local 이 없어 `local` 이 export 명
-                // 으로 fallback 하는데, `putCanonicalName` 은 그 이름으로 **CJS 클로저 *안*의 사적
-                // 심볼**을 찾아(findSymbolIdx) 전역명으로 rename 해버린다(엉뚱한 바인딩 개명 + emit
-                // 의 resolveOwnerLocal 이 그 rename 을 보고 materialize 를 skip → 클로저 스코프 이름을
-                // export → ReferenceError). CJS 전역명은 모듈 심볼이 아니라 emit 이 materialize 한다.
+                // (#4494) CJS-wrapped owner 는 제외. CJS 전역명은 semantic local이 아니라 emitter가
+                // materialize하므로, export spelling으로 CJS 클로저 안의 동명 private SID를 찾지 않는다.
                 if (self.graph.getModule(mod_idx)) |om| {
                     if (om.wrap_kind == .cjs) continue;
                 }
@@ -7528,6 +7554,285 @@ pub const Linker = struct {
         try self.runUnifiedMangle(&chunk_set, occupied_names);
     }
 };
+
+test "default-export compatibility owner rejects a missing SID beside a same-named synthetic decoy" {
+    const local_module: ModuleIndex = @fromBackingInt(@as(u32, 0));
+    const foreign_module: ModuleIndex = @fromBackingInt(@as(u32, 1));
+    const invalid_export_refs = [_]bundler_symbol.SymbolRef{
+        .invalid,
+        .{ .alias = .{ .module = local_module, .symbol = @fromBackingInt(@as(u32, 1)) } },
+        .makeSemantic(local_module, @as(u32, 0)), // points at the unrelated synthetic decoy
+        .makeSemantic(foreign_module, @as(u32, 0)),
+        .makeSemantic(local_module, @as(u32, 99)),
+    };
+    for (invalid_export_refs) |export_ref| {
+        for ([_]bool{ false, true }) |has_root_map_row| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            const arena_allocator = arena.allocator();
+
+            var cache = @import("resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+            defer cache.deinit();
+            var graph = ModuleGraph.init(std.testing.allocator, &cache);
+            defer graph.deinit();
+            var linker = Linker.init(std.testing.allocator, &graph, .esm);
+            defer linker.deinit();
+
+            const local_span = Span{ .start = 0, .end = 3 };
+            var symbols: std.ArrayList(semantic_symbol.Symbol) = .empty;
+            try symbols.append(arena_allocator, .{
+                .name = Span.EMPTY,
+                .scope_id = .none,
+                .kind = .variable_var,
+                .declaration_span = Span.EMPTY,
+                .synthetic_kind = .standalone_generated_binding,
+                .synthetic_name = "foo",
+            });
+
+            var root_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+            if (has_root_map_row) try root_scope_map.put(arena_allocator, "foo", 0);
+            var scope_maps = [_]std.StringHashMapUnmanaged(usize){root_scope_map};
+            const scopes = [_]SemanticScope{.{ .parent = .none, .kind = .module, .is_strict = true }};
+            const semantic = ModuleSemanticData{
+                .symbols = symbols,
+                .scopes = &scopes,
+                .scope_maps = &scope_maps,
+                .exported_names = .empty,
+                .symbol_ids = &.{},
+                .unresolved_references = .empty,
+            };
+            const module_index = try graph.addModule(std.testing.io, "entry.ts");
+            const module = graph.moduleAtMut(module_index) orelse return error.MissingGraphModule;
+            module.source = "foo";
+            module.semantic = semantic;
+            var export_bindings = [_]ExportBinding{.{
+                .exported_name = "default",
+                .local_name = "foo",
+                .local_span = local_span,
+                .kind = .local,
+                .symbol = export_ref,
+            }};
+            module.export_bindings = &export_bindings;
+
+            var name_to_owners: Linker.NameToOwnersMap = .empty;
+            defer {
+                var owners_it = name_to_owners.valueIterator();
+                while (owners_it.next()) |owners| owners.deinit(std.testing.allocator);
+                name_to_owners.deinit(std.testing.allocator);
+            }
+
+            // The export spelling alone must not select the unrelated generated SID
+            // through findSymbolIdx's synthetic-name fallback, with or without a map row.
+            try std.testing.expectError(
+                error.MissingDefaultExportCompatibilityOwnerSymbolId,
+                linker.collectModuleNames(module.*, 0, &name_to_owners),
+            );
+            try std.testing.expect(name_to_owners.get("foo") == null);
+            try std.testing.expect(linker.rename_table.count() == 0);
+        }
+    }
+}
+
+test "default-export owner rejects an escaped root-map name redirected to a same-named synthetic SID" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var cache = @import("resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+
+    const local_span = Span{ .start = 0, .end = 8 };
+    var symbols: std.ArrayList(semantic_symbol.Symbol) = .empty;
+    try symbols.append(arena_allocator, .{
+        .name = Span.EMPTY,
+        .scope_id = .none,
+        .kind = .variable_var,
+        .declaration_span = Span.EMPTY,
+        .synthetic_kind = .standalone_generated_binding,
+        .synthetic_name = "foo",
+    });
+    try symbols.append(arena_allocator, .{
+        .name = local_span,
+        .scope_id = @fromBackingInt(@as(u32, 0)),
+        .kind = .function_decl,
+        .declaration_span = local_span,
+    });
+
+    var root_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    try root_scope_map.put(arena_allocator, "foo", 0);
+    var scope_maps = [_]std.StringHashMapUnmanaged(usize){root_scope_map};
+    const scopes = [_]SemanticScope{.{ .parent = .none, .kind = .module, .is_strict = true }};
+    const semantic = ModuleSemanticData{
+        .symbols = symbols,
+        .scopes = &scopes,
+        .scope_maps = &scope_maps,
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+    };
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "entry.ts");
+    module.source = "f\\u006fo";
+    module.ast = ast_mod.Ast.init(arena_allocator, module.source);
+    module.semantic = semantic;
+    var export_bindings = [_]ExportBinding{.{
+        .exported_name = "default",
+        .local_name = "f\\u006fo",
+        .local_span = local_span,
+        .kind = .local,
+        .symbol = bundler_symbol.SymbolRef.makeSemantic(module.index, @as(u32, 1)),
+    }};
+    module.export_bindings = &export_bindings;
+
+    var name_to_owners: Linker.NameToOwnersMap = .empty;
+    defer {
+        var owners_it = name_to_owners.valueIterator();
+        while (owners_it.next()) |owners| owners.deinit(std.testing.allocator);
+        name_to_owners.deinit(std.testing.allocator);
+    }
+
+    try std.testing.expectError(
+        error.InvalidTopLevelOwnerSymbolIdentity,
+        linker.collectModuleNames(module, 0, &name_to_owners),
+    );
+    try std.testing.expect(name_to_owners.get("foo") == null);
+    const export_id = bundler_symbol.SymbolID.make(module.index, @as(u32, 1));
+    const decoy_id = bundler_symbol.SymbolID.make(module.index, @as(u32, 0));
+    try std.testing.expect(linker.rename_table.get(export_id) == null);
+    try std.testing.expect(linker.rename_table.get(decoy_id) == null);
+}
+
+test "default-export owner deduplicates equivalent root-map rows only for the exact export SID" {
+    for ([_]usize{ 0, 1 }) |duplicate_target| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
+
+        var cache = @import("resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var linker = Linker.init(std.testing.allocator, &graph, .esm);
+        defer linker.deinit();
+
+        const local_span = Span{ .start = 0, .end = 3 };
+        var symbols: std.ArrayList(semantic_symbol.Symbol) = .empty;
+        try symbols.append(arena_allocator, .{
+            .name = local_span,
+            .scope_id = @fromBackingInt(@as(u32, 0)),
+            .kind = .function_decl,
+            .declaration_span = local_span,
+        });
+        try symbols.append(arena_allocator, .{
+            .name = Span.EMPTY,
+            .scope_id = .none,
+            .kind = .variable_var,
+            .declaration_span = Span.EMPTY,
+            .synthetic_kind = .standalone_generated_binding,
+            .synthetic_name = "foo",
+        });
+
+        var root_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+        try root_scope_map.put(arena_allocator, "foo", 0);
+        try root_scope_map.put(arena_allocator, "f\\u006fo", duplicate_target);
+        var scope_maps = [_]std.StringHashMapUnmanaged(usize){root_scope_map};
+        const scopes = [_]SemanticScope{.{ .parent = .none, .kind = .module, .is_strict = true }};
+        const semantic = ModuleSemanticData{
+            .symbols = symbols,
+            .scopes = &scopes,
+            .scope_maps = &scope_maps,
+            .exported_names = .empty,
+            .symbol_ids = &.{},
+            .unresolved_references = .empty,
+        };
+        var module = Module.init(@fromBackingInt(@as(u32, 0)), "entry.ts");
+        module.source = "foo";
+        module.ast = ast_mod.Ast.init(arena_allocator, module.source);
+        module.semantic = semantic;
+        var export_bindings = [_]ExportBinding{.{
+            .exported_name = "default",
+            .local_name = "foo",
+            .local_span = local_span,
+            .kind = .local,
+            .symbol = bundler_symbol.SymbolRef.makeSemantic(module.index, @as(u32, 0)),
+        }};
+        module.export_bindings = &export_bindings;
+
+        var name_to_owners: Linker.NameToOwnersMap = .empty;
+        defer {
+            var owners_it = name_to_owners.valueIterator();
+            while (owners_it.next()) |owners| owners.deinit(std.testing.allocator);
+            name_to_owners.deinit(std.testing.allocator);
+        }
+
+        if (duplicate_target == 0) {
+            try linker.collectModuleNames(module, 0, &name_to_owners);
+            var matching_owners: usize = 0;
+            var exact_owner_found = false;
+            var names_it = name_to_owners.iterator();
+            while (names_it.next()) |entry| {
+                if (!Scanner.identifierNamesEqual(entry.key_ptr.*, "foo")) continue;
+                matching_owners += entry.value_ptr.items.len;
+                for (entry.value_ptr.items) |owner| {
+                    if (owner.symbol_id) |id| {
+                        if (bundler_symbol.SymbolID.eql(
+                            id,
+                            bundler_symbol.SymbolID.make(module.index, @as(u32, 0)),
+                        )) exact_owner_found = true;
+                    }
+                }
+            }
+            try std.testing.expectEqual(@as(usize, 1), matching_owners);
+            try std.testing.expect(exact_owner_found);
+        } else {
+            try std.testing.expectError(
+                error.InvalidTopLevelOwnerSymbolIdentity,
+                linker.collectModuleNames(module, 0, &name_to_owners),
+            );
+        }
+        try std.testing.expect(linker.rename_table.count() == 0);
+    }
+}
+
+test "canonical owner sink rejects missing identity and reserved cross-chunk markers stay nonsemantic" {
+    var cache = @import("resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+
+    const spelling_only_owner: Linker.NameOwner = .{
+        .module_index = 0,
+        .exec_index = 0,
+        .path = "entry.ts",
+    };
+    try std.testing.expectError(
+        error.MissingCanonicalNameOwnerSymbolId,
+        linker.putCanonicalNameForOwner(
+            spelling_only_owner,
+            try std.testing.allocator.dupe(u8, "entry$1"),
+        ),
+    );
+    try std.testing.expect(linker.rename_table.count() == 0);
+
+    var name_to_owners: Linker.NameToOwnersMap = .empty;
+    defer {
+        var owners_it = name_to_owners.valueIterator();
+        while (owners_it.next()) |owners| owners.deinit(std.testing.allocator);
+        name_to_owners.deinit(std.testing.allocator);
+    }
+    try linker.addNameOwner(&name_to_owners, "await", .{
+        .module_index = std.math.maxInt(u32),
+        .exec_index = 0,
+        .path = "",
+    });
+    try linker.calculateRenames(&name_to_owners, true);
+    try std.testing.expect(linker.rename_table.count() == 0);
+}
 
 /// CJS 모듈의 require_xxx 변수명을 캐시에서 가져오거나 새로 생성.
 pub fn getOrCreateRequireVar(
