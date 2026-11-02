@@ -1016,7 +1016,7 @@ pub const Linker = struct {
     /// Resolve the identity already selected by the module-scope map without
     /// repeating its name lookup later during canonical assignment. Reject
     /// ordinary source rows whose map key, symbol spelling, or lexical scope
-    /// disagree. Synthetic output-only rows retain their compatibility path.
+    /// disagree. Synthetic rows use their output spelling when no source span exists.
     fn validateTopLevelOwnerSpelling(
         self: *const Linker,
         m: Module,
@@ -1048,13 +1048,15 @@ pub const Linker = struct {
     ) !TopLevelOwnerIdentity {
         try self.validateTopLevelOwnerSpelling(m, sem, name, symbol_index);
         const symbol = sem.symbols.items[symbol_index];
+        const symbol_id = bundler_symbol.SymbolID.make(m.index, @as(u32, @intCast(symbol_index)));
 
-        // Generated output symbols can have no lexical ScopeId, or can be
+        // Generated output symbols may not have a lexical ScopeId, or may be
         // registered in a wrapper scope while also appearing in scope zero.
-        // Keep those output-domain owners on their established name path.
+        // The scope-map row still selects their exact semantic slot, so retain
+        // its SID instead of resolving the output spelling again later.
         if (symbol.scope_id.isNone()) {
             if (symbol.synthetic_kind == null) return error.InvalidTopLevelOwnerSymbolIdentity;
-            return .{};
+            return .{ .symbol_id = symbol_id };
         }
         const scope_index = symbol.scope_id.toIndex();
         if (scope_index >= sem.scopes.len or scope_index >= sem.scope_maps.len)
@@ -1063,9 +1065,101 @@ pub const Linker = struct {
         if (scope_owner != symbol_index) return error.InvalidTopLevelOwnerSymbolIdentity;
         if (scope_index != 0) {
             if (symbol.synthetic_kind == null) return error.InvalidTopLevelOwnerSymbolIdentity;
-            return .{};
         }
-        return .{ .symbol_id = bundler_symbol.SymbolID.make(m.index, @as(u32, @intCast(symbol_index))) };
+        return .{ .symbol_id = symbol_id };
+    }
+
+    // Private identity capture and canonical sink need direct white-box coverage.
+    test "synthetic top-level owners keep exact SIDs after scope-map redirection" {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
+
+        var cache = @import("resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var linker = Linker.init(std.testing.allocator, &graph, .esm);
+        defer linker.deinit();
+
+        var symbols: std.ArrayList(semantic_symbol.Symbol) = .empty;
+        try symbols.append(arena_allocator, .{
+            .name = Span.EMPTY,
+            .scope_id = .none,
+            .kind = .variable_var,
+            .declaration_span = Span.EMPTY,
+            .synthetic_kind = .standalone_generated_binding,
+            .synthetic_name = "synthetic_none",
+        });
+        try symbols.append(arena_allocator, .{
+            .name = Span.EMPTY,
+            .scope_id = @fromBackingInt(@intCast(1)),
+            .kind = .variable_var,
+            .declaration_span = Span.EMPTY,
+            .synthetic_kind = .standalone_generated_binding,
+            .synthetic_name = "synthetic_wrapper",
+        });
+        try symbols.append(arena_allocator, .{
+            .name = .{ .start = 0, .end = 14 },
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .kind = .variable_const,
+            .declaration_span = .{ .start = 0, .end = 14 },
+        });
+        try symbols.append(arena_allocator, .{
+            .name = .{ .start = 15, .end = 32 },
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .kind = .variable_const,
+            .declaration_span = .{ .start = 15, .end = 32 },
+        });
+
+        var root_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+        try root_scope_map.put(arena_allocator, "synthetic_none", 0);
+        try root_scope_map.put(arena_allocator, "synthetic_wrapper", 1);
+        var wrapper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+        try wrapper_scope_map.put(arena_allocator, "synthetic_wrapper", 1);
+        var scope_maps = [_]std.StringHashMapUnmanaged(usize){ root_scope_map, wrapper_scope_map };
+        const scopes = [_]SemanticScope{
+            .{ .parent = .none, .kind = .module, .is_strict = true },
+            .{ .parent = @fromBackingInt(0), .kind = .function, .is_strict = true },
+        };
+        const semantic = ModuleSemanticData{
+            .symbols = symbols,
+            .scopes = &scopes,
+            .scope_maps = &scope_maps,
+            .exported_names = .empty,
+            .symbol_ids = &.{},
+            .unresolved_references = .empty,
+        };
+        var module = Module.init(@fromBackingInt(@as(u32, 0)), "entry.ts");
+        module.source = "synthetic_none synthetic_wrapper";
+        module.semantic = semantic;
+
+        var name_to_owners: NameToOwnersMap = .empty;
+        defer {
+            var owners_it = name_to_owners.valueIterator();
+            while (owners_it.next()) |owners| owners.deinit(std.testing.allocator);
+            name_to_owners.deinit(std.testing.allocator);
+        }
+        try linker.collectModuleNames(module, 0, &name_to_owners);
+
+        const no_scope_owner = (name_to_owners.get("synthetic_none") orelse return error.MissingNoScopeSyntheticOwner).items[0];
+        const no_scope_id = bundler_symbol.SymbolID.make(module.index, @as(u32, 0));
+        try std.testing.expectEqual(no_scope_id, no_scope_owner.symbol_id orelse return error.MissingNoScopeSyntheticOwnerId);
+        const wrapper_owner = (name_to_owners.get("synthetic_wrapper") orelse return error.MissingWrapperSyntheticOwner).items[0];
+        const wrapper_id = bundler_symbol.SymbolID.make(module.index, @as(u32, 1));
+        try std.testing.expectEqual(wrapper_id, wrapper_owner.symbol_id orelse return error.MissingWrapperSyntheticOwnerId);
+
+        // The canonical write must use the captured owner ID even if the
+        // spelling map now points at a different, same-named source binding.
+        try scope_maps[0].put(arena_allocator, "synthetic_none", 2);
+        try scope_maps[0].put(arena_allocator, "synthetic_wrapper", 3);
+        try linker.putCanonicalNameForOwner(no_scope_owner, "synthetic_none", try std.testing.allocator.dupe(u8, "synthetic_none$1"));
+        try linker.putCanonicalNameForOwner(wrapper_owner, "synthetic_wrapper", try std.testing.allocator.dupe(u8, "synthetic_wrapper$1"));
+
+        try std.testing.expectEqualStrings("synthetic_none$1", linker.rename_table.get(no_scope_id) orelse return error.MissingNoScopeSyntheticOwnerRename);
+        try std.testing.expectEqualStrings("synthetic_wrapper$1", linker.rename_table.get(wrapper_id) orelse return error.MissingWrapperSyntheticOwnerRename);
+        try std.testing.expect(linker.rename_table.get(bundler_symbol.SymbolID.make(module.index, @as(u32, 2))) == null);
+        try std.testing.expect(linker.rename_table.get(bundler_symbol.SymbolID.make(module.index, @as(u32, 3))) == null);
     }
 
     /// Recover a root owner only when the export scanner independently carries

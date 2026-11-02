@@ -39,7 +39,9 @@ Namespace preamble처럼 source AST에 선언이 없는 출력 binding은 `codeg
 
 ## Linker 이름-keyed canonical assignment 경계
 
-변환 후 재분석을 제거했다는 것은 production의 모든 문자열→SID lookup이 사라졌다는 뜻이 아니다. naming pass의 최초 deconflict 시점에는 retained semantic graph가 이미 존재한다. 일반 module-scope 이름은 scope-map iterator에서 수집되지만, 일부 NameOwner는 SID를 직접 전달하지 않아 같은 모듈의 scope-map/synthetic-name lookup으로 canonical assignment 대상 SID를 선택한다. owner는 Linker의 forEachTopLevelOwnerName/collectModuleNames/calculateRenames이다. 이것은 사라진 source identity의 복원이나 AST.symbol_ids 재게시가 아니라 output rename_table의 최초 이름 할당이다. 이 경로를 없애려면 iterator가 이미 가진 actual SID를 NameOwner부터 assignSymbolCanonical까지 직접 전달하고 graphless/등록된 output-domain 역할을 구분해야 한다.
+변환 후 재분석을 제거했다는 것은 production의 모든 문자열→SID lookup이 사라졌다는 뜻이 아니다. naming pass의 최초 deconflict 시점에는 retained semantic graph가 이미 존재한다. `forEachTopLevelOwnerName`가 module-scope row에서 얻은 SID는 source와 synthetic output owner 모두 `NameOwner`를 거쳐 `assignSymbolCanonical`까지 전달한다. scope가 없는 synthetic이나 wrapper scope의 generated symbol도 scope-map row와 spelling을 검증한 뒤 exact SID를 유지한다. 적대 테스트는 owner 수집 뒤 map을 같은 이름의 decoy SID로 바꿔도 canonical write가 원래 owner에만 가는지 확인한다.
+
+남은 name-based canonical fallback은 module-scope row가 없는 일부 local default-export compatibility owner와 실제 semantic SID를 갖지 않는 cross-chunk occupancy marker로 한정된다. 전자는 legacy `findSymbolIdx`가 scope-map 또는 synthetic-name으로 출력 owner를 찾거나, 없으면 no-op한다. 후자는 점유 marker라 semantic symbol을 수정하지 않는다. 이 경계는 사라진 source identity의 복원이나 AST.symbol_ids 재게시가 아니라 output rename_table의 최초 이름 할당 및 충돌 예약이다. fallback을 더 줄이려면 producer가 제공하는 exact identity나 별도 typed output owner를 먼저 연결해야.
 
 resolveNestedShadowForModule은 target rename을 실제 local ExportBinding SID가 있을 때만 수행한다. 일반 ESM re-export는 leaf export로 canonicalize된다. CJS runtime property는 lexical owner가 아니므로 건너뛰고, namespace 같은 nonlocal export alias는 consumer의 exact nested SID를 rename한다. 적대 입력 `export * as math`와 동명 private `const math`, nested parameter를 둔 테스트는 수정 전 private SID 오귀속을 검출하고 수정 후 private SID 보존·consumer SID rename과 Node 원본/번들 출력 `42` 일치를 확인한다.
 
