@@ -8,6 +8,8 @@
 
 Exact scope audit에서 생성 scope의 부모 사슬을 잇는 원본 scope는 owner가 이미 출력 AST에서 사라진 경우에도 잔존 source bridge로 취급한다. owner가 도달 가능하면 생성 owner의 AST 조상이거나, 원본 source span이 생성 owner의 span을 포함해야 한다. 서로 다른 span과 복제된 동일 span의 형제 source block 변이 20개를 모두 거부하고, loop/class lowering이 이동한 owner span으로 입증되는 non-ancestor bridge는 유지한다.
 
+Tree-shaker import liveness와 reverse index는 `ImportBinding.local_symbol`을 사용할 때 현재 `local_symbol_node`의 semantic ID와 다시 대조한다. 다른 same-kind import SID, 외부 모듈 SID, 잘못된 범위, 역할 불일치 또는 없는 anchor는 해당 import를 제거할 근거로 사용하지 않으며 보수적으로 유지한다.
+
 선택적 minify 및 bundler prepass는 AST와 semantic graph를 함께 준비하고 함께 게시한다. 실패한 후보는 원본 AST·graph·export metadata·cache에 부분 결과를 남기지 않는다. 원본 선언을 제거하는 변환은 실제 producer의 선언·참조·scope·외부 root를 포함한 retirement 증명을 남긴다. source symbol의 storage/origin을 일반적인 “삭제됨” 표시로 덮어 검사에서 제외하지 않는다.
 
 `scope_frame_history.zig`의 초기 scope/owner와 생성·이동 기록은 graph와 같은 생명주기를 가진다. Worklet class lowerer, computed class key, enum 및 명시적 statement drop 같은 역할은 각 생성자의 실제 사건으로 증명한다. History의 copy-on-write, 해제, codec 및 새 AST domain 복원에서도 역할과 소유권을 함께 보존해야 한다. 증명은 임의의 동형 AST나 다른 graph에서 재사용할 수 없다.

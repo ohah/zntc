@@ -973,6 +973,18 @@ pub const TreeShaker = struct {
             if (binding.local_symbol.moduleIndex() != module.index) return null;
             const index = binding.local_symbol.semanticIndex() orelse return null;
             if (index >= semantic.symbols.items.len or semantic.symbols.items[index].kind != expected_kind) return null;
+            // The cached SymbolRef is not enough by itself: a stale or poisoned
+            // ImportBinding must not make a different same-kind import appear
+            // unused. Require its current declaration anchor to resolve to the
+            // same exact semantic identity before using it for liveness.
+            const ast = if (module.ast) |*value| value else return null;
+            const anchored = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{
+                .module_index = module.index,
+                .ast = ast,
+                .symbol_ids = semantic.symbol_ids,
+                .symbols = semantic.symbols.items,
+            });
+            if (!binding.local_symbol.eql(anchored)) return null;
             return index;
         }
         if (semantic.scope_maps.len == 0) return null;
@@ -1012,7 +1024,7 @@ pub const TreeShaker = struct {
             // The retained namespace metadata is for linker compatibility;
             // its real tree-shaker edge is the typed exact provider callsite.
             if (self.canSkipCompletedForeignNamespace(mod_idx, ib_idx)) continue;
-            const sym_idx = ib.local_symbol.semanticIndex() orelse continue;
+            const sym_idx = self.importBindingSemanticIndex(mod, &sem, ib) orelse continue;
             if (sym_idx < arr.len) arr[sym_idx] = @intCast(ib_idx);
         }
         self.sym_to_ib[mod_idx] = arr;
