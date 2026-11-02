@@ -6,6 +6,8 @@ const rt = @import("../runtime_helpers.zig");
 const ModuleIndex = types.ModuleIndex;
 const BundlerDiagnostic = types.BundlerDiagnostic;
 const Module = @import("../module.zig").Module;
+const ModuleSemanticData = @import("../module.zig").ModuleSemanticData;
+const Scanner = @import("../../lexer/scanner.zig").Scanner;
 const ImportBinding = @import("../binding_scanner.zig").ImportBinding;
 const ExportBinding = @import("../binding_scanner.zig").ExportBinding;
 const Span = @import("../../lexer/token.zig").Span;
@@ -178,16 +180,96 @@ fn nsForceInline(
 /// `local_symbol`; a valid but foreign SymbolRef fails closed instead of being
 /// redirected through a potentially stale spelling.
 fn importBindingLocalSemanticIndex(
+    self: *const Linker,
     ib: ImportBinding,
+    module: *const Module,
+    semantic: *const ModuleSemanticData,
     module_scope: *const std.StringHashMapUnmanaged(usize),
     module_index: u32,
 ) ?u32 {
     if (ib.local_symbol.isValid()) {
         if (ib.local_symbol.moduleIndex() != ModuleIndex.fromUsize(module_index)) return null;
-        return ib.local_symbol.semanticIndex();
+        const symbol_index = ib.local_symbol.semanticIndex() orelse return null;
+        if (!importBindingHasExpectedKind(ib, semantic, symbol_index)) return null;
+        return symbol_index;
     }
     const scope_index = module_scope.get(ib.local_name) orelse return null;
+    self.validateMetadataScopeMapOwnerIdentity(module.*, semantic, ib.local_name, 0, scope_index) catch return null;
+    if (!importBindingHasExpectedKind(ib, semantic, scope_index)) return null;
     return @intCast(scope_index);
+}
+
+fn importBindingHasExpectedKind(ib: ImportBinding, semantic: *const ModuleSemanticData, symbol_index: usize) bool {
+    if (symbol_index >= semantic.symbols.items.len) return false;
+    const expected_kind: semantic_symbol.SymbolKind = switch (ib.local_role) {
+        .import_binding => .import_binding,
+        .materialized_var => .variable_var,
+        .materialized_const => .variable_const,
+    };
+    return semantic.symbols.items[symbol_index].kind == expected_kind;
+}
+
+const ambiguous_import_binding_index = std.math.maxInt(usize);
+
+fn buildMetadataImportBindingNameIndex(
+    allocator: std.mem.Allocator,
+    bindings: []const ImportBinding,
+) !std.StringHashMapUnmanaged(usize) {
+    var result: std.StringHashMapUnmanaged(usize) = .empty;
+    errdefer result.deinit(allocator);
+    for (bindings, 0..) |binding, index| {
+        const entry = try result.getOrPut(allocator, binding.local_name);
+        if (entry.found_existing) {
+            entry.value_ptr.* = ambiguous_import_binding_index;
+        } else {
+            entry.value_ptr.* = index;
+        }
+    }
+    return result;
+}
+
+/// Resolve a root-map row for metadata renames. A row that independently proves
+/// the exact root owner remains authoritative for source-local renames, even
+/// when a generated import has the same spelling. If the row is malformed,
+/// only an exact captured import SymbolRef may replace it.
+fn metadataRootScopeMapOwner(
+    self: *const Linker,
+    module: *const Module,
+    semantic: *const ModuleSemanticData,
+    import_binding_name_index: *const std.StringHashMapUnmanaged(usize),
+    name: []const u8,
+    mapped_index: usize,
+) !?usize {
+    const binding_index = import_binding_name_index.get(name) orelse blk: {
+        for (module.import_bindings, 0..) |binding, index| {
+            if (Scanner.identifierNamesEqual(binding.local_name, name)) break :blk index;
+        }
+        break :blk null;
+    };
+    if (binding_index) |index| {
+        if (index == ambiguous_import_binding_index or index >= module.import_bindings.len) return null;
+        const binding = module.import_bindings[index];
+        const mapped_row_is_owner = blk: {
+            self.validateMetadataScopeMapOwnerIdentity(module.*, semantic, name, 0, mapped_index) catch break :blk false;
+            break :blk true;
+        };
+        if (mapped_row_is_owner) {
+            // Anchorless import compatibility remains role-checked. With a
+            // captured identity, a valid root owner can instead be a distinct
+            // source local that shares a generated import's spelling.
+            if (binding.local_symbol.isValid() or importBindingHasExpectedKind(binding, semantic, mapped_index)) return mapped_index;
+            return null;
+        }
+        if (binding.local_symbol.isValid()) {
+            if (binding.local_symbol.moduleIndex() != module.index) return null;
+            const symbol_index = binding.local_symbol.semanticIndex() orelse return null;
+            if (!importBindingHasExpectedKind(binding, semantic, symbol_index)) return null;
+            return symbol_index;
+        }
+        return null;
+    }
+    try self.validateMetadataScopeMapOwnerIdentity(module.*, semantic, name, 0, mapped_index);
+    return mapped_index;
 }
 
 /// (#3975) namespace import target 이 *순수* CJS star re-export — ESM 모듈이 단일
@@ -627,6 +709,8 @@ pub fn buildMetadataForAstWithHolderReservations(
         .symbol_ids = &.{},
         .allocator = self.allocator,
     };
+    var import_binding_name_index = try buildMetadataImportBindingNameIndex(self.allocator, m.import_bindings);
+    defer import_binding_name_index.deinit(self.allocator);
 
     // CJS import preamble writer (#1621: minify 시 __toESM → $tE 등 축약)
     var preamble = PreambleWriter.init(self.allocator);
@@ -1328,7 +1412,7 @@ pub fn buildMetadataForAstWithHolderReservations(
                                     if (rec_idx < cmod_ptr.import_records.len) {
                                         const src = cmod_ptr.import_records[rec_idx].resolved;
                                         if (!src.isNone()) {
-                                            const import_sym_id = importBindingLocalSemanticIndex(ib, &module_scope, module_index) orelse break :blk ib.imported_name;
+                                            const import_sym_id = importBindingLocalSemanticIndex(self, ib, &m, &sem, &module_scope, module_index) orelse break :blk ib.imported_name;
                                             const inline_name = try self.registerNamespaceRewrites(
                                                 &ns_rewrite_list,
                                                 &ns_inline_list,
@@ -1358,7 +1442,7 @@ pub fn buildMetadataForAstWithHolderReservations(
                         for (cmod2_ptr.import_bindings) |cib| {
                             if (cib.kind == .namespace and std.mem.eql(u8, cib.local_name, export_local)) {
                                 // namespace import → 인라인 객체로 처리
-                                const imp_sym = importBindingLocalSemanticIndex(ib, &module_scope, module_index) orelse break;
+                                const imp_sym = importBindingLocalSemanticIndex(self, ib, &m, &sem, &module_scope, module_index) orelse break;
                                 const ns_target_mod = if (cib.import_record_index < cmod2_ptr.import_records.len)
                                     @backingInt(cmod2_ptr.import_records[cib.import_record_index].resolved)
                                 else
@@ -1452,7 +1536,7 @@ pub fn buildMetadataForAstWithHolderReservations(
                 .namespace_member_expression => effective_target.len > 0 and std.unicode.utf8ValidateSlice(effective_target),
             };
             if (valid_target) {
-                if (importBindingLocalSemanticIndex(ib, &module_scope, module_index)) |sym_idx| {
+                if (importBindingLocalSemanticIndex(self, ib, &m, &sem, &module_scope, module_index)) |sym_idx| {
                     // #3664 P2: synthetic_named_exports → canonical(default/target) export 의 member
                     // access 로 rename(`{target_name}.{member}`). 정적으로 export 안 된 named import 를
                     // default export 객체의 member 참조로 치환. owned(allocPrint)라 lazy 와 같은
@@ -1607,7 +1691,8 @@ pub fn buildMetadataForAstWithHolderReservations(
         var sit = module_scope.iterator();
         while (sit.next()) |scope_entry| {
             const sym_name = scope_entry.key_ptr.*;
-            const sym_idx: u32 = @intCast(scope_entry.value_ptr.*);
+            const owner_index = (try metadataRootScopeMapOwner(self, &m, &sem, &import_binding_name_index, sym_name, scope_entry.value_ptr.*)) orelse continue;
+            const sym_idx: u32 = @intCast(owner_index);
             const symbol_id = bundler_symbol.SymbolID.make(m.index, sym_idx);
             if (self.rename_table.get(symbol_id)) |renamed| {
                 if (!export_getter_overrides.contains(sym_name) and !renames.contains(sym_idx)) {
@@ -1625,6 +1710,7 @@ pub fn buildMetadataForAstWithHolderReservations(
             while (s < sem.scope_maps.len) : (s += 1) {
                 var nit = sem.scope_maps[s].iterator();
                 while (nit.next()) |e| {
+                    try self.validateMetadataScopeMapOwnerIdentity(m, &sem, e.key_ptr.*, s, e.value_ptr.*);
                     const sym_idx: u32 = @intCast(e.value_ptr.*);
                     if (renames.contains(sym_idx)) continue;
                     if (self.nestedRenameFor(module_index, sym_idx)) |renamed| {
@@ -2625,7 +2711,9 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
 
     const node_count = ast.nodes.items.len;
     var skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count);
+    errdefer skip_nodes.deinit();
     var renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    errdefer renames.deinit(self.allocator);
 
     // 1. import_declaration → 전체 스킵
     for (ast.nodes.items, 0..) |node, node_idx| {
@@ -2682,6 +2770,8 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
         .symbol_ids = &.{},
         .allocator = self.allocator,
     };
+    var import_binding_name_index = try buildMetadataImportBindingNameIndex(self.allocator, m.import_bindings);
+    defer import_binding_name_index.deinit(self.allocator);
 
     // 3. import 바인딩: import된 심볼을 canonical 이름으로 치환
     // import binding의 심볼 인덱스를 모듈 스코프에서 이름으로 조회
@@ -2706,7 +2796,8 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
         const module_scope = sem.scope_maps[0];
         var sit = module_scope.iterator();
         while (sit.next()) |scope_entry| {
-            const sym_idx = scope_entry.value_ptr.*;
+            const owner_index = (try metadataRootScopeMapOwner(self, &m, &sem, &import_binding_name_index, scope_entry.key_ptr.*, scope_entry.value_ptr.*)) orelse continue;
+            const sym_idx = owner_index;
             const symbol_id = bundler_symbol.SymbolID.make(m.index, sym_idx);
             if (self.rename_table.get(symbol_id)) |renamed| {
                 try renames.put(self.allocator, @intCast(sym_idx), renamed);

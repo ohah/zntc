@@ -1228,6 +1228,23 @@ pub const Linker = struct {
         };
     }
 
+    /// Validate a scope-map row before metadata treats its value as a rename
+    /// SymbolId. Root rows share the narrow CJS wrapper-owner exception used by
+    /// the mangler; nested rows must belong to the exact map scope.
+    pub fn validateMetadataScopeMapOwnerIdentity(
+        self: *const Linker,
+        m: Module,
+        sem: *const ModuleSemanticData,
+        name: []const u8,
+        scope_index: usize,
+        symbol_index: usize,
+    ) !void {
+        if (scope_index == 0) {
+            return self.validateManglerRootMapOwner(m, sem, name, symbol_index);
+        }
+        return self.validateScopeMapOwnerIdentity(m, sem, name, scope_index, symbol_index);
+    }
+
     // Private identity capture and canonical sink need direct white-box coverage.
     test "synthetic top-level owners keep exact SIDs after scope-map redirection" {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
