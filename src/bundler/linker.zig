@@ -4229,7 +4229,7 @@ pub const Linker = struct {
             // so equal local/canonical spellings need no repair for them. Generated helper
             // references bypass lexical resolution by SymbolId and can be captured in output.
             if (!ib.is_helper and std.mem.eql(u8, ib.local_name, ref_name)) continue;
-            if (!self.hasNestedBinding(mod_i, ref_name) and !helperFactoryScopeZeroShadow(m, ib, ref_name)) continue;
+            if (!self.hasNestedBinding(mod_i, ref_name) and !self.helperFactoryScopeZeroShadow(m, ib, ref_name)) continue;
 
             // (#4566 C) same-chunk 라도 target 이 **cross-chunk-export** 되면, dev-split 의 lazy override
             // (computeRenamesForModules 2.5)가 target canonical 을 전역 공개명으로 되돌려 target-rename 이
@@ -4285,16 +4285,31 @@ pub const Linker = struct {
     /// bindings can capture a helper provider's canonical global spelling,
     /// although they are deliberately outside hasNestedBinding's scope 1+ set.
     /// A removed helper import itself is not a physical factory-local shadow.
-    fn helperFactoryScopeZeroShadow(m: *const Module, binding: ImportBinding, name: []const u8) bool {
+    fn helperFactoryScopeZeroShadow(self: *const Linker, m: *const Module, binding: ImportBinding, name: []const u8) bool {
         if (!binding.is_helper or m.wrap_kind != .cjs) return false;
-        const sem = m.semantic orelse return false;
-        if (sem.scope_maps.len == 0) return false;
-        const id = sem.scope_maps[0].get(name) orelse return false;
-        if (id >= sem.symbols.items.len) return false;
+        const sem = if (m.semantic) |*value| value else return false;
+        const selected = if (sem.scope_maps.len > 0) sem.scope_maps[0].get(name) else null;
+        const id = selected orelse {
+            const local = if (binding.local_symbol.moduleIndex() == m.index)
+                binding.local_symbol.semanticIndex()
+            else
+                null;
+            for (sem.symbols.items, 0..) |symbol, raw| {
+                if (symbol.scope_id.isNone() or symbol.scope_id.toIndex() != 0) continue;
+                if (local) |local_id| if (@as(usize, local_id) == raw and symbol.kind == .import_binding) continue;
+                self.validateTopLevelOwnerSpelling(m.*, sem, name, raw) catch continue;
+                return true;
+            }
+            return false;
+        };
+        if (id >= sem.symbols.items.len) return true;
+        // This is a classification gate, not a rename sink. If a present row
+        // cannot prove the exact factory-local owner, treat it as a possible
+        // shadow so the helper receives a collision-free provider alias.
+        self.validateScopeMapOwnerIdentity(m.*, sem, name, 0, id) catch return true;
         if (binding.local_symbol.moduleIndex() == m.index and sem.symbols.items[id].kind == .import_binding)
             if (binding.local_symbol.semanticIndex()) |local| if (id == local) return false;
-        return !sem.symbols.items[id].scope_id.isNone() and
-            sem.symbols.items[id].scope_id.toIndex() == 0;
+        return true;
     }
 
     /// unified_mangler.mangleAll() 을 호출하기 위한 입력 수집. `(module_index,
@@ -5262,7 +5277,7 @@ pub const Linker = struct {
             const resolved = self.getResolvedBinding(consumer_module_index, binding.local_span) orelse continue;
             if (resolved.canonical.module_index != helper_module.index or
                 !std.mem.eql(u8, resolved.canonical.export_name, export_name)) continue;
-            if (helperFactoryScopeZeroShadow(consumer, binding, binding_name)) return true;
+            if (self.helperFactoryScopeZeroShadow(consumer, binding, binding_name)) return true;
         }
         return false;
     }

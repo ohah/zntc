@@ -49,6 +49,8 @@ Compiler-generated callsite read shadow는 foreign target의 exact identity를 �
 
 Namespace access 재분석도 import SID를 소비하므로 `SymbolRef`와 scanner AST anchor가 함께 있으면 서로 일치해야 한다. `SymbolRef`가 없으면 retained anchor에서 SID를 얻고, anchor까지 없는 저수준 caller만 root scope-map fallback을 사용한다. 그 fallback도 spelling·scope·binding kind를 검증하며 실패하면 namespace 사용 집합을 전체 보존 경로로 돌린다. 적대 fixture는 invalid ref와 poisoned `ns → decoy0` 행에서 `wrong0`가 사용 집합에 섞이는 baseline 오류를 검출하고, 수정 후에는 anchor 복구와 anchorless fallback의 정상/poisoned 경우를 모두 확인한다.
 
+CJS runtime-helper factory-root shadow 판정도 scope-map SID를 사용해 preserved import에 local alias가 필요한지 결정한다. 행이 있으면 scope·spelling을 검증하고, 행이 없거나 root map이 비면 실제 root symbol spelling을 확인한다. 손상된 행은 “충돌 없음”으로 오판하지 않고 가능한 shadow로 처리해 emitter가 사용 가능한 alias를 고르게 한다. 적대 fixture는 실제 root helper-name binding의 map row를 nested decoy SID로 바꾸거나 row를 제거했을 때 baseline에서 shadow가 누락되는 경우를 재현한다.
+
 resolveNestedShadowForModule은 target rename을 실제 local ExportBinding SID가 있을 때만 수행한다. 일반 ESM re-export는 leaf export로 canonicalize된다. CJS runtime property는 lexical owner가 아니므로 건너뛰고, namespace 같은 nonlocal export alias는 consumer의 exact nested SID를 rename한다. 적대 입력 `export * as math`와 동명 private `const math`, nested parameter를 둔 테스트는 수정 전 private SID 오귀속을 검출하고 수정 후 private SID 보존·consumer SID rename과 Node 원본/번들 출력 `42` 일치를 확인한다.
 
 lazy-only computeRenamesForModules의 nonlocal fallback은 제거했다. Scanner가 등록한 local ExportBinding만 exact SymbolId에 할당하고, re-export alias는 그 모듈의 lexical binding이 아니므로 건너뛴다. cross-chunk namespace output은 typed output owner가 이름을 받는다. 적대 입력 export * as math와 같은 파일의 const math, 그리고 math unresolved global로 alias를 math$1로 바꾸는 실제 ChunkGraph 테스트는 수정 전 private math SID가 잘못 rename되는 것을 재현하고 수정 후 rename이 없음을 확인한다. 이 수정도 전체 변환 재분석 제거 또는 남은 linker lookup의 전면 제거를 뜻하지 않는다.
