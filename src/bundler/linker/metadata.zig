@@ -176,9 +176,9 @@ fn nsForceInline(
 }
 
 /// Resolve the current module's import binding by its captured semantic identity.
-/// The scope-map lookup remains only for low-level callers that have not populated
-/// `local_symbol`; a valid but foreign SymbolRef fails closed instead of being
-/// redirected through a potentially stale spelling.
+/// If the linker-derived SID is absent, a retained scanner anchor can still prove
+/// it without publishing a repaired field. Source-backed modules with no exact
+/// anchor fail closed; only graphless low-level callers may use the legacy map.
 fn importBindingLocalSemanticIndex(
     self: *const Linker,
     ib: ImportBinding,
@@ -193,6 +193,14 @@ fn importBindingLocalSemanticIndex(
         if (!importBindingHasExpectedKind(ib, semantic, symbol_index)) return null;
         return symbol_index;
     }
+    if (ib.local_symbol_node != null) {
+        const anchored = module.checkedSourceImportLocalSymbol(ib) catch return null;
+        if (!anchored.isValid() or anchored.moduleIndex() != ModuleIndex.fromUsize(module_index)) return null;
+        const symbol_index = anchored.semanticIndex() orelse return null;
+        if (!importBindingHasExpectedKind(ib, semantic, symbol_index)) return null;
+        return symbol_index;
+    }
+    if (module.ast != null) return null;
     const scope_index = module_scope.get(ib.local_name) orelse return null;
     self.validateMetadataScopeMapOwnerIdentity(module.*, semantic, ib.local_name, 0, scope_index) catch return null;
     if (!importBindingHasExpectedKind(ib, semantic, scope_index)) return null;
