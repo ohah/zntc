@@ -22948,7 +22948,7 @@ fn bufferPreparedOutputHasNormalForm(a: std.mem.Allocator, module: *const Module
     var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     var globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
-    try collectParserUnresolvedNodes(a, ast, parser_count, sem.symbol_ids, &sem.unresolved_references, &unresolved);
+    try collectParserUnresolvedNodes(a, ast, parser_count, sem.symbol_ids, &sem.unresolved_references, &sem.node_scope_provenance, &unresolved);
     const helpers = if (module.transform_cache) |cache| cache.helper_ref_nodes else &.{};
     if (module.transform_cache) |cache| for (cache.explicit_global_ref_nodes) |raw| {
         try globals.put(a, raw, {});
