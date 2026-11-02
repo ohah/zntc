@@ -3035,12 +3035,18 @@ test "rename: no conflict — no rename" {
 
     // x는 b.ts에만 있으므로 충돌 없음 → canonical_names 비어 있음
     try std.testing.expectEqual(@as(u32, 0), r.linker.canonical_strings.items.len);
+    const b_index = findModuleIdx(r.graph, "b.ts") orelse return error.MissingRenameOwnerModule;
+    const b = r.graph.getModule(b_index) orelse return error.MissingRenameOwnerModule;
+    const b_semantic = b.semantic orelse return error.MissingRenameOwnerSemantic;
+    const x_symbol = b_semantic.scope_maps[0].get("x") orelse return error.MissingRenameOwnerSymbol;
+    const x_id = bundler_symbol.SymbolID.make(b_index, @as(u32, @intCast(x_symbol)));
+    try std.testing.expect(r.linker.rename_table.get(x_id) == null);
 }
 
 test "rename: two modules same name — second gets $1" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "a.ts", "import './b';\nexport const count = 0;");
+    try writeFile(tmp.dir, "a.ts", "import './b';\nexport const \\u0063ount = 0;");
     try writeFile(tmp.dir, "b.ts", "export const count = 1;");
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
@@ -3048,16 +3054,115 @@ test "rename: two modules same name — second gets $1" {
     defer r.destroyGraph();
     defer r.cache.deinit();
 
-    // b.ts(exec_index 낮음)가 원본 유지, a.ts가 count$1
-    // 또는 a.ts가 원본이고 b.ts가 $1 (exec_index에 따라)
+    // Exactly one of the two source SymbolIds owns the renamed spelling; the
+    // raw escaped declaration spelling in a.ts still matches the scope key.
     try std.testing.expect(r.linker.canonical_strings.items.len > 0);
 
-    // 하나는 리네임됨
-    var has_rename = false;
-    for (r.linker.canonical_strings.items) |val| {
-        if (std.mem.startsWith(u8, val, "count$")) has_rename = true;
+    var renamed_ids: usize = 0;
+    var unchanged_ids: usize = 0;
+    for ([_][]const u8{ "a.ts", "b.ts" }) |basename| {
+        const module_index = findModuleIdx(r.graph, basename) orelse return error.MissingRenameOwnerModule;
+        const module = r.graph.getModule(module_index) orelse return error.MissingRenameOwnerModule;
+        const semantic = module.semantic orelse return error.MissingRenameOwnerSemantic;
+        const symbol_index = semantic.scope_maps[0].get("count") orelse return error.MissingRenameOwnerSymbol;
+        const id = bundler_symbol.SymbolID.make(module_index, @as(u32, @intCast(symbol_index)));
+        if (r.linker.rename_table.get(id)) |renamed| {
+            try std.testing.expectEqualStrings("count$1", renamed);
+            renamed_ids += 1;
+        } else {
+            unchanged_ids += 1;
+        }
     }
-    try std.testing.expect(has_rename);
+    try std.testing.expectEqual(@as(usize, 1), renamed_ids);
+    try std.testing.expectEqual(@as(usize, 1), unchanged_ids);
+}
+
+test "linker top-level owners reject poisoned scope maps before canonical publication" {
+    const Mutation = enum { different_name, same_named_nested, out_of_range };
+    for ([_]Mutation{ .different_name, .same_named_nested, .out_of_range }) |mutation| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.ts",
+            \\import './dep';
+            \\const collision = 0;
+            \\const decoy = 1;
+            \\function nested() { const collision = 2; return collision; }
+        );
+        try writeFile(tmp.dir, "dep.ts", "export const collision = 3;");
+
+        var r = try buildAndLink(std.testing.allocator, &tmp, "entry.ts");
+        defer r.linker.deinit();
+        defer r.destroyGraph();
+        defer r.cache.deinit();
+
+        const entry_index = findModuleIdx(r.graph, "entry.ts") orelse return error.MissingRenameOwnerModule;
+        const entry = r.graph.moduleAtMut(entry_index) orelse return error.MissingRenameOwnerModule;
+        const semantic = entry.semantic orelse return error.MissingRenameOwnerSemantic;
+        const mutable_root = @constCast(&semantic.scope_maps[0]);
+        const collision_owner = mutable_root.getPtr("collision") orelse return error.MissingRenameOwnerSymbol;
+        switch (mutation) {
+            .different_name => collision_owner.* = mutable_root.get("decoy") orelse return error.MissingRenameOwnerDecoy,
+            .same_named_nested => {
+                var nested_collision: ?usize = null;
+                for (semantic.scope_maps[1..]) |scope_map| {
+                    if (scope_map.get("collision")) |symbol_index| nested_collision = symbol_index;
+                }
+                collision_owner.* = nested_collision orelse return error.MissingNestedRenameOwner;
+            },
+            .out_of_range => collision_owner.* = semantic.symbols.items.len,
+        }
+
+        try std.testing.expectError(error.InvalidTopLevelOwnerSymbolIdentity, r.linker.computeRenames());
+        const decoy = semantic.scope_maps[0].get("decoy") orelse return error.MissingRenameOwnerDecoy;
+        try std.testing.expect(r.linker.rename_table.get(bundler_symbol.SymbolID.make(entry_index, @as(u32, @intCast(decoy)))) == null);
+    }
+}
+
+test "linker exact export owners survive nested and out-of-range scope-map corruption" {
+    const Mutation = enum { same_named_nested, out_of_range };
+    for ([_]Mutation{ .same_named_nested, .out_of_range }) |mutation| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.ts", "import { publicValue } from './provider'; const collision = 0; console.log(collision, publicValue);");
+        try writeFile(tmp.dir, "provider.ts", "const collision = 1; export { collision as publicValue }; function nested() { const collision = 2; return collision; }");
+
+        var r = try buildAndLink(std.testing.allocator, &tmp, "entry.ts");
+        defer r.linker.deinit();
+        defer r.destroyGraph();
+        defer r.cache.deinit();
+
+        const provider_index = findModuleIdx(r.graph, "provider.ts") orelse return error.MissingRenameOwnerModule;
+        const provider = r.graph.moduleAtMut(provider_index) orelse return error.MissingRenameOwnerModule;
+        const semantic = provider.semantic orelse return error.MissingRenameOwnerSemantic;
+        const export_symbol = provider.findLocalExportSemanticIndex("publicValue") orelse return error.MissingCanonicalExportSymbol;
+        try std.testing.expectEqual(provider_index, provider.export_bindings[0].symbol.moduleIndex());
+        try std.testing.expectEqual(export_symbol, provider.export_bindings[0].symbol.semanticIndex().?);
+        const before = try r.linker.moduleFingerprint(provider.*);
+        const mutable_root = @constCast(&semantic.scope_maps[0]);
+        const collision_owner = mutable_root.getPtr("collision") orelse return error.MissingRenameOwnerSymbol;
+        var nested_symbol: ?usize = null;
+        switch (mutation) {
+            .same_named_nested => {
+                for (semantic.scope_maps[1..]) |scope_map| {
+                    if (scope_map.get("collision")) |symbol_index| {
+                        const symbol = semantic.symbols.items[symbol_index];
+                        if (!symbol.scope_id.isNone() and symbol.scope_id.toIndex() != 0)
+                            nested_symbol = symbol_index;
+                    }
+                }
+                collision_owner.* = nested_symbol orelse return error.MissingNestedRenameOwner;
+            },
+            .out_of_range => collision_owner.* = semantic.symbols.items.len,
+        }
+
+        const after = try r.linker.moduleFingerprint(provider.*);
+        try std.testing.expect(std.meta.eql(before, after));
+        try r.linker.computeRenames();
+        if (nested_symbol) |symbol_index| {
+            const nested_id = bundler_symbol.SymbolID.make(provider_index, @as(u32, @intCast(symbol_index)));
+            try std.testing.expect(r.linker.rename_table.get(nested_id) == null);
+        }
+    }
 }
 
 test "rename: three modules same name — $1 and $2" {
@@ -3271,6 +3376,19 @@ test "single-owner reserved name: candidate skips nested binding" {
     try std.testing.expect(renamed != null);
     // nested scope에 console$1이 있으므로 console$2가 되어야 함
     try std.testing.expectEqualStrings("console$2", renamed.?);
+    const entry_index = findModuleIdx(r.graph, "a.ts") orelse return error.MissingRenameOwnerModule;
+    const entry = r.graph.getModule(entry_index) orelse return error.MissingRenameOwnerModule;
+    const semantic = entry.semantic orelse return error.MissingRenameOwnerSemantic;
+    const console_symbol = semantic.scope_maps[0].get("console") orelse return error.MissingRenameOwnerSymbol;
+    const console_id = bundler_symbol.SymbolID.make(entry_index, @as(u32, @intCast(console_symbol)));
+    try std.testing.expectEqualStrings("console$2", r.linker.rename_table.get(console_id) orelse return error.MissingExactRenameOwner);
+    const nested_console = blk: {
+        for (semantic.scope_maps[1..]) |scope_map| {
+            if (scope_map.get("console$1")) |symbol_index| break :blk symbol_index;
+        }
+        return error.MissingNestedRenameOwner;
+    };
+    try std.testing.expect(r.linker.rename_table.get(bundler_symbol.SymbolID.make(entry_index, @as(u32, @intCast(nested_console)))) == null);
 }
 
 test "isReservedName: special identifiers" {

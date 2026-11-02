@@ -732,6 +732,13 @@ pub const Linker = struct {
         try self.resolveImports();
     }
 
+    /// Top-level owner enumeration keeps exact lexical identity separate from
+    /// the older preferred-spelling rule used by generated output owners.
+    const TopLevelOwnerIdentity = struct {
+        symbol_id: ?bundler_symbol.SymbolID = null,
+        preserve_preferred_spelling: bool = false,
+    };
+
     /// 이름 충돌 감지 + 리네임에 사용하는 소유자 정보.
     const NameOwner = struct {
         module_index: u32,
@@ -739,10 +746,12 @@ pub const Linker = struct {
         /// calculateRenames sort tie-break. exec_index 동률 시 path 사전순 (cross-chunk
         /// marker 는 ""), worker race 비결정성 방지.
         path: []const u8,
-        /// Generated output bindings such as runtime factories and default
-        /// export facades carry their exact identity even without a scope-map
-        /// entry for their output spelling.
+        /// Exact semantic/output identity for this spelling.
         symbol_id: ?bundler_symbol.SymbolID = null,
+        /// Existing output owners and ES5-hoisted block owners keep their
+        /// preferred spelling ahead of ordinary module-scope declarations.
+        /// Exact identity by itself does not imply that priority.
+        preserve_preferred_spelling: bool = false,
     };
 
     /// name_to_owners HashMap의 타입 별칭.
@@ -870,7 +879,7 @@ pub const Linker = struct {
         m: Module,
         comptime Ctx: type,
         ctx: Ctx,
-        comptime cb: fn (Ctx, []const u8, ?bundler_symbol.SymbolID) anyerror!void,
+        comptime cb: fn (Ctx, []const u8, TopLevelOwnerIdentity) anyerror!void,
     ) !void {
         const sem = m.semantic orelse return;
         if (sem.scope_maps.len == 0) return;
@@ -899,32 +908,43 @@ pub const Linker = struct {
         var scope_it = module_scope.iterator();
         while (scope_it.next()) |scope_entry| {
             const sym_name = scope_entry.key_ptr.*;
+            const map_sym_idx = scope_entry.value_ptr.*;
+            var sym_idx = map_sym_idx;
+            if (sym_idx >= sem.symbols.items.len) {
+                const exact_export = try self.exactLocalExportOwnerForName(m, &sem, sym_name) orelse
+                    return error.InvalidTopLevelOwnerSymbolIdentity;
+                sym_idx = @intCast(@backingInt(exact_export.inner));
+            } else self.validateTopLevelOwnerSpelling(m, &sem, sym_name, sym_idx) catch {
+                const exact_export = try self.exactLocalExportOwnerForName(m, &sem, sym_name) orelse
+                    return error.InvalidTopLevelOwnerSymbolIdentity;
+                sym_idx = @intCast(@backingInt(exact_export.inner));
+            };
+            const symbol = sem.symbols.items[sym_idx];
+            // Validate every map row's target and spelling before filtering so
+            // malformed entries cannot hide behind a skipped spelling. Exact
+            // local-export identities are the only permitted repair witness.
             if (std.mem.eql(u8, sym_name, "default")) continue;
 
             // `_default` 합성 심볼은 scope_maps에도 등록되지만 owner 등록은 export_bindings
             // 경로(아래)에서 전담한다. 여기서도 등록하면 같은 모듈의 같은 이름이
             // 이중 owner가 되어 collectModuleNames 충돌 처리가 `_default$1` 접미사를
             // 생성한다 (#1598).
-            const sym_idx_for_kind = scope_entry.value_ptr.*;
-            if (sym_idx_for_kind < sem.symbols.items.len) {
-                const sk = sem.symbols.items[sym_idx_for_kind].synthetic_kind;
-                if (sk == .default_export) continue;
-                if (m.wrap_kind == .cjs) {
-                    // CJS 래퍼 내부의 사용자 로컬은 `__commonJS(function (...) { ... })`
-                    // 안에 남으므로 번들 최상위 이름을 점유하지 않는다. 번들러가 직접
-                    // 래퍼 밖에 emit하는 합성 심볼만 충돌 후보로 본다.
-                    switch (sk orelse continue) {
-                        .cjs_exports, .cjs_require, .esm_init => {},
-                        else => continue,
-                    }
+            const synthetic_kind = symbol.synthetic_kind;
+            if (synthetic_kind == .default_export) continue;
+            if (m.wrap_kind == .cjs) {
+                // CJS 래퍼 내부의 사용자 로컬은 `__commonJS(function (...) { ... })`
+                // 안에 남으므로 번들 최상위 이름을 점유하지 않는다. 번들러가 직접
+                // 래퍼 밖에 emit하는 합성 심볼만 충돌 후보로 본다.
+                switch (synthetic_kind orelse continue) {
+                    .cjs_exports, .cjs_require, .esm_init => {},
+                    else => continue,
                 }
             }
 
             // import binding은 일반적으로 인라인되어 변수가 생성되지 않으므로 충돌 대상 아님.
             // 단, CJS 모듈을 import하면 preamble에서 `var X = require_xxx().X`로 변수가 생성되므로
             // 충돌 대상에 포함해야 한다.
-            const sym_idx = scope_entry.value_ptr.*;
-            if (sym_idx < sem.symbols.items.len and sem.symbols.items[sym_idx].decl_flags.is_import) {
+            if (symbol.decl_flags.is_import) {
                 // import binding이 top-level 변수를 생성하는 경우에만 충돌 대상에 포함:
                 // - CJS preamble: var X = require_xxx().X
                 // - __esm 호이스팅: var X; (래퍼 밖으로 호이스팅)
@@ -947,7 +967,16 @@ pub const Linker = struct {
                 if (!generates_top_level_var) continue;
             }
 
-            try cb(ctx, sym_name, null);
+            const identity: TopLevelOwnerIdentity = self.topLevelOwnerIdentity(m, &sem, sym_name, map_sym_idx) catch blk: {
+                // An exact local-export SymbolId is an independent producer
+                // witness. If the scope map was redirected to another name
+                // or scope, discard that row and keep the exported source
+                // binding as the owner for its actual spelling.
+                const exact_export = try self.exactLocalExportOwnerForName(m, &sem, sym_name) orelse
+                    return error.InvalidTopLevelOwnerSymbolIdentity;
+                break :blk .{ .symbol_id = exact_export };
+            };
+            try cb(ctx, sym_name, identity);
         }
 
         // codegen이 현재 모듈에 `_default` 합성 변수를 만드는 모든 export를 수집.
@@ -971,17 +1000,104 @@ pub const Linker = struct {
                     return error.MissingDefaultExportFacadeOwnerScope;
                 if (facade.scope_id.toIndex() != 0)
                     return error.InvalidDefaultExportFacadeOwnerScope;
-                try cb(ctx, "_default", symbol_id);
+                try cb(ctx, "_default", .{ .symbol_id = symbol_id, .preserve_preferred_spelling = true });
                 continue;
             }
             if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
                 // export default function foo → foo 이름으로 등록
                 const local = m.exportBindingLocalName(eb);
                 if (module_scope.get(local) == null) {
-                    try cb(ctx, local, null);
+                    try cb(ctx, local, .{});
                 }
             }
         }
+    }
+
+    /// Resolve the identity already selected by the module-scope map without
+    /// repeating its name lookup later during canonical assignment. Reject
+    /// ordinary source rows whose map key, symbol spelling, or lexical scope
+    /// disagree. Synthetic output-only rows retain their compatibility path.
+    fn validateTopLevelOwnerSpelling(
+        self: *const Linker,
+        m: Module,
+        sem: *const ModuleSemanticData,
+        name: []const u8,
+        symbol_index: usize,
+    ) !void {
+        _ = self;
+        if (symbol_index >= sem.symbols.items.len) return error.InvalidTopLevelOwnerSymbolIdentity;
+        const symbol = sem.symbols.items[symbol_index];
+        const actual_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else blk: {
+            const span = symbol.name;
+            if ((span.start & ast_mod.Ast.STRING_TABLE_BIT) != 0 or span.end < span.start)
+                return error.InvalidTopLevelOwnerSymbolIdentity;
+            const start: usize = @intCast(span.start);
+            const end: usize = @intCast(span.end);
+            if (end > m.source.len) return error.InvalidTopLevelOwnerSymbolIdentity;
+            break :blk m.source[start..end];
+        };
+        if (!Scanner.identifierNamesEqual(actual_name, name)) return error.InvalidTopLevelOwnerSymbolIdentity;
+    }
+
+    fn topLevelOwnerIdentity(
+        self: *const Linker,
+        m: Module,
+        sem: *const ModuleSemanticData,
+        name: []const u8,
+        symbol_index: usize,
+    ) !TopLevelOwnerIdentity {
+        try self.validateTopLevelOwnerSpelling(m, sem, name, symbol_index);
+        const symbol = sem.symbols.items[symbol_index];
+
+        // Generated output symbols can have no lexical ScopeId, or can be
+        // registered in a wrapper scope while also appearing in scope zero.
+        // Keep those output-domain owners on their established name path.
+        if (symbol.scope_id.isNone()) {
+            if (symbol.synthetic_kind == null) return error.InvalidTopLevelOwnerSymbolIdentity;
+            return .{};
+        }
+        const scope_index = symbol.scope_id.toIndex();
+        if (scope_index >= sem.scopes.len or scope_index >= sem.scope_maps.len)
+            return error.InvalidTopLevelOwnerSymbolIdentity;
+        const scope_owner = sem.scope_maps[scope_index].get(name) orelse return error.InvalidTopLevelOwnerSymbolIdentity;
+        if (scope_owner != symbol_index) return error.InvalidTopLevelOwnerSymbolIdentity;
+        if (scope_index != 0) {
+            if (symbol.synthetic_kind == null) return error.InvalidTopLevelOwnerSymbolIdentity;
+            return .{};
+        }
+        return .{ .symbol_id = bundler_symbol.SymbolID.make(m.index, @as(u32, @intCast(symbol_index))) };
+    }
+
+    /// Recover a root owner only when the export scanner independently carries
+    /// the exact local SymbolId and both the export spelling and semantic symbol
+    /// identify the requested root binding. The scope map is deliberately not
+    /// consulted here because this path handles a poisoned map row.
+    fn exactLocalExportOwnerForName(
+        self: *const Linker,
+        m: Module,
+        sem: *const ModuleSemanticData,
+        name: []const u8,
+    ) !?bundler_symbol.SymbolID {
+        if (sem.scopes.len == 0 or sem.scope_maps.len == 0)
+            return error.InvalidTopLevelOwnerSymbolIdentity;
+        var exact_owner: ?bundler_symbol.SymbolID = null;
+        for (m.export_bindings) |binding| {
+            if (binding.kind != .local or binding.hasSyntheticDefault(sem.symbols.items)) continue;
+            if (!Scanner.identifierNamesEqual(binding.local_name, name)) continue;
+            const symbol_index = m.exportBindingSemanticIndex(binding) orelse continue;
+            const symbol = sem.symbols.items[symbol_index];
+            if (symbol.scope_id.isNone() or symbol.scope_id.toIndex() != 0) continue;
+            self.validateTopLevelOwnerSpelling(m, sem, name, symbol_index) catch continue;
+
+            const symbol_id = bundler_symbol.SymbolID.make(m.index, symbol_index);
+            if (exact_owner) |previous| {
+                if (!bundler_symbol.SymbolID.eql(previous, symbol_id))
+                    return error.AmbiguousTopLevelOwnerExportIdentity;
+            } else {
+                exact_owner = symbol_id;
+            }
+        }
+        return exact_owner;
     }
 
     /// 단일 모듈의 top-level 심볼 이름을 name_to_owners에 수집한다.
@@ -1000,9 +1116,10 @@ pub const Linker = struct {
             linker: *Linker,
             map: *NameToOwnersMap,
             owner: NameOwner,
-            fn add(c: @This(), name: []const u8, symbol_id: ?bundler_symbol.SymbolID) anyerror!void {
+            fn add(c: @This(), name: []const u8, identity: TopLevelOwnerIdentity) anyerror!void {
                 var owner = c.owner;
-                owner.symbol_id = symbol_id;
+                owner.symbol_id = identity.symbol_id;
+                owner.preserve_preferred_spelling = identity.preserve_preferred_spelling;
                 try c.linker.addNameOwner(c.map, name, owner);
             }
         };
@@ -1019,6 +1136,9 @@ pub const Linker = struct {
             fn add(c: @This(), name: []const u8, symbol_index: u32) anyerror!void {
                 var block_owner = c.owner;
                 block_owner.symbol_id = bundler_symbol.SymbolID.make(@fromBackingInt(@intCast(c.owner.module_index)), symbol_index);
+                // Preserve the existing priority that exact hoisted-block
+                // owners already had before ordinary source owners gained IDs.
+                block_owner.preserve_preferred_spelling = true;
                 try c.linker.addNameOwner(c.map, name, block_owner);
             }
         };
@@ -1265,7 +1385,7 @@ pub const Linker = struct {
                     var suffix: u32 = 1;
                     const candidate = try self.findAvailableCandidate(name, owner.module_index, &suffix, name_to_owners);
                     try self.putCanonicalNameForOwner(owner, name, candidate);
-                } else if (owners[0].symbol_id != null) {
+                } else if (owners[0].preserve_preferred_spelling) {
                     // Output-owned symbols need an explicit final name mapping
                     // even when their preferred spelling stays unchanged.
                     try self.putCanonicalNameForOwner(owners[0], name, try self.allocator.dupe(u8, name));
@@ -1283,7 +1403,8 @@ pub const Linker = struct {
                     const a_is_marker = a.module_index == std.math.maxInt(u32);
                     const b_is_marker = b.module_index == std.math.maxInt(u32);
                     if (a_is_marker != b_is_marker) return a_is_marker;
-                    if ((a.symbol_id != null) != (b.symbol_id != null)) return a.symbol_id != null;
+                    if (a.preserve_preferred_spelling != b.preserve_preferred_spelling)
+                        return a.preserve_preferred_spelling;
                     if (a.exec_index != b.exec_index) return a.exec_index < b.exec_index;
                     return types.stringLessThan({}, a.path, b.path);
                 }
@@ -1305,7 +1426,7 @@ pub const Linker = struct {
                 try self.putCanonicalNameForOwner(owner, name, candidate);
                 suffix += 1;
             }
-            if (!name_is_reserved and owners[0].symbol_id != null) {
+            if (!name_is_reserved and owners[0].preserve_preferred_spelling) {
                 // The runtime identity sorts ahead of source declarations for
                 // the same spelling and keeps the preferred name. Persist that
                 // unchanged spelling and reserve it for subsequent mangle.
@@ -1486,6 +1607,7 @@ pub const Linker = struct {
             .exec_index = owner_module.exec_index,
             .path = owner_module.path,
             .symbol_id = symbol_id,
+            .preserve_preferred_spelling = true,
         });
         try self.calculateRenames(&name_to_owners, false);
 
@@ -1824,6 +1946,7 @@ pub const Linker = struct {
             .exec_index = 0,
             .path = owner_module.path,
             .symbol_id = symbol_id,
+            .preserve_preferred_spelling = true,
         });
     }
 
@@ -2005,6 +2128,7 @@ pub const Linker = struct {
             .exec_index = owner_module.exec_index,
             .path = owner_module.path,
             .symbol_id = symbol_id,
+            .preserve_preferred_spelling = true,
         });
         try self.calculateRenames(&name_to_owners, false);
         const selected = self.rename_table.get(symbol_id) orelse return error.BundlerRuntimeHelperNameMissing;
@@ -3018,7 +3142,13 @@ pub const Linker = struct {
             self.allocator.free(selected);
             // Map keys borrow the canonical string owned until Linker deinit.
             const output_name = self.rename_table.get(exact) orelse return error.InvalidCallsiteTarget;
-            try self.addNameOwner(&name_to_owners, output_name, .{ .module_index = exact.module.toU32(), .exec_index = owner.exec_index, .path = owner.path, .symbol_id = exact });
+            try self.addNameOwner(&name_to_owners, output_name, .{
+                .module_index = exact.module.toU32(),
+                .exec_index = owner.exec_index,
+                .path = owner.path,
+                .symbol_id = exact,
+                .preserve_preferred_spelling = true,
+            });
         };
 
         // 2. 충돌하는 이름에 대해 리네임 계산
@@ -3504,10 +3634,10 @@ pub const Linker = struct {
         // top-level owner 이름집합 (G2) — collectModuleNames 와 동일 필터 공유.
         const Ctx = struct {
             acc: *u64,
-            fn add(c: @This(), name: []const u8, symbol_id: ?bundler_symbol.SymbolID) anyerror!void {
+            fn add(c: @This(), name: []const u8, identity: TopLevelOwnerIdentity) anyerror!void {
                 // order-independent: 각 이름 해시를 wrapping-add. 같은 집합 → 같은 합.
                 c.acc.* +%= std.hash.Wyhash.hash(0xc0, name);
-                if (symbol_id) |id| c.acc.* +%= std.hash.Wyhash.hash(0xc2, std.mem.asBytes(&id));
+                if (identity.symbol_id) |id| c.acc.* +%= std.hash.Wyhash.hash(0xc2, std.mem.asBytes(&id));
             }
         };
         try self.forEachTopLevelOwnerName(m, Ctx, .{ .acc = &fp.toplevel_name_set_hash }, Ctx.add);
