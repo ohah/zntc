@@ -42,9 +42,80 @@ const TestResult = struct {
     }
 };
 
+const LinkedTestResult = struct {
+    graph: *ModuleGraph,
+    linker: Linker,
+    cache: resolve_cache_mod.ResolveCache,
+    entry_path: []u8,
+    allocator: std.mem.Allocator,
+
+    fn deinit(self: *LinkedTestResult) void {
+        self.linker.deinit();
+        self.graph.deinit();
+        self.allocator.destroy(self.graph);
+        self.cache.deinit();
+        self.allocator.free(self.entry_path);
+    }
+
+    fn findModule(self: *const LinkedTestResult, suffix: []const u8) ?u32 {
+        for (0..self.graph.moduleCount()) |i| {
+            const module = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
+            if (std.mem.endsWith(u8, module.path, suffix)) return @intCast(i);
+        }
+        return null;
+    }
+};
+
 /// side_effects=false 설정 없이 빌드+분석.
 fn buildAndShake(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !TestResult {
     return buildAndShakeWithOpts(allocator, tmp, entry_name, &.{});
+}
+
+/// Build and link a graph but leave semantic state mutable for hostile tree-shaker tests.
+fn buildLinkedGraph(
+    allocator: std.mem.Allocator,
+    tmp: *std.testing.TmpDir,
+    entry_name: []const u8,
+    no_side_effects: []const []const u8,
+) !LinkedTestResult {
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(dir_path);
+    const entry_path = try std.fs.path.resolve(allocator, &.{ dir_path, entry_name });
+    errdefer allocator.free(entry_path);
+
+    var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
+    errdefer cache.deinit();
+    const graph = try allocator.create(ModuleGraph);
+    graph.* = ModuleGraph.init(allocator, &cache);
+    errdefer {
+        graph.deinit();
+        allocator.destroy(graph);
+    }
+    try graph.build(std.testing.io, &.{entry_path});
+
+    for (0..graph.moduleCount()) |i| {
+        const module = graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
+        for (no_side_effects) |suffix| {
+            if (std.mem.endsWith(u8, module.path, suffix)) {
+                module.side_effects = false;
+                break;
+            }
+        }
+    }
+
+    var linker = Linker.init(allocator, graph, .esm);
+    errdefer linker.deinit();
+    try linker.link();
+    linker.populateImportSymbols();
+    linker.populateNamespaceAccesses();
+
+    return .{
+        .graph = graph,
+        .linker = linker,
+        .cache = cache,
+        .entry_path = entry_path,
+        .allocator = allocator,
+    };
 }
 
 /// side_effects=false로 설정할 모듈 접미사 목록을 받는 테스트 헬퍼.
@@ -773,6 +844,115 @@ test "import liveness keeps the captured SID when the root map is poisoned" {
     try mutable_scope_maps[0].put(std.testing.allocator, "used", binding_sid);
     try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
     binding.local_symbol = original_ref;
+}
+
+test "tree-shaking fails closed when a local export root map points at a decoy" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { live } from './provider'; console.log(live);");
+    try writeFile(tmp.dir, "provider.ts", "export const live = 1; export const decoy = 2;");
+
+    const allocator = std.testing.allocator;
+    var setup = try buildLinkedGraph(allocator, &tmp, "entry.ts", &.{"provider.ts"});
+    defer setup.deinit();
+
+    const provider_idx = setup.findModule("provider.ts") orelse return error.MissingProvider;
+    const provider = setup.graph.moduleAtMut(ModuleIndex.fromUsize(provider_idx)) orelse return error.MissingProvider;
+    const export_binding = @constCast(provider.findExportBinding("live") orelse return error.MissingLiveExport);
+    const semantic = if (provider.semantic) |*value| value else return error.MissingProviderSemantic;
+    const live_sid = semantic.scope_maps[0].get("live") orelse return error.MissingLiveSymbol;
+    const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoySymbol;
+
+    // Simulate a damaged alias carrier plus a valid but unrelated root-map row.
+    // The direct local-export fast path must not mark the decoy declaration as live.
+    export_binding.symbol = .invalid;
+    const mutable_scope_maps = @constCast(semantic.scope_maps);
+    try mutable_scope_maps[0].put(allocator, "live", decoy_sid);
+
+    var shaker = try TreeShaker.init(allocator, setup.graph, &setup.linker);
+    defer shaker.deinit();
+    try shaker.analyze(&.{setup.entry_path});
+
+    const infos = shaker.getModuleStmtInfos(provider_idx) orelse return error.MissingProviderStmtInfos;
+    const live_stmt = infos.declaredStmtBySymbol(@intCast(live_sid)) orelse return error.MissingLiveStatement;
+    try std.testing.expect(shaker.isStmtReachable(provider_idx, live_stmt));
+    try std.testing.expect(shaker.isExportUsed(provider_idx, "live"));
+}
+
+test "tree-shaking fails closed when canonical export fallback sees a decoy SID" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { live } from './barrel'; console.log(live);");
+    try writeFile(tmp.dir, "barrel.ts", "export { live } from './provider';");
+    try writeFile(tmp.dir, "provider.ts", "export const live = 1; export const decoy = 2;");
+
+    const allocator = std.testing.allocator;
+    var setup = try buildLinkedGraph(allocator, &tmp, "entry.ts", &.{"provider.ts"});
+    defer setup.deinit();
+
+    const provider_idx = setup.findModule("provider.ts") orelse return error.MissingProvider;
+    const provider = setup.graph.moduleAtMut(ModuleIndex.fromUsize(provider_idx)) orelse return error.MissingProvider;
+    const export_binding = @constCast(provider.findExportBinding("live") orelse return error.MissingLiveExport);
+    const semantic = if (provider.semantic) |*value| value else return error.MissingProviderSemantic;
+    const live_sid = semantic.scope_maps[0].get("live") orelse return error.MissingLiveSymbol;
+    const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoySymbol;
+
+    // The barrel forces seedExport through its canonical fallback. A damaged
+    // provider carrier then makes the poisoned spelling map the only SID source.
+    export_binding.symbol = .invalid;
+    const mutable_scope_maps = @constCast(semantic.scope_maps);
+    try mutable_scope_maps[0].put(allocator, "live", decoy_sid);
+
+    var shaker = try TreeShaker.init(allocator, setup.graph, &setup.linker);
+    defer shaker.deinit();
+    try shaker.analyze(&.{setup.entry_path});
+
+    const infos = shaker.getModuleStmtInfos(provider_idx) orelse return error.MissingProviderStmtInfos;
+    const live_stmt = infos.declaredStmtBySymbol(@intCast(live_sid)) orelse return error.MissingLiveStatement;
+    try std.testing.expect(shaker.isStmtReachable(provider_idx, live_stmt));
+}
+
+test "tree-shaking fails closed when an intermediate re-export map points at a decoy" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { live } from './barrel'; console.log(live);");
+    try writeFile(tmp.dir, "barrel.ts", "const decoy = 0; export { live } from './provider';");
+    try writeFile(tmp.dir, "provider.ts", "export const live = 1;");
+
+    const allocator = std.testing.allocator;
+    var setup = try buildLinkedGraph(allocator, &tmp, "entry.ts", &.{ "barrel.ts", "provider.ts" });
+    defer setup.deinit();
+
+    const barrel_idx = setup.findModule("barrel.ts") orelse return error.MissingBarrel;
+    const provider_idx = setup.findModule("provider.ts") orelse return error.MissingProvider;
+    const barrel = setup.graph.moduleAtMut(ModuleIndex.fromUsize(barrel_idx)) orelse return error.MissingBarrel;
+    const export_binding = barrel.findExportBinding("live") orelse return error.MissingLiveExport;
+    const export_node = export_binding.source_export_node orelse return error.MissingLiveExportNode;
+    const semantic = if (barrel.semantic) |*value| value else return error.MissingBarrelSemantic;
+    const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoySymbol;
+    const mutable_scope_maps = @constCast(semantic.scope_maps);
+    try mutable_scope_maps[0].put(allocator, "live", decoy_sid);
+
+    var shaker = try TreeShaker.init(allocator, setup.graph, &setup.linker);
+    defer shaker.deinit();
+    try shaker.analyze(&.{setup.entry_path});
+
+    const infos = shaker.getModuleStmtInfos(barrel_idx) orelse return error.MissingBarrelStmtInfos;
+    var export_stmt: ?u32 = null;
+    for (infos.stmts, 0..) |stmt, i| {
+        if (stmt.node_idx == @backingInt(export_node)) {
+            export_stmt = @intCast(i);
+            break;
+        }
+    }
+    try std.testing.expect(shaker.isStmtReachable(barrel_idx, export_stmt orelse return error.MissingExportStatement));
+
+    const provider = setup.graph.moduleAtMut(ModuleIndex.fromUsize(provider_idx)) orelse return error.MissingProvider;
+    const provider_semantic = if (provider.semantic) |*value| value else return error.MissingProviderSemantic;
+    const live_sid = provider_semantic.scope_maps[0].get("live") orelse return error.MissingLiveSymbol;
+    const provider_infos = shaker.getModuleStmtInfos(provider_idx) orelse return error.MissingProviderStmtInfos;
+    const live_stmt = provider_infos.declaredStmtBySymbol(@intCast(live_sid)) orelse return error.MissingLiveStatement;
+    try std.testing.expect(shaker.isStmtReachable(provider_idx, live_stmt));
 }
 
 test "refcount: unused default import not marked as used" {

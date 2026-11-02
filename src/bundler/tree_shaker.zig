@@ -1566,7 +1566,6 @@ pub const TreeShaker = struct {
 
         const local_name = target_module.exportBindingLocalName(binding.*);
         const target_sem = target_module.semantic orelse return false;
-        if (target_sem.scope_maps.len == 0) return false;
         const direct_sym: u32 = switch (binding.symbol) {
             .semantic => |sym| blk: {
                 if (sym.module != target_idx or sym.symbol.isNone()) return false;
@@ -1574,7 +1573,21 @@ pub const TreeShaker = struct {
                 if (sym_idx >= target_sem.symbols.items.len) return false;
                 break :blk sym_idx;
             },
-            .alias => @intCast(target_sem.scope_maps[0].get(local_name) orelse return false),
+            .alias => blk: {
+                if (target_sem.scope_maps.len == 0) {
+                    try self.markAndSeedAllStmts(target_u32, queue, module_stmt_infos, reachable_stmts);
+                    return true;
+                }
+                const mapped_sym = target_sem.scope_maps[0].get(local_name) orelse {
+                    try self.markAndSeedAllStmts(target_u32, queue, module_stmt_infos, reachable_stmts);
+                    return true;
+                };
+                self.linker.validateMetadataScopeMapOwnerIdentity(target_module.*, &target_sem, local_name, 0, mapped_sym) catch {
+                    try self.markAndSeedAllStmts(target_u32, queue, module_stmt_infos, reachable_stmts);
+                    return true;
+                };
+                break :blk @intCast(mapped_sym);
+            },
         };
 
         var direct_scope = profile.begin(.shake_fixpoint_bfs_seed_export_direct);
@@ -1597,6 +1610,22 @@ pub const TreeShaker = struct {
         }
 
         return true;
+    }
+
+    fn exportSeedSemanticIndex(
+        self: *const TreeShaker,
+        module: *const Module,
+        semantic: *const module_mod.ModuleSemanticData,
+        exported_name: []const u8,
+        local_name: []const u8,
+    ) ?u32 {
+        if (module.findExportBinding(exported_name)) |binding| {
+            if (module.exportBindingSemanticIndex(binding.*)) |index| return index;
+        }
+        if (semantic.scope_maps.len == 0) return null;
+        const mapped_index = semantic.scope_maps[0].get(local_name) orelse return null;
+        self.linker.validateMetadataScopeMapOwnerIdentity(module.*, semantic, local_name, 0, mapped_index) catch return null;
+        return @intCast(mapped_index);
     }
 
     /// canonical export의 선언 statement를 BFS 큐에 추가.
@@ -1709,9 +1738,17 @@ pub const TreeShaker = struct {
             if (mid_module.semantic) |mid_sem| {
                 if (mid_sem.scope_maps.len > 0) {
                     const mid_local = self.linker.getExportLocalName(@intCast(target_mod), imported_name) orelse imported_name;
-                    if (mid_sem.scope_maps[0].get(mid_local)) |mid_sym| {
-                        if (module_stmt_infos[target_mod]) |mid_infos| {
-                            try self.enqueueSymbolLiveStatements(@intCast(target_mod), mid_infos, @intCast(mid_sym), reachable_stmts, queue);
+                    mid_owner_check: {
+                        if (mid_sem.scope_maps[0].get(mid_local)) |mid_sym| {
+                            self.linker.validateMetadataScopeMapOwnerIdentity(mid_module, &mid_sem, mid_local, 0, mid_sym) catch {
+                                try self.markAndSeedAllStmts(@intCast(target_mod), queue, module_stmt_infos, reachable_stmts);
+                                break :mid_owner_check;
+                            };
+                            if (module_stmt_infos[target_mod]) |mid_infos| {
+                                try self.enqueueSymbolLiveStatements(@intCast(target_mod), mid_infos, @intCast(mid_sym), reachable_stmts, queue);
+                            } else {
+                                try self.markAndSeedAllStmts(@intCast(target_mod), queue, module_stmt_infos, reachable_stmts);
+                            }
                         }
                     }
                 }
@@ -1727,19 +1764,11 @@ pub const TreeShaker = struct {
             try self.seedOpaqueModule(@intCast(canon_mod), queue, module_stmt_infos, reachable_stmts);
             return;
         };
-        if (target_sem.scope_maps.len == 0) {
+        const local_name = cached_canon_local orelse (self.linker.getExportLocalName(@intCast(canon_mod), canonical.export_name) orelse canonical.export_name);
+        const sym_idx = self.exportSeedSemanticIndex(target_module, &target_sem, canonical.export_name, local_name) orelse {
             semantic_scope.end();
+            try self.markAndSeedAllStmts(@intCast(canon_mod), queue, module_stmt_infos, reachable_stmts);
             return;
-        }
-
-        const sym_idx = if (target_module.findExportSymbol(canonical.export_name).semanticIndex()) |direct_sym|
-            direct_sym
-        else blk: {
-            const local_name = cached_canon_local orelse (self.linker.getExportLocalName(@intCast(canon_mod), canonical.export_name) orelse canonical.export_name);
-            break :blk target_sem.scope_maps[0].get(local_name) orelse {
-                semantic_scope.end();
-                return;
-            };
         };
         const target_infos = module_stmt_infos[canon_mod] orelse {
             semantic_scope.end();
