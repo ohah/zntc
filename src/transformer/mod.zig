@@ -94,6 +94,7 @@ test {
     _ = @import("generated_alias_reference_semantic_test.zig");
     _ = @import("module_map_binding_semantic_test.zig");
     _ = @import("parameter_body_var_semantic_test.zig");
+    _ = @import("parameter_environment_identity_test.zig");
     _ = @import("binding_storage_identity_semantic_test.zig");
     _ = @import("legacy_anonymous_export_semantic_test.zig");
     _ = @import("transformer/legacy_decorator_helpers.zig");
