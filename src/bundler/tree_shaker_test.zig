@@ -860,8 +860,8 @@ test "import liveness keeps the captured SID when the root map is poisoned" {
     try mutable_scope_maps[0].put(std.testing.allocator, "used", semantic.symbols.items.len + 7);
     try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
 
-    // Anchorless low-level bindings fail closed on a decoy map row, while an
-    // exact, correctly typed compatibility row remains supported.
+    // A missing cached SID still uses its exact source anchor, regardless of
+    // whether the spelling map contains a decoy, invalid index, or right row.
     binding.local_symbol = .invalid;
     try mutable_scope_maps[0].put(std.testing.allocator, "used", decoy_sid);
     try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
@@ -883,6 +883,24 @@ test "import liveness keeps the captured SID when the root map is poisoned" {
 
     try mutable_scope_maps[0].put(std.testing.allocator, "used", binding_sid);
     try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "used"));
+
+    // The exact anchor can preserve accurate liveness when the root row points
+    // at another same-kind import: idle is unused, while the decoy import is live.
+    const idle_ref = idle_binding.local_symbol;
+    const idle_sid = idle_ref.semanticIndex() orelse return error.MissingIdleImportSymbol;
+    const idle_anchor = idle_binding.local_symbol_node orelse return error.MissingIdleImportAnchor;
+    idle_binding.local_symbol = .invalid;
+    try mutable_scope_maps[0].put(std.testing.allocator, "idle", binding_sid);
+    try std.testing.expect(!r.shaker.isImportLiveInModule(entry_index, "idle"));
+    try std.testing.expect(!idle_binding.local_symbol.isValid());
+
+    // Without either exact carrier, even the correctly spelled root row must
+    // not reconstruct the missing SID; stay conservative and keep the import.
+    idle_binding.local_symbol_node = null;
+    try mutable_scope_maps[0].put(std.testing.allocator, "idle", idle_sid);
+    try std.testing.expect(r.shaker.isImportLiveInModule(entry_index, "idle"));
+    idle_binding.local_symbol = idle_ref;
+    idle_binding.local_symbol_node = idle_anchor;
     binding.local_symbol = original_ref;
 }
 
