@@ -2,12 +2,30 @@
 
 const std = @import("std");
 const Module = @import("../module.zig").Module;
+const ModuleSemanticData = @import("../module.zig").ModuleSemanticData;
+const ImportBinding = @import("../binding_scanner.zig").ImportBinding;
 const Linker = @import("../linker.zig").Linker;
 const Ast = @import("../../parser/ast.zig").Ast;
 const CallFlags = @import("../../parser/ast.zig").CallFlags;
 const stmt_info_mod = @import("../stmt_info.zig");
 const TreeShaker = @import("../tree_shaker.zig").TreeShaker;
 const profile = @import("../../profile.zig");
+
+fn purityImportLocalSemanticIndex(module: *const Module, sem: *const ModuleSemanticData, ib: ImportBinding) ?u32 {
+    if (ib.local_symbol.isValid()) {
+        _ = module.checkedImportBindingLocalName(ib) catch return null;
+        if (ib.local_symbol.moduleIndex() != module.index) return null;
+        const sid = ib.local_symbol.semanticIndex() orelse return null;
+        if (sid >= sem.symbols.items.len or sem.symbols.items[sid].kind != .import_binding) return null;
+        return sid;
+    }
+
+    const anchored = module.checkedSourceImportLocalSymbol(ib) catch return null;
+    if (!anchored.isValid() or anchored.moduleIndex() != module.index) return null;
+    const sid = anchored.semanticIndex() orelse return null;
+    if (sid >= sem.symbols.items.len or sem.symbols.items[sid].kind != .import_binding) return null;
+    return sid;
+}
 
 /// Cross-module @__NO_SIDE_EFFECTS__ 전파.
 ///
@@ -87,8 +105,7 @@ pub fn propagateCrossModulePurity(
         defer scope.end();
         for (module.import_bindings) |ib| {
             if (ib.kind == .namespace) continue;
-            _ = module.checkedImportBindingLocalName(ib) catch continue;
-            const local_sym_idx = ib.local_symbol.semanticIndex() orelse continue;
+            const local_sym_idx = purityImportLocalSemanticIndex(module, &sem, ib) orelse continue;
             if (local_sym_idx >= sym_count or import_call_state[local_sym_idx] != 1) continue;
 
             if (ib.import_record_index >= module.import_records.len) continue;
