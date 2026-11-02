@@ -431,6 +431,7 @@ const Pass = struct {
         return .{
             .symbol_ids = self.symbol_ids,
             .symbols = self.symbols,
+            .scopes = self.scopes,
             .unresolved_globals = self.unresolved_globals,
         };
     }

@@ -16295,6 +16295,7 @@ test "define graph source preflight rejects hostile identity and dynamic-scope e
         .{ .source = "const object = {}; function read() { return object?.flag; }", .key = "object.flag", .value = "false", .mutation = .none },
         .{ .source = "function read() { return flag; }", .key = "flag", .value = "false", .mutation = .none },
         .{ .source = "function read(flag) { eval('flag'); return flag; }", .key = "flag", .value = "globalThis.value", .mutation = .none },
+        .{ .source = "function read(input, scope) { const flag = 0; with (scope) { input; } return flag; }", .key = "flag", .value = "input + 1", .mutation = .none },
         .{ .source = "import { flag } from 'pkg'; function read() { return flag; }", .key = "flag", .value = "false", .mutation = .none },
         .{ .source = local_source, .key = "flag", .value = "false", .mutation = .truncated_symbol_id_map },
         .{ .source = "const flag = 1; function read() { return flag; }", .key = "flag", .value = "false", .mutation = .missing_symbol_id },
