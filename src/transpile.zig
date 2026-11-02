@@ -3800,6 +3800,50 @@ fn reserveGeneratedExternalNames(
     }
 }
 
+const StandaloneScopeSymbolMatch = union(enum) {
+    none,
+    unique: u32,
+    ambiguous,
+};
+
+fn standaloneScopeSymbolMatches(transformer: *const Transformer, symbol_id: usize, scope: ScopeId, name: []const u8) bool {
+    if (symbol_id >= transformer.symbols.len) return false;
+    const symbol = transformer.symbols[symbol_id];
+    if (symbol.scope_id != scope) return false;
+    const symbol_name = if (symbol.synthetic_name.len > 0)
+        symbol.synthetic_name
+    else
+        transformer.ast.getText(symbol.name);
+    return Scanner.identifierNamesEqual(symbol_name, name);
+}
+
+fn findStandaloneScopeSymbol(transformer: *const Transformer, scope: ScopeId, name: []const u8) StandaloneScopeSymbolMatch {
+    var found: ?u32 = null;
+    for (transformer.symbols, 0..) |_, symbol_id| {
+        if (!standaloneScopeSymbolMatches(transformer, symbol_id, scope, name)) continue;
+        if (found != null and found.? != symbol_id) return .ambiguous;
+        found = @intCast(symbol_id);
+    }
+    return if (found) |symbol_id| .{ .unique = symbol_id } else .none;
+}
+
+/// Return only a SymbolId that owns this exact lexical scope and spelling.
+/// A stale map row may point at an outer same-name symbol, so recover a bad row
+/// only from one existing local Symbol record. This never creates or reanalyzes
+/// identities; ambiguity and contradictory map state fail closed.
+fn standaloneScopeSymbolId(transformer: *const Transformer, scope: ScopeId, name: []const u8) error{TransformError}!?u32 {
+    if (scope.isNone() or scope.toIndex() >= transformer.scope_maps.len or
+        scope.toIndex() >= transformer.scopes.len) return error.TransformError;
+    if (transformer.scope_maps[scope.toIndex()].get(name)) |mapped| {
+        if (standaloneScopeSymbolMatches(transformer, mapped, scope, name)) return @intCast(mapped);
+        return switch (findStandaloneScopeSymbol(transformer, scope, name)) {
+            .unique => |symbol_id| @as(?u32, symbol_id),
+            .none, .ambiguous => error.TransformError,
+        };
+    }
+    return null;
+}
+
 /// Without identifier mangling there is no Mangler reservation pass to keep a
 /// transform-created global out of a same-named lexical binding. Rename only
 /// the exact source bindings visible from each marked output reference, and
@@ -3907,27 +3951,25 @@ fn reserveStandaloneExplicitGlobalShadows(
                 return error.TransformError;
             const scope_index: usize = @intCast(scope);
             const current_scope = transformer.scopes[scope_index];
-            if (scope_index < transformer.scope_maps.len) {
-                if (transformer.scope_maps[scope_index].get(decoded)) |symbol_index| {
-                    if (symbol_index >= transformer.symbols.len) return error.TransformError;
-                    if (current_scope.blocksMangling()) break;
-                    const symbol_id = try @import("semantic/native_name_affinity.zig").representative(
-                        transformer.symbols,
-                        @fromBackingInt(@as(u32, @intCast(symbol_index))),
-                    );
-                    const output_symbol = @backingInt(symbol_id);
-                    const selected_name = output_names.get(output_symbol) orelse
-                        transformer.ast.getText(transformer.symbols[output_symbol].name);
-                    if (Scanner.identifierValueEquals(selected_name, decoded) and !renamed_symbols.contains(output_symbol)) {
-                        var suffix: u32 = 1;
-                        while (true) : (suffix += 1) {
-                            const candidate = try std.fmt.allocPrint(allocator, "{s}${d}", .{ decoded, suffix });
-                            if (reserved.contains(candidate)) continue;
-                            try reserveStandaloneOutputName(allocator, &reserved, candidate);
-                            try output_names.put(allocator, output_symbol, candidate);
-                            try renamed_symbols.put(allocator, output_symbol, {});
-                            break;
-                        }
+            if (scope_index >= transformer.scope_maps.len) return error.TransformError;
+            if (current_scope.blocksMangling()) break;
+            if (try standaloneScopeSymbolId(transformer, @fromBackingInt(scope), decoded)) |local_symbol| {
+                const symbol_id = try @import("semantic/native_name_affinity.zig").representative(
+                    transformer.symbols,
+                    @fromBackingInt(local_symbol),
+                );
+                const output_symbol = @backingInt(symbol_id);
+                const selected_name = output_names.get(output_symbol) orelse
+                    transformer.ast.getText(transformer.symbols[output_symbol].name);
+                if (Scanner.identifierValueEquals(selected_name, decoded) and !renamed_symbols.contains(output_symbol)) {
+                    var suffix: u32 = 1;
+                    while (true) : (suffix += 1) {
+                        const candidate = try std.fmt.allocPrint(allocator, "{s}${d}", .{ decoded, suffix });
+                        if (reserved.contains(candidate)) continue;
+                        try reserveStandaloneOutputName(allocator, &reserved, candidate);
+                        try output_names.put(allocator, output_symbol, candidate);
+                        try renamed_symbols.put(allocator, output_symbol, {});
+                        break;
                     }
                 }
             }
@@ -13853,6 +13895,85 @@ test "#4819 deferred output spelling without a late SymbolId fails closed" {
     symbols[0].synthetic_kind = .standalone_generated_binding;
     symbols[0].synthetic_name = "_different";
     try std.testing.expectError(error.TransformError, buildStandaloneLateOutputNameOverrides(allocator, &transformer));
+}
+
+test "#4819 standalone explicit-global shadows resolve the exact lexical SymbolId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "var Global = 1; function use(Global, other) { return Global; }");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+
+    var root_global: ?u32 = null;
+    var parameter_global: ?u32 = null;
+    var parameter_other: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (!Scanner.identifierNamesEqual(parser.ast.getText(symbol.name), "Global") and
+            !Scanner.identifierNamesEqual(symbol.synthetic_name, "Global"))
+        {
+            if (symbol.kind == .parameter and Scanner.identifierNamesEqual(parser.ast.getText(symbol.name), "other"))
+                parameter_other = @intCast(raw);
+            continue;
+        }
+        if (symbol.scope_id.toIndex() == 0 and symbol.kind == .variable_var) root_global = @intCast(raw);
+        if (symbol.kind == .parameter) parameter_global = @intCast(raw);
+    }
+    const root_global_id = root_global orelse return error.MissingRootGlobal;
+    const parameter_global_id = parameter_global orelse return error.MissingParameterGlobal;
+    const parameter_other_id = parameter_other orelse return error.MissingParameterOther;
+    const parameter_scope = analyzer.symbols.items[parameter_global_id].scope_id;
+    try std.testing.expect(parameter_scope.toIndex() < analyzer.scope_maps.items.len);
+    try std.testing.expectEqual(@as(?usize, parameter_global_id), analyzer.scope_maps.items[parameter_scope.toIndex()].get("Global"));
+
+    var global_reference: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .identifier_reference and Scanner.identifierNamesEqual(parser.ast.getText(node.data.string_ref), "Global"))
+            global_reference = @intCast(raw);
+    }
+    const reference_raw = global_reference orelse return error.MissingGlobalReference;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.symbol_ids.items[reference_raw] = null;
+    try transformer.scope_owner_map.put(allocator, reference_raw, @backingInt(parameter_scope));
+
+    const poison_cases = [_]enum { foreign_same_name, wrong_name_same_scope, out_of_range }{
+        .foreign_same_name,
+        .wrong_name_same_scope,
+        .out_of_range,
+    };
+    for (poison_cases) |poison| {
+        const map = @constCast(&transformer.scope_maps[parameter_scope.toIndex()]);
+        try map.put(allocator, "Global", parameter_global_id);
+        switch (poison) {
+            .foreign_same_name => try map.put(allocator, "Global", root_global_id),
+            .wrong_name_same_scope => try map.put(allocator, "Global", parameter_other_id),
+            .out_of_range => try map.put(allocator, "Global", transformer.symbols.len),
+        }
+
+        var output_names: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+        try reserveStandaloneExplicitGlobalShadows(
+            allocator,
+            &transformer,
+            root,
+            &.{reference_raw},
+            &output_names,
+        );
+        try std.testing.expectEqualStrings("Global$1", output_names.get(parameter_global_id) orelse return error.MissingExactShadowRename);
+        try std.testing.expectEqualStrings("Global$2", output_names.get(root_global_id) orelse return error.MissingRootShadowRename);
+        try std.testing.expect(output_names.get(parameter_other_id) == null);
+    }
 }
 
 test "#4819 standalone helper preamble resolves its emitted name through SymbolId" {
