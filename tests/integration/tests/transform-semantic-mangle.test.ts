@@ -640,7 +640,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     }
   });
 
-  test('compound define falls back to reanalysis when syntax minification changes its graph', async () => {
+  test('compound define retains exact identity through syntax minification', async () => {
     const fixture = await createFixture({
       'input.js': [
         'globalThis.reader = { flag(value) { return value + 2; } };',
@@ -670,7 +670,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     const identity = expectPrepassGraph(
       `${result.stdout}\n${result.stderr}`,
       'input.js',
-      'reanalyzed',
+      'retained',
     );
     expect(identity).toMatch(/clean=1(?:\s|$)/);
     for (const counter of EXACT_ZERO_COUNTERS) {
