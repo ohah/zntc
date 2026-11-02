@@ -7322,8 +7322,39 @@ pub const Linker = struct {
     fn cjsWrapperParameterConflictsWithRoot(module: *const Module, raw_symbol_id: usize, name: []const u8) bool {
         if (module.ast == null) return false;
         const sem = module.semantic orelse return true;
-        if (sem.scope_maps.len == 0) return true;
-        return sem.scope_maps[0].get(name) != raw_symbol_id;
+        if (sem.scopes.len == 0 or sem.scope_maps.len == 0) return true;
+        if (sem.scope_maps[0].get(name) != raw_symbol_id) return true;
+
+        // A poisoned root row can point back to the wrapper parameter itself,
+        // hiding a distinct lexical declaration that still owns scope zero.
+        // Scan semantic owners only for this ambiguous equal-SID case so a
+        // genuine `var exports` redeclaration (which shares the wrapper SID)
+        // does not acquire an unnecessary alias.
+        for (sem.symbols.items, 0..) |symbol, symbol_index| {
+            if (symbol_index == raw_symbol_id) continue;
+            if (!symbol.scope_id.isNone()) {
+                const scope_index = symbol.scope_id.toIndex();
+                if (scope_index != 0 and scope_index < sem.scopes.len and scope_index < sem.scope_maps.len) continue;
+            }
+            if (symbolMayHaveSpelling(module, symbol_index, name)) return true;
+        }
+        return false;
+    }
+
+    fn symbolMayHaveSpelling(module: *const Module, symbol_index: usize, name: []const u8) bool {
+        const sem = module.semantic orelse return true;
+        if (symbol_index >= sem.symbols.items.len) return true;
+        const symbol = sem.symbols.items[symbol_index];
+        const actual_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else blk: {
+            const span = symbol.name;
+            if ((span.start & ast_mod.Ast.STRING_TABLE_BIT) != 0 or span.end <= span.start)
+                return true;
+            const start: usize = @intCast(span.start);
+            const end: usize = @intCast(span.end);
+            if (end > module.source.len) return true;
+            break :blk module.source[start..end];
+        };
+        return Scanner.identifierNamesEqual(actual_name, name);
     }
 
     fn cjsWrapperParameterCurrentName(

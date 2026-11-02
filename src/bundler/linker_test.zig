@@ -1658,6 +1658,54 @@ test "#4819: CJS lexical conflicts keep distinct wrapper parameter SymbolIds" {
     try std.testing.expectError(error.CjsWrapperParameterScopeMismatch, graph_finalize.registerWrapperSymbols(r.graph));
 }
 
+test "#4819: poisoned CJS root map still aliases conflicting wrapper parameters" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.cjs", "let exports = 'local'; let module = exports; console.log(module);");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.cjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const index = findModuleIdx(r.graph, "entry.cjs") orelse return error.TestUnexpectedResult;
+    const module = r.graph.moduleAtMut(index) orelse return error.TestUnexpectedResult;
+    const sem = module.semantic orelse return error.TestUnexpectedResult;
+    const exports_id = module.cjs_wrapper_exports_parameter_symbol orelse return error.TestUnexpectedResult;
+    const module_id = module.cjs_wrapper_module_parameter_symbol orelse return error.TestUnexpectedResult;
+    const root_maps = @constCast(sem.scope_maps);
+    const source_exports = root_maps[0].get("exports") orelse return error.TestUnexpectedResult;
+    const source_module = root_maps[0].get("module") orelse return error.TestUnexpectedResult;
+
+    // The lexical source declarations remain distinct owners, but a stale map
+    // row redirects both names to the wrapper parameters themselves.
+    try std.testing.expect(source_exports != @backingInt(exports_id));
+    try std.testing.expect(source_module != @backingInt(module_id));
+    try std.testing.expectEqual(@as(u32, 0), @backingInt(sem.symbols.items[source_exports].scope_id));
+    try std.testing.expectEqual(@as(u32, 0), @backingInt(sem.symbols.items[source_module].scope_id));
+    root_maps[0].putAssumeCapacity("exports", @backingInt(exports_id));
+    root_maps[0].putAssumeCapacity("module", @backingInt(module_id));
+
+    try r.linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+    const exports_name = r.linker.rename_table.get(bundler_symbol.SymbolID.make(index, @backingInt(exports_id))) orelse return error.TestUnexpectedResult;
+    const module_name = r.linker.rename_table.get(bundler_symbol.SymbolID.make(index, @backingInt(module_id))) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!std.mem.eql(u8, exports_name, "exports"));
+    try std.testing.expect(!std.mem.eql(u8, module_name, "module"));
+    try std.testing.expect(!std.mem.eql(u8, exports_name, module_name));
+
+    const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, std.testing.allocator, r.graph, &.{ .format = .esm }, &r.linker, null);
+    defer output.deinit(std.testing.allocator);
+    try writeFile(tmp.dir, "output.mjs", output.output);
+    const output_path = try @import("test_helpers.zig").absPath(&tmp, "output.mjs");
+    defer std.testing.allocator.free(output_path);
+    const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", output_path } });
+    defer std.testing.allocator.free(actual.stdout);
+    defer std.testing.allocator.free(actual.stderr);
+    if (actual.term != .exited or actual.term.exited != 0) std.debug.print("POISONED_CJS_WRAPPER_OUTPUT\n{s}\nERROR\n{s}\n", .{ output.output, actual.stderr });
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    try std.testing.expectEqualStrings("local\n", actual.stdout);
+}
+
 test "#4819: escaped CJS var redeclaration shares the wrapper parameter SymbolId" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1686,6 +1734,9 @@ test "#4819: escaped CJS var redeclaration shares the wrapper parameter SymbolId
     try graph_finalize.registerWrapperSymbols(r.graph);
     try std.testing.expectEqual(scope_count, module.semantic.?.scopes.len);
     try std.testing.expectEqual(scope_map_count, module.semantic.?.scope_maps.len);
+
+    try r.linker.finalize(.{ .compute_renames = false, .compute_mangling = false });
+    try std.testing.expect(r.linker.rename_table.get(bundler_symbol.SymbolID.make(index, @backingInt(exports_id))) == null);
 
     const source_ast = module.ast orelse return error.TestUnexpectedResult;
     const source_semantic = module.semantic orelse return error.TestUnexpectedResult;
