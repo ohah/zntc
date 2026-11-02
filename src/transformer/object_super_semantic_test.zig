@@ -545,8 +545,13 @@ test "class key hoisting preserves exact external lookup provenance" {
 test "computed class key short circuit preserves frozen SelfKey source lookup" {
     const helpers = @import("../bundler/test_helpers.zig");
     const Bundler = @import("../bundler/bundler.zig").Bundler;
-    const source = "var SelfKey=class SelfKey{static[false&&SelfKey]=1};console.log(SelfKey.false);";
-    for ([_]bool{ false, true }) |minify| {
+    const sources = [_][]const u8{
+        "var SelfKey=class SelfKey{static[false&&SelfKey]=1};console.log(SelfKey.false);",
+        "var SelfKey=class SelfKey{static[true||SelfKey]=2};console.log(SelfKey.true);",
+        "var hits=0;var SelfKey=class SelfKey{static[false&&(hits++,SelfKey)]=3};console.log(SelfKey.false,hits);",
+    };
+    const expected = [_][]const u8{ "1\n", "2\n", "3 0\n" };
+    for (sources, expected) |source, stdout| for ([_]bool{ false, true }) |minify| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
         const a = arena.allocator();
@@ -557,7 +562,7 @@ test "computed class key short circuit preserves frozen SelfKey source lookup" {
         defer std.testing.allocator.free(entry);
         const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", entry } });
         try std.testing.expect(native.term == .exited and native.term.exited == 0);
-        try std.testing.expectEqualStrings("1\n", native.stdout);
+        try std.testing.expectEqualStrings(stdout, native.stdout);
         var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .node, .format = .cjs, .unsupported = TransformOptions.compat.fromESTarget(.es5), .minify_identifiers = minify });
         defer b.deinit();
         const result = try b.bundle(std.testing.io);
@@ -568,5 +573,5 @@ test "computed class key short circuit preserves frozen SelfKey source lookup" {
         if (actual.term != .exited or actual.term.exited != 0) std.debug.print("SELF_KEY code={s} stderr={s}\n", .{ result.output, actual.stderr });
         try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
         try std.testing.expectEqualStrings(native.stdout, actual.stdout);
-    }
+    };
 }
