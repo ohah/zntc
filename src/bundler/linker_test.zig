@@ -6712,6 +6712,41 @@ test "runtime helper CJS factory scope zero shadows rename the exact provider" {
             "__callSuper",
         ));
         if (index == 0) {
+            const semantic = entry.semantic.?;
+            const source_binding_id = semantic.scope_maps[0].get("__callSuper") orelse return error.MissingSourceShadow;
+            const nested_decoy = for (semantic.symbols.items, 0..) |symbol, raw| {
+                if (raw == local or symbol.scope_id.isNone() or symbol.scope_id.toIndex() == 0) continue;
+                break raw;
+            } else return error.MissingNestedDecoy;
+            const mutable_scope_maps = @constCast(semantic.scope_maps);
+            try mutable_scope_maps[0].put(std.testing.allocator, "__callSuper", nested_decoy);
+            try std.testing.expect(result.linker.preserveRuntimeHelperImportIsShadowed(
+                entry_index.toU32(),
+                provider.index.toU32(),
+                resolved.canonical.export_name,
+                "__callSuper",
+            ));
+            try mutable_scope_maps[0].put(std.testing.allocator, "__callSuper", source_binding_id);
+            try std.testing.expect(mutable_scope_maps[0].remove("__callSuper"));
+            try std.testing.expect(result.linker.preserveRuntimeHelperImportIsShadowed(
+                entry_index.toU32(),
+                provider.index.toU32(),
+                resolved.canonical.export_name,
+                "__callSuper",
+            ));
+            try mutable_scope_maps[0].put(std.testing.allocator, "__callSuper", source_binding_id);
+            const mutable_entry = @constCast(entry);
+            const saved_scope_maps = mutable_entry.semantic.?.scope_maps;
+            mutable_entry.semantic.?.scope_maps = &.{};
+            try std.testing.expect(result.linker.preserveRuntimeHelperImportIsShadowed(
+                entry_index.toU32(),
+                provider.index.toU32(),
+                resolved.canonical.export_name,
+                "__callSuper",
+            ));
+            mutable_entry.semantic.?.scope_maps = saved_scope_maps;
+        }
+        if (index == 0) {
             const source_binding_id = entry.semantic.?.scope_maps[0].get("__callSuper").?;
             const source_id = bundler_symbol.SymbolID.make(entry_index, source_binding_id);
             try std.testing.expectEqualStrings("__callSuper", result.linker.rename_table.get(source_id) orelse "__callSuper");
@@ -6746,7 +6781,10 @@ test "runtime helper CJS factory scope zero shadows rename the exact provider" {
                     11 => mutable_entry.semantic.?.scope_maps[0].getPtr("__callSuper").?.* = @intCast(mutable_entry.semantic.?.symbols.items.len),
                     else => unreachable,
                 }
-                try std.testing.expect(!result.linker.preserveRuntimeHelperImportIsShadowed(
+                // Malformed root rows conservatively request a collision-free
+                // import alias; unrelated invalid helper identities still reject.
+                const expected_shadow = hostile == 6 or hostile == 7 or hostile == 11;
+                try std.testing.expectEqual(expected_shadow, result.linker.preserveRuntimeHelperImportIsShadowed(
                     entry_index.toU32(),
                     if (hostile == 9) entry_index.toU32() else provider.index.toU32(),
                     resolved.canonical.export_name,
