@@ -5878,7 +5878,12 @@ pub const Linker = struct {
         // 심볼의 is_exported 플래그로 추가 확인.
         if (sem.scope_maps.len > 0) {
             if (sem.scope_maps[0].get(name)) |sym_idx| {
-                if (sym_idx < sem.symbols.items.len and sem.symbols.items[sym_idx].decl_flags.is_exported) return true;
+                // A map row is only a candidate owner. If it cannot prove the
+                // requested root spelling and exact semantic scope, the export
+                // inventory is uncertain; suppress a potentially false missing
+                // export diagnostic instead of trusting a decoy's flag.
+                _ = self.topLevelOwnerIdentity(m.*, sem, name, sym_idx) catch return true;
+                if (sem.symbols.items[sym_idx].decl_flags.is_exported) return true;
             }
         }
         // export * from <src>: 구체 이름은 exported_names 에 없으므로 소스로 재귀
