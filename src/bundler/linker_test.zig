@@ -4953,6 +4953,49 @@ test "#4819 import fanout preserves physical references and module-specific mang
     }
 }
 
+test "#4819: unified mangler rejects poisoned root map owners" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "const alpha = 1; const decoy = 2; console.log(alpha);");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const index = findModuleIdx(r.graph, "entry.mjs") orelse return error.TestUnexpectedResult;
+    const module = r.graph.moduleAtMut(index) orelse return error.TestUnexpectedResult;
+    const semantic = module.semantic orelse return error.TestUnexpectedResult;
+    const alpha = semantic.scope_maps[0].get("alpha") orelse return error.MissingAlphaOwner;
+    const decoy = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoyOwner;
+    try std.testing.expect(alpha != decoy);
+    var baseline = try r.linker.collectUnifiedInput(null, &.{});
+    defer baseline.deinit();
+    var alpha_is_candidate = false;
+    for (baseline.top_level_candidates) |candidate| {
+        if (candidate.module_index == index.toU32() and candidate.symbol_id == alpha) alpha_is_candidate = true;
+    }
+    try std.testing.expect(alpha_is_candidate);
+
+    @constCast(&semantic.scope_maps[0]).getPtr("alpha").?.* = decoy;
+    if (r.linker.collectUnifiedInput(null, &.{})) |collected| {
+        var accepted = collected;
+        defer accepted.deinit();
+        return error.PoisonedRootMapOwnerAccepted;
+    } else |err| {
+        try std.testing.expectEqual(error.InvalidTopLevelOwnerSymbolIdentity, err);
+    }
+
+    @constCast(&semantic.scope_maps[0]).getPtr("alpha").?.* = semantic.symbols.items.len;
+    if (r.linker.collectUnifiedInput(null, &.{})) |collected| {
+        var accepted = collected;
+        defer accepted.deinit();
+        return error.OutOfRangeRootMapOwnerAccepted;
+    } else |err| {
+        try std.testing.expectEqual(error.InvalidTopLevelOwnerSymbolIdentity, err);
+    }
+}
+
 test "populateSymbolRefCounts: import이 source default symbol의 ref_count 증가" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
