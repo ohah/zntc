@@ -76,6 +76,10 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
     var discover_scope = profile.begin(.graph_discover);
     for (entry_points) |entry_path| {
         const idx = try self.addModule(io, entry_path);
+        // addModule only registers the slot; discovery starts below. Publish
+        // the actual source-entry role before its transformer pre-pass reads
+        // the output-readiness contract, including incremental discovery.
+        self.modules.at(@backingInt(idx)).is_entry_point = true;
         _ = try graph_requested_exports.requestAll(self, idx);
     }
 
@@ -162,6 +166,7 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
     var runtime_indices: std.ArrayList(types.ModuleIndex) = .empty;
     defer runtime_indices.deinit(self.allocator);
     try applyRuntimePolyfills(self, io, &runtime_indices);
+    try demandTlaReadinessAll(self, io, &runtime_indices);
     try injectEmittedChunks(self, io);
     try linkExecutionRoots(self, entry_points, inject_indices.items, runtime_indices.items, run_before_main_indices.items);
     discover_scope.end();
@@ -582,6 +587,62 @@ fn applyRuntimePolyfills(self: *ModuleGraph, io: std.Io, runtime_indices: *std.A
     try discoverPendingModulesSequential(self, io, discover_start);
 }
 
+const tla_readiness_all_id = "\x00zntc:runtime/readiness-all";
+
+fn demandTlaReadinessAll(self: *ModuleGraph, io: std.Io, runtime_indices: *std.ArrayList(ModuleIndex)) !void {
+    self.tla_readiness_all = null;
+    if (!(self.code_splitting or self.preserve_modules) or !self.transform_options_base.tla_entry_exports_awaited) return;
+    var demanded = false;
+    var i: usize = 0;
+    while (i < self.modules.count()) : (i += 1) {
+        const module = self.modules.at(i);
+        if (module.self_uses_top_level_await or module.tla_iife_stmt != null) {
+            demanded = true;
+            break;
+        }
+    }
+    if (!demanded) return;
+    const start = self.modules.count();
+    const helper = try self.addModule(io, tla_readiness_all_id);
+    _ = try graph_requested_exports.requestAll(self, helper);
+    try runtime_indices.append(self.allocator, helper);
+    try discoverPendingModulesSequential(self, io, start);
+}
+
+fn keepTlaReadinessAllSynchronous(self: *ModuleGraph) !void {
+    if (!(self.code_splitting or self.preserve_modules) or !self.transform_options_base.tla_entry_exports_awaited) return;
+    const index = self.path_to_module.get(tla_readiness_all_id) orelse return;
+    const module = self.modules.at(@backingInt(index));
+    const origin = module.runtime_helper_source orelse return error.InvalidTlaReadinessHelper;
+    if (origin.catalog != .readiness_all or
+        !@import("../../runtime_helper_modules.zig").matchesConstructedSource(origin, self.helper_plugin_opts, module.source) or
+        module.dependencies.items.len != 0 or module.self_uses_top_level_await or module.uses_top_level_await or
+        module.tla_iife_stmt != null) return error.InvalidTlaReadinessHelper;
+    // This actual builtin constructs readiness itself. Its WeakMap and
+    // methods must execute synchronously before an async entry can use it;
+    // the ordinary "module after first await" ordering rule does not apply.
+    module.wrap_kind = .none;
+}
+
+fn captureTlaReadinessAll(self: *ModuleGraph) !void {
+    if (!(self.code_splitting or self.preserve_modules) or !self.transform_options_base.tla_entry_exports_awaited) return;
+    const index = self.path_to_module.get(tla_readiness_all_id) orelse return;
+    const module = self.modules.at(@backingInt(index));
+    const origin = module.runtime_helper_source orelse return error.InvalidTlaReadinessHelper;
+    if (origin.catalog != .readiness_all or
+        !@import("../../runtime_helper_modules.zig").matchesConstructedSource(origin, self.helper_plugin_opts, module.source))
+        return error.InvalidTlaReadinessHelper;
+    const semantic = if (module.semantic) |*value| value else return error.InvalidTlaReadinessHelper;
+    if (semantic.owner_token == .unassigned) return error.InvalidTlaReadinessHelper;
+    for (module.export_bindings, 0..) |binding, i| {
+        if (!std.mem.eql(u8, binding.exported_name, "__tlaReadyAll")) continue;
+        const sid = module.exportBindingSemanticIndex(binding) orelse return error.InvalidTlaReadinessHelper;
+        self.tla_readiness_all = .{ .module_index = index, .export_index = @intCast(i), .symbol_id = @fromBackingInt(@intCast(sid)), .owner_token = semantic.owner_token };
+        return;
+    }
+    return error.InvalidTlaReadinessHelper;
+}
+
 fn discoverPendingModulesSequential(self: *ModuleGraph, io: std.Io, start_index: usize) !void {
     var parse_start = start_index;
     while (parse_start < self.modules.count()) {
@@ -751,7 +812,9 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
     graph_finalize.propagateTopLevelAwait(self);
     graph_finalize.computeAsyncCone(self);
     graph_finalize.promoteAsyncConeToEsmWrap(self);
+    try keepTlaReadinessAllSynchronous(self);
     try graph_finalize.registerWrapperSymbols(self);
+    try captureTlaReadinessAll(self);
     checkSelfReExport(self);
 }
 
@@ -987,6 +1050,10 @@ pub fn buildIncremental(
 
     for (entry_points) |entry_path| {
         const idx = try self.addModule(io, entry_path);
+        // addModule only registers the slot; discovery starts below. Publish
+        // the actual source-entry role before its transformer pre-pass reads
+        // the output-readiness contract, including incremental discovery.
+        self.modules.at(@backingInt(idx)).is_entry_point = true;
         _ = try graph_requested_exports.requestAll(self, idx);
     }
 
@@ -1151,6 +1218,7 @@ pub fn buildIncremental(
     defer runtime_indices.deinit(self.allocator);
     const before_runtime_count = self.modules.count();
     try applyRuntimePolyfills(self, io, &runtime_indices);
+    try demandTlaReadinessAll(self, io, &runtime_indices);
     if (self.modules.count() > before_runtime_count) graph_changed = true;
     // watch/incremental 에서도 emit chunk 플래그를 이번 emit_store.chunks 기준으로 set
     // (cache-hit restore 에서 stale 은 이미 reset). build() 와 동일 처리 (#1880 PR7-2b-i).

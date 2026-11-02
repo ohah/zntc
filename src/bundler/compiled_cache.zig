@@ -100,7 +100,7 @@ pub const InputHasher = struct {
 ///   emit_module_pass 의 per-module 결과 (dev_codes / compiled_cache entry) 는 동일하므로
 ///   module-level cache key 에 영향 없음. dev_mode incremental rebuild 가 first=false 만
 ///   set 해도 first build 의 entry 와 동일 input_hash → cache hit.
-const expected_emit_options_field_count: usize = 61;
+const expected_emit_options_field_count: usize = 63;
 const intentionally_unhashed_fields = [_][]const u8{
     "skip_bundle_output",
     // PR-3b-i: 어느 청크를 outputs 로 쓸지(chunk 선택)만 거르고 per-module 컴파일 결과는
@@ -122,6 +122,27 @@ comptime {
 /// EmitOptions 의 emit 결과에 영향을 주는 모든 필드를 순차 hash.
 pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     h.addU32(@backingInt(options.format));
+    // Deferred emission has an owned writer result as well as code bytes.
+    // Hash its role, never a transient output pointer or previously written value.
+    h.addBool(options.defer_async_entry_exports != null);
+    if (options.defer_async_entry_exports) |deferred| {
+        h.addU32(deferred.module_index);
+        h.addBool(deferred.cjs_value);
+        h.addBool(deferred.assign_cjs);
+        h.addBool(deferred.pm_protocol);
+        h.addBool(deferred.internal_module);
+    }
+    h.addBool(options.deferred_module_exports != null);
+    if (options.deferred_module_exports) |contexts| {
+        h.addU64(@intCast(contexts.len));
+        for (contexts) |context| {
+            h.addU32(context.module_index);
+            h.addBool(context.cjs_value);
+            h.addBool(context.assign_cjs);
+            h.addBool(context.pm_protocol);
+            h.addBool(context.internal_module);
+        }
+    }
     h.addBool(options.preinitialized_esm_namespace != null);
     if (options.preinitialized_esm_namespace) |namespace| {
         h.addU32(@backingInt(namespace.module));
@@ -245,6 +266,7 @@ pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     h.addBool(options.transform_options_base.use_define_for_class_fields);
     h.addBool(options.transform_options_base.verbatim_module_syntax);
     h.addBool(options.transform_options_base.keep_names);
+    h.addBool(options.transform_options_base.tla_entry_exports_awaited);
     h.addU64(@bitCast(options.transform_options_base.unsupported));
     // #4598 `tla_chunk_wrapped` 는 여기 따로 안 넣는다 — `format`·`code_splitting`·
     // `unsupported` 로 **완전히 결정되는 파생값**이고 셋 다 이미 위에서 해싱된다.

@@ -682,6 +682,42 @@ pub const READ_RUNTIME_MIN = "var " ++ NAMES.READ_MIN ++ "=function(o,n){var m=t
 /// generator-to-Promise wrapper. this/arguments를 fn.apply로 보존.
 ///
 /// 스펙 참고: esbuild internal/runtime/runtime.go __async
+/// One analyzed virtual module owns both aggregation and private PM protocol.
+/// WeakMap membership, never a public property or a thenable guess, grants
+/// access to an instantiated namespace and its initialization promise.
+fn readinessAllRuntime(comptime name: []const u8) []const u8 {
+    return "var __tlaReadinessStates;\n" ++
+        "function " ++ name ++ "(values) { return Promise.all(values); }\n" ++
+        name ++ ".register = function(hostExports, namespace) {\n" ++
+        "  if (!__tlaReadinessStates) __tlaReadinessStates = new WeakMap();\n" ++
+        "  var known = __tlaReadinessStates.get(hostExports);\n" ++
+        "  if (known) { if (known.namespace !== namespace) throw new TypeError('Invalid TLA namespace owner'); return known; }\n" ++
+        "  var state = {namespace: namespace, internals: hostExports, initializing: true, ready: null};\n" ++
+        "  __tlaReadinessStates.set(hostExports, state);\n" ++
+        "  return state;\n" ++
+        "};\n" ++
+        name ++ ".state = function(value) {\n" ++
+        "  return __tlaReadinessStates && value !== null && (typeof value === 'object' || typeof value === 'function') ? __tlaReadinessStates.get(value) : void 0;\n" ++
+        "};\n" ++
+        name ++ ".publish = function(hostExports, hostModule, initialize, dependencies, readValue, assignHost) {\n" ++
+        "  var state = __tlaReadinessStates && __tlaReadinessStates.get(hostExports);\n" ++
+        "  if (!state || state.internals !== hostExports || !state.initializing || state.ready !== null) throw new TypeError('Invalid TLA publication owner');\n" ++
+        "  var waits = [];\n" ++
+        "  for (var i = 0; i < dependencies.length; i++) {\n" ++
+        "    var dependency = dependencies[i];\n" ++
+        "    if (!dependency || __tlaReadinessStates.get(dependency.internals) !== dependency) throw new TypeError('Invalid TLA dependency owner');\n" ++
+        "    if (!dependency.initializing) { if (dependency.ready === null) throw new TypeError('Missing TLA dependency readiness'); waits.push(dependency.ready); }\n" ++
+        "  }\n" ++
+        "  var ready = Promise.all(waits).then(initialize).then(readValue);\n" ++
+        "  state.ready = ready; state.initializing = false;\n" ++
+        "  __tlaReadinessStates.set(ready, state);\n" ++
+        "  if (assignHost) hostModule.exports = ready;\n" ++
+        "  return ready;\n" ++
+        "};\n";
+}
+pub const READINESS_ALL_RUNTIME = readinessAllRuntime("__tlaReadyAll");
+pub const READINESS_ALL_RUNTIME_MIN = readinessAllRuntime(NAMES.READINESS_ALL_MIN);
+
 pub const ASYNC_RUNTIME =
     \\var __async = (fn) => function(...args) {
     \\  return new Promise((resolve, reject) => {

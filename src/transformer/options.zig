@@ -97,6 +97,11 @@ pub const TransformOptions = struct {
     /// wait, exports keep their place after the wrapper so importers that run
     /// right away still see a value.
     tla_module_awaited: bool = false,
+    /// The bundle's non-ESM output entry publishes its exports only after the
+    /// registered initialization promise resolves. The graph applies this
+    /// capability to actual entry files (including preserve-modules files),
+    /// rather than moving initializers in every dependency.
+    tla_entry_exports_awaited: bool = false,
     /// #4598: es5 등 async 문법이 없는 타겟 + 비-ESM 출력. 최상위 await 를 기다릴 수단이
     /// async 초기화 함수(`__esm({ async "m"() {…} })` + `await init_m()`)뿐이라, webpack 처럼
     /// 그 래퍼만 네이티브 async 로 내고 경고한다. 모듈 본문은 그대로 타겟에 맞게 낮춘다.

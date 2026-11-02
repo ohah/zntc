@@ -26,6 +26,40 @@ const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const BundlerDiagnostic = types.BundlerDiagnostic;
 const Module = @import("module.zig").Module;
+// A TLA producer can materialize the analyzer's default facade under a
+// collision-free binding name. Accept only that actual source-owned identity;
+// a spelling or a scope-map row alone never selects its SymbolId.
+fn materializedDefaultFacadeName(module: *const Module, binding: ExportBinding, raw: u32) ?[]const u8 {
+    if (binding.kind != .local or binding.default_export_node != null or binding.has_default_export_facade or
+        !std.mem.eql(u8, binding.exported_name, "default")) return null;
+    const semantic = module.semantic orelse return null;
+    const ast = &(module.ast orelse return null);
+    if (raw >= semantic.symbols.items.len or module.exportBindingSemanticIndex(binding) != raw) return null;
+    const symbol = semantic.symbols.items[raw];
+    if (symbol.synthetic_kind != .default_export or !symbol.decl_flags.is_default_export or !symbol.decl_flags.is_exported or
+        symbol.scope_id.isNone() or symbol.origin_scope.isNone() or symbol.scope_id.toIndex() != 0 or symbol.origin_scope.toIndex() != 0 or
+        semantic.scope_maps.len == 0 or symbol.synthetic_name.len == 0 or
+        !std.mem.eql(u8, binding.local_name, symbol.synthetic_name) or
+        semantic.scope_maps[0].get(symbol.synthetic_name) != @as(?usize, raw)) return null;
+    const local = binding.local_symbol_node orelse return null;
+    if (@backingInt(local) >= semantic.symbol_ids.len or semantic.symbol_ids[@backingInt(local)] != raw or
+        @backingInt(local) >= ast.nodes.items.len) return null;
+    const leaf = ast.getNode(local);
+    if ((leaf.tag != .identifier_reference and leaf.tag != .binding_identifier) or
+        !std.mem.eql(u8, ast.getText(leaf.data.string_ref), symbol.synthetic_name)) return null;
+    var anchors: usize = 0;
+    for (semantic.references) |row| {
+        if (@backingInt(row.symbol_id) != raw or !row.flags.declare) continue;
+        const node = row.declaration_node_index;
+        if (node.isNone() or @backingInt(node) >= ast.nodes.items.len or @backingInt(node) >= semantic.symbol_ids.len or
+            semantic.symbol_ids[@backingInt(node)] != raw or row.scope_id != symbol.scope_id) return null;
+        const declaration = ast.getNode(node);
+        if (declaration.tag != .binding_identifier or !std.mem.eql(u8, ast.getText(declaration.data.string_ref), symbol.synthetic_name)) return null;
+        anchors += 1;
+    }
+    return if (anchors == 1) symbol.synthetic_name else null;
+}
+
 const EsmInteropRuntimeHelperSymbolIds = @import("module.zig").EsmInteropRuntimeHelperSymbolIds;
 const WrapperNameError = @import("module.zig").WrapperNameError;
 const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
@@ -1033,14 +1067,16 @@ pub const Linker = struct {
                 const symbol_index = @backingInt(symbol_id.inner);
                 if (symbol_index >= sem.symbols.items.len) return error.InvalidDefaultExportFacadeSymbolId;
                 const facade = sem.symbols.items[symbol_index];
-                if (facade.synthetic_kind != .default_export or
-                    !std.mem.eql(u8, facade.synthetic_name, "_default"))
-                    return error.InvalidDefaultExportFacadeSymbol;
+                if (facade.synthetic_kind != .default_export) return error.InvalidDefaultExportFacadeSymbol;
+                const facade_name = if (std.mem.eql(u8, facade.synthetic_name, "_default"))
+                    "_default"
+                else
+                    materializedDefaultFacadeName(&m, eb, @intCast(symbol_index)) orelse return error.InvalidDefaultExportFacadeSymbol;
                 if (facade.scope_id.isNone() or facade.scope_id.toIndex() >= sem.scopes.len)
                     return error.MissingDefaultExportFacadeOwnerScope;
                 if (facade.scope_id.toIndex() != 0)
                     return error.InvalidDefaultExportFacadeOwnerScope;
-                try cb(ctx, "_default", .{ .symbol_id = symbol_id, .preserve_preferred_spelling = true });
+                try cb(ctx, facade_name, .{ .symbol_id = symbol_id, .preserve_preferred_spelling = true });
                 continue;
             }
             if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
@@ -7845,4 +7881,48 @@ pub fn getOrCreateRequireVar(
     const name = try target_mod.allocRequireName(self.allocator, &self.rename_table);
     try cache.put(self.allocator, mod_idx, name);
     return name;
+}
+
+test "materialized TLA default facade keeps its actual output owner and rejects foreign bindings" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "entry.mjs", .data = "const _default='user';await 0;export default _default+'!';" });
+    const path = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = @import("resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es2016);
+    graph.transform_options_base.tla_module_awaited = true;
+    try graph.build(std.testing.io, &.{path});
+    const index = graph.path_to_module.get(path).?;
+    const module = graph.modules.at(@backingInt(index));
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    const binding = module.export_bindings[0];
+    const raw = module.exportBindingSemanticIndex(binding).?;
+    try std.testing.expectEqualStrings("_default2", materializedDefaultFacadeName(module, binding, raw).?);
+    const semantic = &module.semantic.?;
+    const original = semantic.symbols.items[raw];
+    defer semantic.symbols.items[raw] = original;
+    const user = semantic.scope_maps[0].get("_default").?;
+    var wrong = binding;
+    wrong.symbol = .{ .semantic = .{ .module = index, .symbol = @fromBackingInt(@intCast(user)) } };
+    try std.testing.expect(materializedDefaultFacadeName(module, wrong, raw) == null);
+    for (module.ast.?.nodes.items, 0..) |node, i| {
+        if (node.tag != .binding_identifier or i >= semantic.symbol_ids.len or semantic.symbol_ids[i] != @as(?u32, @intCast(user))) continue;
+        wrong = binding;
+        wrong.local_symbol_node = @fromBackingInt(@intCast(i));
+        try std.testing.expect(materializedDefaultFacadeName(module, wrong, raw) == null);
+        break;
+    }
+    semantic.symbols.items[raw].scope_id = .none;
+    try std.testing.expect(materializedDefaultFacadeName(module, binding, raw) == null);
+    semantic.symbols.items[raw] = original;
+    semantic.symbols.items[raw].decl_flags.is_default_export = false;
+    try std.testing.expect(materializedDefaultFacadeName(module, binding, raw) == null);
+    semantic.symbols.items[raw] = original;
+    try std.testing.expectEqualStrings("_default2", materializedDefaultFacadeName(module, binding, raw).?);
 }

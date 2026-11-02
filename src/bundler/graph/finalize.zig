@@ -1850,11 +1850,18 @@ pub fn computeAsyncCone(self: *ModuleGraph) void {
 pub fn promoteAsyncConeToEsmWrap(self: *ModuleGraph) void {
     const base = &self.transform_options_base;
     if (!base.unsupported.top_level_await) return; // 타겟이 TLA 지원 → 손대지 않음
-    if (!base.asyncInitWrappersAllowed()) return; // es5 ESM 은 단일 파일 `await` 경로(#5575)
-    if (self.code_splitting or self.preserve_modules) return;
+    const protocol_readiness = (self.preserve_modules or self.code_splitting) and base.tla_entry_exports_awaited;
+    // The protocol's synchronous outer factory returns its registered inner IIFE
+    // promise; the owned protocol waits for it without native async syntax.
+    if (!base.asyncInitWrappersAllowed() and !protocol_readiness) return;
+    if (self.code_splitting and !protocol_readiness) return;
+    // PM/split readiness instantiates each ESM module's namespace and hoisted
+    // functions before requiring dependencies, then awaits its exact init.
+    // Modes without that output role keep their old evaluation path.
+    if (self.preserve_modules and !protocol_readiness) return;
     // 청크 위임(#4625)이 이 청크를 async factory 로 감싸면 모듈을 또 래핑하지 않는다.
     // 위임 산물이 scope-hoist 라 더 작고 이미 검증돼 있다 — 겹치면 커지기만 한다.
-    if (base.tla_chunk_wrapped) return;
+    if (base.tla_chunk_wrapped and !protocol_readiness) return;
 
     var warned_async_fallback = false;
     var it = self.modules.iterator(0);
@@ -1867,13 +1874,13 @@ pub fn promoteAsyncConeToEsmWrap(self: *ModuleGraph) void {
         // ⚠️ 대신 emitter 가 승격 안 된 TLA 모듈에 최상위 `await <temp>;` 를 낸다.
         //    안 그러면 `lowerProgram` 이 옮긴 초기화식을 아무도 기다리지 않아 export 값이
         //    조용히 `undefined` 가 된다(리뷰 실측: main `V= 41` → `V= undefined`).
-        if (m.is_entry_point and m.export_bindings.len > 0) continue;
+        if (m.is_entry_point and m.export_bindings.len > 0 and !base.tla_entry_exports_awaited) continue;
         // ⚠️ **순수 re-export entry**(`export { v } from './dep'`)가 소비자면 승격하면 안 된다.
         //    그 위상엔 `init_X()` 를 부르는 경로가 아예 없어(import 바인딩도 wrap 도 없음)
         //    factory 가 정의만 되고 호출되지 않는다 → export 값이 영구히 `undefined`
         //    (리뷰 실측: main `v= 41` → `v= undefined`). 승격 안 하면 scope-hoist 로
         //    남아 emitter 의 최상위 await fallback 이 처리한다.
-        if (hasOnlyReExportImporters(self, m)) continue;
+        if (!protocol_readiness and hasOnlyReExportImporters(self, m)) continue;
         if (m.exports_kind == .none) m.exports_kind = .esm;
         if (m.exports_kind.isEsm()) m.wrap_kind = .esm;
         // webpack 과 같이 경고: 기다리려면 async 초기화 함수가 필요한데 타겟에 async 가 없다.
@@ -1958,6 +1965,12 @@ fn hasOnlyReExportImporters(self: *ModuleGraph, target: *const Module) bool {
             if (rec.kind != .re_export) return false;
             // A wrapped barrel's init runs its re-export sources' inits (#5662).
             if (m.wrap_kind == .esm) return false;
+            // A non-ESM library entry has an actual ready-value writer. Its
+            // pending wrapper owns this static dependency even when ModuleStore
+            // iteration visits the dependency before the entry.
+            if (self.transform_options_base.tla_entry_exports_awaited and
+                m.is_entry_point and m.in_async_cone and m.export_bindings.len > 0 and
+                m.wrap_kind == .none and m.module_type.isJavaScriptLike()) return false;
         }
     }
     return saw_any;

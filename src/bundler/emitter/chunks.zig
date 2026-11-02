@@ -78,6 +78,99 @@ fn crossChunkPublicName(l: *const Linker, sym: chunk_mod.CrossChunkSym, preserve
     return error.MissingCrossChunkPublicName;
 }
 
+fn firstAsyncChunkModule(chunk: *const Chunk, graph: *const ModuleGraph) ?ModuleIndex {
+    for (chunk.modules.items) |index| {
+        const module = graph.getModule(index) orelse continue;
+        if (module.in_async_cone or module.tla_iife_stmt != null or module.uses_top_level_await) return index;
+    }
+    return null;
+}
+
+/// Resolve the registered helper through its actual provider and output chunk.
+/// A canonical local is usable only inside the provider's own chunk.
+fn readinessHelperExpression(
+    allocator: std.mem.Allocator,
+    graph: *const ModuleGraph,
+    chunk_graph: *const ChunkGraph,
+    chunk: *const Chunk,
+    options: *const EmitOptions,
+    linker: *const Linker,
+    reg_ids: []const []const u8,
+) ![]const u8 {
+    const provider = try parent.checkedReadinessAllProvider(graph, linker);
+    const helper_chunk_index = chunk_graph.getModuleChunk(provider.module.index);
+    if (helper_chunk_index.isNone()) return error.InvalidTlaReadinessHelper;
+    if (helper_chunk_index == chunk.index) return try allocator.dupe(u8, provider.local_name);
+    const helper_chunk = chunk_graph.getChunk(helper_chunk_index);
+    const ext = options.out_extension_js orelse ".js";
+    var importer: std.ArrayListUnmanaged(u8) = .empty;
+    defer importer.deinit(allocator);
+    var helper: std.ArrayListUnmanaged(u8) = .empty;
+    defer helper.deinit(allocator);
+    try chunkPlaceholderStem(chunk, &importer, allocator, options);
+    try chunkPlaceholderStem(helper_chunk, &helper, allocator, options);
+    const registry = options.format.isWrappedFormat() and !options.preserve_modules;
+    const path = if (registry) blk: {
+        const raw = @backingInt(helper_chunk_index);
+        if (raw >= reg_ids.len) return error.InvalidTlaReadinessHelper;
+        break :blk try allocator.dupe(u8, reg_ids[raw]);
+    } else if (helper_chunk.explicit_file_name) |file|
+        try computeRelativePath(allocator, std.fs.path.dirname(importer.items) orelse "", file, "")
+    else if (options.preserve_modules and helper_chunk.rel_dir != null)
+        try computeRelativeImportPath(allocator, chunk.rel_dir orelse "./", helper_chunk.rel_dir.?, ext, options.preserve_modules_root)
+    else
+        try computeRelativePath(allocator, std.fs.path.dirname(importer.items) orelse "", helper.items, ext);
+    defer allocator.free(path);
+    const quoted_path = try quoteChunkPath(allocator, path);
+    defer allocator.free(quoted_path);
+    const key = try @import("../public_export_key.zig").fromSyntax(allocator, provider.binding.exported_name);
+    defer key.deinit(allocator);
+    const quoted_key = try std.json.Stringify.valueAlloc(allocator, key.text, .{});
+    defer allocator.free(quoted_key);
+    return try std.fmt.allocPrint(allocator, "{s}({s})[{s}]", .{ if (registry) "__zntc_require" else "require", quoted_path, quoted_key });
+}
+
+fn quoteChunkPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.append(allocator, '"');
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, path, cursor, HASH_PLACEHOLDER_PREFIX)) |start| {
+        const end = start + HASH_PLACEHOLDER_PREFIX.len + PLACEHOLDER_HASH_LEN;
+        if (end > path.len) return error.InvalidChunkHashPlaceholder;
+        for (path[start + HASH_PLACEHOLDER_PREFIX.len .. end]) |digit| {
+            if (!((digit >= '0' and digit <= '9') or (digit >= 'a' and digit <= 'f') or (digit >= 'A' and digit <= 'F')))
+                return error.InvalidChunkHashPlaceholder;
+        }
+        const segment = try std.json.Stringify.valueAlloc(allocator, path[cursor..start], .{});
+        defer allocator.free(segment);
+        try out.appendSlice(allocator, segment[1 .. segment.len - 1]);
+        // Keep only the compiler's physical sentinel until resolveContentHashes.
+        // Encoding it as a JS escape would make the final hash pass miss it.
+        try out.appendSlice(allocator, path[start..end]);
+        cursor = end;
+    }
+    const tail = try std.json.Stringify.valueAlloc(allocator, path[cursor..], .{});
+    defer allocator.free(tail);
+    try out.appendSlice(allocator, tail[1 .. tail.len - 1]);
+    try out.append(allocator, '"');
+    return try out.toOwnedSlice(allocator);
+}
+
+test "readiness helper paths retain real late hash slots without changing literal escapes" {
+    const a = std.testing.allocator;
+    const slot = HASH_PLACEHOLDER_PREFIX ++ "0123456789abcdef";
+    const path = "./quoted\"-\\u0000ZHliteral-한글-" ++ slot ++ ".js";
+    const quoted = try quoteChunkPath(a, path);
+    defer a.free(quoted);
+    const final = try replacePlaceholders(a, quoted, slot, "89abcdef");
+    defer a.free(final);
+    const parsed = try std.json.parseFromSlice([]const u8, a, final, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("./quoted\"-\\u0000ZHliteral-한글-89abcdef.js", parsed.value);
+    try std.testing.expect(std.mem.indexOf(u8, final, HASH_PLACEHOLDER_PREFIX) == null);
+}
+
 const ChunkModuleEmitResult = struct {
     code: ?[]const u8 = null,
     mappings: ?[]const SourceMap.Mapping = null,
@@ -396,6 +489,10 @@ fn emitPmCjsLiveImport(
     used_locals: *std.StringHashMapUnmanaged(void),
     natural_bindings: *const std.StringHashMapUnmanaged(void),
     alias_strs: *std.ArrayList([]const u8),
+    await_namespace: bool,
+    async_import_depth: *usize,
+    require_callee: []const u8,
+    assign_host: bool,
 ) !void {
     // ns holder: `const ns_x = require("<bind_arg>");`
     const dep_mod = graph.getModule(dep_module) orelse return;
@@ -404,11 +501,23 @@ fn emitPmCjsLiveImport(
     // 키(borrow)로 넣을 수 있어(기존 caller 는 안정 slice 를 넘김) `defer free` 하면 UAF 다.
     try alias_strs.append(allocator, ns_base);
     const ns_local = try mintConsumerLocal(allocator, ns_base, used_locals, natural_bindings, alias_strs);
-    try chunk_output.appendSlice(allocator, if (legacy_syntax) "var " else "const ");
-    try chunk_output.appendSlice(allocator, ns_local);
-    try chunk_output.appendSlice(allocator, if (min) "=require(\"" else " = require(\"");
-    try chunk_output.appendSlice(allocator, bind_arg);
-    try chunk_output.appendSlice(allocator, if (min) "\");" else "\");\n");
+    if (await_namespace) {
+        // This holder already owns the consumer's namespace reads. Carry that
+        // same output binding as the callback parameter, after the graph-owned
+        // asynchronous provider has completed; do not inspect arbitrary thenables.
+        try chunk_output.appendSlice(allocator, if (async_import_depth.* == 0) (if (assign_host) "module.exports = " else "") else "return ");
+        try chunk_output.appendSlice(allocator, require_callee);
+        try chunk_output.appendSlice(allocator, "(\"");
+        try chunk_output.appendSlice(allocator, bind_arg);
+        try chunk_output.print(allocator, "\").then(function({s}) {{\n", .{ns_local});
+        async_import_depth.* += 1;
+    } else {
+        try chunk_output.appendSlice(allocator, if (legacy_syntax) "var " else "const ");
+        try chunk_output.appendSlice(allocator, ns_local);
+        try chunk_output.appendSlice(allocator, if (min) "=require(\"" else " = require(\"");
+        try chunk_output.appendSlice(allocator, bind_arg);
+        try chunk_output.appendSlice(allocator, if (min) "\");" else "\");\n");
+    }
 
     var destructure_open = false;
     for (syms) |sym| {
@@ -472,6 +581,54 @@ fn emitPmCjsLiveImport(
         try chunk_output.appendSlice(allocator, ns_local);
         try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
     }
+}
+
+fn emitPmAsyncWrapperImport(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    linker: ?*Linker,
+    provider: *const Module,
+    syms: []const chunk_mod.CrossChunkSym,
+    path: []const u8,
+    helper: []const u8,
+    consumer: u32,
+    used_locals: *std.StringHashMapUnmanaged(void),
+    natural_bindings: *const std.StringHashMapUnmanaged(void),
+    alias_strs: *std.ArrayList([]const u8),
+) !void {
+    const names = try wrapperNamesFor(allocator, provider, null);
+    defer names.deinit(allocator);
+    const quoted_path = try std.json.Stringify.valueAlloc(allocator, path, .{});
+    defer allocator.free(quoted_path);
+    const state = try std.fmt.allocPrint(allocator, "{s}.state(require({s}))", .{ helper, quoted_path });
+    defer allocator.free(state);
+    if (names.b) |namespace| try out.print(allocator, "var {s}={s}.namespace;\n", .{ namespace, state });
+    var locals: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer locals.deinit(allocator);
+    for (syms) |sym| {
+        const binding = try crossChunkBindingName(linker, sym);
+        const global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) else null;
+        const local = try deconflictedConsumerLocal(linker, sym, binding, global != null, consumer, allocator, used_locals, natural_bindings, alias_strs);
+        try locals.append(allocator, local);
+        try out.print(allocator, "var {s};\n", .{local});
+    }
+    // Evaluation is owned by publish(), not by an imported forwarding thunk.
+    // A real recursive require observes an instantiated namespace and no ready
+    // promise yet. Capture that backedge before the provider finishes loading.
+    try out.print(allocator, "var {s}=function(){{\n", .{names.a});
+    if (names.b) |namespace| try out.print(allocator, "{s}={s}.namespace;\n", .{ namespace, state });
+    for (syms, 0..) |sym, index| {
+        const global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) else null;
+        const binding = try crossChunkBindingName(linker, sym);
+        const key = if (global) |value| value else sym.name;
+        const property = try ordinaryConsumerPropertyKey(allocator, linker, sym, key, if (global != null) .binding_spelling else .module_export_name);
+        defer property.deinit(allocator);
+        const quoted_key = try std.json.Stringify.valueAlloc(allocator, property.text, .{});
+        defer allocator.free(quoted_key);
+        _ = binding;
+        try out.print(allocator, "{s}={s}.internals[{s}];\n", .{ locals.items[index], state, quoted_key });
+    }
+    try out.print(allocator, "return {s}.__zntc_ready;\n}};\n{s}.__zntc_ready={s}.initializing?void 0:{s}.ready;\n", .{ names.a, names.a, state, state });
 }
 
 /// (#4580) 모듈이 default 외 **named** export 를 하나라도 내는가 — `export *`(ESM 스펙상 default
@@ -1006,7 +1163,8 @@ fn emitChunksImpl(
         }
 
         // 청크별 런타임 헬퍼 주입
-        try emitChunkRuntimeHelpers(&chunk_output, allocator, chunk, graph, linker, options, null);
+        var chunk_interop_emitted = false;
+        try emitChunkRuntimeHelpers(&chunk_output, allocator, chunk, graph, linker, options, null, &chunk_interop_emitted);
 
         // dev_split (RFC_LAZY_DEV_MODULE_HMR PR-2): 글로벌 __zntc_modules 등록 prelude.
         // emitChunkRuntimeHelpers 가 청크-로컬 __esm/__commonJS 를 정의한 *직후* 에 주입돼야
@@ -1130,6 +1288,28 @@ fn emitChunksImpl(
         // - cjs_split (P3-B): cjs+splitting, resolved_path=청크 stem
         //   (둘 다 Node 네이티브 require 가 정적 string 으로 해석).
         const pm_cjs = options.preserve_modules and options.format == .cjs;
+        var pm_async_import_depth: usize = 0;
+        const pm_protocol_owner: ?ModuleIndex = if (pm_cjs and chunk.modules.items.len == 1) blk: {
+            const owner = graph.getModule(chunk.modules.items[0]) orelse break :blk null;
+            break :blk if (owner.wrap_kind == .esm and owner.in_async_cone) owner.index else null;
+        } else null;
+        const pm_readiness = if (pm_protocol_owner != null)
+            try readinessHelperExpression(allocator, graph, chunk_graph, chunk, options, linker orelse return error.MissingTlaReadinessHelper, reg_ids)
+        else
+            null;
+        defer if (pm_readiness) |value| allocator.free(value);
+        var pm_definition_pos = chunk_output.items.len;
+        var pm_definition_code: std.ArrayListUnmanaged(u8) = .empty;
+        defer pm_definition_code.deinit(allocator);
+        var pm_dependency_states: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer {
+            for (pm_dependency_states.items) |value| allocator.free(value);
+            pm_dependency_states.deinit(allocator);
+        }
+        var split_async_import_depth: usize = 0;
+        const split_assign_host = options.format != .cjs or !chunk_is_user_entry or options.output_exports != .none;
+        var split_bridge_entries: std.ArrayList(LinkingMetadata.FinalExportEntry) = .empty;
+        defer split_bridge_entries.deinit(allocator);
         const cjs_split = options.format == .cjs and !options.preserve_modules;
         const cjs_require = pm_cjs or cjs_split;
 
@@ -1189,6 +1369,21 @@ fn emitChunksImpl(
             };
             defer allocator.free(resolved_path);
 
+            if (pm_readiness) |helper_expr| {
+                const dep_owner = depChunkModuleIndex(dep_chunk);
+                const async_dep = if (dep_owner) |index|
+                    if (graph.getModule(index)) |provider| provider.wrap_kind == .esm and provider.in_async_cone else false
+                else
+                    false;
+                if (async_dep) {
+                    const quoted = try std.json.Stringify.valueAlloc(allocator, resolved_path, .{});
+                    defer allocator.free(quoted);
+                    const state = try std.fmt.allocPrint(allocator, "{s}.state(require({s}))", .{ helper_expr, quoted });
+                    errdefer allocator.free(state);
+                    try pm_dependency_states.append(allocator, state);
+                }
+            }
+
             // 청크 경계 결합 형태: esm `import{}from""` / cjs `const{}=require("")`
             // / iife `const{}=__zntc_require("<id>")`. brace·alias 표기는 cjs 와
             // iife 가 동일(`const {` / `name: alias`) — reg_like 로 공유.
@@ -1243,6 +1438,41 @@ fn emitChunksImpl(
                 const names = try wrapperNamesFor(allocator, dm, null);
                 defer names.deinit(allocator);
                 const min = options.minify_whitespace;
+
+                if (pm_readiness) |helper_expr| {
+                    if (dm.wrap_kind == .esm and dm.in_async_cone) {
+                        try emitPmAsyncWrapperImport(
+                            allocator,
+                            &chunk_output,
+                            linker,
+                            dm,
+                            pm_esm_wrap_dep_syms orelse &.{},
+                            bind_arg,
+                            helper_expr,
+                            @backingInt(pm_protocol_owner.?),
+                            &used_locals,
+                            &natural_bindings,
+                            &alias_strs,
+                        );
+                        continue;
+                    }
+                }
+
+                if (!options.preserve_modules and options.format != .esm and dm.wrap_kind == .esm and dm.in_async_cone) {
+                    const ns_base = try types.makeNsVarName(allocator, dm.path);
+                    try alias_strs.append(allocator, ns_base);
+                    const ns_local = try mintConsumerLocal(allocator, ns_base, &used_locals, &natural_bindings, &alias_strs);
+                    try chunk_output.appendSlice(allocator, if (split_async_import_depth == 0) (if (split_assign_host) "module.exports = " else "") else "return ");
+                    try chunk_output.print(allocator, "{s}(\"{s}\").then(function({s}) {{\n", .{ if (reg_split) "__zntc_require" else "require", bind_arg, ns_local });
+                    split_async_import_depth += 1;
+                    for ([_]?[]const u8{ names.a, names.b }) |maybe| {
+                        const name = maybe orelse continue;
+                        const quoted = try std.json.Stringify.valueAlloc(allocator, name, .{});
+                        defer allocator.free(quoted);
+                        try chunk_output.print(allocator, "var {s}={s}[{s}];\n", .{ name, ns_local, quoted });
+                    }
+                    continue;
+                }
 
                 if (cjs_require) {
                     // (#4526) ⚠️ cjs 는 **구조분해하면 안 된다**.
@@ -1450,10 +1680,27 @@ fn emitChunksImpl(
             if (!reg_split and !options.preserve_modules) {
                 if (chunk.esm_wrapper_cross_imports.get(dep_ci)) |initializers| {
                     std.mem.sort(SymbolID, initializers.items, {}, esmInitLessThan);
+                    const ready_holder: ?[]const u8 = if (cjs_require and initializers.items.len != 0 and firstAsyncChunkModule(dep_chunk, graph) != null) blk: {
+                        const actual = graph.getModule(initializers.items[0].module) orelse return error.InvalidEsmInitOwner;
+                        const base = try types.makeNsVarName(allocator, actual.path);
+                        try alias_strs.append(allocator, base);
+                        const holder = try mintConsumerLocal(allocator, base, &used_locals, &natural_bindings, &alias_strs);
+                        try chunk_output.appendSlice(allocator, if (split_async_import_depth == 0) (if (split_assign_host) "module.exports = " else "") else "return ");
+                        try chunk_output.print(allocator, "require(\"{s}\").then(function({s}) {{\n", .{ bind_arg, holder });
+                        split_async_import_depth += 1;
+                        break :blk holder;
+                    } else null;
                     for (initializers.items) |init| {
                         const name = try esmWrapperNameFor(allocator, graph, init, null);
                         defer allocator.free(name);
-                        if (cjs_require) {
+                        if (ready_holder) |holder| {
+                            // The exact wrapper export ledger is part of this
+                            // provider's completed namespace. Never read its
+                            // Promise as if it already were that namespace.
+                            const quoted = try std.json.Stringify.valueAlloc(allocator, name, .{});
+                            defer allocator.free(quoted);
+                            try chunk_output.print(allocator, "var {s}={s}[{s}];\n", .{ name, holder, quoted });
+                        } else if (cjs_require) {
                             const provider = graph.getModule(init.module) orelse return error.InvalidEsmInitOwner;
                             if ((try provider.esmInitSymbol()).eql(init)) {
                                 try chunk_output.print(allocator, "var {s}=function(){{return require(\"{s}\").{s}.apply(this,arguments)}};\n", .{ name, bind_arg, name });
@@ -1526,6 +1773,13 @@ fn emitChunksImpl(
                     import_symbols = lazy_unique_symbols.items;
                 }
 
+                if (!options.preserve_modules and options.format != .esm) {
+                    if (firstAsyncChunkModule(dep_chunk, graph)) |async_provider| {
+                        try emitPmCjsLiveImport(allocator, &chunk_output, linker, graph, async_provider, import_symbols, bind_arg, lazy_local_keys, options.minify_whitespace, options.transform_options_base.unsupported.block_scoping or options.transform_options_base.unsupported.destructuring, &used_locals, &natural_bindings, &alias_strs, true, &split_async_import_depth, if (reg_split) "__zntc_require" else "require", split_assign_host);
+                        continue;
+                    }
+                }
+
                 // (#4587 target a) preserve-modules CJS 라이브 바인딩: dep 의 재할당(storage)
                 // export 를 구조분해(로드 시점 스냅샷)로 잡으면 순환에서 undefined 를 박제한다.
                 // 재할당 심볼은 ns holder(`const ns=require()`) + body 참조 `ns.<key>`
@@ -1535,6 +1789,10 @@ fn emitChunksImpl(
                 // 게이트와 동일 값이어야 정합).
                 const storage_output_gate = options.output_exports == .auto or options.output_exports == .named;
                 const dep_mod_idx: ?ModuleIndex = if (pm_cjs and storage_output_gate) depChunkModuleIndex(dep_chunk) else null;
+                const await_pm_namespace = if (pm_protocol_owner != null) false else if (dep_mod_idx) |dmi|
+                    if (graph.getModule(dmi)) |provider| provider.in_async_cone else false
+                else
+                    false;
                 var has_reassigned = false;
                 if (dep_mod_idx) |dmi| {
                     for (symbols.?.items) |sym| {
@@ -1544,7 +1802,7 @@ fn emitChunksImpl(
                         }
                     }
                 }
-                if (has_reassigned) {
+                if (has_reassigned or await_pm_namespace) {
                     try emitPmCjsLiveImport(
                         allocator,
                         &chunk_output,
@@ -1559,6 +1817,10 @@ fn emitChunksImpl(
                         &used_locals,
                         &natural_bindings,
                         &alias_strs,
+                        await_pm_namespace,
+                        &pm_async_import_depth,
+                        "require",
+                        true,
                     );
                     continue;
                 }
@@ -1643,6 +1905,27 @@ fn emitChunksImpl(
                 // 심볼 정보 없음 → side-effect (실행/등록 순서 보장용)
                 // ⚠️ 래퍼 분기(preserve-modules) 또는 #4541 wrapper named import 가 이미 결합을
                 // 냈으면 여기서 또 내면 중복이다.
+                if (!options.preserve_modules and options.format != .esm and firstAsyncChunkModule(dep_chunk, graph) != null) {
+                    try chunk_output.appendSlice(allocator, if (split_async_import_depth == 0) (if (split_assign_host) "module.exports = " else "") else "return ");
+                    try chunk_output.appendSlice(allocator, if (reg_split) "__zntc_require(\"" else "require(\"");
+                    try chunk_output.appendSlice(allocator, bind_arg);
+                    try chunk_output.appendSlice(allocator, "\").then(function() {\n");
+                    split_async_import_depth += 1;
+                    continue;
+                }
+                if (pm_cjs and pm_protocol_owner == null and (options.output_exports == .auto or options.output_exports == .named)) {
+                    const async_provider = if (depChunkModuleIndex(dep_chunk)) |dmi|
+                        if (graph.getModule(dmi)) |provider| provider.in_async_cone else false
+                    else
+                        false;
+                    if (async_provider) {
+                        try chunk_output.appendSlice(allocator, if (pm_async_import_depth == 0) "module.exports = require(\"" else "return require(\"");
+                        try chunk_output.appendSlice(allocator, bind_arg);
+                        try chunk_output.appendSlice(allocator, "\").then(function() {\n");
+                        pm_async_import_depth += 1;
+                        continue;
+                    }
+                }
                 const se_open = if (reg_split)
                     "__zntc_require(\""
                 else if (cjs_require)
@@ -1657,6 +1940,11 @@ fn emitChunksImpl(
                 try chunk_output.appendSlice(allocator, se_close);
             }
         }
+
+        // These declarations now belong to the readiness callback. Hoist their
+        // public function values inside that same function scope, after its
+        // dependency holders exist, rather than reading an unbound outer name.
+        if (pm_async_import_depth > 0 and fn_hoist_entry != null) fn_hoist_pos = chunk_output.items.len;
 
         // 청크 내 모듈을 정렬. 단일번들(bundleOrderLessThan)과 동일하게 **래핑 모듈
         // (__commonJS/__esm) 먼저, 그 안에서 exec_index** — `var require_X = __commonJS(...)`/
@@ -1757,6 +2045,7 @@ fn emitChunksImpl(
             );
             if (imports_output.items.len > 0) {
                 try chunk_output.insertSlice(allocator, external_imports_pos, imports_output.items);
+                pm_definition_pos += imports_output.items.len;
                 if (ns_preamble_pos) |*pos| pos.* += imports_output.items.len;
                 if (fn_hoist_pos) |*pos| pos.* += imports_output.items.len;
             }
@@ -1791,6 +2080,7 @@ fn emitChunksImpl(
             try l.appendSharedNamespacePreambleFiltered(&ns_preamble, &chunk_targets);
             if (ns_preamble.items.len > 0) {
                 try chunk_output.insertSlice(allocator, pos, ns_preamble.items);
+                pm_definition_pos += ns_preamble.items.len;
             }
         };
 
@@ -1865,7 +2155,45 @@ fn emitChunksImpl(
         // Each module body is independent after this chunk's rename table is
         // finalized. Emit large chunks in parallel, then keep import rewriting,
         // sourcemap assembly, and output concatenation in deterministic order.
-        const module_emit_options = if (reg_split) &iife_emit_opts else options;
+        var pm_deferred_exports: parent.DeferredAsyncEntryExports = .{ .module_index = entry_mod_idx orelse 0 };
+        defer if (pm_deferred_exports.value) |value| allocator.free(value);
+        defer if (pm_deferred_exports.init_name) |value| allocator.free(value);
+        defer if (pm_deferred_exports.namespace_name) |value| allocator.free(value);
+        var pm_emit_options = if (reg_split) iife_emit_opts else options.*;
+        if (pm_async_import_depth > 0 or pm_protocol_owner != null) {
+            if (entry_mod_idx == null) return error.MissingAsyncEntryExportOwner;
+            pm_emit_options.defer_async_entry_exports = &pm_deferred_exports;
+            pm_deferred_exports.pm_protocol = pm_protocol_owner != null;
+        }
+        var split_deferred_exports: parent.DeferredAsyncEntryExports = .{ .module_index = entry_mod_idx orelse 0 };
+        defer if (split_deferred_exports.value) |value| allocator.free(value);
+        var split_emit_options = if (reg_split) iife_emit_opts else options.*;
+        const split_needs_readiness = !options.preserve_modules and options.format != .esm and
+            (split_async_import_depth > 0 or firstAsyncChunkModule(chunk, graph) != null);
+        const split_contexts = try allocator.alloc(parent.DeferredAsyncEntryExports, if (split_needs_readiness) module_count else 0);
+        defer allocator.free(split_contexts);
+        for (split_contexts, 0..) |*context, index| context.* = .{ .module_index = @intCast(index) };
+        defer for (split_contexts) |context| {
+            if (context.value) |value| allocator.free(value);
+            if (context.init_name) |value| allocator.free(value);
+            if (context.namespace_name) |value| allocator.free(value);
+        };
+        if (split_needs_readiness) {
+            for (sorted_mods) |index| {
+                const owner = graph.getModule(index) orelse return error.InvalidTlaReadinessOwner;
+                if (owner.wrap_kind == .esm and owner.in_async_cone)
+                    split_contexts[index.toU32()].internal_module = true;
+            }
+            split_emit_options.deferred_module_exports = split_contexts;
+            if (!chunk_is_user_entry) split_emit_options.output_exports = .named;
+            if (entry_mod_idx != null) split_emit_options.defer_async_entry_exports = &split_deferred_exports;
+        }
+        const internal_readiness_helper = if (graph.tla_readiness_all) |known|
+            chunk.modules.items.len == 1 and chunk.modules.items[0] == known.module_index
+        else
+            false;
+        if (internal_readiness_helper) pm_emit_options.output_exports = .named;
+        const module_emit_options = if (pm_async_import_depth > 0 or pm_protocol_owner != null or internal_readiness_helper) &pm_emit_options else if (split_needs_readiness) &split_emit_options else if (reg_split) &iife_emit_opts else options;
         const parallelism: usize = @max(1, if (graph.max_threads != 0)
             @as(usize, @intCast(graph.max_threads))
         else
@@ -1979,10 +2307,15 @@ fn emitChunksImpl(
                     if (module_line) |*ml| ml.* += @intCast(std.mem.count(u8, chunk_output.items[before_len..], "\n"));
                 }
 
+                const pm_mapping_base: ?u32 = if (pm_protocol_owner != null and chunk_sm != null)
+                    @intCast(std.mem.count(u8, chunk_output.items[0..pm_definition_pos], "\n") + std.mem.count(u8, pm_definition_code.items, "\n"))
+                else
+                    null;
+                const definition_output = if (pm_protocol_owner != null) &pm_definition_code else &chunk_output;
                 if (!options.minify_whitespace) {
-                    try chunk_output.appendSlice(allocator, "//#region ");
-                    try chunk_output.appendSlice(allocator, std.fs.path.basename(m.path));
-                    try chunk_output.append(allocator, '\n');
+                    try definition_output.appendSlice(allocator, "//#region ");
+                    try definition_output.appendSlice(allocator, std.fs.path.basename(m.path));
+                    try definition_output.append(allocator, '\n');
                     if (module_line) |*ml| ml.* += 1;
                 }
 
@@ -2000,7 +2333,7 @@ fn emitChunksImpl(
                         .source = m.source,
                         .maps = maps,
                         .module_names = module_names,
-                        .base_line = module_line.? - region_lines,
+                        .base_line = pm_mapping_base orelse (module_line.? - region_lines),
                         .preamble_lines = module_preamble_lines,
                         .sources_content = options.sourcemap.sources_content,
                         .indent_offset = false,
@@ -2011,10 +2344,15 @@ fn emitChunksImpl(
                     });
                 };
 
-                try chunk_output.appendSlice(allocator, stripped);
+                if (pm_protocol_owner) |owner| {
+                    if (m.index != owner or m.wrap_kind != .esm) return error.InvalidAsyncEntryExportOwner;
+                    // Instantiation definitions precede recursive require;
+                    // evaluation stays behind the registered initializer.
+                    try pm_definition_code.appendSlice(allocator, stripped);
+                } else try chunk_output.appendSlice(allocator, stripped);
                 if (module_line) |*ml| ml.* += stripped_lines;
                 if (!options.minify_whitespace) {
-                    try chunk_output.appendSlice(allocator, "//#endregion\n");
+                    try definition_output.appendSlice(allocator, "//#endregion\n");
                     if (module_line) |*ml| ml.* += 1;
                 }
 
@@ -2167,7 +2505,7 @@ fn emitChunksImpl(
             // 먼저 평가되는 쪽이 아직 미평가인 상대의 `var require_X`(=undefined)를 불러
             // TypeError 다 — node 는 require 가 dynamic 이라 되지만 ESM 출력으로는 흉내낼 수
             // 없다. 그건 별도 이슈로 남긴다(예전엔 본문이 아예 안 돌아 **조용히** 틀렸다).
-            const pm_entry_call = em.is_entry_point and em.wrap_kind.isWrapped();
+            const pm_entry_call = em.is_entry_point and em.wrap_kind.isWrapped() and pm_protocol_owner == null;
 
             if (options.format == .cjs) {
                 // 청크가 `require()` 로 소비되므로 exports 객체에 깐다.
@@ -2413,6 +2751,7 @@ fn emitChunksImpl(
                             (try provider.localName(l)) orelse return error.InvalidCrossChunkExport;
                         if (cjs_x) {
                             try appendCjsExportBinding(allocator, &chunk_output, global, null, local, pm_wrapped_esm_provider, options.minify_whitespace);
+                            if (split_needs_readiness) try split_bridge_entries.append(allocator, .{ .local = local, .exported = global });
                         } else {
                             if (!first_in_group) try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "," else ", ");
                             try chunk_output.appendSlice(allocator, local);
@@ -2470,11 +2809,12 @@ fn emitChunksImpl(
             while (init_iterator.next()) |init| try initializers.append(allocator, init.*);
             std.mem.sort(SymbolID, initializers.items, {}, esmInitLessThan);
             for (initializers.items) |init| {
-                if (initialized_namespaces.contains(init)) continue;
                 const local = try esmWrapperNameFor(allocator, graph, init, linker);
-                defer allocator.free(local);
+                try alias_strs.append(allocator, local);
                 const public = try esmWrapperNameFor(allocator, graph, init, null);
-                defer allocator.free(public);
+                try alias_strs.append(allocator, public);
+                if (split_needs_readiness) try split_bridge_entries.append(allocator, .{ .local = local, .exported = public });
+                if (initialized_namespaces.contains(init)) continue;
                 if (options.format == .cjs) {
                     try chunk_output.print(allocator, "exports.{s}={s};\n", .{ public, local });
                 } else if (std.mem.eql(u8, local, public)) {
@@ -2528,13 +2868,100 @@ fn emitChunksImpl(
             }
         }
 
+        if (split_needs_readiness) {
+            const l = linker orelse return error.MissingTlaReadinessHelper;
+            const helper = try readinessHelperExpression(allocator, graph, chunk_graph, chunk, options, l, reg_ids);
+            defer allocator.free(helper);
+            var waits: std.ArrayList(u8) = .empty;
+            defer waits.deinit(allocator);
+            try waits.appendSlice(allocator, helper);
+            try waits.appendSlice(allocator, "([");
+            const module_contexts = split_emit_options.deferred_module_exports orelse return error.MissingAsyncEntryExportContext;
+            // Instantiate all exact module namespaces before evaluation. This
+            // makes a recursive edge refer to an owned state, never a guessed
+            // Promise/public property on a user object.
+            for (sorted_mods) |mod_idx| {
+                const context = &module_contexts[mod_idx.toU32()];
+                if (!context.internal_module) continue;
+                const namespace = context.namespace_name orelse return error.MissingAsyncEntryExportValue;
+                try chunk_output.print(allocator, "{s}.register({s},{s});\n", .{ helper, namespace, namespace });
+            }
+            for (sorted_mods) |mod_idx| {
+                const context = &module_contexts[mod_idx.toU32()];
+                if (!context.internal_module) continue;
+                const provider = graph.getModule(mod_idx) orelse return error.InvalidTlaReadinessOwner;
+                const namespace = context.namespace_name orelse return error.MissingAsyncEntryExportValue;
+                const initialize = context.init_name orelse return error.MissingAsyncEntryExportValue;
+                try chunk_output.print(allocator, "{s}.publish({s},null,{s},[", .{ helper, namespace, initialize });
+                var dependency_count: usize = 0;
+                var seen_dependencies: std.AutoHashMapUnmanaged(u32, void) = .empty;
+                defer seen_dependencies.deinit(allocator);
+                for (provider.import_records) |record| {
+                    if (record.resolved.isNone() or record.kind == .dynamic_import) continue;
+                    const dependency_index = record.resolved.toU32();
+                    if (dependency_index >= module_contexts.len) return error.InvalidTlaReadinessOwner;
+                    const dependency = &module_contexts[dependency_index];
+                    if (!dependency.internal_module or std.mem.indexOfScalar(ModuleIndex, chunk.modules.items, record.resolved) == null) continue;
+                    const inserted = try seen_dependencies.getOrPut(allocator, dependency_index);
+                    if (inserted.found_existing) continue;
+                    if (dependency_count != 0) try chunk_output.append(allocator, ',');
+                    const dependency_namespace = dependency.namespace_name orelse return error.MissingAsyncEntryExportValue;
+                    try chunk_output.print(allocator, "{s}.state({s})", .{ helper, dependency_namespace });
+                    dependency_count += 1;
+                }
+                // Internal readiness resolves void. Returning its namespace here
+                // would assimilate a callable public `then` too early.
+                try chunk_output.appendSlice(allocator, "],function(){},false);\n");
+            }
+            var wait_count: usize = 0;
+            for (sorted_mods) |mod_idx| {
+                const context = &module_contexts[mod_idx.toU32()];
+                if (!context.internal_module) continue;
+                if (wait_count != 0) try waits.appendSlice(allocator, ",");
+                const namespace = context.namespace_name orelse return error.MissingAsyncEntryExportValue;
+                try waits.print(allocator, "{s}.state({s}).ready", .{ helper, namespace });
+                wait_count += 1;
+            }
+            try waits.appendSlice(allocator, "])");
+            const public_context: ?*parent.DeferredAsyncEntryExports = if (entry_mod_idx) |index|
+                if (module_contexts[index].internal_module) &module_contexts[index] else &split_deferred_exports
+            else
+                null;
+            const needs_ready_marker = if (public_context != null and public_context.?.value != null)
+                public_context.?.needs_ready_marker
+            else
+                try @import("entry_exports.zig").readyNamespaceNeedsMarker(allocator, split_bridge_entries.items, true, .named);
+            if (needs_ready_marker and !chunk_interop_emitted) {
+                const provider = graph.interop_ast_provider orelse return error.MissingAsyncEntryMarkerIdentity;
+                if (!provider.active) return error.InteropAstProviderNotActivated;
+                // This provider is emitted into each consuming chunk, not imported
+                // from an unrelated output chunk. Its exact selected SID names are
+                // the same names used by the finalized ready-value renderer.
+                _ = try l.esmInteropRuntimeHelperName(.def_prop);
+                try @import("../runtime_interop_ast.zig").emit(&chunk_output, allocator, graph, l, options);
+                chunk_interop_emitted = true;
+            }
+            try chunk_output.appendSlice(allocator, if (split_async_import_depth == 0) (if (split_assign_host) "module.exports = " else "") else "return ");
+            try chunk_output.appendSlice(allocator, waits.items);
+            try chunk_output.appendSlice(allocator, ".then(function() {\n");
+            if (if (public_context) |context| context.value else null) |value| {
+                try chunk_output.appendSlice(allocator, value);
+            } else {
+                const value = try @import("entry_exports.zig").emitReadyEntryExports(allocator, split_bridge_entries.items, null, true, .named, false, try parent.readyEntryMarkerName(allocator, split_bridge_entries.items, true, .named, l));
+                defer allocator.free(value);
+                try chunk_output.appendSlice(allocator, value);
+            }
+            try chunk_output.appendSlice(allocator, "});\n");
+            for (0..split_async_import_depth) |_| try chunk_output.appendSlice(allocator, "});\n");
+        }
+
         // Wrapped entry 모듈은 factory body 안에서 명시적으로 호출해야 본문이 실행된다.
         // scope-hoist(.none) entry 는 인라인 실행되지만, require.context/CJS-interop 등으로
         // wrap 된 entry 는 `var require_X=__commonJS(...)`/`var init_X=__esm(...)` 정의만 되고
         // 호출 안 돼 본문 미실행이었다(issue #4039 / verifier BUG2). bootstrap 의
         // `__zntc_require("entry-chunk")` 는 factory 를 1회 실행하므로 여기서 wrapped entry
         // init 을 호출하면 정확히 1회 실행(__commonJS/__esm 가 memoize).
-        if (reg_split and chunk_is_user_entry) {
+        if (reg_split and chunk_is_user_entry and !split_needs_readiness) {
             if (entry_mod_idx) |ei| {
                 if (graph.getModule(@fromBackingInt(@intCast(ei)))) |em| {
                     // TLA(.esm + top-level await) entry 는 appendModuleCall 이 `await init_X()`
@@ -2609,7 +3036,7 @@ fn emitChunksImpl(
         // 된 both-case(같은 non-dynamic entry_point 청크에 공존)도 정확히 1회 호출. dynamic-import
         // 대상은 `is_entry_point=false`(build_flow)라 자동 제외. reg_split(bootstrap)·preserve-modules
         // (pm_entry_call)는 각자 담당하므로 게이트 제외.
-        if (!reg_split and !options.preserve_modules and chunk_is_user_entry) {
+        if (!reg_split and !options.preserve_modules and chunk_is_user_entry and !split_needs_readiness) {
             for (sorted_mods) |mod_idx| {
                 const em = graph.getModule(mod_idx) orelse continue;
                 if (!em.is_entry_point) continue; // user/emitted entry (dynamic-import 대상은 false)
@@ -2630,6 +3057,27 @@ fn emitChunksImpl(
                     } else try parent.appendGuardedModuleCall(&chunk_output, allocator, em, options, if (linker) |l| &l.rename_table else null);
                 }
             }
+        }
+
+        if (pm_protocol_owner != null) {
+            const helper_expr = pm_readiness orelse return error.MissingTlaReadinessHelper;
+            const namespace = pm_deferred_exports.namespace_name orelse return error.MissingAsyncEntryExportValue;
+            const init_name = pm_deferred_exports.init_name orelse return error.MissingAsyncEntryExportValue;
+            const value = pm_deferred_exports.value orelse return error.MissingAsyncEntryExportValue;
+            try pm_definition_code.print(allocator, "{s}.register(exports,{s});\n", .{ helper_expr, namespace });
+            try chunk_output.insertSlice(allocator, pm_definition_pos, pm_definition_code.items);
+            try chunk_output.print(allocator, "{s}.publish(exports,module,{s},[", .{ helper_expr, init_name });
+            for (pm_dependency_states.items, 0..) |state, index| {
+                if (index != 0) try chunk_output.append(allocator, ',');
+                try chunk_output.appendSlice(allocator, state);
+            }
+            try chunk_output.appendSlice(allocator, "],function(){\n");
+            try chunk_output.appendSlice(allocator, value);
+            try chunk_output.print(allocator, "}},{s});\n", .{if (options.output_exports == .none) "false" else "true"});
+        } else if (pm_async_import_depth > 0) {
+            const value = pm_deferred_exports.value orelse return error.MissingAsyncEntryExportValue;
+            try chunk_output.appendSlice(allocator, value);
+            for (0..pm_async_import_depth) |_| try chunk_output.appendSlice(allocator, "});\n");
         }
 
         // UMD/AMD(PR4): entry 청크 보편 wrapper 닫기(Edit 3 prologue 의 짝).

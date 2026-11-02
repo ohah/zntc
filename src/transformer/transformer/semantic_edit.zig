@@ -5243,6 +5243,13 @@ pub fn ensureSymbolDeclaration(self: *Transformer, raw_id: u32, scope: ScopeId) 
     editor.ensureDeclaration(@fromBackingInt(@intCast(raw_id)), scope) catch |err| return editError(err);
 }
 
+pub fn materializeDefaultExportFacade(self: *Transformer, source: NodeIndex, binding: NodeIndex, scope: ScopeId) Transformer.Error!void {
+    const editor = try editorFor(self);
+    editor.materializeDefaultExportFacade(source, binding, scope) catch |err| return editError(err);
+    const raw = editor.symbol_ids.items[@backingInt(source)] orelse std.debug.panic("materialized default facade lost its source identity", .{});
+    try setSymbolId(self, binding, @fromBackingInt(@intCast(raw)));
+}
+
 pub fn ensureSymbolDeclarationAtNode(self: *Transformer, raw_id: u32, scope: ScopeId, binding: NodeIndex) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);

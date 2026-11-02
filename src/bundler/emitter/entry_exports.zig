@@ -175,6 +175,115 @@ pub fn emitWrappedEntryExports(
     return try out.toOwnedSlice(allocator);
 }
 
+/// Publish a library value only after its registered initializer settles.
+/// No callback parameter or temporary binding is introduced: all value operands
+/// come from the existing final-export entries and remain live through getters.
+pub fn readyNamespaceNeedsMarker(allocator: std.mem.Allocator, entries: []const FinalExportEntry, cjs: bool, mode: OutputExports) !bool {
+    if (!cjs or mode == .none or mode == .default_) return false;
+    var has_default = false;
+    var has_named = false;
+    var has_marker = false;
+    for (entries) |entry| {
+        const keys = @import("../public_export_key.zig");
+        const key = if (entry.public_key_literal) |literal| try keys.fromLiteralSyntax(allocator, literal) else try keys.fromSyntax(allocator, entry.exported);
+        defer key.deinit(allocator);
+        if (std.mem.eql(u8, key.text, "default")) has_default = true else has_named = true;
+        if (std.mem.eql(u8, key.text, "__esModule")) has_marker = true;
+    }
+    return has_default and !has_marker and (mode == .named or has_named);
+}
+
+pub fn emitReadyEntryExports(
+    allocator: std.mem.Allocator,
+    entries: []const FinalExportEntry,
+    promise_name: ?[]const u8,
+    cjs: bool,
+    mode: OutputExports,
+    assign_cjs: bool,
+    def_prop_name: ?[]const u8,
+) ![]const u8 {
+    if (cjs and mode == .none) return try allocator.dupe(u8, "");
+    var default_local: ?[]const u8 = null;
+    var has_named = false;
+    var has_es_module_key = false;
+    for (entries) |entry| {
+        const keys = @import("../public_export_key.zig");
+        const key = if (entry.public_key_literal) |literal| try keys.fromLiteralSyntax(allocator, literal) else try keys.fromSyntax(allocator, entry.exported);
+        defer key.deinit(allocator);
+        if (std.mem.eql(u8, key.text, "default")) default_local = entry.local else has_named = true;
+        if (std.mem.eql(u8, key.text, "__esModule")) has_es_module_key = true;
+    }
+    if (cjs and mode == .default_ and (has_named or default_local == null)) return error.OutputExportsDefaultRequiresSingleDefault;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    if (promise_name) |promise| {
+        try out.appendSlice(allocator, if (assign_cjs) "module.exports = " else "return ");
+        try out.appendSlice(allocator, promise);
+        try out.appendSlice(allocator, ".then(function() {\n");
+    }
+    try appendMaterializations(&out, allocator, entries);
+    if (cjs and (mode == .default_ or (mode == .auto and default_local != null and !has_named))) {
+        try out.print(allocator, "return {s};\n", .{default_local.?});
+    } else {
+        const marker = cjs and default_local != null and !has_es_module_key;
+        if (marker) {
+            const def_prop = def_prop_name orelse return error.MissingAsyncEntryMarkerIdentity;
+            try out.print(allocator, "return {s}({{", .{def_prop});
+        } else try out.appendSlice(allocator, "return {");
+        for (entries, 0..) |entry, i| {
+            if (i != 0) try out.appendSlice(allocator, ",");
+            try out.appendSlice(allocator, "get ");
+            if (entry.public_key_literal) |literal| {
+                const keys = @import("../public_export_key.zig");
+                const key = try keys.fromLiteralSyntax(allocator, literal);
+                defer key.deinit(allocator);
+                const quoted = try std.json.Stringify.valueAlloc(allocator, key.text, .{});
+                defer allocator.free(quoted);
+                try out.appendSlice(allocator, quoted);
+            } else {
+                try out.appendSlice(allocator, entry.exported);
+            }
+            try out.print(allocator, "() {{ return {s}; }}", .{entry.local});
+        }
+        try out.appendSlice(allocator, if (marker) "},\"__esModule\",{value:true});\n" else "};\n");
+    }
+    if (promise_name != null) try out.appendSlice(allocator, "});\n");
+    return try out.toOwnedSlice(allocator);
+}
+
+/// A wrapped module's registered namespace, rather than an inaccessible body
+/// local, owns every public value read after initialization.
+pub fn emitReadyNamespaceExports(
+    allocator: std.mem.Allocator,
+    entries: []const FinalExportEntry,
+    namespace_name: []const u8,
+    readiness: ?[]const u8,
+    cjs: bool,
+    mode: OutputExports,
+    assign_cjs: bool,
+    def_prop_name: ?[]const u8,
+) ![]const u8 {
+    var projected: std.ArrayList(FinalExportEntry) = .empty;
+    defer {
+        for (projected.items) |entry| allocator.free(entry.local);
+        projected.deinit(allocator);
+    }
+    for (entries) |entry| {
+        const keys = @import("../public_export_key.zig");
+        const key = if (entry.public_key_literal) |literal| try keys.fromLiteralSyntax(allocator, literal) else try keys.fromSyntax(allocator, entry.exported);
+        defer key.deinit(allocator);
+        const quoted = try std.json.Stringify.valueAlloc(allocator, key.text, .{});
+        defer allocator.free(quoted);
+        const local = try std.fmt.allocPrint(allocator, "{s}[{s}]", .{ namespace_name, quoted });
+        errdefer allocator.free(local);
+        var mapped = entry;
+        mapped.local = local;
+        mapped.materialize = null;
+        try projected.append(allocator, mapped);
+    }
+    return emitReadyEntryExports(allocator, projected.items, readiness, cjs, mode, assign_cjs, def_prop_name);
+}
+
 /// Entry export struct를 CJS 출력으로 변환.
 /// mode 별 emit 분기:
 ///   auto    : default-only → `module.exports = X`, named-only → `exports.X = X`, mixed → 양쪽 + esModule
@@ -481,4 +590,18 @@ fn checkOrdinaryQuotedExportAllocation(allocator: std.mem.Allocator) !void {
 test "quoted ordinary CJS export writers preserve certified StringValue and allocation ownership" {
     try checkOrdinaryQuotedExportAllocation(std.testing.allocator);
     try std.testing.checkAllAllocationFailures(std.testing.allocator, checkOrdinaryQuotedExportAllocation, .{});
+}
+
+test "ready marker demand follows decoded final public keys and actual output role" {
+    const a = std.testing.allocator;
+    const quoted_default = [_]FinalExportEntry{.{ .local = "value", .exported = "\"default\"", .public_key_literal = "\"default\"" }};
+    try std.testing.expect(try readyNamespaceNeedsMarker(a, &quoted_default, true, .named));
+    try std.testing.expect(!try readyNamespaceNeedsMarker(a, &quoted_default, true, .auto));
+    try std.testing.expect(!try readyNamespaceNeedsMarker(a, &quoted_default, true, .none));
+    try std.testing.expect(!try readyNamespaceNeedsMarker(a, &quoted_default, false, .named));
+    const public_marker = [_]FinalExportEntry{
+        quoted_default[0],
+        .{ .local = "source_marker", .exported = "\"__esModule\"", .public_key_literal = "\"__esModule\"" },
+    };
+    try std.testing.expect(!try readyNamespaceNeedsMarker(a, &public_marker, true, .named));
 }

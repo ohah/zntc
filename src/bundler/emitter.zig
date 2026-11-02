@@ -218,7 +218,23 @@ const emitter_runtime = @import("emitter/runtime_helpers.zig");
 const emitter_tree_shake = @import("emitter/tree_shake.zig");
 const purity = @import("purity.zig");
 
+/// One chunk's actual entry writer hands its ready value to the enclosing
+/// structured import callbacks. Only that entry may publish this owned slice.
+pub const DeferredAsyncEntryExports = struct {
+    module_index: u32,
+    cjs_value: bool = true,
+    assign_cjs: bool = false,
+    pm_protocol: bool = false,
+    internal_module: bool = false,
+    needs_ready_marker: bool = false,
+    init_name: ?[]const u8 = null,
+    namespace_name: ?[]const u8 = null,
+    value: ?[]const u8 = null,
+};
+
 pub const EmitOptions = struct {
+    defer_async_entry_exports: ?*DeferredAsyncEntryExports = null,
+    deferred_module_exports: ?[]DeferredAsyncEntryExports = null,
     /// Existing namespace storage initialized by this output instance before CJS requires.
     preinitialized_esm_namespace: ?@import("symbol.zig").SymbolID = null,
 
@@ -884,6 +900,24 @@ pub fn emitWithTreeShaking(
         break :blk null;
     };
 
+    var single_deferred_exports: DeferredAsyncEntryExports = .{
+        .module_index = entry_idx orelse 0,
+        .cjs_value = options.format == .cjs,
+        .assign_cjs = options.format == .cjs,
+    };
+    defer if (single_deferred_exports.value) |value| allocator.free(value);
+    var single_module_options = options.*;
+    if (options.defer_async_entry_exports == null and options.format != .esm) {
+        for (sorted.items) |m| {
+            if (!m.is_entry_point or m.export_bindings.len == 0) continue;
+            const ready = m.tla_iife_stmt != null or m.tla_delegated_to_chunk or asyncEntryOwnsBootstrap(m, options);
+            if (!ready or (options.format == .cjs and options.output_exports == .none)) continue;
+            if (options.format == .iife and options.global_name == null) continue;
+            single_module_options.defer_async_entry_exports = &single_deferred_exports;
+        }
+    }
+    const per_module_options = &single_module_options;
+
     prelude_scope.end();
 
     // emit_module_pass: Phase 1 (used_names 사전 계산) + Phase 1.5 (compiled cache
@@ -931,7 +965,10 @@ pub fn emitWithTreeShaking(
     // Namespace holder names also depend on collision reservations outside a
     // module's direct dependency chain. Freeze this before metadata workers or
     // cached shared-namespace restoration mutate the emission registry.
-    const options_hash: u64 = if (options.compiled_cache != null) blk: {
+    // A hit restores code but cannot replay the actual entry writer's owned
+    // deferred-value publication. Keep this context entirely out of the cache.
+    const active_compiled_cache = if (per_module_options.defer_async_entry_exports == null and per_module_options.deferred_module_exports == null) options.compiled_cache else null;
+    const options_hash: u64 = if (active_compiled_cache != null) blk: {
         if (linker) |l| try holder_reservations.seed(l);
         const base_hash = cache_mod.computeOptionsHash(options);
         const seed_hash = holder_reservations.initialFingerprint();
@@ -944,7 +981,7 @@ pub fn emitWithTreeShaking(
     // stale 재사용이 정답 → folding 불필요(HMR 핫패스 보호). linker 없으면 정적 인라인 없음 → 무의미.
     var emit_fps: []u64 = &.{};
     defer if (emit_fps.len > 0) allocator.free(emit_fps);
-    if (options.compiled_cache != null and !options.dev_mode) {
+    if (active_compiled_cache != null and !options.dev_mode) {
         if (linker) |l| {
             const n = graph.moduleCount();
             emit_fps = try allocator.alloc(u64, n);
@@ -959,7 +996,7 @@ pub fn emitWithTreeShaking(
         }
     }
 
-    if (options.compiled_cache) |cache| {
+    if (active_compiled_cache) |cache| {
         // PR-B: HMR 위상 보존-hit 의 unchanged 모듈은 input(source/import/mtime)이 물리 불변이라
         // 직전 Entry 의 input_hash 가 자기 자신과 일치한다. graph.changed_emit_paths(보존-hit 에서만
         // non-null)에 없는 모듈은 전체 source 해시(computeInputHash) 없이 peek 으로 직전 결과를
@@ -1027,7 +1064,7 @@ pub fn emitWithTreeShaking(
         var s: usize = 0;
         while (s < total) {
             const e = @min(s + chunk, total);
-            group.async(io, emitRangeThread, .{ allocator, sorted.items, options, linker, entry_idx, used_names_list, hit_mask, shaker, results, emit_errors, &holder_reservations, s, e });
+            group.async(io, emitRangeThread, .{ allocator, sorted.items, per_module_options, linker, entry_idx, used_names_list, hit_mask, shaker, results, emit_errors, &holder_reservations, s, e });
             s = e;
         }
         group.await(io) catch {};
@@ -1036,7 +1073,7 @@ pub fn emitWithTreeShaking(
             if (hit_mask[i]) continue;
             const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-            results[i].code = emitModuleWithHolderReservations(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].names, &results[i].preamble_lines, &results[i].fn_map_json, &results[i].entry_chain, &results[i].shared_ns_decls, &holder_reservations) catch |err| blk: {
+            results[i].code = emitModuleWithHolderReservations(allocator, m, per_module_options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].names, &results[i].preamble_lines, &results[i].fn_map_json, &results[i].entry_chain, &results[i].shared_ns_decls, &holder_reservations) catch |err| blk: {
                 emit_errors[i] = err;
                 break :blk null;
             };
@@ -1046,7 +1083,7 @@ pub fn emitWithTreeShaking(
 
     // Phase 2.5: miss 결과를 cache 에 put. StringHashMap.put 은 thread-unsafe 이므로
     // 병렬 emit 완료 후 순차 처리. put 실패는 다음 빌드에서 재시도되므로 silent continue.
-    if (options.compiled_cache) |cache| {
+    if (active_compiled_cache) |cache| {
         for (sorted.items, 0..) |m, i| {
             if (hit_mask[i]) continue;
             if (m.mtime == 0) continue;
@@ -1391,6 +1428,10 @@ pub fn emitWithTreeShaking(
         }
     }
 
+    // Public readiness starts only after every module/helper declaration has
+    // been installed, just like the existing wrapped-entry bootstrap.
+    if (single_deferred_exports.value) |value| try output.appendSlice(allocator, value);
+
     // 래핑된 엔트리 자동 호출. Metro `getAppendScripts` 와 동등하게
     // runBeforeMainModule은 entry 앞의 별도 `__r(N);`로 실행하고, entry 자체는 한 번만
     // outer `__zntc_guarded(...)`로 호출한다. entry dependency chain은 entry factory
@@ -1398,6 +1439,9 @@ pub fn emitWithTreeShaking(
     if (entry_idx) |ei| {
         for (sorted.items, 0..) |em, ei_idx| {
             if (em.index.toU32() == ei and em.wrap_kind.isWrapped()) {
+                // The actual async public writer invokes this registered init
+                // and propagates its promise; a second bootstrap is not needed.
+                if (asyncEntryOwnsBootstrap(em, options)) break;
                 if (results[ei_idx].entry_chain) |chain| {
                     if (!rbm_calls_emitted) {
                         try output.appendSlice(allocator, chain);
@@ -1755,7 +1799,7 @@ pub fn needsPropertyQuote(name: []const u8) bool {
 /// transformation. The generated `await` is outside the AST, so the identity
 /// record also checks its source node, SymbolId, and ScopeId against the final
 /// module semantic graph before selecting the linked name.
-fn resolveTlaPromiseName(module: *const Module, linker: ?*const Linker) ?[]const u8 {
+pub fn resolveTlaPromiseName(module: *const Module, linker: ?*const Linker) ?[]const u8 {
     const reference = module.tla_promise_reference orelse return null;
     const ast = &(module.ast orelse return null);
     const binding_raw = reference.binding_node_index;
@@ -1770,6 +1814,42 @@ fn resolveTlaPromiseName(module: *const Module, linker: ?*const Linker) ?[]const
         if (l.rename_table.get(linked_id)) |renamed| return renamed;
     }
     return source_name;
+}
+
+pub const ReadinessAllProvider = struct {
+    module: *const Module,
+    binding: *const @import("binding_scanner.zig").ExportBinding,
+    local_name: []const u8,
+};
+
+/// Read only the helper export captured by the graph's real demand producer.
+/// This accessor cannot find a replacement SID from a spelling or another module.
+pub fn checkedReadinessAllProvider(graph: *const ModuleGraph, linker: *const Linker) !ReadinessAllProvider {
+    const known = graph.tla_readiness_all orelse return error.MissingTlaReadinessHelper;
+    const module = graph.getModule(known.module_index) orelse return error.InvalidTlaReadinessHelper;
+    const semantic = module.semantic orelse return error.InvalidTlaReadinessHelper;
+    if (known.owner_token == .unassigned or semantic.owner_token != known.owner_token or
+        linker.getModule(known.module_index.toU32()) != module or known.export_index >= module.export_bindings.len or
+        @backingInt(known.symbol_id) >= semantic.symbols.items.len) return error.InvalidTlaReadinessHelper;
+    const binding = &module.export_bindings[known.export_index];
+    if (module.exportBindingSemanticIndex(binding.*) != @as(?u32, @backingInt(known.symbol_id)) or
+        !std.mem.eql(u8, binding.exported_name, "__tlaReadyAll") or
+        semantic.symbols.items[@backingInt(known.symbol_id)].kind != .function_decl) return error.InvalidTlaReadinessHelper;
+    const local = linker.getCanonicalForExport(binding.*, known.module_index.toU32()) orelse return error.InvalidTlaReadinessHelper;
+    return .{ .module = module, .binding = binding, .local_name = local };
+}
+
+pub fn readyEntryMarkerName(allocator: std.mem.Allocator, entries: []const LinkingMetadata.FinalExportEntry, cjs: bool, mode: @import("bundler.zig").OutputExports, linker: ?*const Linker) !?[]const u8 {
+    if (!try entry_exports.readyNamespaceNeedsMarker(allocator, entries, cjs, mode)) return null;
+    const owner = linker orelse return error.MissingAsyncEntryMarkerIdentity;
+    return try owner.esmInteropRuntimeHelperName(.def_prop);
+}
+
+pub fn asyncEntryOwnsBootstrap(module: *const Module, options: *const EmitOptions) bool {
+    return options.format != .esm and options.transform_options_base.tla_entry_exports_awaited and
+        module.wrap_kind == .esm and module.export_bindings.len > 0 and
+        (module.uses_top_level_await or module.in_async_cone or module.tla_iife_stmt != null) and
+        !(options.format == .cjs and options.output_exports == .none);
 }
 
 pub fn appendIndented(wrapped: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8) !void {
@@ -2035,7 +2115,7 @@ pub fn emitModule(
 pub fn emitModuleWithHolderReservations(
     allocator: std.mem.Allocator,
     module: *const Module,
-    options: *const EmitOptions,
+    input_options: *const EmitOptions,
     linker: ?*const Linker,
     is_entry: bool,
     used_export_names: ?[]const []const u8,
@@ -2049,6 +2129,13 @@ pub fn emitModuleWithHolderReservations(
     shared_ns_decls_out: ?*[]const CompiledModule.SharedNsDecl,
     holder_reservations: ?*@import("namespace_holder_reservations.zig").NamespaceHolderReservations,
 ) !?[]const u8 {
+    var selected_options = input_options.*;
+    if (input_options.deferred_module_exports) |contexts| {
+        const index = module.index.toU32();
+        if (index >= contexts.len or contexts[index].module_index != index) return error.InvalidAsyncEntryExportContext;
+        if (contexts[index].internal_module) selected_options.defer_async_entry_exports = &contexts[index];
+    }
+    const options = &selected_options;
     // Disabled 모듈 (platform=browser에서 Node 빌트인): 빈 __commonJS wrapper 출력.
     // esbuild 호환: var require_X = __commonJS({ "(disabled)"(exports, module) {} });
     if (module.is_disabled) {
@@ -2530,7 +2617,57 @@ pub fn emitModuleWithHolderReservations(
                 }
             };
         }
-        if (is_entry and options.preserve_modules and options.format == .cjs and options.output_exports == .named) {
+        const pm_protocol = if (options.defer_async_entry_exports) |target| target.pm_protocol else false;
+        const internal_module = if (options.defer_async_entry_exports) |target| target.internal_module else false;
+        if ((is_entry and (asyncEntryOwnsBootstrap(module, options) or pm_protocol)) or internal_module) {
+            const md = metadata orelse return error.MissingAsyncEntryExportMetadata;
+            const entries: []const LinkingMetadata.FinalExportEntry = md.final_export_entries orelse if (pm_protocol or internal_module) &.{} else return error.MissingAsyncEntryExportMetadata;
+            const rename_table = if (linker) |l| &l.rename_table else null;
+            const init_identity = try module.esmInitSymbol();
+            const namespace_identity = try module.esmNamespaceSymbol();
+            const init_name = try module.esmWrapperName(init_identity, rename_table);
+            const namespace_name = try module.esmWrapperName(namespace_identity, rename_table);
+            const readiness = try std.fmt.allocPrint(allocator, "{s}()", .{init_name});
+            defer allocator.free(readiness);
+            const deferred = options.defer_async_entry_exports;
+            if (deferred) |target| target.needs_ready_marker = !(internal_module and !is_entry) and try entry_exports.readyNamespaceNeedsMarker(allocator, entries, target.cjs_value, if ((pm_protocol or internal_module) and entries.len == 0) .none else if (internal_module and !is_entry) .named else options.output_exports);
+            const suffix = if (internal_module and !is_entry) try allocator.dupe(u8, "") else entry_exports.emitReadyNamespaceExports(allocator, entries, namespace_name, if (pm_protocol or internal_module) null else readiness, if (deferred) |target| target.cjs_value else options.format == .cjs, if ((pm_protocol or internal_module) and entries.len == 0) .none else if (internal_module and !is_entry) .named else options.output_exports, if (deferred) |target| target.assign_cjs else options.format == .cjs, try readyEntryMarkerName(allocator, entries, if (deferred) |target| target.cjs_value else options.format == .cjs, if ((pm_protocol or internal_module) and entries.len == 0) .none else if (internal_module and !is_entry) .named else options.output_exports, linker)) catch |err| switch (err) {
+                error.OutputExportsDefaultRequiresSingleDefault => blk: {
+                    if (linker) |l| try emitOutputExportsConflictDiag(l, module.path, options.output_exports);
+                    break :blk try allocator.dupe(u8, "");
+                },
+                else => return err,
+            };
+            if (deferred) |target| {
+                if (target.module_index != module.index.toU32() or target.value != null) {
+                    allocator.free(suffix);
+                    return error.InvalidAsyncEntryExportContext;
+                }
+                if (target.pm_protocol or target.internal_module) {
+                    if (target.init_name != null or target.namespace_name != null) {
+                        allocator.free(suffix);
+                        return error.InvalidAsyncEntryExportContext;
+                    }
+                    const owned_init = allocator.dupe(u8, init_name) catch |err| {
+                        allocator.free(suffix);
+                        return err;
+                    };
+                    const owned_namespace = allocator.dupe(u8, namespace_name) catch |err| {
+                        allocator.free(owned_init);
+                        allocator.free(suffix);
+                        return err;
+                    };
+                    target.init_name = owned_init;
+                    target.namespace_name = owned_namespace;
+                }
+                target.value = suffix;
+            } else {
+                defer allocator.free(suffix);
+                const combined = try std.mem.concat(allocator, u8, &.{ wrapped_code, suffix });
+                allocator.free(wrapped_code);
+                wrapped_code = combined;
+            }
+        } else if (is_entry and options.preserve_modules and options.format == .cjs and options.output_exports == .named) {
             if (metadata) |md| if (md.final_export_entries) |entries| {
                 _ = try module.esmNamespaceSymbol();
                 const namespace_name = try module.allocExportsName(allocator, if (linker) |l| &l.rename_table else null);
@@ -2869,13 +3006,54 @@ pub fn emitModuleWithHolderReservations(
     defer if (final_exports_buf) |buf| allocator.free(buf);
 
     const final_exports = if (final_export_entries) |entries| blk: {
+        if (options.defer_async_entry_exports) |deferred| {
+            if (is_entry) {
+                if (deferred.module_index != module.index.toU32() or deferred.value != null) return error.InvalidAsyncEntryExportContext;
+                const ready = if (module.tla_iife_stmt != null)
+                    resolveTlaPromiseName(module, linker) orelse return error.MissingTlaPromiseIdentity
+                else
+                    null;
+                deferred.needs_ready_marker = try entry_exports.readyNamespaceNeedsMarker(allocator, entries, deferred.cjs_value, options.output_exports);
+                deferred.value = entry_exports.emitReadyEntryExports(allocator, entries, ready, deferred.cjs_value, options.output_exports, deferred.assign_cjs, try readyEntryMarkerName(allocator, entries, deferred.cjs_value, options.output_exports, linker)) catch |err| switch (err) {
+                    error.OutputExportsDefaultRequiresSingleDefault => {
+                        if (linker) |l| try emitOutputExportsConflictDiag(l, module.path, options.output_exports);
+                        break :blk @as(?[]const u8, null);
+                    },
+                    else => return err,
+                };
+                break :blk @as(?[]const u8, null);
+            }
+        }
+        // The module-owned promise is captured by the TLA producer, never
+        // rediscovered from a generated spelling. The existing async IIFE
+        // delegation already returns its namespace after evaluation.
+        if (is_entry and module.tla_iife_stmt != null and !module.tla_delegated_to_chunk and
+            options.format != .esm and !options.iife_split_factory)
+        {
+            const ready = resolveTlaPromiseName(module, linker) orelse return error.MissingTlaPromiseIdentity;
+            if (options.format == .cjs or
+                (options.format.isWrappedFormat() and (options.format != .iife or options.global_name != null)))
+            {
+                final_exports_buf = entry_exports.emitReadyEntryExports(allocator, entries, ready, options.format == .cjs, options.output_exports, options.format == .cjs, try readyEntryMarkerName(allocator, entries, options.format == .cjs, options.output_exports, linker)) catch |err| switch (err) {
+                    error.OutputExportsDefaultRequiresSingleDefault => {
+                        if (linker) |l| try emitOutputExportsConflictDiag(l, module.path, options.output_exports);
+                        break :blk @as(?[]const u8, null);
+                    },
+                    else => return err,
+                };
+                break :blk final_exports_buf;
+            }
+        }
         // IIFE splitting: 청크 factory 가 `exports`/`module`/`require` 를 주므로
         // CJS 와 동일 모델 — wrapped `return{}`(레지스트리가 버림) 대신 아래
         // emitCjsEntryExports 경로로 factory-bound exports(default/__esModule
         // interop 포함)를 emit. global_name 은 chunks.zig bootstrap 이 처리.
         if (options.format.isWrappedFormat() and !options.iife_split_factory) {
             if (options.format != .iife or options.global_name != null) {
-                final_exports_buf = try emitWrappedEntryExports(allocator, entries, options.minify_whitespace);
+                final_exports_buf = if (is_entry and module.tla_delegated_to_chunk)
+                    try entry_exports.emitReadyEntryExports(allocator, entries, null, false, options.output_exports, false, null)
+                else
+                    try emitWrappedEntryExports(allocator, entries, options.minify_whitespace);
                 break :blk final_exports_buf;
             }
             // 래핑 포맷 (globalName 없음, IIFE): export는 syntax error이므로 제거

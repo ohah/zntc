@@ -1052,6 +1052,10 @@ pub const Bundler = struct {
                 format != .esm and
                 !self.options.code_splitting and
                 !self.options.preserve_modules,
+            // Non-ESM entry publication waits for the registered readiness
+            // value; preserve-modules and split entries use the same ABI.
+            .tla_entry_exports_awaited = format == .cjs or format == .umd or format == .amd or
+                (format == .iife and (self.options.global_name != null or self.options.code_splitting)),
             .tla_module_awaited = self.options.unsupported.top_level_await and
                 self.options.unsupported.async_await and
                 !self.options.code_splitting and
@@ -1746,6 +1750,23 @@ pub const Bundler = struct {
                 .es5 = self.options.unsupported.arrow,
                 .configurable_exports = self.options.configurable_exports,
             });
+        }
+
+        // Split ready namespaces consume the same registered descriptor role,
+        // but the ordinary single-output candidate gate above excludes them.
+        if (self.options.scope_hoist and self.options.code_splitting and
+            !self.options.preserve_modules and self.options.format != .esm and !self.options.dev_mode)
+        {
+            var candidates = graph.modulesIterator();
+            while (candidates.next()) |candidate| {
+                if (!try @import("emitter/runtime_helpers.zig").asyncReadyMarkerCandidate(graph, candidate)) continue;
+                try @import("runtime_interop_ast.zig").installCandidate(graph, io, .{
+                    .minify = self.options.minify_whitespace,
+                    .es5 = self.options.unsupported.arrow,
+                    .configurable_exports = self.options.configurable_exports,
+                });
+                break;
+            }
         }
 
         // First bounded self-namespace producer: main single-output path only.

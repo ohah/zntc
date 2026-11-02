@@ -59,6 +59,13 @@ pub const LazySeed = struct {
     resolve_dir: ?[]const u8,
 };
 
+pub const TlaReadinessAll = struct {
+    module_index: types.ModuleIndex,
+    export_index: u32,
+    symbol_id: @import("../semantic/symbol.zig").SymbolId,
+    owner_token: module_mod.SemanticOwnerToken,
+};
+
 pub const ModuleGraph = struct {
     pub const matchSideEffectsPatterns = graph_package_side_effects.matchPatterns;
     const configureParserForModule = graph_parse_helpers.configureParserForModule;
@@ -84,6 +91,7 @@ pub const ModuleGraph = struct {
     const isPackageTypeModule = graph_package_info.isPackageTypeModule;
 
     allocator: std.mem.Allocator,
+    tla_readiness_all: ?TlaReadinessAll = null,
     /// Actual installed runtime/source domains; refreshed only at graph
     /// handoff or prepared same-graph publication, never by witness capture.
     output_runtime_registry: @import("../semantic/output_runtime_registration.zig").Registry = .{},

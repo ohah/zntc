@@ -230,6 +230,35 @@ esbuild 스타일: `onResolve`, `onLoad`, `onTransform`, `onRenderChunk`, `onGen
 
 ## 주요 동작 포인트
 
+### Top-level await 라이브러리의 외부 소비
+
+비동기 초기화가 필요한 CJS 라이브러리는 `require()`의 반환값을 기다린 뒤 사용한다.
+초기화 중 발생한 오류도 이 Promise의 거부로 전달된다. 비동기 초기화가 없는
+라이브러리는 기존 동기 반환값을 유지한다.
+
+```js
+async function main() {
+  const library = await require('./library.cjs');
+  console.log(library.value);
+}
+main().catch(console.error);
+```
+
+| 출력 | 비동기 entry의 완료 값 |
+| --- | --- |
+| CJS `output.exports=auto` | default-only는 default 값, 그 외는 namespace |
+| CJS `output.exports=named` | namespace |
+| CJS `output.exports=default` | default 값; named export가 섞이면 기존처럼 빌드 오류 |
+| IIFE / UMD | 기존 namespace를 완료 값으로 갖는 Promise |
+
+CJS `output.exports=none`은 공개 반환값을 만들지 않는 기존 계약을 유지한다.
+이 모드는 외부에서 `require()`를 기다리는 라이브러리 API로 사용하지 않는다.
+공개 namespace의 이름과 getter는 유지하며, callable `then` export는 네이티브
+동적 `import()`와 같은 Promise assimilation 규칙을 따른다.
+
+이 반환 계약은 타깃의 기존 지원·진단 정책을 바꾸지 않는다. 예를 들어 async를
+지원하지 않는 타깃의 일부 `export const x = await ...` 입력은 계속 오류다.
+
 ### 플랫폼 프리셋
 
 - `--platform=browser` + `--bundle` → IIFE 출력 + `NODE_ENV=production` 자동 define + Node 빌트인 빈 모듈 대체

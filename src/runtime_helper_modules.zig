@@ -166,6 +166,11 @@ const MODULES = [_]HelperModule{
         .body = .{ .plain = rt.CLASS_CALL_CHECK_RUNTIME, .min = rt.CLASS_CALL_CHECK_RUNTIME_MIN },
     },
     .{
+        .short = "readiness-all",
+        .helpers = &.{"__tlaReadyAll"},
+        .body = .{ .plain = rt.READINESS_ALL_RUNTIME, .min = rt.READINESS_ALL_RUNTIME_MIN },
+    },
+    .{
         .short = "class-define-property",
         .helpers = &.{"__classDefineProperty"},
         .body = .{ .plain = rt.CLASS_DEFINE_PROPERTY_RUNTIME, .min = rt.CLASS_DEFINE_PROPERTY_RUNTIME_MIN },
@@ -553,6 +558,7 @@ fn catalogFor(m: *const HelperModule) ?source_origin.Catalog {
         .{ .short = "super-get", .catalog = .super_get },
         .{ .short = "super-set", .catalog = .super_set },
         .{ .short = "wrap-regex", .catalog = .wrap_regex },
+        .{ .short = "readiness-all", .catalog = .readiness_all },
     };
     for (known) |entry| if (m == findModule(entry.short).?) return entry.catalog;
     return null;
@@ -565,6 +571,7 @@ fn moduleForCatalog(catalog: source_origin.Catalog) *const HelperModule {
         .super_get => "super-get",
         .super_set => "super-set",
         .wrap_regex => "wrap-regex",
+        .readiness_all => "readiness-all",
     }).?;
 }
 
