@@ -3550,17 +3550,24 @@ pub const Linker = struct {
     /// its provider's source export is lowercase (`import { x as Component }`).
     /// Scope hoisting emits the provider's canonical name in the JSX tag, so give
     /// that exact provider SymbolId an uppercase-safe canonical spelling too.
+    /// ImportBinding.local_symbol is linker-derived and can be absent while the
+    /// scanner-owned local node still has an exact semantic SID. Read only that
+    /// source anchor here; do not recover identity from the local spelling.
+    fn preservedJsxImportRequiresUppercase(importer: *const Module, ib: ImportBinding) bool {
+        if (ib.kind == .namespace) return false;
+        const local = importer.checkedSourceImportLocalSymbol(ib) catch return false;
+        if (!local.isValid() or local.moduleIndex() != importer.index) return false;
+        const local_sid = local.semanticIndex() orelse return false;
+        const sem = importer.semantic orelse return false;
+        if (local_sid >= sem.symbols.items.len) return false;
+        return sem.symbols.items[local_sid].requires_uppercase_first_char;
+    }
+
     fn resolvePreservedJsxImportNames(self: *Linker, name_to_owners: *const NameToOwnersMap) !void {
         var importer_it = self.graph.modulesIterator();
         while (importer_it.next()) |importer| {
-            const importer_sem = importer.semantic orelse continue;
             for (importer.import_bindings) |ib| {
-                if (ib.kind == .namespace) continue;
-                const local_sid = ib.local_symbol.semanticIndex() orelse continue;
-                if (ib.local_symbol.moduleIndex() != importer.index or
-                    local_sid >= importer_sem.symbols.items.len or
-                    !importer_sem.symbols.items[local_sid].requires_uppercase_first_char)
-                    continue;
+                if (!preservedJsxImportRequiresUppercase(importer, ib)) continue;
 
                 const source: ?bundler_symbol.SymbolRef = blk: {
                     if (ib.import_record_index < importer.import_records.len) {
@@ -4535,14 +4542,8 @@ pub const Linker = struct {
         var jsx_importer_it = self.graph.modulesIterator();
         while (jsx_importer_it.next()) |importer| {
             if (self.graph.jsx_runtime != .preserve) break;
-            const sem = importer.semantic orelse continue;
             for (importer.import_bindings) |ib| {
-                if (ib.kind == .namespace) continue;
-                const local_sid = ib.local_symbol.semanticIndex() orelse continue;
-                if (ib.local_symbol.moduleIndex() != importer.index or
-                    local_sid >= sem.symbols.items.len or
-                    !sem.symbols.items[local_sid].requires_uppercase_first_char)
-                    continue;
+                if (!preservedJsxImportRequiresUppercase(importer, ib)) continue;
 
                 const source: ?bundler_symbol.SymbolRef = blk: {
                     if (ib.import_record_index < importer.import_records.len) {
