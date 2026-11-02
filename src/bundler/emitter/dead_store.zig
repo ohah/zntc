@@ -48,12 +48,19 @@
 
 const std = @import("std");
 const Module = @import("../module.zig").Module;
+const ModuleSemanticData = @import("../module.zig").ModuleSemanticData;
+const ExportBinding = @import("../binding_scanner.zig").ExportBinding;
 const ast_mod = @import("../../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const NodeIndex = ast_mod.NodeIndex;
 const ast_walk = @import("../../parser/ast_walk.zig");
 const purity = @import("../purity.zig");
+const binding_scanner = @import("../binding_scanner.zig");
+const Scanner = @import("../../lexer/scanner.zig").Scanner;
+const Parser = @import("../../parser/parser.zig").Parser;
 const TokenKind = @import("../../lexer/token.zig").Kind;
+const Span = @import("../../lexer/token.zig").Span;
+const SymbolRef = @import("../symbol.zig").SymbolRef;
 const semantic_symbol = @import("../../semantic/symbol.zig");
 const Reference = semantic_symbol.Reference;
 const Symbol = semantic_symbol.Symbol;
@@ -835,13 +842,275 @@ fn markDeadOverwrittenDeclarationInitializers(
     ast.extra_data.items[de + 2] = @backingInt(NodeIndex.none);
 }
 
+fn localExportSemanticIndexForDeadStore(module: *const Module, binding: ExportBinding) ?u32 {
+    if (!binding.has_default_export_facade) return module.exportBindingLocalNodeSemanticIndex(binding);
+
+    // Expression defaults have no local binding node: the analyzer assigns
+    // their facade SID to the export declaration itself. Validate that exact
+    // producer node so a valid facade does not disable DSE for every local.
+    const symbol_index = module.exportBindingSemanticIndex(binding) orelse return null;
+    const declaration = binding.default_export_node orelse return null;
+    if (declaration.isNone()) return null;
+    const ast = module.ast orelse return null;
+    const semantic = module.semantic orelse return null;
+    const raw = @backingInt(declaration);
+    if (raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len) return null;
+    if (ast.nodes.items[raw].tag != .export_default_declaration or semantic.symbol_ids[raw] != symbol_index) return null;
+    const symbol = semantic.symbols.items[symbol_index];
+    if (symbol.synthetic_kind != .default_export or !symbol.decl_flags.is_default_export) return null;
+    return symbol_index;
+}
+
 fn isExportedSymbol(module: *const Module, sym_idx: u32) bool {
     for (module.export_bindings) |binding| {
+        if (binding.kind == .local) {
+            // A scalar SID alone cannot prove which local declaration this
+            // export owns. If its scanner node and semantic ID map disagree,
+            // preserve stores conservatively instead of pruning an export.
+            const export_sym = localExportSemanticIndexForDeadStore(module, binding) orelse return true;
+            if (export_sym == sym_idx) return true;
+            continue;
+        }
+
+        // Re-export records can carry a local default bridge SID without a
+        // local declaration anchor. Keep their existing conservative match.
         if (binding.symbol.semanticIndex()) |export_sym| {
             if (export_sym == sym_idx) return true;
         }
     }
     return false;
+}
+
+test "dead-store export guard fails closed on stale local export identity" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "export let live = 0; let decoy = 1;";
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+
+    var exports = try binding_scanner.extractExportBindings(allocator, &parser.ast, &.{}, &.{});
+    try std.testing.expectEqual(@as(usize, 1), exports.len);
+    const live_node = exports[0].local_symbol_node orelse return error.MissingLiveExportNode;
+    var decoy_node: ?NodeIndex = null;
+    var literal_node: ?NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .binding_identifier and std.mem.eql(u8, parser.ast.getText(node.span), "decoy")) {
+            decoy_node = @fromBackingInt(@intCast(raw));
+        } else if (node.tag == .numeric_literal) {
+            literal_node = @fromBackingInt(@intCast(raw));
+        }
+    }
+    const decoy = decoy_node orelse return error.MissingDecoyNode;
+    const literal = literal_node orelse return error.MissingLiteralNode;
+
+    const symbol_ids = try allocator.alloc(?u32, parser.ast.nodes.items.len);
+    @memset(symbol_ids, null);
+    symbol_ids[@backingInt(live_node)] = 1;
+    symbol_ids[@backingInt(decoy)] = 0;
+    var semantic = ModuleSemanticData{
+        .symbols = .empty,
+        .scopes = &.{},
+        .scope_maps = &.{},
+        .exported_names = .empty,
+        .symbol_ids = symbol_ids,
+        .unresolved_references = .empty,
+    };
+    const symbol: Symbol = .{
+        .name = Span.EMPTY,
+        .scope_id = @fromBackingInt(@intCast(0)),
+        .kind = .variable_let,
+        .decl_flags = semantic_symbol.SymbolKind.variable_let.declFlags(),
+        .declaration_span = Span.EMPTY,
+    };
+    try semantic.symbols.append(allocator, symbol);
+    try semantic.symbols.append(allocator, symbol);
+
+    var module = Module.init(@fromBackingInt(@intCast(0)), "entry.mjs");
+    module.source = source;
+    module.ast = parser.ast;
+    module.semantic = semantic;
+    exports[0].symbol = SymbolRef.makeSemantic(module.index, 1);
+    module.export_bindings = exports;
+
+    const scopes = [_]Scope{.{ .parent = scope_mod.ScopeId.none, .kind = .module, .is_strict = true }};
+    var ref_index = try DeadStoreRefIndex.init(allocator, &.{}, &scopes, semantic.symbols.items.len);
+    var skip_nodes = try std.DynamicBitSet.initEmpty(allocator, parser.ast.nodes.items.len);
+    const pass = Pass{
+        .allocator = allocator,
+        .ast = &parser.ast,
+        .symbol_ids = symbol_ids,
+        .symbols = semantic.symbols.items,
+        .scopes = &scopes,
+        .ref_index = &ref_index,
+        .unresolved_globals = &semantic.unresolved_references,
+        .skip_nodes = &skip_nodes,
+        .module = &module,
+    };
+
+    // Exact source identity protects the exported SID while leaving a valid
+    // same-module decoy eligible for dead-store removal.
+    try std.testing.expect(pass.storeIsProtected(1, 0));
+    try std.testing.expect(!pass.storeIsProtected(0, 0));
+
+    // Spelling drift cannot change a valid local export's identity.
+    var renamed_export = exports[0];
+    renamed_export.local_name = "decoy";
+    exports[0] = renamed_export;
+    module.export_bindings = exports;
+    try std.testing.expect(pass.storeIsProtected(1, 0));
+    try std.testing.expect(!pass.storeIsProtected(0, 0));
+
+    // A re-export may carry a local default bridge SID without a declaration
+    // anchor. Keep the existing conservative scalar handling for that role.
+    var re_export_bridge = exports[0];
+    re_export_bridge.kind = .re_export;
+    re_export_bridge.symbol = SymbolRef.makeSemantic(module.index, 0);
+    exports[0] = re_export_bridge;
+    try std.testing.expect(!pass.storeIsProtected(1, 0));
+    try std.testing.expect(pass.storeIsProtected(0, 0));
+    exports[0] = renamed_export;
+
+    const stale_same_module = blk: {
+        var binding = exports[0];
+        binding.symbol = SymbolRef.makeSemantic(module.index, 0);
+        break :blk binding;
+    };
+    const stale_foreign_module = blk: {
+        var binding = exports[0];
+        binding.symbol = SymbolRef.makeSemantic(@fromBackingInt(@intCast(1)), 0);
+        break :blk binding;
+    };
+    const missing_symbol = blk: {
+        var binding = exports[0];
+        binding.symbol = SymbolRef.invalid;
+        break :blk binding;
+    };
+    const out_of_range_symbol = blk: {
+        var binding = exports[0];
+        binding.symbol = SymbolRef.makeSemantic(module.index, std.math.maxInt(u32));
+        break :blk binding;
+    };
+    const missing_anchor = blk: {
+        var binding = stale_same_module;
+        binding.local_symbol_node = null;
+        break :blk binding;
+    };
+    const decoy_anchor = blk: {
+        var binding = exports[0];
+        binding.local_symbol_node = decoy;
+        break :blk binding;
+    };
+    const non_identifier_anchor = blk: {
+        var binding = exports[0];
+        binding.local_symbol_node = literal;
+        break :blk binding;
+    };
+    const out_of_range_anchor = blk: {
+        var binding = exports[0];
+        binding.local_symbol_node = @fromBackingInt(@intCast(std.math.maxInt(u32)));
+        break :blk binding;
+    };
+    const corruptions = [_]ExportBinding{
+        stale_same_module,
+        stale_foreign_module,
+        missing_symbol,
+        out_of_range_symbol,
+        missing_anchor,
+        decoy_anchor,
+        non_identifier_anchor,
+        out_of_range_anchor,
+    };
+    for (corruptions) |binding| {
+        exports[0] = binding;
+        module.export_bindings = exports;
+        // If any local export carrier is incomplete or disagrees with its
+        // source node, protect every local store rather than trusting its SID.
+        try std.testing.expect(pass.storeIsProtected(1, 0));
+        try std.testing.expect(pass.storeIsProtected(0, 0));
+    }
+
+    exports[0] = stale_same_module;
+    module.export_bindings = exports;
+    module.semantic = null;
+    try std.testing.expect(pass.storeIsProtected(0, 0));
+    module.semantic = semantic;
+    module.ast = null;
+    try std.testing.expect(pass.storeIsProtected(0, 0));
+}
+
+test "dead-store export guard validates default facade through its declaration node" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "export default 42; let decoy = 1;";
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    const exports = try binding_scanner.extractExportBindings(allocator, &parser.ast, &.{}, &.{});
+    try std.testing.expectEqual(@as(usize, 1), exports.len);
+    try std.testing.expect(exports[0].has_default_export_facade);
+    try std.testing.expect(exports[0].local_symbol_node == null);
+    const default_node = exports[0].default_export_node orelse return error.MissingDefaultExportNode;
+
+    var decoy_node: ?NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .binding_identifier and std.mem.eql(u8, parser.ast.getText(node.span), "decoy")) {
+            decoy_node = @fromBackingInt(@intCast(raw));
+        }
+    }
+    const decoy = decoy_node orelse return error.MissingDecoyNode;
+    const symbol_ids = try allocator.alloc(?u32, parser.ast.nodes.items.len);
+    @memset(symbol_ids, null);
+    symbol_ids[@backingInt(default_node)] = 1;
+    symbol_ids[@backingInt(decoy)] = 0;
+
+    var semantic = ModuleSemanticData{
+        .symbols = .empty,
+        .scopes = &.{},
+        .scope_maps = &.{},
+        .exported_names = .empty,
+        .symbol_ids = symbol_ids,
+        .unresolved_references = .empty,
+    };
+    const symbol: Symbol = .{
+        .name = Span.EMPTY,
+        .scope_id = @fromBackingInt(@intCast(0)),
+        .kind = .variable_let,
+        .decl_flags = semantic_symbol.SymbolKind.variable_let.declFlags(),
+        .declaration_span = Span.EMPTY,
+    };
+    try semantic.symbols.append(allocator, symbol);
+    var facade = symbol;
+    facade.synthetic_kind = .default_export;
+    facade.decl_flags.is_default_export = true;
+    facade.decl_flags.is_exported = true;
+    try semantic.symbols.append(allocator, facade);
+
+    var module = Module.init(@fromBackingInt(@intCast(0)), "entry.mjs");
+    module.source = source;
+    module.ast = parser.ast;
+    module.semantic = semantic;
+    var export_binding = exports[0];
+    export_binding.symbol = SymbolRef.makeSemantic(module.index, 1);
+    var bindings = [_]ExportBinding{export_binding};
+    module.export_bindings = &bindings;
+
+    // The facade's source-owned declaration node carries its SID even though
+    // the source expression has no local binding node of its own.
+    try std.testing.expect(isExportedSymbol(&module, 1));
+    try std.testing.expect(!isExportedSymbol(&module, 0));
+
+    export_binding.symbol = SymbolRef.makeSemantic(module.index, 0);
+    var stale_bindings = [_]ExportBinding{export_binding};
+    module.export_bindings = &stale_bindings;
+    try std.testing.expect(isExportedSymbol(&module, 1));
+    try std.testing.expect(isExportedSymbol(&module, 0));
 }
 
 /// `require_removable_rhs` — 이 statement 를 **지울 후보** 로 볼 때만 true. RHS 평가가
