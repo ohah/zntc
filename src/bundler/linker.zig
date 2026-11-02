@@ -7289,10 +7289,14 @@ pub const Linker = struct {
                     // semantic SymbolId; its global alias was handed to the shared namespace
                     // owner when cross-chunk names were assigned.
                     if (self.isSharedNamespaceAssignment(mod_idx.toU32(), e.key_ptr.*, e.value_ptr.*)) continue;
-                    const local = self.getExportLocalName(mod_idx.toU32(), e.key_ptr.*) orelse e.key_ptr.*;
                     const dup = try self.allocator.dupe(u8, e.value_ptr.*);
                     if (!try self.putCanonicalNameForLocalExport(mod_idx.toU32(), e.key_ptr.*, dup)) {
-                        try self.putCanonicalName(mod_idx.toU32(), local, dup);
+                        // A re-export key is a public alias, not a lexical binding in this
+                        // module. Its canonical provider or generated namespace owner carries
+                        // the rename; using the public spelling in findSymbolIdx can select an
+                        // unrelated private local (for example `const math` beside
+                        // `export * as math`).
+                        self.allocator.free(dup);
                     }
                 }
             }
