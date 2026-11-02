@@ -336,20 +336,19 @@ pub fn unsafePrivateFactoryEval(self: anytype, node: ast_mod.Node, source_scope:
     // A bare name is safe only from the original lexical graph, not from the
     // new factory's spelling lookup. Reject lexical TDZ and unknown globals:
     // the factory parameter could otherwise introduce a previously absent name.
-    var scope = source_scope;
-    while (!scope.isNone() and scope.toIndex() < self.scopes.len) : (scope = self.scopes[scope.toIndex()].parent) {
-        if (self.scope_maps[scope.toIndex()].get(text)) |raw_id| {
-            if (raw_id == class_self_id) return false;
-            if (raw_id >= self.symbols.len) return true;
-            return switch (self.symbols[raw_id].kind) {
-                .variable_var => false,
-                .parameter => parameter_initializer,
-                .function_decl => !self.scopes[scope.toIndex()].kind.isVarScope(),
-                else => true,
-            };
-        }
-    }
-    return true;
+    const raw_id = self.lexicalSymbolIdAtScope(text, source_scope) orelse return true;
+    if (raw_id == class_self_id) return false;
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    if (raw_id >= symbols.len) return true;
+    const owner_scope = symbols[raw_id].scope_id;
+    if (owner_scope.isNone() or owner_scope.toIndex() >= scopes.len) return true;
+    return switch (symbols[raw_id].kind) {
+        .variable_var => false,
+        .parameter => parameter_initializer,
+        .function_decl => !scopes[owner_scope.toIndex()].kind.isVarScope(),
+        else => true,
+    };
 }
 
 pub fn noteDynamicEval(self: anytype, node: ast_mod.Node) void {
