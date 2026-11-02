@@ -4376,6 +4376,32 @@ test "namespace hostile metadata rejects foreign and alias SymbolRefs, preservin
         // Invalid SymbolRef is reserved for low-level callers that have no
         // captured identity, so the legacy name-to-scope fallback remains live.
         binding.local_symbol = .invalid;
+        try mutable_scope_maps[0].put(allocator, "value", decoy_symbol);
+        var poisoned_fallback_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+        defer poisoned_fallback_metadata.deinit();
+        try std.testing.expect(poisoned_fallback_metadata.ns_member_rewrites.get(binding_symbol) == null);
+        try std.testing.expect(poisoned_fallback_metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
+
+        try mutable_scope_maps[0].put(allocator, "value", semantic.symbols.items.len + 7);
+        var out_of_range_fallback_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+        defer out_of_range_fallback_metadata.deinit();
+        try std.testing.expect(out_of_range_fallback_metadata.ns_member_rewrites.get(binding_symbol) == null);
+        try std.testing.expect(out_of_range_fallback_metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
+
+        // Even a same-spelling, in-range root row cannot stand in for an
+        // import binding if its semantic kind belongs to an ordinary const.
+        const mutable_symbols = @constCast(semantic.symbols.items);
+        const original_decoy_name = mutable_symbols[decoy_symbol].name;
+        mutable_symbols[decoy_symbol].name = mutable_symbols[binding_symbol].name;
+        _ = mutable_scope_maps[0].remove("decoy0");
+        try mutable_scope_maps[0].put(allocator, "value", decoy_symbol);
+        var wrong_kind_fallback_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+        defer wrong_kind_fallback_metadata.deinit();
+        try std.testing.expect(wrong_kind_fallback_metadata.ns_member_rewrites.get(binding_symbol) == null);
+        try std.testing.expect(wrong_kind_fallback_metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
+        mutable_symbols[decoy_symbol].name = original_decoy_name;
+        try mutable_scope_maps[0].put(allocator, "decoy0", decoy_symbol);
+
         try mutable_scope_maps[0].put(allocator, "value", binding_symbol);
         var fallback_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
         defer fallback_metadata.deinit();
@@ -4561,6 +4587,22 @@ fn buildMetadataForModule(
     return r.linker.buildMetadataForAst(ast, module_index, is_entry, null, r.linker.format, true);
 }
 
+fn expectMetadataIdentityError(r: *const TestResult, module_index: u32, legacy: bool) !void {
+    const metadata = if (legacy)
+        r.linker.buildMetadata(module_index, true) catch |err| {
+            try std.testing.expectEqual(error.InvalidTopLevelOwnerSymbolIdentity, err);
+            return;
+        }
+    else
+        buildMetadataForModule(r, module_index, true) catch |err| {
+            try std.testing.expectEqual(error.InvalidTopLevelOwnerSymbolIdentity, err);
+            return;
+        };
+    var owned_metadata = metadata;
+    defer owned_metadata.deinit();
+    return error.PoisonedMetadataMapAccepted;
+}
+
 test "metadata self renames preserve exact scope-map SymbolIds across ten hostile inputs" {
     const sources = [_][]const u8{
         "const outer = 7; const neighbor = 9; function read(outer) { return outer; } console.log(outer, neighbor, read(2), externalGlobal);",
@@ -4613,6 +4655,44 @@ test "metadata self renames preserve exact scope-map SymbolIds across ten hostil
         defer raw_metadata.deinit();
         try std.testing.expectEqualStrings("selected_outer", raw_metadata.renames.get(@intCast(outer)) orelse return error.MissingExactRawMetadataRename);
         try std.testing.expect(raw_metadata.renames.get(@intCast(neighbor)) == null);
+
+        // Force the non-minify nested rename path, then redirect a nested row
+        // to a valid root SID. The row's map location must agree with the SID's
+        // actual scope before metadata uses it as a rename target.
+        try result.linker.nonminify_nested_shadow_modules.put(std.testing.allocator, entry_index.toU32(), {});
+        var nested_scope_index: ?usize = null;
+        var nested_outer: ?usize = null;
+        for (sem.scope_maps, 0..) |scope_map, scope_index| {
+            if (scope_index == 0) continue;
+            if (scope_map.get("outer")) |nested| {
+                if (nested != outer) {
+                    nested_scope_index = scope_index;
+                    nested_outer = nested;
+                    break;
+                }
+            }
+        }
+        const selected_nested_scope = nested_scope_index orelse return error.MissingNestedMetadataIdentityScope;
+        const selected_nested_symbol = nested_outer orelse return error.MissingNestedMetadataIdentitySymbol;
+        const mutable_scope_maps = @constCast(sem.scope_maps);
+        try mutable_scope_maps[selected_nested_scope].put(std.testing.allocator, "outer", outer);
+        try expectMetadataIdentityError(&result, entry_index.toU32(), false);
+        try mutable_scope_maps[selected_nested_scope].put(std.testing.allocator, "outer", selected_nested_symbol);
+
+        // Both metadata builders also consume root map rows as rename owners.
+        // A valid SID for another spelling must be rejected in either path.
+        try mutable_scope_maps[0].put(std.testing.allocator, "outer", neighbor);
+        try expectMetadataIdentityError(&result, entry_index.toU32(), false);
+        try expectMetadataIdentityError(&result, entry_index.toU32(), true);
+
+        // A same-spelling nested SID and an out-of-range SID are also invalid
+        // root owners. Check both metadata entry points against both shapes.
+        try mutable_scope_maps[0].put(std.testing.allocator, "outer", selected_nested_symbol);
+        try expectMetadataIdentityError(&result, entry_index.toU32(), false);
+        try expectMetadataIdentityError(&result, entry_index.toU32(), true);
+        try mutable_scope_maps[0].put(std.testing.allocator, "outer", sem.symbols.items.len + 7);
+        try expectMetadataIdentityError(&result, entry_index.toU32(), false);
+        try expectMetadataIdentityError(&result, entry_index.toU32(), true);
     }
 }
 
