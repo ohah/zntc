@@ -5166,25 +5166,6 @@ pub const Linker = struct {
         if (id.isValid()) try self.rename_table.put(self.allocator, id, value);
     }
 
-    /// scope_maps[0] → synthetic_name fallback으로 symbol 의 module-local index 찾기.
-    /// Legacy output-name lookup uses this only to read a canonical name; canonical
-    /// assignments require the exact SymbolId captured in NameOwner.
-    fn findSymbolIdx(self: *const Linker, module_index: u32, name: []const u8) ?u32 {
-        const m = self.getModule(module_index) orelse return null;
-        const sem = m.semantic orelse return null;
-        if (sem.scope_maps.len > 0) {
-            if (sem.scope_maps[0].get(name)) |sym_idx| {
-                if (sym_idx < sem.symbols.items.len) return @intCast(sym_idx);
-            }
-        }
-        for (sem.symbols.items, 0..) |*sym, i| {
-            if (sym.synthetic_kind != null and std.mem.eql(u8, sym.synthetic_name, name)) {
-                return @intCast(i);
-            }
-        }
-        return null;
-    }
-
     /// nested-scope binding(scope_maps[1..]) 의 모든 이름을 1-pass 로 순회한다.
     /// `hasNestedBinding`(단일 lookup) 과 `moduleFingerprint`(G5 nested 이름집합)의 **공유
     /// 입력 소스** — 둘이 보는 scope 1+ 집합이 정확히 같도록 단일 정의로 묶는다
@@ -5338,12 +5319,6 @@ pub const Linker = struct {
         return m.exportBindingLocalName(eb.*);
     }
 
-    /// 특정 모듈+이름에 대한 canonical name 조회. 리네임 안 됐으면 null (원본 유지).
-    /// scope_maps[0] → synthetic_name 순으로 Symbol 탐색.
-    pub fn getCanonicalName(self: *const Linker, module_index: u32, name: []const u8) ?[]const u8 {
-        return self.lookupSymbolCanonical(module_index, name);
-    }
-
     /// #4535: 한 모듈의 **local** emit-영향 상태를 해시한다(자기 자신만; 전이성은 아래 deep-fold 가
     /// 담당). `emitDeepFingerprint` 가 `local + Σ dep.deep` (Merkle) 로 합성하고, 그 deep 값을
     /// `compiled_cache.computeInputHash` 가 각 resolved import 대상마다 접어, provider 의 wrap_kind
@@ -5466,13 +5441,6 @@ pub const Linker = struct {
         state[idx] = 2;
         out[idx] = h;
         return h;
-    }
-
-    fn lookupSymbolCanonical(self: *const Linker, module_index: u32, name: []const u8) ?[]const u8 {
-        const idx = self.findSymbolIdx(module_index, name) orelse return null;
-        // emit 경로는 build-scope `rename_table` 을 읽는다 — `Symbol.canonical_name` field 는
-        // RFC #3940 Sub-PR-L.5c 에서 제거됨. miss → null (원본 이름 유지).
-        return self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(module_index))), idx));
     }
 
     /// Consume the export-map producer's actual source binding or alias receipt.
