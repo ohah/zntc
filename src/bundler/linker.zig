@@ -6399,6 +6399,52 @@ pub const Linker = struct {
     ///    `analyzeNamespaceAccess`는 `semantic.symbol_ids` 기반이라 scope-aware.
     ///    `.namespace` 바인딩은 collectNamespaceAccesses 결과를 신뢰하지 않고
     ///    symbol-aware 판정으로 **덮어쓴다**.
+    fn namespaceAccessSymbolIndex(
+        self: *const Linker,
+        module: *const Module,
+        semantic: *const ModuleSemanticData,
+        ast: *const Ast,
+        binding: ImportBinding,
+    ) ?u32 {
+        const anchored = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{
+            .module_index = module.index,
+            .ast = ast,
+            .symbol_ids = semantic.symbol_ids,
+            .symbols = semantic.symbols.items,
+        });
+
+        if (binding.local_symbol.isValid()) {
+            if (binding.local_symbol.moduleIndex() != module.index) return null;
+            const raw = binding.local_symbol.semanticIndex() orelse return null;
+            if (raw >= semantic.symbols.items.len) return null;
+            if (binding.local_symbol_node != null and
+                (!anchored.isValid() or !binding.local_symbol.eql(anchored))) return null;
+            return raw;
+        }
+
+        // A retained scanner anchor remains authoritative when a low-level
+        // SymbolRef is absent. Never let a same-spelling map row override it.
+        if (binding.local_symbol_node != null) {
+            if (!anchored.isValid() or anchored.moduleIndex() != module.index) return null;
+            const raw = anchored.semanticIndex() orelse return null;
+            if (raw >= semantic.symbols.items.len) return null;
+            return raw;
+        }
+
+        // Compatibility for callers that provide neither an exact SymbolRef
+        // nor a scanner anchor: validate the root row before using it as an SID.
+        if (semantic.scope_maps.len == 0) return null;
+        const raw = semantic.scope_maps[0].get(binding.local_name) orelse return null;
+        self.validateScopeMapOwnerIdentity(module.*, semantic, binding.local_name, 0, raw) catch return null;
+        const expected_kind: semantic_symbol.SymbolKind = switch (binding.local_role) {
+            .import_binding => .import_binding,
+            .materialized_var => .variable_var,
+            .materialized_const => .variable_const,
+        };
+        if (semantic.symbols.items[raw].kind != expected_kind) return null;
+        return @intCast(raw);
+    }
+
     pub fn populateNamespaceAccesses(self: *const Linker) void {
         var scope = profile.begin(.link_populate_namespace_accesses);
         defer scope.end();
@@ -6495,12 +6541,14 @@ pub const Linker = struct {
                     if (!is_virtual_ns) continue;
                 }
 
-                // 소비자 모듈의 exact import SymbolId 우선. 이름 조회는 ID가 없는
-                // low-level binding에만 남겨 stale scope-map spelling의 오연결을 막는다.
-                const sym_idx: u32 = if (ib.local_symbol.isValid()) blk: {
-                    if (ib.local_symbol.moduleIndex() != importer.index) continue;
-                    break :blk ib.local_symbol.semanticIndex() orelse continue;
-                } else @intCast(sem.scope_maps[0].get(ib.local_name) orelse continue);
+                // The SymbolRef and scanner anchor must agree. An invalid ref can
+                // still use its retained AST anchor; only anchorless low-level
+                // bindings use a validated scope-map compatibility lookup.
+                const sym_idx = self.namespaceAccessSymbolIndex(importer, &sem, ast, ib.*) orelse {
+                    ib.namespace_used_properties = null;
+                    ib.namespace_used_property_stmts = null;
+                    continue;
+                };
 
                 // 분석은 linker.allocator에서 임시로 (내부 HashMap 용), 결과 슬라이스만 arena.
                 var access = namespace_access.analyzeNamespaceAccessWithIndex(
