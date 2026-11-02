@@ -712,7 +712,7 @@ pub fn exportBindingIsHoistableFn(m: *const Module, eb: ExportBinding) bool {
     // default 는 제외 — `module.exports = X`(default-only) / `exports.default`(mixed) 모드 로직이
     // 별도 처리(hoist 하면 그 로직과 충돌). named function export 만 대상.
     if (std.mem.eql(u8, eb.exported_name, "default")) return false;
-    const idx = eb.symbol.semanticIndex() orelse return false;
+    const idx = m.exportBindingLocalNodeSemanticIndex(eb) orelse return false;
     const sem = m.semantic orelse return false;
     if (idx >= sem.symbols.items.len) return false;
     return sem.symbols.items[idx].decl_flags.is_function;
@@ -5518,6 +5518,38 @@ test "used output export names survive ten stale export SID carriers" {
         try std.testing.expect(restored_local_name);
         std.debug.print("used output export hostile case {d}: preserved {s} after stale SID {d}\n", .{ case_index + 1, case.local_name, decoy_symbol });
     }
+}
+
+test "hoistable function export rejects a same-module decoy SID" {
+    const helper = @import("../test_helpers.zig");
+    const resolve_cache_mod = @import("../resolve_cache.zig");
+    const SymbolRef = @import("../symbol.zig").SymbolRef;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helper.writeFile(tmp.dir, "provider.mjs", "export const live = 1; export function legitimate() {} function decoy() {}");
+
+    const path = try helper.absPath(&tmp, "provider.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{path});
+    var linker = Linker.init(std.testing.allocator, &graph, .cjs);
+    defer linker.deinit();
+    try linker.link();
+
+    const module = graph.getModule(ModuleIndex.fromUsize(0)) orelse return error.MissingProvider;
+    const binding = @constCast(module.findExportBinding("live") orelse return error.MissingLiveExport);
+    const legitimate_binding = module.findExportBinding("legitimate") orelse return error.MissingLegitimateExport;
+    const semantic = module.semantic orelse return error.MissingProviderSemantic;
+    const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoySID;
+    try std.testing.expect(exportBindingIsHoistableFn(module, legitimate_binding.*));
+    try std.testing.expect(!exportBindingIsHoistableFn(module, binding.*));
+
+    // A valid function SID in this module is still the wrong source binding.
+    binding.symbol = SymbolRef.makeSemantic(module.index, decoy_sid);
+    try std.testing.expect(!exportBindingIsHoistableFn(module, binding.*));
 }
 
 // ============================================================
