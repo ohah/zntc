@@ -6512,7 +6512,6 @@ pub const Linker = struct {
     ///    `.namespace` 바인딩은 collectNamespaceAccesses 결과를 신뢰하지 않고
     ///    symbol-aware 판정으로 **덮어쓴다**.
     fn namespaceAccessSymbolIndex(
-        self: *const Linker,
         module: *const Module,
         semantic: *const ModuleSemanticData,
         ast: *const Ast,
@@ -6542,19 +6541,7 @@ pub const Linker = struct {
             if (raw >= semantic.symbols.items.len) return null;
             return raw;
         }
-
-        // Compatibility for callers that provide neither an exact SymbolRef
-        // nor a scanner anchor: validate the root row before using it as an SID.
-        if (semantic.scope_maps.len == 0) return null;
-        const raw = semantic.scope_maps[0].get(binding.local_name) orelse return null;
-        self.validateScopeMapOwnerIdentity(module.*, semantic, binding.local_name, 0, raw) catch return null;
-        const expected_kind: semantic_symbol.SymbolKind = switch (binding.local_role) {
-            .import_binding => .import_binding,
-            .materialized_var => .variable_var,
-            .materialized_const => .variable_const,
-        };
-        if (semantic.symbols.items[raw].kind != expected_kind) return null;
-        return @intCast(raw);
+        return null;
     }
 
     pub fn populateNamespaceAccesses(self: *const Linker) void {
@@ -6653,10 +6640,10 @@ pub const Linker = struct {
                     if (!is_virtual_ns) continue;
                 }
 
-                // The SymbolRef and scanner anchor must agree. An invalid ref can
-                // still use its retained AST anchor; only anchorless low-level
-                // bindings use a validated scope-map compatibility lookup.
-                const sym_idx = self.namespaceAccessSymbolIndex(importer, &sem, ast, ib.*) orelse {
+                // A missing SymbolRef can still use its retained scanner-owned
+                // anchor. With neither exact identity carrier, clear the result
+                // instead of reconstructing a SID from the source spelling.
+                const sym_idx = namespaceAccessSymbolIndex(importer, &sem, ast, ib.*) orelse {
                     ib.namespace_used_properties = null;
                     ib.namespace_used_property_stmts = null;
                     continue;

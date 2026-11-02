@@ -4355,15 +4355,12 @@ test "namespace access analysis uses import identity anchors under hostile scope
     try std.testing.expect(answer_found);
     try std.testing.expect(!decoy_found);
 
-    // Keep the documented compatibility fallback for truly anchorless
-    // low-level bindings, while requiring its root row to identify the import.
+    // Without either exact identity carrier, even a correct-looking spelling
+    // row cannot reconstruct the source binding SID.
     entry.import_bindings[binding_index].local_symbol_node = null;
     try mutable_scope_maps[0].put(allocator, "ns", binding_symbol);
     r.linker.populateNamespaceAccesses();
-    const fallback = entry.import_bindings[binding_index].namespace_used_properties orelse
-        return error.MissingNamespaceFallbackProperties;
-    try std.testing.expectEqual(@as(usize, 1), fallback.len);
-    try std.testing.expectEqualStrings("answer", fallback[0]);
+    try std.testing.expect(entry.import_bindings[binding_index].namespace_used_properties == null);
 
     try mutable_scope_maps[0].put(allocator, "ns", decoy_symbol);
     r.linker.populateNamespaceAccesses();
