@@ -449,6 +449,130 @@ fn buildAndLinkWithTransformOptions(
     return .{ .linker = linker, .graph = graph, .cache = cache };
 }
 
+const PreservedJsxImportIdentityFixture = struct {
+    result: TestResult,
+    provider_index: ModuleIndex,
+    provider_symbol: u32,
+    importer_index: ModuleIndex,
+    import_binding_index: usize,
+    import_local_node: @import("../parser/ast.zig").NodeIndex,
+};
+
+fn buildPreservedJsxImportIdentityFixture(tmp: *std.testing.TmpDir) !PreservedJsxImportIdentityFixture {
+    try writeFile(tmp.dir, "component.jsx", "export function x() { return null; }");
+    try writeFile(tmp.dir, "entry.jsx",
+        \\import { x as ImportedComponent } from './component.jsx';
+        \\export const view = <ImportedComponent probe={ImportedComponent} />;
+    );
+
+    var result = try buildAndLink(std.testing.allocator, tmp, "entry.jsx");
+    errdefer {
+        result.linker.deinit();
+        result.destroyGraph();
+        result.cache.deinit();
+    }
+    result.graph.jsx_runtime = .preserve;
+
+    const importer_index = findModuleIdx(result.graph, "entry.jsx") orelse return error.MissingJsxImporter;
+    const importer = result.graph.moduleAtMut(importer_index) orelse return error.MissingJsxImporter;
+    const importer_sem = importer.semantic orelse return error.MissingJsxImporterSemantic;
+    const binding_index = blk: {
+        for (importer.import_bindings, 0..) |binding, index| {
+            if (std.mem.eql(u8, binding.local_name, "ImportedComponent")) break :blk index;
+        }
+        return error.MissingJsxImportBinding;
+    };
+    const actual_local = try importer.checkedSourceImportLocalSymbol(importer.import_bindings[binding_index]);
+    const actual_local_sid = actual_local.semanticIndex() orelse return error.MissingJsxImportLocalSymbol;
+    try std.testing.expectEqual(importer_index, actual_local.moduleIndex());
+    try std.testing.expect(importer_sem.symbols.items[actual_local_sid].requires_uppercase_first_char);
+    const import_local_node = importer.import_bindings[binding_index].local_symbol_node orelse return error.MissingJsxImportLocalNode;
+
+    // Simulate a missing linker-derived carrier while retaining the authoritative
+    // scanner-owned node -> semantic SID mapping. JSX name constraints must still
+    // follow that exact source identity without republishing the missing field.
+    importer.import_bindings[binding_index].local_symbol = .invalid;
+
+    const provider_index = findModuleIdx(result.graph, "component.jsx") orelse return error.MissingJsxProvider;
+    const provider_symbol = sourceTopLevelSymbolId(result.graph, provider_index, "x") orelse return error.MissingJsxProviderSymbol;
+    return .{
+        .result = result,
+        .provider_index = provider_index,
+        .provider_symbol = @backingInt(provider_symbol.inner),
+        .importer_index = importer_index,
+        .import_binding_index = binding_index,
+        .import_local_node = import_local_node,
+    };
+}
+
+test "preserved JSX rename reads uppercase requirement from exact import anchor" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var fixture = try buildPreservedJsxImportIdentityFixture(&tmp);
+    defer fixture.result.cache.deinit();
+    defer fixture.result.destroyGraph();
+    defer fixture.result.linker.deinit();
+
+    try fixture.result.linker.computeRenames();
+    try std.testing.expect(!fixture.result.graph.getModule(fixture.importer_index).?.import_bindings[fixture.import_binding_index].local_symbol.isValid());
+
+    const canonical = fixture.result.linker.rename_table.get(bundler_symbol.SymbolID.make(fixture.provider_index, fixture.provider_symbol)) orelse
+        return error.MissingCanonicalJsxProviderName;
+    try std.testing.expect(canonical.len > 0);
+    try std.testing.expect(std.ascii.isUpper(canonical[0]));
+}
+
+test "preserved JSX Phase A candidate reads uppercase requirement from exact import anchor" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var fixture = try buildPreservedJsxImportIdentityFixture(&tmp);
+    defer fixture.result.cache.deinit();
+    defer fixture.result.destroyGraph();
+    defer fixture.result.linker.deinit();
+
+    var collected = try fixture.result.linker.collectUnifiedInput(null, &.{});
+    defer collected.deinit();
+    try std.testing.expect(!fixture.result.graph.getModule(fixture.importer_index).?.import_bindings[fixture.import_binding_index].local_symbol.isValid());
+
+    var found = false;
+    for (collected.top_level_candidates) |candidate| {
+        if (candidate.module_index != @backingInt(fixture.provider_index) or candidate.symbol_id != fixture.provider_symbol) continue;
+        try std.testing.expect(candidate.requires_uppercase_first_char);
+        found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "preserved JSX does not infer component identity from a missing source SID" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var fixture = try buildPreservedJsxImportIdentityFixture(&tmp);
+    defer fixture.result.cache.deinit();
+    defer fixture.result.destroyGraph();
+    defer fixture.result.linker.deinit();
+
+    const importer = fixture.result.graph.moduleAtMut(fixture.importer_index) orelse return error.MissingJsxImporter;
+    const sem = importer.semantic orelse return error.MissingJsxImporterSemantic;
+    @constCast(sem.symbol_ids)[@backingInt(fixture.import_local_node)] = null;
+
+    try fixture.result.linker.computeRenames();
+    try std.testing.expect(!importer.import_bindings[fixture.import_binding_index].local_symbol.isValid());
+    const provider_id = bundler_symbol.SymbolID.make(fixture.provider_index, fixture.provider_symbol);
+    if (fixture.result.linker.rename_table.get(provider_id)) |canonical| {
+        try std.testing.expect(!std.ascii.isUpper(canonical[0]));
+    }
+
+    var collected = try fixture.result.linker.collectUnifiedInput(null, &.{});
+    defer collected.deinit();
+    var found_component_candidate = false;
+    for (collected.top_level_candidates) |candidate| {
+        if (candidate.module_index != @backingInt(fixture.provider_index) or candidate.symbol_id != fixture.provider_symbol) continue;
+        found_component_candidate = true;
+        try std.testing.expect(!candidate.requires_uppercase_first_char);
+    }
+    try std.testing.expect(!found_component_candidate);
+}
+
 fn addGraphRuntimeHelperIdentity(module: *Module, name: []const u8) !semantic_symbol.SymbolId {
     if (module.parse_arena == null) {
         module.parse_arena = @import("module.zig").createParseArena(std.testing.allocator) orelse return error.OutOfMemory;
