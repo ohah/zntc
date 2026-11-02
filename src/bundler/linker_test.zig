@@ -3299,6 +3299,74 @@ test "CJS re-export shadow leaves a same-named private provider local alone" {
     try std.testing.expectEqualStrings(native.stdout, actual.stdout);
 }
 
+test "namespace re-export shadow never renames a same-named private barrel local" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "entry.mjs",
+        "import { math as imported } from './barrel.mjs'; function read(math) { return imported.value + math; } console.log(read(1));",
+    );
+    try writeFile(tmp.dir, "barrel.mjs", "export * as math from './provider.mjs'; const math = 99;");
+    try writeFile(tmp.dir, "provider.mjs", "export const value = 41;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingRenameOwnerModule;
+    const entry = r.graph.getModule(entry_index) orelse return error.MissingRenameOwnerModule;
+    const resolved = r.linker.getResolvedBinding(entry_index.toU32(), entry.import_bindings[0].local_span) orelse
+        return error.MissingResolvedImport;
+    const barrel_index = findModuleIdx(r.graph, "barrel.mjs") orelse return error.MissingRenameOwnerModule;
+    try std.testing.expectEqual(barrel_index, resolved.canonical.module_index);
+    try std.testing.expectEqualStrings("math", resolved.canonical.export_name);
+
+    const barrel = r.graph.getModule(barrel_index) orelse return error.MissingRenameOwnerModule;
+    try std.testing.expectEqual(.re_export_namespace, barrel.findExportBinding("math").?.kind);
+    const semantic = barrel.semantic orelse return error.MissingRenameOwnerSemantic;
+    const private_symbol = semantic.scope_maps[0].get("math") orelse return error.MissingRenameOwnerSymbol;
+    const private_id = bundler_symbol.SymbolID.make(barrel_index, @as(u32, @intCast(private_symbol)));
+    const entry_semantic = entry.semantic orelse return error.MissingRenameOwnerSemantic;
+    const consumer_symbol = blk: {
+        for (entry_semantic.scope_maps, 0..) |scope_map, scope_index| {
+            if (scope_index == 0) continue;
+            if (scope_map.get("math")) |symbol| break :blk symbol;
+        }
+        return error.MissingNestedRenameOwnerSymbol;
+    };
+    const consumer_id = bundler_symbol.SymbolID.make(entry_index, @as(u32, @intCast(consumer_symbol)));
+
+    try r.linker.computeRenames();
+
+    const helpers = @import("test_helpers.zig");
+    const entry_path = try helpers.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry_path);
+    const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", entry_path } });
+    defer std.testing.allocator.free(native.stdout);
+    defer std.testing.allocator.free(native.stderr);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, native.term);
+    try std.testing.expectEqualStrings("42\n", native.stdout);
+
+    var bundled = try helpers.bundleEntry(std.testing.allocator, &tmp, entry_path, .{ .platform = .node });
+    defer bundled.deinit();
+    try std.testing.expect(!bundled.result.hasErrors());
+    try writeFile(tmp.dir, "actual.cjs", bundled.code());
+    const output_path = try helpers.absPath(&tmp, "actual.cjs");
+    defer std.testing.allocator.free(output_path);
+    const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", output_path } });
+    defer std.testing.allocator.free(actual.stdout);
+    defer std.testing.allocator.free(actual.stderr);
+    if (actual.term != .exited or actual.term.exited != 0) std.debug.print("namespace re-export shadow output failed: {s}\n{s}\n", .{ actual.stderr, bundled.code() });
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+    try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+
+    try std.testing.expect(r.linker.rename_table.get(private_id) == null);
+    const consumer_name = r.linker.rename_table.get(consumer_id) orelse return error.MissingNestedRenameOwnerRename;
+    try std.testing.expect(!std.mem.eql(u8, consumer_name, "math"));
+}
+
 test "rename: three modules same name — $1 and $2" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
