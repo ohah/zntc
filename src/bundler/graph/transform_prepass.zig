@@ -17171,9 +17171,12 @@ test "generic prepass staging detaches mutable graph state and aborts without so
         try std.testing.expect(!(try prepared.isCurrent(parse_allocator)));
     }
 
-    try module.pending_renames.map.put(parse_allocator, bundler_symbol.SymbolID.make(module.index, 1), "hostile-name");
+    // Canonical output hints belong to the actual known source SID. The
+    // registered output-domain owner is independently checked above.
+    const original_output_hint = module.semantic.?.symbols.items[0].output_name_hint;
+    module.semantic.?.symbols.items[0].output_name_hint = "hostile-output-hint";
     try std.testing.expect(!(try prepared.isCurrent(parse_allocator)));
-    _ = module.pending_renames.map.remove(bundler_symbol.SymbolID.make(module.index, 1));
+    module.semantic.?.symbols.items[0].output_name_hint = original_output_hint;
     try std.testing.expect(try prepared.isCurrent(parse_allocator));
 
     try module.ts_type_export_names.put(parse_allocator, "HostileType", {});
