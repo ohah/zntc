@@ -17,6 +17,27 @@ const writeFile = @import("test_helpers.zig").writeFile;
 const bundler_symbol = @import("symbol.zig");
 const semantic_symbol = @import("../semantic/symbol.zig");
 const PreservedRenames = bundler_symbol.PreservedRenames;
+const chunk_mod = @import("chunk.zig");
+
+fn addTestChunk(
+    chunk_graph: *chunk_mod.ChunkGraph,
+    allocator: std.mem.Allocator,
+    module_indices: []const ModuleIndex,
+) !chunk_mod.ChunkIndex {
+    const bits = try chunk_mod.BitSet.init(allocator, @intCast(chunk_graph.module_to_chunk.len));
+    var chunk = chunk_mod.Chunk.init(.none, .common, bits);
+    var owns_chunk = true;
+    defer if (owns_chunk) chunk.deinit(allocator);
+    for (module_indices) |module_index| {
+        const index: u32 = @intCast(@backingInt(module_index));
+        chunk.bits.setBit(index);
+        try chunk.addModule(allocator, module_index);
+    }
+    const chunk_index = try chunk_graph.addChunk(chunk);
+    owns_chunk = false;
+    for (module_indices) |module_index| chunk_graph.assignModuleToChunk(module_index, chunk_index);
+    return chunk_index;
+}
 
 test "resolved export local cannot borrow an unexported lexical binding" {
     var tmp = std.testing.tmpDir(.{});
@@ -641,6 +662,60 @@ test "lazy cross-chunk export overrides use exact SymbolIds under hostile local 
             try std.testing.expect(!std.mem.eql(u8, global_name, decoy_canonical));
         }
     }
+}
+
+test "lazy namespace re-export alias never renames a same-named private local" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import './consumer.mjs'; import './free.mjs';");
+    try writeFile(tmp.dir, "consumer.mjs", "import { math } from './barrel.mjs'; console.log(math.value);");
+    try writeFile(tmp.dir, "free.mjs", "typeof math;");
+    try writeFile(tmp.dir, "barrel.mjs", "export * as math from './provider.mjs'; const math = 99;");
+    try writeFile(tmp.dir, "provider.mjs", "export const value = 41;");
+
+    const root_path = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer allocator.free(root_path);
+    var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{root_path});
+    graph.lazy_compilation = true;
+    var linker = Linker.init(allocator, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+
+    const entry_index = findModuleIdx(&graph, "entry.mjs") orelse return error.MissingRenameOwnerModule;
+    const consumer_index = findModuleIdx(&graph, "consumer.mjs") orelse return error.MissingRenameOwnerModule;
+    const free_index = findModuleIdx(&graph, "free.mjs") orelse return error.MissingRenameOwnerModule;
+    const barrel_index = findModuleIdx(&graph, "barrel.mjs") orelse return error.MissingRenameOwnerModule;
+    const provider_index = findModuleIdx(&graph, "provider.mjs") orelse return error.MissingRenameOwnerModule;
+
+    var chunks = try chunk_mod.ChunkGraph.init(allocator, graph.moduleCount());
+    defer chunks.deinit();
+    const entry_modules = [_]ModuleIndex{ entry_index, consumer_index, free_index };
+    const common_modules = [_]ModuleIndex{ barrel_index, provider_index };
+    _ = try addTestChunk(&chunks, allocator, &entry_modules);
+    _ = try addTestChunk(&chunks, allocator, &common_modules);
+    linker.module_to_chunk = chunks.module_to_chunk;
+    defer linker.module_to_chunk = null;
+
+    try chunk_mod.computeCrossChunkLinks(&chunks, &graph, allocator, &linker);
+    try chunk_mod.computeCrossChunkGlobalNames(allocator, &chunks, &linker);
+    const public_alias = linker.getCrossChunkGlobalName(barrel_index.toU32(), "math") orelse
+        return error.MissingNamespaceReExportCrossChunkName;
+    try std.testing.expectEqualStrings("math$1", public_alias);
+    try std.testing.expect(!linker.isSharedNamespaceAssignment(barrel_index.toU32(), "math", public_alias));
+
+    const barrel = graph.getModule(barrel_index) orelse return error.MissingRenameOwnerModule;
+    try std.testing.expectEqual(.re_export_namespace, barrel.findExportBinding("math").?.kind);
+    const semantic = barrel.semantic orelse return error.MissingRenameOwnerSemantic;
+    const private_symbol = semantic.scope_maps[0].get("math") orelse return error.MissingRenameOwnerSymbol;
+    const private_id = bundler_symbol.SymbolID.make(barrel_index, @as(u32, @intCast(private_symbol)));
+
+    try linker.computeRenamesForModules(&.{barrel_index}, &.{});
+    try std.testing.expect(linker.rename_table.get(private_id) == null);
 }
 
 test "linker: tagged-template cache final names come from exact post-graph bindings" {
