@@ -4174,6 +4174,8 @@ pub const Linker = struct {
                 if (hops >= sem.scopes.len or scope.toIndex() >= sem.scopes.len or scope.toIndex() >= sem.scope_maps.len) return error.InvalidCallsiteReference;
                 if (sem.scopes[scope.toIndex()].blocksMangling()) break;
                 if (sem.scope_maps[scope.toIndex()].get(name)) |shadow| {
+                    self.validateScopeMapOwnerIdentity(module.*, sem, name, scope.toIndex(), shadow) catch
+                        return error.InvalidCallsiteReference;
                     if (shadow != local_sid) {
                         const identity = bundler_symbol.SymbolID.make(module.index, shadow);
                         const selected = self.rename_table.get(identity);
@@ -8253,4 +8255,61 @@ test "materialized TLA default facade keeps its actual output owner and rejects 
     try std.testing.expect(materializedDefaultFacadeName(module, binding, raw) == null);
     semantic.symbols.items[raw] = original;
     try std.testing.expectEqualStrings("_default2", materializedDefaultFacadeName(module, binding, raw).?);
+}
+
+test "callsite shadow resolver rejects a scope map redirected to another valid SID" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "provider.mjs", .data = "export const value=7;" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "entry.mjs", .data = "import*as value from './provider.mjs';import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'),value===ns);" });
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    var cache = @import("resolve_cache.zig").ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    try @import("self_namespace_ast.zig").lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+
+    const importer = graph.moduleAtMut(ModuleIndex.fromUsize(0)).?;
+    var callsite_binding: ?ImportBinding = null;
+    for (importer.import_bindings) |binding| if (binding.callsite_target != null) {
+        callsite_binding = binding;
+        break;
+    };
+    const binding = callsite_binding orelse return error.MissingCallsiteBinding;
+    var semantic = &importer.semantic.?;
+    const value_shadow = semantic.scope_maps[0].get("value") orelse return error.MissingValueShadow;
+    const wrong_shadow = semantic.scope_maps[0].get("ns") orelse return error.MissingNamespaceShadow;
+    const value_sid: u32 = @intCast(value_shadow);
+    const wrong_sid: u32 = @intCast(wrong_shadow);
+    const local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{
+        .module_index = importer.index,
+        .ast = &importer.ast.?,
+        .symbol_ids = semantic.symbol_ids,
+        .symbols = semantic.symbols.items,
+    });
+    const local_sid = local.semanticIndex() orelse return error.MissingCallsiteLocalSID;
+    try std.testing.expect(value_shadow != wrong_shadow);
+    try std.testing.expect(local_sid != wrong_shadow);
+    try std.testing.expectEqual(@as(usize, 2), semantic.scopes.len);
+
+    var linker = Linker.init(a, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    try @constCast(&semantic.scope_maps[0]).put(a, "value", wrong_shadow);
+    var name_to_owners: Linker.NameToOwnersMap = .empty;
+    defer name_to_owners.deinit(a);
+    try std.testing.expect(value_sid != wrong_sid);
+    try std.testing.expectError(
+        error.InvalidCallsiteReference,
+        linker.resolveCallsiteReadShadows(importer, binding, &name_to_owners),
+    );
+    try std.testing.expectEqual(@as(usize, 0), linker.rename_table.count());
+
+    try @constCast(&semantic.scope_maps[0]).put(a, "value", value_shadow);
+    try linker.resolveCallsiteReadShadows(importer, binding, &name_to_owners);
+    try std.testing.expect(linker.rename_table.get(bundler_symbol.SymbolID.make(importer.index, value_sid)) != null);
+    try std.testing.expect(linker.rename_table.get(bundler_symbol.SymbolID.make(importer.index, wrong_sid)) == null);
 }
