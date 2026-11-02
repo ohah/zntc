@@ -172,6 +172,19 @@ trailing_nodes가 있으면 함수 뒤에 삽입
 의미 그래프가 없는 transformer-only 호출은 `SymbolId`를 만들 수 없어 등록 결과가 `null`이다. semantic edit가
 활성화된 상태에서 삽입 scope가 없으면 변환은 실패한다. 이름 문자열로 나중에 심볼을 복구하는 fallback은 사용하지 않는다.
 
+### Bundler Visitor와 semantic graph 계약
+
+Zig `Plugin`의 AST Visitor는 기본적으로 분석된 semantic graph를 유지한다고 약속하지 않는다. Visitor가 바인딩,
+참조, lexical scope와 그 owner를 바꾸지 않는 경우에만 `.ast_graph_contract = .identity_preserving_visitor_edits`를
+선언할 수 있다. 이 계약은 visitor가 바꾼 출력 AST를 exact identity audit로 다시 검사한 뒤 후보를 게시한다.
+이름과 SID의 연결이 어긋나거나 다른 binding을 가리키면 후보 전체를 거부하며, 실패한 AST나 graph를 원본 모듈에
+부분 게시하지 않는다.
+
+이 opt-in은 plain JavaScript의 제한된 bundler prepass 경로에만 적용된다. `onFunction` 또는 auto-worklet 훅과
+함께 선언할 수 없고, 임의 subtree 교체나 binding/reference/scope를 추가·삭제·이동하는 Visitor는 이 계약의 대상이
+아니다. 이런 변환은 기본 `.untracked` 계약을 유지해야 한다. JS `onAstFunction` API에는 이 내부 graph 계약을
+노출하지 않는다.
+
 ## 내장 플러그인 추가 방법
 
 1. `src/transformer/plugins/my_plugin.zig` 생성

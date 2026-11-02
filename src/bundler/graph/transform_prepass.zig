@@ -11548,16 +11548,16 @@ fn canKeepPrepassSemanticGraphPrepared(
     // The Reanimated visitor edits only the module AST. Its generated factory
     // bindings/references and scopes, plus React Refresh registration handles
     // and component references, are attached to the semantic editor. Preserve
-    // that graph for their bounded combination. User AST plugins remain
-    // on the full reanalysis path because their graph effects are not declared
-    // to the transformer. Resolve/load/source/output/lifecycle plugins do not
-    // edit this analyzed AST and need no such fallback.
+    // that graph for their bounded combination. AST plugins can keep this
+    // graph only with a declared semantic-edit or identity-preserving visitor
+    // contract. Uncontracted plugins stay on the conservative path. Resolve,
+    // load, source/output, and lifecycle plugins do not edit this analyzed AST.
     const safe_builtin_worklet = self.worklet_transform and !hasAstTransformHooks(self.plugins) and
         !self.styled_components and !self.emotion and
         !options.unsupported.hasAny() and !ast.has_jsx and !ast.has_decorator and
         !hasNestedWorkletFunctionScope(ast, semantic) and
         isBuiltinWorkletPluginSet(plugins) and isBuiltinWorkletPluginSet(options.plugins);
-    const tracked_function_plugin_graph = canRetainTrackedAstFunctionPluginGraph(
+    const tracked_ast_plugin_graph = canRetainContractedAstPluginGraph(
         self,
         module,
         ast,
@@ -11565,9 +11565,9 @@ fn canKeepPrepassSemanticGraphPrepared(
         plugins,
     );
     if ((self.worklet_transform and !safe_builtin_worklet) or
-        (hasAstTransformHooks(self.plugins) and !tracked_function_plugin_graph) or
-        (hasAstTransformHooks(plugins) and !safe_builtin_worklet and !tracked_function_plugin_graph) or
-        (hasAstTransformHooks(options.plugins) and !safe_builtin_worklet and !tracked_function_plugin_graph)) return false;
+        (hasAstTransformHooks(self.plugins) and !tracked_ast_plugin_graph) or
+        (hasAstTransformHooks(plugins) and !safe_builtin_worklet and !tracked_ast_plugin_graph) or
+        (hasAstTransformHooks(options.plugins) and !safe_builtin_worklet and !tracked_ast_plugin_graph)) return false;
     // The styled-components CSS-prop visitor adds a real AST import and exact
     // helper SymbolId. The retained-graph path rescans import/export metadata
     // from that edited AST without replacing its semantic graph.
@@ -11741,7 +11741,7 @@ fn canKeepPrepassSemanticGraphPrepared(
     // can remain on this graph. Other graph-changing transforms remain here.
     var found_other_transform = graph_editable_jsx or retained_stage3_decorators or retained_legacy_decorators or safe_graph_subset or
         safe_styled_components or
-        options.react_refresh or options.emotion or safe_builtin_worklet or tracked_function_plugin_graph;
+        options.react_refresh or options.emotion or safe_builtin_worklet or tracked_ast_plugin_graph;
     var found_transform = found_other_transform or retained_define_references or retained_simple_console_drops;
     // Type erasure may combine with native class visitation that only removes
     // type syntax. Other runtime transforms remain fail-closed at the TS import gate.
@@ -12740,54 +12740,130 @@ fn hasAstTransformHooks(plugins: anytype) bool {
     return false;
 }
 
-fn hasTrackedAstFunctionGraphHooks(plugins: anytype) bool {
-    for (plugins) |plugin| if (plugin.hasTrackedFunctionGraphContract()) return true;
+fn hasRetainedAstGraphContractHooks(plugins: anytype) bool {
+    for (plugins) |plugin| if (plugin.hasRetainedGraphContract()) return true;
     return false;
 }
 
-fn allAstTransformHooksHaveTrackedFunctionGraphContract(plugins: anytype) bool {
+fn allAstTransformHooksHaveRetainedGraphContract(plugins: anytype) bool {
     for (plugins) |plugin| {
-        if (plugin.hasAstTransformHooks() and !plugin.hasTrackedFunctionGraphContract()) return false;
+        if (plugin.hasAstTransformHooks() and !plugin.hasRetainedGraphContract()) return false;
     }
     return true;
+}
+
+const IdentityPreservingVisitorMutationKind = enum {
+    rewrite_literal,
+    poison_reference,
+};
+
+const IdentityPreservingVisitorMutation = struct {
+    kind: IdentityPreservingVisitorMutationKind,
+    did_mutate: bool = false,
+};
+
+fn identityPreservingVisitorTestHook(
+    context: ?*anyopaque,
+    api: *plugin_mod.AstTransformCtx,
+    _: ast_mod.NodeIndex,
+) plugin_mod.PluginError!?ast_mod.NodeIndex {
+    const mutation = @as(*IdentityPreservingVisitorMutation, @ptrCast(@alignCast(context orelse return null)));
+    const ast = api.transformer.ast;
+    switch (mutation.kind) {
+        .rewrite_literal => {
+            var first_numeric: ?usize = null;
+            var second_numeric_span: ?Span = null;
+            for (ast.nodes.items, 0..) |node, raw| {
+                if (node.tag != .numeric_literal) continue;
+                if (first_numeric == null) {
+                    first_numeric = raw;
+                } else {
+                    second_numeric_span = node.span;
+                    break;
+                }
+            }
+            const first = first_numeric orelse return null;
+            const second_span = second_numeric_span orelse return null;
+            ast.nodes.items[first].span = second_span;
+            mutation.did_mutate = true;
+        },
+        .poison_reference => {
+            var decoy_binding: ?Span = null;
+            var decoy_name: ?ast_mod.StringRef = null;
+            var value_reference: ?usize = null;
+            for (ast.nodes.items, 0..) |node, raw| {
+                if (node.tag == .binding_identifier and
+                    Scanner.identifierNamesEqual(ast.getText(node.span), "decoy"))
+                {
+                    decoy_binding = node.span;
+                    decoy_name = node.data.string_ref;
+                } else if (node.tag == .identifier_reference and
+                    Scanner.identifierNamesEqual(ast.identifierNameText(node), "value"))
+                {
+                    value_reference = raw;
+                }
+            }
+            const reference = value_reference orelse return null;
+            ast.nodes.items[reference].span = decoy_binding orelse return null;
+            ast.nodes.items[reference].data.string_ref = decoy_name orelse return null;
+            mutation.did_mutate = true;
+        },
+    }
+    return null;
 }
 
 test "tracked plugin graph contract rejects untracked AST hook composition" {
     const Plugin = plugin_mod.Plugin;
     const function_hook = worklet_plugin.plugin().onFunction;
+    const visitor_hook = worklet_plugin.plugin().visitor.?.on_program;
     const tracked = Plugin{
         .name = "tracked-function",
         .onFunction = function_hook,
         .ast_graph_contract = .tracked_function_edits,
+    };
+    const identity_preserving_visitor = Plugin{
+        .name = "identity-preserving-visitor",
+        .visitor = .{ .on_program = visitor_hook },
+        .ast_graph_contract = .identity_preserving_visitor_edits,
     };
     const untracked = Plugin{ .name = "untracked-function", .onFunction = function_hook };
     const non_ast = Plugin{ .name = "observer" };
     const tracked_only = [_]Plugin{tracked};
     const tracked_and_untracked = [_]Plugin{ tracked, untracked };
     const tracked_with_observer = [_]Plugin{ tracked, non_ast };
+    const retained_contracts = [_]Plugin{ tracked, identity_preserving_visitor };
 
-    try std.testing.expect(allAstTransformHooksHaveTrackedFunctionGraphContract(&tracked_only));
-    try std.testing.expect(!allAstTransformHooksHaveTrackedFunctionGraphContract(&tracked_and_untracked));
-    try std.testing.expect(allAstTransformHooksHaveTrackedFunctionGraphContract(&tracked_with_observer));
+    try std.testing.expect(allAstTransformHooksHaveRetainedGraphContract(&tracked_only));
+    try std.testing.expect(!allAstTransformHooksHaveRetainedGraphContract(&tracked_and_untracked));
+    try std.testing.expect(allAstTransformHooksHaveRetainedGraphContract(&tracked_with_observer));
+    try std.testing.expect(allAstTransformHooksHaveRetainedGraphContract(&retained_contracts));
+    try std.testing.expect(identity_preserving_visitor.hasRetainedGraphContract());
+    try std.testing.expect(!(Plugin{
+        .name = "visitor-plus-function",
+        .onFunction = function_hook,
+        .visitor = .{ .on_program = visitor_hook },
+        .ast_graph_contract = .identity_preserving_visitor_edits,
+    }).hasRetainedGraphContract());
 }
 
-/// Admit only function-hook plugins whose AST additions are tracked by
-/// AstTransformCtx. Their exact output graph is checked after `finishSemanticEdit`;
-/// plugins that replace arbitrary visitor subtrees keep the analyzer boundary.
-fn canRetainTrackedAstFunctionPluginGraph(
+/// Admit only AST plugins with an explicit graph contract. Function hooks use
+/// AstTransformCtx's tracked insertion-scope operations. Identity-preserving
+/// visitors must leave binding/reference/scope edges alone. Both contracts are
+/// checked against the exact output graph after `finishSemanticEdit`.
+fn canRetainContractedAstPluginGraph(
     self: anytype,
     module: *const Module,
     ast: *const ast_mod.Ast,
     options: TransformOptions,
     merged_plugins: anytype,
 ) bool {
-    const has_tracked_hook = hasTrackedAstFunctionGraphHooks(self.plugins) or
-        hasTrackedAstFunctionGraphHooks(merged_plugins) or
-        hasTrackedAstFunctionGraphHooks(options.plugins);
-    if (!has_tracked_hook or
-        !allAstTransformHooksHaveTrackedFunctionGraphContract(self.plugins) or
-        !allAstTransformHooksHaveTrackedFunctionGraphContract(merged_plugins) or
-        !allAstTransformHooksHaveTrackedFunctionGraphContract(options.plugins)) return false;
+    const has_contracted_hook = hasRetainedAstGraphContractHooks(self.plugins) or
+        hasRetainedAstGraphContractHooks(merged_plugins) or
+        hasRetainedAstGraphContractHooks(options.plugins);
+    if (!has_contracted_hook or
+        !allAstTransformHooksHaveRetainedGraphContract(self.plugins) or
+        !allAstTransformHooksHaveRetainedGraphContract(merged_plugins) or
+        !allAstTransformHooksHaveRetainedGraphContract(options.plugins)) return false;
 
     if (self.worklet_transform or self.flow or isFlowPath(module.path) or
         module.module_type != .js or ast.is_typescript or module.import_records.len != 0 or
@@ -12910,6 +12986,7 @@ test "plugin graph retention admits only actual builtin worklet capabilities" {
 }
 
 test "plugin graph retention vetoes AST capabilities even without matching source tags" {
+    const Plugin = plugin_mod.Plugin;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -12923,6 +13000,7 @@ test "plugin graph retention vetoes AST capabilities even without matching sourc
     try analyzer.analyze();
     var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.js");
     module.source = parser.ast.source;
+    module.module_type = .js;
     module.ast = parser.ast;
     module.semantic = .{
         .symbols = analyzer.symbols,
@@ -12974,6 +13052,15 @@ test "plugin graph retention vetoes AST capabilities even without matching sourc
         context.plugins = &.{.{ .name = field, .visitor = visitor }};
         options.plugins = context.plugins;
         try std.testing.expect(!canKeepPrepassSemanticGraph(&context, &module, options, context.plugins, &allow_get, &allow_set, null));
+
+        const contracted_visitor = Plugin{
+            .name = field,
+            .visitor = visitor,
+            .ast_graph_contract = .identity_preserving_visitor_edits,
+        };
+        context.plugins = &.{contracted_visitor};
+        options.plugins = context.plugins;
+        try std.testing.expect(canKeepPrepassSemanticGraph(&context, &module, options, context.plugins, &allow_get, &allow_set, null));
     }
 }
 
@@ -17853,6 +17940,81 @@ test "generic prepass run publishes transformed output and preserves parser AST"
     if (module.alias_table) |*table| table.deinit();
     if (module.export_index_by_name) |*index| index.deinit(graph_allocator);
 
+    const visitor_source = "const value = 1 + 2; value;";
+    const visitor_fixture = try runtimeHelperReanalysisTestFixture(allocator, visitor_source);
+    const visitor_owner = visitor_fixture.semantic.owner_token;
+    var visitor_mutation: IdentityPreservingVisitorMutation = .{ .kind = .rewrite_literal };
+    const identity_visitor_plugins = [_]plugin_mod.Plugin{.{
+        .name = "identity-preserving-literal-visitor",
+        .context = @ptrCast(&visitor_mutation),
+        .visitor = .{ .on_program = identityPreservingVisitorTestHook },
+        .ast_graph_contract = .identity_preserving_visitor_edits,
+    }};
+    context.plugins = &identity_visitor_plugins;
+    var visitor_module = Module.init(@fromBackingInt(@as(u32, 1)), "identity-visitor.js");
+    visitor_module.source = visitor_source;
+    visitor_module.module_type = .js;
+    visitor_module.state = .ready;
+    visitor_module.ast = visitor_fixture.ast;
+    visitor_module.semantic = visitor_fixture.semantic;
+    run(&context, &visitor_module, allocator);
+    defer if (visitor_module.alias_table) |*table| table.deinit();
+    defer if (visitor_module.export_index_by_name) |*index| index.deinit(graph_allocator);
+    try std.testing.expect(visitor_mutation.did_mutate);
+    try std.testing.expectEqual(@as(usize, 0), context.diag_count);
+    try std.testing.expect(visitor_module.ast.?.transformed_root != null);
+    try std.testing.expect(visitor_module.transform_cache != null);
+    try std.testing.expectEqual(visitor_owner, visitor_module.semantic.?.owner_token);
+    try std.testing.expectEqualSlices(
+        ?u32,
+        visitor_fixture.semantic.symbol_ids,
+        visitor_module.semantic.?.symbol_ids[0..visitor_fixture.semantic.symbol_ids.len],
+    );
+    var retained_rewritten_literal = false;
+    for (visitor_module.ast.?.nodes.items) |node| {
+        if (node.tag == .numeric_literal and
+            std.mem.eql(u8, visitor_module.ast.?.getText(node.span), "2"))
+        {
+            retained_rewritten_literal = true;
+            break;
+        }
+    }
+    try std.testing.expect(retained_rewritten_literal);
+
+    const hostile_visitor_source = "const value = 1; const decoy = 2; value;";
+    const hostile_visitor_fixture = try runtimeHelperReanalysisTestFixture(allocator, hostile_visitor_source);
+    const hostile_owner = hostile_visitor_fixture.semantic.owner_token;
+    var hostile_snapshot = try ast_mod.Ast.cloneForTransformer(&hostile_visitor_fixture.ast, allocator);
+    hostile_snapshot.type_only_binding_names = try hostile_visitor_fixture.ast.type_only_binding_names.clone(allocator);
+    var hostile_mutation: IdentityPreservingVisitorMutation = .{ .kind = .poison_reference };
+    const hostile_identity_visitor_plugins = [_]plugin_mod.Plugin{.{
+        .name = "dishonest-identity-preserving-visitor",
+        .context = @ptrCast(&hostile_mutation),
+        .visitor = .{ .on_program = identityPreservingVisitorTestHook },
+        .ast_graph_contract = .identity_preserving_visitor_edits,
+    }};
+    context.plugins = &hostile_identity_visitor_plugins;
+    var hostile_visitor_module = Module.init(@fromBackingInt(@as(u32, 2)), "hostile-identity-visitor.js");
+    hostile_visitor_module.source = hostile_visitor_source;
+    hostile_visitor_module.module_type = .js;
+    hostile_visitor_module.state = .ready;
+    hostile_visitor_module.ast = hostile_visitor_fixture.ast;
+    hostile_visitor_module.semantic = hostile_visitor_fixture.semantic;
+    run(&context, &hostile_visitor_module, allocator);
+    defer if (hostile_visitor_module.alias_table) |*table| table.deinit();
+    defer if (hostile_visitor_module.export_index_by_name) |*index| index.deinit(graph_allocator);
+    try std.testing.expect(hostile_mutation.did_mutate);
+    try std.testing.expectEqual(@as(usize, 1), context.diag_count);
+    try std.testing.expect(hostile_visitor_module.ast.?.transformed_root == null);
+    try std.testing.expect(hostile_visitor_module.transform_cache == null);
+    try std.testing.expectEqual(hostile_owner, hostile_visitor_module.semantic.?.owner_token);
+    try std.testing.expect(try sameGenericPrepassAstContents(
+        &hostile_snapshot,
+        &hostile_visitor_fixture.ast,
+        allocator,
+    ));
+
+    context.plugins = &.{};
     var module_without_semantic = Module.init(@fromBackingInt(@as(u32, 1)), "input-without-semantic.js");
     module_without_semantic.source = source;
     module_without_semantic.module_type = .js;
@@ -17861,7 +18023,7 @@ test "generic prepass run publishes transformed output and preserves parser AST"
     run(&context, &module_without_semantic, allocator);
     // Installed generic output requires the initial parser's semantic graph.
     // A missing graph is rejected before candidate publication, never repaired.
-    try std.testing.expectEqual(@as(usize, 1), context.diag_count);
+    try std.testing.expectEqual(@as(usize, 2), context.diag_count);
     try std.testing.expect(module_without_semantic.semantic == null);
     try std.testing.expect(module_without_semantic.ast.?.transformed_root == null);
     try std.testing.expect(module_without_semantic.transform_cache == null);
@@ -18315,7 +18477,7 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     // 안전. dev mode 모듈도 동일.
     opts.emit_runtime_helper_imports = true;
 
-    const tracked_function_plugin_graph = canRetainTrackedAstFunctionPluginGraph(
+    const tracked_ast_plugin_graph = canRetainContractedAstPluginGraph(
         self,
         module,
         ast_ptr,
@@ -18535,12 +18697,12 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     }
 
     const root = transformer.transform() catch return;
-    if (can_keep_semantic_graph and tracked_function_plugin_graph and
+    if (can_keep_semantic_graph and tracked_ast_plugin_graph and
         hasReachableDynamicNameLookup(arena_alloc, transformer.ast, root))
     {
         // Plugin-generated eval/with can observe unminified source names. The
-        // source-only admission check cannot see those edits, so let the
-        // analyzer rebuild the dynamic scope facts before mangling.
+        // source-only admission check cannot see those edits, so discard this
+        // retained-graph candidate instead of publishing stale dynamic facts.
         can_keep_semantic_graph = false;
     }
     if (can_keep_semantic_graph and hasAttributedInlineTypeRuntimeImport(ast_ptr, opts)) {
@@ -18757,11 +18919,11 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
         .ref_deltas = prepass_ref_deltas,
     };
 
-    // A tracked function-hook plugin claims that every generated binding and
-    // reference went through AstTransformCtx's semantic editor API. Reject a
-    // broken claim before metadata publication; reanalysis must not repair a
-    // missing plugin-generated identity.
-    if (can_keep_semantic_graph and tracked_function_plugin_graph) {
+    // A contracted AST plugin claims that its edits preserve identity, or that
+    // generated function edits went through AstTransformCtx. Reject a broken
+    // claim before metadata publication; reanalysis must not repair a missing
+    // plugin-generated identity.
+    if (can_keep_semantic_graph and tracked_ast_plugin_graph) {
         const exact = exactPrepassReport(
             arena_alloc,
             module,
@@ -18774,13 +18936,13 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
         ) catch null;
         if (exact == null or !exact.?.isClean()) {
             if (debug_symbol_coverage) {
-                if (exact) |report| std.debug.print("zntc: tracked-plugin-graph-rejected {s}: {any}\n", .{ module.path, report });
+                if (exact) |report| std.debug.print("zntc: contracted-plugin-graph-rejected {s}: {any}\n", .{ module.path, report });
             }
             candidate_diagnosed.* = true;
             failRetainedGraphRefresh(
                 self,
                 module,
-                "A tracked function-hook plugin produced a graph that failed exact semantic identity validation.",
+                "A contracted AST plugin produced a graph that failed exact semantic identity validation.",
             );
             return;
         }
