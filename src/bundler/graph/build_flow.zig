@@ -1054,8 +1054,11 @@ pub fn buildIncremental(
                 const saved_importers = mod.importers;
                 const saved_dynamic = mod.dynamic_imports;
                 const saved_dynamic_importers = mod.dynamic_importers;
+                // Finish fallible preparation while the store still owns the
+                // payload. Its same source graph is then moved without SID birth.
+                try cache_hit_modules.put(self.allocator, @intCast(i), {});
+                try cached.module.relocateStoredSourceBindingRefs(saved_index);
                 mod.* = cached.module;
-                mod.index = saved_index;
                 mod.path = saved_path;
                 mod.dependencies = saved_deps;
                 mod.importers = saved_importers;
@@ -1074,7 +1077,6 @@ pub fn buildIncremental(
                 // 코스트는 무시 가능. (M8 측정 record_dep link 88%).
                 mod.dependencies.ensureTotalCapacity(self.allocator, 8) catch {};
                 mod.importers.ensureTotalCapacity(self.allocator, 8) catch {};
-                try cache_hit_modules.put(self.allocator, @intCast(i), {});
                 // parse_arena 소유권 이전: store → graph.
                 cached.module.parse_arena = null;
                 cached.module.codegen_output_domain = null;
