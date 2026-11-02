@@ -2882,6 +2882,10 @@ pub const Linker = struct {
     pub fn isInteropImportLive(self: *const Linker, module: *const Module, binding: ImportBinding) bool {
         if (self.graph.interop_ast_provider == null) return true;
         if (binding.source_type_only == true) return false;
+        // The liveness queries below consume only a scalar SID. Keep the
+        // ImportBinding's producer-owned AST node paired with that SID first;
+        // an in-range same-module decoy must never drop a runtime helper import.
+        _ = module.checkedImportBindingLocalName(binding) catch return true;
         if (self.tree_shaker) |shaker| return shaker.isImportSymbolLive(module.index.toU32(), binding.local_symbol);
         if (binding.local_symbol.moduleIndex() != module.index) return true;
         const id = binding.local_symbol.semanticIndex() orelse return true;

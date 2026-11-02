@@ -665,10 +665,34 @@ test "interop AST provider cache and owner corruption fail closed across ten inp
         const decoy_id = source_map.get("unusedDecoy").?;
         try source_map.put(source_owner.parse_arena.?.allocator(), "value", decoy_id);
         try std.testing.expect(linker.isInteropImportLive(source_owner, source_binding));
+        // A captured same-module SID can still belong to an unrelated local.
+        // The runtime interop prelude must not drop a live import from that row.
+        const SymbolRef = @import("symbol.zig").SymbolRef;
+        var stale_source_binding = source_binding;
+        stale_source_binding.local_symbol = SymbolRef.makeSemantic(source_owner.index, @as(u32, @intCast(decoy_id)));
+        try std.testing.expect(linker.isInteropImportLive(source_owner, stale_source_binding));
         const selected = try linker.esmInteropRuntimeNames();
         inline for (names.ESM_INTEROP_RUNTIME_HELPERS, 0..) |helper, index| {
             try std.testing.expectEqualStrings(module.semantic.?.symbols.items[@backingInt(original.bindings[index].?.symbol_id)].nameText(module.source), selected.get(helper));
         }
+        graph.transform_options_base.minify_syntax = true;
+        try linker.link();
+        linker.populateImportSymbols();
+        linker.populateNamespaceAccesses();
+        var shaker = try @import("tree_shaker.zig").TreeShaker.init(std.testing.allocator, &graph, &linker);
+        defer shaker.deinit();
+        try shaker.analyze(&.{entry});
+        linker.tree_shaker = &shaker;
+        const source_infos = shaker.getModuleStmtInfos(source_owner.index.toU32()) orelse return error.MissingSourceStmtInfos;
+        const unused_sid = source_semantic.scope_maps[0].get("unusedDecoy") orelse return error.MissingUnusedDecoySID;
+        const unused_stmt = source_infos.declaredStmtBySymbol(@intCast(unused_sid)) orelse return error.MissingUnusedDecoyStmt;
+        try std.testing.expect(!shaker.isStmtReachable(source_owner.index.toU32(), unused_stmt));
+        var stale_tree_shaker_binding = source_binding;
+        stale_tree_shaker_binding.local_symbol = SymbolRef.makeSemantic(source_owner.index, @as(u32, @intCast(decoy_id)));
+        // The scalar liveness query sees the unused decoy as dead; the public
+        // Linker path must validate the producer-owned import anchor first.
+        try std.testing.expect(linker.isInteropImportLive(source_owner, source_binding));
+        try std.testing.expect(linker.isInteropImportLive(source_owner, stale_tree_shaker_binding));
         switch (corruption) {
             0 => graph.interop_ast_provider = null,
             1 => module.semantic = null,
