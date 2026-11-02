@@ -16173,3 +16173,30 @@ test "standalone combined minify preserves original Flow match and synthetic col
     }
     try std.testing.expectEqual(@as(usize, 0), failures);
 }
+
+test "Flow match single-use binding publishes actual inline output without rollback" {
+    const source = "// @flow\nfunction f(input){return match(input){[const first]=>first,_=>0};}console.log(f([42]));";
+    const reference = "function f(input){if(Array.isArray(input)&&input.length>=1)return input[0];return 0;}console.log(f([42]));";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", reference }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("42\n", native.stdout);
+    for ([_]bool{ false, true }) |identifiers| {
+        const result = try transpile(a, source, "input.flow.mjs", .{ .flow = true, .unsupported = @import("transformer/compat.zig").fromESTarget(.esnext), .minify_syntax = true, .minify_identifiers = identifiers });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        var scanner = try Scanner.init(a, result.code);
+        var parser = Parser.init(a, &scanner);
+        parser.configureFromExtension(".js");
+        _ = try parser.parse();
+        var declarations: usize = 0;
+        for (parser.ast.nodes.items) |node| if (node.tag == .variable_declarator) {
+            declarations += 1;
+        };
+        if (declarations != 0) std.debug.print("FLOW_INLINE published declarations={d} identifiers={} code={s}\n", .{ declarations, identifiers, result.code });
+        try std.testing.expectEqual(@as(usize, 0), declarations);
+    }
+}

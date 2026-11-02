@@ -533,3 +533,241 @@ test "minifier actual local inline retirement heap OOM preserves source graph an
     try std.testing.expect(succeeded and failures > 0);
     std.debug.print("actual inline retirement heap OOM failures={d} success=1\n", .{failures});
 }
+
+const COPIED_INLINE_SOURCE = "function run(value){let item=42;return true?true?item:0:0;}console.log(run(42));";
+
+test "minifier actual copied inline read retains its baseline origin and ordered cursor" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const actual = try ActualInlineFixture.initSource(a, COPIED_INLINE_SOURCE);
+    const event = actual.receipt.inlined_bindings[0];
+    try std.testing.expect(event.read_step_count > 0 and event.read_step_count <= actual.receipt.reference_steps.len);
+    try std.testing.expect(event.read_origin.node_index != event.witness.read_reference.node_index);
+    var baseline_matches: usize = 0;
+    for (actual.receipt.identity_baseline) |row| if (std.meta.eql(row, event.read_origin)) {
+        baseline_matches += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 1), baseline_matches);
+    var copies: usize = 0;
+    var previous = event.read_origin.node_index;
+    for (actual.receipt.reference_steps[0..event.read_step_count]) |step| {
+        if (step.kind == .copy and step.source_reference != null and step.read_origin != null and std.meta.eql(step.read_origin.?, event.read_origin)) {
+            try std.testing.expectEqual(previous, step.source);
+            previous = step.target;
+            copies += 1;
+        }
+    }
+    try std.testing.expect(copies > 1);
+    try std.testing.expectEqual(event.witness.read, previous);
+    try actual.journal.retireInlinedBindings(&actual.fixture.editor, actual.fixture.root, actual.receipt);
+    try std.testing.expect(try inlineStateValid(a, &actual.fixture.parser.ast, actual.fixture.root, &actual.fixture.editor));
+}
+
+test "minifier actual compound wrap consumes its selected read without a copy" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const actual = try ActualInlineFixture.initSource(a, "function run(value){let item=value+1;return item*2;}console.log(run(20));");
+    const event = actual.receipt.inlined_bindings[0];
+    try std.testing.expect(event.wrapped_initializer);
+    var consumes: usize = 0;
+    for (actual.receipt.reference_steps[event.read_step_count..]) |step| {
+        if (step.kind == .consume and step.source == event.witness.read and step.source_reference != null and
+            std.meta.eql(step.source_reference.?, event.witness.read_reference) and step.read_origin != null and std.meta.eql(step.read_origin.?, event.read_origin) and step.result_reference == null) consumes += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), consumes);
+    try actual.journal.retireInlinedBindings(&actual.fixture.editor, actual.fixture.root, actual.receipt);
+    try std.testing.expect(try inlineStateValid(a, &actual.fixture.parser.ast, actual.fixture.root, &actual.fixture.editor));
+}
+
+test "minifier copied inline origin rejects paired cursor hop order and stale overwrite receipts" {
+    const Step = @import("../../semantic/function_retirement_receipt.zig").ReferenceStep;
+    const Event = @import("../../semantic/inlined_binding_retirement.zig").Event;
+    const Ref = @import("../../semantic/symbol.zig").Reference;
+    for (0..10) |poison| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const actual = try ActualInlineFixture.initSource(a, COPIED_INLINE_SOURCE);
+        const f = actual.fixture;
+        const original = actual.receipt.inlined_bindings[0];
+        try std.testing.expect(original.read_step_count > 1);
+        const events = try a.dupe(Event, actual.receipt.inlined_bindings);
+        const steps = try a.dupe(Step, actual.receipt.reference_steps);
+        var poisoned = actual.receipt;
+        poisoned.inlined_bindings = events;
+        poisoned.reference_steps = steps;
+        var hop: ?usize = null;
+        var first_hop: ?usize = null;
+        var previous = original.read_origin.node_index;
+        var dependent_hops: usize = 0;
+        for (steps[0..original.read_step_count], 0..) |step, index| if (step.kind == .copy and step.source_reference != null and step.read_origin != null and std.meta.eql(step.read_origin.?, original.read_origin)) {
+            try std.testing.expectEqual(previous, step.source);
+            previous = step.target;
+            if (first_hop == null) first_hop = index;
+            dependent_hops += 1;
+            if (step.target == original.witness.read) hop = index;
+        };
+        try std.testing.expect(dependent_hops > 1);
+        const selected_hop = hop orelse return error.MissingActualInlineHop;
+        try std.testing.expect(first_hop.? != selected_hop);
+        const ids_before = try a.dupe(?u32, f.editor.symbol_ids.items);
+        const refs_before = try a.dupe(Ref, f.editor.references.items);
+        switch (poison) {
+            0 => {
+                events[0].read_origin.node_index = original.witness.read;
+                steps[selected_hop].read_origin = events[0].read_origin;
+            },
+            1 => events[0].read_step_count = 0,
+            2 => events[0].read_step_count = steps.len + 1,
+            3 => {
+                const missing = try a.alloc(Step, steps.len - 1);
+                @memcpy(missing[0..selected_hop], steps[0..selected_hop]);
+                @memcpy(missing[selected_hop..], steps[selected_hop + 1 ..]);
+                poisoned.reference_steps = missing;
+                events[0].read_step_count -= 1;
+            },
+            4 => {
+                steps[selected_hop].source_reference.?.flags.write = true;
+                steps[selected_hop].read_origin.?.flags.write = true;
+                events[0].read_origin.flags.write = true;
+            },
+            5 => std.mem.swap(Step, &steps[first_hop.?], &steps[selected_hop]),
+            6 => steps[selected_hop].target_reference = steps[selected_hop].source_reference,
+            7 => {
+                steps[selected_hop].source = original.binding;
+                steps[selected_hop].source_reference.?.node_index = original.binding;
+            },
+            8 => {
+                const baseline = try a.alloc(Ref, actual.receipt.identity_baseline.len + 1);
+                @memcpy(baseline[0..actual.receipt.identity_baseline.len], actual.receipt.identity_baseline);
+                baseline[baseline.len - 1] = original.read_origin;
+                poisoned.identity_baseline = baseline;
+            },
+            9 => {
+                steps[selected_hop].result_reference.?.flags.write = true;
+                events[0].witness.read_reference.flags.write = true;
+            },
+            else => unreachable,
+        }
+        if (f.editor.retireInlinedLocalBindings(events, f.root, poisoned)) |_| {
+            std.debug.print("copied inline replay poison accepted={d}\n", .{poison});
+            return error.TestExpectedError;
+        } else |_| {}
+        try std.testing.expectEqual(@as(u32, 0), f.editor.source_owned_retirements.count());
+        try std.testing.expectEqualSlices(?u32, ids_before, f.editor.symbol_ids.items);
+        try std.testing.expectEqualDeep(refs_before, f.editor.references.items);
+        try actual.journal.retireInlinedBindings(&f.editor, f.root, actual.receipt);
+        try std.testing.expect(try inlineStateValid(a, &f.parser.ast, f.root, &f.editor));
+    }
+}
+
+fn actualCopiedBindingInline(a: std.mem.Allocator) !struct { actual: ActualInlineFixture, source: ast_mod.NodeIndex } {
+    const f = try Fixture.initWithSourceOrigins(a, "function run(value){let item=value;return item;}console.log(run(42));", true, true);
+    var source: ast_mod.NodeIndex = .none;
+    var sid: @import("../../semantic/symbol.zig").SymbolId = .none;
+    for (f.editor.references.items) |row| if (row.flags.declare and f.editor.symbols.items[@backingInt(row.symbol_id)].kind == .variable_let) {
+        try std.testing.expect(source.isNone());
+        source = row.declaration_node_index;
+        sid = row.symbol_id;
+    };
+    try std.testing.expect(!source.isNone());
+    const output = try f.parser.ast.addNode(f.parser.ast.getNode(source));
+    var declarators: usize = 0;
+    for (f.parser.ast.nodes.items) |node| if (node.tag == .variable_declarator and f.parser.ast.readExtraNode(node.data.extra, 0) == source) {
+        f.parser.ast.extra_data.items[node.data.extra] = @backingInt(output);
+        declarators += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 1), declarators);
+    // This is the actual binding-copy handoff: it attaches the existing SID
+    // and reanchors its real declaration row. No positive SID row is injected.
+    try f.editor.attachExistingBinding(output, sid);
+    f.parser.ast.transformed_root = f.root;
+    try std.testing.expectEqual(@as(?u32, @backingInt(sid)), f.editor.symbol_ids.items[@backingInt(source)]);
+    const history = f.editor.scopeHistoryView();
+    var journal = try Journal.init(a, f.editor.references.items, .{
+        .domain = &f.parser.ast,
+        .root = f.root,
+        .symbol_ids = f.editor.symbol_ids.items,
+        .owners = &f.editor.scope_owner_map,
+        .expressions = &f.editor.node_scope_provenance,
+        .class_self = &f.analyzer.class_self_symbol_map,
+        .symbols = f.editor.symbols.items,
+        .scopes = f.editor.scopes.items,
+        .scope_maps = f.editor.scope_maps.items,
+        .source_epoch = @intCast(history.events.len),
+    });
+    const deltas = try a.alloc(u32, f.editor.symbols.items.len);
+    @memset(deltas, 0);
+    @import("../minify.zig").minify(&f.parser.ast, .{
+        .symbols = f.editor.symbols.items,
+        .symbol_ids = f.editor.symbol_ids.items,
+        .symbol_ids_mut = f.editor.symbol_ids.items,
+        .semantic_journal = &journal,
+        .scopes = f.editor.scopes.items,
+        .references = f.editor.references.items,
+        .unresolved_globals = &f.analyzer.unresolved_references,
+        .ref_deltas = deltas,
+        .allow_top_level_inline = true,
+    }, a, f.root);
+    try std.testing.expect(journal.failure == null);
+    try std.testing.expectEqual(@as(usize, 1), journal.inlined_bindings.items.len);
+    const receipt = try journal.applyReferenceAndOwnerEdits(&f.editor, f.root, null, null);
+    try std.testing.expectEqual(@as(usize, 1), receipt.inactive_bindings.len);
+    try std.testing.expectEqual(source, receipt.inactive_bindings[0].node);
+    try std.testing.expectEqual(sid, receipt.inactive_bindings[0].symbol_id);
+    return .{ .actual = .{ .fixture = f, .journal = journal, .receipt = receipt }, .source = source };
+}
+
+test "minifier actual copied binding consumes only its snapshotted inactive source anchor" {
+    const Anchor = @import("../../semantic/function_retirement_receipt.zig").InactiveBindingAnchor;
+    for (0..8) |poison| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const fixture = try actualCopiedBindingInline(a);
+        const actual = fixture.actual;
+        const f = actual.fixture;
+        const sid = actual.receipt.inlined_bindings[0].symbol_id;
+        const anchors = try a.dupe(Anchor, actual.receipt.inactive_bindings);
+        var receipt = actual.receipt;
+        receipt.inactive_bindings = anchors;
+        const source_node = f.parser.ast.getNode(fixture.source);
+        const body = f.parser.ast.getNode(f.root).data.list;
+        const console_statement = f.parser.ast.readExtraNode(body.start, body.len - 1);
+        const original_statement = f.parser.ast.getNode(console_statement);
+        switch (poison) {
+            0 => anchors[0].node = actual.receipt.inlined_bindings[0].binding,
+            1 => anchors[0].before_node.span.start += 1,
+            2 => anchors[0].symbol_id = @fromBackingInt(@as(u32, 0)),
+            3 => f.parser.ast.nodes.items[@backingInt(console_statement)].data.unary.operand = fixture.source,
+            4 => {
+                const extra = try f.parser.ast.addNode(source_node);
+                try std.testing.expectEqual(f.editor.symbol_ids.items.len, @as(usize, @backingInt(extra)));
+                // Negative only: a post-snapshot, unsupported extra ID must
+                // never gain the original source anchor's permission.
+                try f.editor.symbol_ids.append(a, @backingInt(sid));
+            },
+            5 => f.parser.ast.nodes.items[@backingInt(fixture.source)].data.string_ref.end += 1,
+            6 => receipt.inactive_bindings = &.{},
+            7 => receipt.inactive_bindings = try a.dupe(Anchor, &.{ anchors[0], anchors[0] }),
+            else => unreachable,
+        }
+        if (f.editor.retireInlinedLocalBindings(receipt.inlined_bindings, f.root, receipt)) |_| {
+            std.debug.print("inactive binding snapshot poison accepted={d}\n", .{poison});
+            return error.TestExpectedError;
+        } else |_| {}
+        f.parser.ast.nodes.items[@backingInt(fixture.source)] = source_node;
+        f.parser.ast.nodes.items[@backingInt(console_statement)] = original_statement;
+        if (poison == 4) {
+            _ = f.parser.ast.nodes.pop();
+            _ = f.editor.symbol_ids.pop();
+        }
+        try std.testing.expectEqual(@as(u32, 0), f.editor.source_owned_retirements.count());
+        try std.testing.expectEqual(@as(?u32, @backingInt(sid)), f.editor.symbol_ids.items[@backingInt(fixture.source)]);
+        try actual.journal.retireInlinedBindings(&f.editor, f.root, actual.receipt);
+        try std.testing.expectEqual(@as(?u32, null), f.editor.symbol_ids.items[@backingInt(fixture.source)]);
+        try std.testing.expect(try inlineStateValid(a, &f.parser.ast, f.root, &f.editor));
+    }
+}

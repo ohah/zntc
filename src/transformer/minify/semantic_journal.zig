@@ -47,6 +47,10 @@ pub const SemanticJournal = struct {
     allocator: std.mem.Allocator,
     domain: *const ast_mod.Ast,
     source_references: []Reference = &.{},
+    inactive_bindings: std.ArrayList(RetirementReceipt.InactiveBindingAnchor) = .empty,
+    identity_baseline: std.ArrayList(Reference) = .empty,
+    reference_steps: std.ArrayList(RetirementReceipt.ReferenceStep) = .empty,
+    read_origins: std.AutoHashMapUnmanaged(u32, Reference) = .empty,
     source_expressions: NodeProvenance.Map = .empty,
     baseline_edges: std.ArrayList(BaselineEdge) = .empty,
     events: std.ArrayList(Event) = .empty,
@@ -91,6 +95,38 @@ pub const SemanticJournal = struct {
             const entry = try self.references.getOrPut(allocator, raw);
             if (entry.found_existing) return error.InvalidReferenceIdentity;
             entry.value_ptr.* = reference;
+            try self.identity_baseline.append(allocator, reference);
+            try self.read_origins.put(allocator, raw, reference);
+        }
+        // Only source declaration-shaped anchors already detached before minify.
+        // This is a snapshot, not permission to sweep unrelated inactive IDs.
+        const full_nodes = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(allocator, maps.domain, maps.root);
+        defer allocator.free(full_nodes);
+        var full_live = try std.DynamicBitSet.initEmpty(allocator, maps.domain.nodes.items.len);
+        defer full_live.deinit();
+        for (full_nodes) |raw| {
+            if (raw >= maps.domain.nodes.items.len) return error.InvalidReferenceIdentity;
+            full_live.set(raw);
+        }
+        var row_nodes = try std.DynamicBitSet.initEmpty(allocator, maps.domain.nodes.items.len);
+        defer row_nodes.deinit();
+        for (references) |row| {
+            if (!row.node_index.isNone() and @backingInt(row.node_index) < maps.domain.nodes.items.len) row_nodes.set(@backingInt(row.node_index));
+            if (!row.declaration_node_index.isNone() and @backingInt(row.declaration_node_index) < maps.domain.nodes.items.len) row_nodes.set(@backingInt(row.declaration_node_index));
+        }
+        for (maps.domain.nodes.items, 0..) |node, raw| {
+            if (full_live.isSet(raw) or raw >= maps.symbol_ids.len) continue;
+            const sid = maps.symbol_ids[raw] orelse continue;
+            if (sid >= maps.symbols.len) continue;
+            const symbol = maps.symbols[sid];
+            if ((symbol.kind != .variable_let and symbol.kind != .variable_const) or !std.meta.eql(node.span, symbol.name)) continue;
+            switch (node.tag) {
+                .binding_identifier, .flow_match_binding_pattern, .identifier_reference => {},
+                .flow_match_rest => if (node.data.none == 0) continue,
+                else => continue,
+            }
+            if (row_nodes.isSet(raw)) continue;
+            try self.inactive_bindings.append(allocator, .{ .node = @fromBackingInt(@intCast(raw)), .symbol_id = @fromBackingInt(sid), .before_node = node });
         }
         self.owners = try maps.owners.clone(allocator);
         self.expressions = try maps.expressions.clone(allocator);
@@ -104,6 +140,10 @@ pub const SemanticJournal = struct {
     }
 
     pub fn deinit(self: *SemanticJournal) void {
+        self.inactive_bindings.deinit(self.allocator);
+        self.identity_baseline.deinit(self.allocator);
+        self.reference_steps.deinit(self.allocator);
+        self.read_origins.deinit(self.allocator);
         self.inlined_bindings.deinit(self.allocator);
         self.events.deinit(self.allocator);
         self.function_name_elisions.deinit(self.allocator);
@@ -170,6 +210,8 @@ pub const SemanticJournal = struct {
         const source_statement = ast.nodes.items[statement];
         if (source_statement.tag != .variable_declaration or ast.nodes.items[declarator].tag != .variable_declarator or ast.nodes.items[binding].tag != .binding_identifier or !ast.hasExtra(source_statement.data.extra, 2)) return error.InvalidReferenceIdentity;
         try self.inlined_bindings.append(self.allocator, .{
+            .read_origin = self.read_origins.get(read) orelse return error.InvalidReferenceIdentity,
+            .read_step_count = self.reference_steps.items.len,
             .domain = ast,
             .symbol_id = @fromBackingInt(sid),
             .before = before,
@@ -233,6 +275,9 @@ pub const SemanticJournal = struct {
                 next = reference;
             } else if (self.references.contains(source)) return error.InvalidReferenceIdentity;
         }
+        const read_origin = if (source_reference != null) self.read_origins.get(source) orelse return error.InvalidReferenceIdentity else null;
+        try self.reference_steps.append(self.allocator, .{ .kind = .copy, .source = @fromBackingInt(source), .target = @fromBackingInt(target), .source_reference = source_reference, .target_reference = self.references.get(target), .result_reference = next, .read_origin = read_origin });
+        if (next != null) try self.read_origins.put(self.allocator, target, read_origin.?) else _ = self.read_origins.remove(target);
         const source_owner = self.owners.get(source);
         const target_owner = self.owners.get(target);
         if (target_owner != null and target_owner != source_owner) return error.ScopeOwnerConflict;
@@ -244,6 +289,24 @@ pub const SemanticJournal = struct {
         if (source_class_self) |id| try self.class_self.put(self.allocator, target, id) else _ = self.class_self.remove(target);
         try self.targets.put(self.allocator, target, {});
         if (next) |reference| try self.references.put(self.allocator, target, reference) else _ = self.references.remove(target);
+    }
+
+    /// Consume the actual selected read when a compound wrap emits no copy.
+    pub fn recordReadConsumption(self: *SemanticJournal, ast: *const ast_mod.Ast, read: u32, ids: []const ?u32) void {
+        if (self.failure != null) return;
+        self.recordReadConsumptionFallible(ast, read, ids) catch |err| {
+            self.failure = err;
+        };
+    }
+
+    fn recordReadConsumptionFallible(self: *SemanticJournal, ast: *const ast_mod.Ast, read: u32, ids: []const ?u32) Error!void {
+        if (ast != self.domain or read >= ids.len or read >= ast.nodes.items.len) return error.InvalidReferenceIdentity;
+        const before = self.references.get(read) orelse return error.InvalidReferenceIdentity;
+        const origin = self.read_origins.get(read) orelse return error.InvalidReferenceIdentity;
+        if (ids[read] != @as(?u32, @backingInt(before.symbol_id)) or ast.nodes.items[read].tag != .identifier_reference or !before.flags.read or before.flags.write or before.flags.declare) return error.InvalidReferenceIdentity;
+        try self.reference_steps.append(self.allocator, .{ .kind = .consume, .source = @fromBackingInt(read), .target = @fromBackingInt(read), .source_reference = before, .target_reference = before, .result_reference = null, .read_origin = origin });
+        _ = self.references.remove(read);
+        _ = self.read_origins.remove(read);
     }
 
     /// A parameterless, synchronous, non-dynamic arrow with no own binding
@@ -295,7 +358,15 @@ pub const SemanticJournal = struct {
         };
         references = self.references.valueIterator();
         while (references.next()) |reference| if (reference.scope_id.toIndex() == scope) {
+            const before = reference.*;
             reference.scope_id = frame.parent;
+            self.reference_steps.append(self.allocator, .{ .kind = .empty_arrow_elide, .source = before.node_index, .target = before.node_index, .source_reference = before, .target_reference = before, .result_reference = reference.*, .read_origin = self.read_origins.get(@backingInt(before.node_index)) orelse {
+                self.failure = error.InvalidReferenceIdentity;
+                return false;
+            }, .scope = @fromBackingInt(scope), .parent = frame.parent }) catch |err| {
+                self.failure = err;
+                return false;
+            };
         };
         var expressions = self.expressions.valueIterator();
         while (expressions.next()) |entry| if (entry.scope.toIndex() == scope) {
@@ -455,7 +526,13 @@ pub const SemanticJournal = struct {
         const names_owned = try self.allocator.dupe(@import("../../semantic/function_name_retirement.zig").Elision, self.function_name_elisions.items);
         errdefer self.allocator.free(names_owned);
         const inlined_owned = try self.allocator.dupe(InlineBinding.Event, self.inlined_bindings.items);
-        return .{ .inlined_bindings = inlined_owned, .domain = self.domain, .reference_changes = references_owned, .owner_changes = owners_owned, .provenance_changes = provenance_owned, .copies = copies_owned, .function_name_elisions = names_owned };
+        errdefer self.allocator.free(inlined_owned);
+        const baseline_owned = try self.allocator.dupe(Reference, self.identity_baseline.items);
+        errdefer self.allocator.free(baseline_owned);
+        const steps_owned = try self.allocator.dupe(RetirementReceipt.ReferenceStep, self.reference_steps.items);
+        errdefer self.allocator.free(steps_owned);
+        const inactive_owned = try self.allocator.dupe(RetirementReceipt.InactiveBindingAnchor, self.inactive_bindings.items);
+        return .{ .inactive_bindings = inactive_owned, .identity_baseline = baseline_owned, .reference_steps = steps_owned, .inlined_bindings = inlined_owned, .domain = self.domain, .reference_changes = references_owned, .owner_changes = owners_owned, .provenance_changes = provenance_owned, .copies = copies_owned, .function_name_elisions = names_owned };
     }
 
     pub fn retireInlinedBindings(self: *const SemanticJournal, editor: *SemanticEditor, root: ast_mod.NodeIndex, receipt: RetirementReceipt.ApplicationReceipt) !void {
@@ -480,6 +557,9 @@ pub const SemanticJournal = struct {
     }
 
     pub fn freeApplicationReceipt(self: *const SemanticJournal, receipt: RetirementReceipt.ApplicationReceipt) void {
+        self.allocator.free(receipt.inactive_bindings);
+        self.allocator.free(receipt.identity_baseline);
+        self.allocator.free(receipt.reference_steps);
         self.allocator.free(receipt.reference_changes);
         self.allocator.free(receipt.owner_changes);
         self.allocator.free(receipt.provenance_changes);
