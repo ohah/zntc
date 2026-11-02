@@ -102,7 +102,12 @@ pub fn captureAll(a: std.mem.Allocator, editor: anytype, root: NodeIndex, comple
         const read = edges[raw].read.?;
         if (edges[raw].declarations != 1 or declaration.declaration_node_index != capture.binding or declaration.node_index != .none or
             declaration.scope_id != before.scope_id or !std.meta.eql(declaration.flags, @as(symbol.ReferenceFlags, .{ .declare = true })) or
-            editor.symbol_ids.items[@backingInt(capture.binding)] != raw or read.scope_id != before.scope_id) return error.InvalidSymbol;
+            editor.symbol_ids.items[@backingInt(capture.binding)] != raw) return error.InvalidSymbol;
+        if (read.scope_id.isNone() or read.scope_id.toIndex() >= editor.scopes.items.len) return error.InvalidScope;
+        // The alias minifier only moves immutable reads within their actual
+        // declaration scope. A field evaluator's nested closure keeps this
+        // capture alive; it is not a failed source-retirement proof.
+        if (read.scope_id != before.scope_id) continue;
         const binding = editor.ast.getNode(capture.binding);
         if (binding.tag != .binding_identifier or !std.meta.eql(binding.data.string_ref, before.name)) return error.InvalidNode;
         const declarator_index = parentOf(&parents, capture.binding) orelse return error.InvalidNode;

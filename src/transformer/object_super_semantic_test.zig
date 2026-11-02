@@ -575,3 +575,30 @@ test "computed class key short circuit preserves frozen SelfKey source lookup" {
         try std.testing.expectEqualStrings(native.stdout, actual.stdout);
     };
 }
+
+test "static class capture nested reads preserve optimization and original anonymous class values" {
+    const source = "// Anonymous class lowering generates an inner constructor name. Two sibling\n// class IIFEs intentionally reuse that generated spelling, while source names\n// occupy the first candidates. Their semantic IDs must remain scope-specific.\nconst _Class = 'outer';\nclass Base {}\n\nfunction create(_Class2) {\n  const First = class extends Base {\n    static value = this.readValue();\n    static readValue() {\n      return 10;\n    }\n  };\n  const Second = class extends Base {\n    static value = this.readValue() + 1;\n    static readValue() {\n      return 20;\n    }\n  };\n  return [First.value, Second.value, First.readValue() === 10, Second.readValue() === 20, _Class2];\n}\n\nconsole.log([_Class, ...create('parameter')].join(','));\n";
+    for ([_]TransformOptions.compat.ESTarget{ .es2015, .es2017 }) |target| for ([_]bool{ false, true }) |identifiers| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const result = try @import("../transpile.zig").transpile(a, source, "anonymous.mjs", .{ .unsupported = TransformOptions.compat.fromESTarget(target), .minify_syntax = true, .minify_identifiers = identifiers });
+        var scanner = try Scanner.init(a, result.code);
+        var parser = Parser.init(a, &scanner);
+        _ = try parser.parse();
+        var outer_declarations: usize = 0;
+        for (parser.ast.nodes.items) |node| {
+            if (node.tag != .variable_declarator or !parser.ast.hasExtra(node.data.extra, 2)) continue;
+            const init = parser.ast.readExtraNode(node.data.extra, 2);
+            if (init.isNone()) continue;
+            const value = parser.ast.getNode(init);
+            if (value.tag != .string_literal) continue;
+            const text = parser.ast.getText(value.span);
+            if (std.mem.eql(u8, text, "\"outer\"") or std.mem.eql(u8, text, "'outer'")) outer_declarations += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 0), outer_declarations);
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("outer,10,21,true,true,parameter\n", actual.stdout);
+    };
+}

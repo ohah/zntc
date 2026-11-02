@@ -17,6 +17,8 @@ pub const Witness = struct {
     read_frame: scope.Scope,
 };
 pub const Event = struct {
+    read_origin: sym.Reference,
+    read_step_count: usize,
     domain: *const ast.Ast,
     symbol_id: sym.SymbolId,
     before: sym.Symbol,

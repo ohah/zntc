@@ -61,7 +61,7 @@ fn sameRetirementNodePayload(a: ast_mod.Node, b: ast_mod.Node) bool {
 
 fn sameInlineBindingEvent(a: @import("inlined_binding_retirement.zig").Event, b: @import("inlined_binding_retirement.zig").Event) bool {
     if (a.domain != b.domain or a.symbol_id != b.symbol_id or !@import("source_owned_retirement.zig").equalSymbol(a.before, b.before) or
-        !std.meta.eql(a.declaration, b.declaration) or a.statement != b.statement or a.binding != b.binding or
+        !std.meta.eql(a.declaration, b.declaration) or !std.meta.eql(a.read_origin, b.read_origin) or a.read_step_count != b.read_step_count or a.statement != b.statement or a.binding != b.binding or
         !sameRetirementNodePayload(a.statement_node, b.statement_node) or !sameRetirementNodePayload(a.binding_node, b.binding_node) or
         !sameRetirementNodePayload(a.initializer_node, b.initializer_node) or a.wrapped_initializer != b.wrapped_initializer) return false;
     const x = a.witness;
@@ -2321,6 +2321,101 @@ pub const SemanticEditor = struct {
     /// original row/map/history mutation occurs on rejection or allocation fail.
     /// Consume only the declaration selected by the minifier's actual inline
     /// event. The candidate owns all graph edits; the AST is read-only here.
+    /// Replay only the producer's ordered identity edits. A copied read keeps
+    /// its original reference authority even when its physical node and scope
+    /// have changed before the declaration is selected for inlining.
+    const InlineReadAnchor = struct { node: NodeIndex, before_node: ast_mod.Node };
+
+    fn validateInlineReadLineage(self: *const SemanticEditor, event: @import("inlined_binding_retirement.zig").Event, receipt: @import("function_retirement_receipt.zig").ApplicationReceipt) Error![]InlineReadAnchor {
+        if (event.read_step_count > receipt.reference_steps.len or event.read_origin.symbol_id != event.symbol_id) return error.InvalidSymbol;
+        const State = struct { current: Reference, origin: Reference, payload: ?ast_mod.Node = null };
+        var state: std.AutoHashMapUnmanaged(u32, State) = .empty;
+        defer state.deinit(self.allocator);
+        for (receipt.identity_baseline) |row| {
+            if (row.node_index.isNone() or row.flags.declare or !self.validSymbol(row.symbol_id) or !self.validScope(row.scope_id)) return error.InvalidNode;
+            const raw = @backingInt(row.node_index);
+            if (raw >= self.ast.nodes.items.len or state.contains(raw)) return error.InvalidNode;
+            try state.put(self.allocator, raw, .{ .current = row, .origin = row });
+        }
+        const original = state.get(@backingInt(event.read_origin.node_index)) orelse return error.ReferenceNotFound;
+        if (!std.meta.eql(original.current, event.read_origin)) return error.InvalidSymbol;
+        var copy_index: usize = 0;
+        for (receipt.reference_steps[0..event.read_step_count]) |step| {
+            if (step.source.isNone() or step.target.isNone() or @backingInt(step.source) >= self.ast.nodes.items.len or @backingInt(step.target) >= self.ast.nodes.items.len) return error.InvalidNode;
+            const source = state.get(@backingInt(step.source));
+            const target = state.get(@backingInt(step.target));
+            const source_row = if (source) |item| @as(?Reference, item.current) else null;
+            const target_row = if (target) |item| @as(?Reference, item.current) else null;
+            if (!std.meta.eql(source_row, step.source_reference) or !std.meta.eql(target_row, step.target_reference)) return error.InvalidSymbol;
+            const origin = if (source) |item| @as(?Reference, item.origin) else null;
+            if (!std.meta.eql(origin, step.read_origin)) return error.InvalidSymbol;
+            switch (step.kind) {
+                .copy => {
+                    if (step.scope != null or step.parent != null or step.source == step.target or copy_index >= receipt.copies.len) return error.InvalidNode;
+                    const copy = receipt.copies[copy_index];
+                    copy_index += 1;
+                    if (copy.source != step.source or copy.target != step.target or !std.meta.eql(copy.source_reference, step.source_reference)) return error.InvalidNode;
+                    if (source) |item| if (item.payload) |payload| if (!sameRetirementNodePayload(payload, copy.source_node)) return error.InvalidNode;
+                    if (target) |item| if (item.payload) |payload| if (!sameRetirementNodePayload(payload, copy.target_node)) return error.InvalidNode;
+                    const reference_payload = copy.source_node.tag == .identifier_reference or copy.source_node.tag == .assignment_target_identifier or copy.source_node.tag == .jsx_identifier;
+                    if (step.source_reference != null and !reference_payload) return error.InvalidNode;
+                    var expected: ?Reference = null;
+                    if (step.source_reference) |row| {
+                        var after = row;
+                        after.node_index = step.target;
+                        if (step.target_reference) |previous| {
+                            after.scope_id = previous.scope_id;
+                            after.stmt_idx = previous.stmt_idx;
+                            after.scope_stmt_idx = previous.scope_stmt_idx;
+                        }
+                        expected = after;
+                    }
+                    if (!std.meta.eql(expected, step.result_reference)) return error.InvalidSymbol;
+                    if (expected) |after| {
+                        try state.put(self.allocator, @backingInt(step.target), .{ .current = after, .origin = origin orelse return error.InvalidSymbol, .payload = copy.source_node });
+                    } else _ = state.remove(@backingInt(step.target));
+                },
+                .empty_arrow_elide => {
+                    const from = step.scope orelse return error.InvalidScope;
+                    const parent = step.parent orelse return error.InvalidScope;
+                    if (step.source != step.target or source == null or !self.validScope(from) or !self.validScope(parent) or source.?.current.scope_id != from) return error.InvalidScope;
+                    var owner_matches: usize = 0;
+                    for (receipt.owner_changes) |owner| if (owner.effect == .empty_arrow_elide and owner.scope == from and owner.parent == parent) {
+                        owner_matches += 1;
+                    };
+                    if (owner_matches != 1) return error.InvalidScope;
+                    var after = source.?.current;
+                    after.scope_id = parent;
+                    if (!std.meta.eql(@as(?Reference, after), step.result_reference)) return error.InvalidSymbol;
+                    state.getPtr(@backingInt(step.source)).?.current = after;
+                },
+                .consume => {
+                    if (step.scope != null or step.parent != null or step.source != step.target or source == null or step.result_reference != null) return error.InvalidNode;
+                    _ = state.remove(@backingInt(step.source));
+                },
+            }
+        }
+        const selected = state.get(@backingInt(event.witness.read)) orelse return error.ReferenceNotFound;
+        if (!std.meta.eql(selected.current, event.witness.read_reference) or !std.meta.eql(selected.origin, event.read_origin)) return error.InvalidSymbol;
+        if (event.wrapped_initializer) {
+            if (event.read_step_count >= receipt.reference_steps.len) return error.InvalidNode;
+            const consumed = receipt.reference_steps[event.read_step_count];
+            if (consumed.kind != .consume or consumed.source != event.witness.read or consumed.target != event.witness.read or
+                !std.meta.eql(consumed.source_reference, @as(?Reference, event.witness.read_reference)) or
+                !std.meta.eql(consumed.target_reference, @as(?Reference, event.witness.read_reference)) or
+                !std.meta.eql(consumed.read_origin, @as(?Reference, event.read_origin)) or consumed.result_reference != null) return error.InvalidNode;
+        }
+        var anchors: std.ArrayList(InlineReadAnchor) = .empty;
+        errdefer anchors.deinit(self.allocator);
+        var values = state.iterator();
+        while (values.next()) |entry| {
+            const item = entry.value_ptr.*;
+            if (item.current.symbol_id != event.symbol_id or !std.meta.eql(item.origin, event.read_origin)) continue;
+            if (item.payload) |payload| try anchors.append(self.allocator, .{ .node = @fromBackingInt(entry.key_ptr.*), .before_node = payload });
+        }
+        return anchors.toOwnedSlice(self.allocator);
+    }
+
     pub fn retireInlinedLocalBindings(self: *SemanticEditor, events: []const @import("inlined_binding_retirement.zig").Event, root: NodeIndex, receipt: @import("function_retirement_receipt.zig").ApplicationReceipt) Error!usize {
         if (events.len == 0) return 0;
         const Retirement = @import("source_owned_retirement.zig");
@@ -2353,6 +2448,8 @@ pub const SemanticEditor = struct {
                 attestations += 1;
             };
             if (attestations != 1) return error.InvalidNode;
+            const read_anchors = try candidate.validateInlineReadLineage(event, receipt);
+            defer candidate.allocator.free(read_anchors);
             inline for (.{ event.statement, event.binding, payload.declarator, payload.initializer, payload.read }) |node| {
                 if (node.isNone() or @backingInt(node) >= candidate.ast.nodes.items.len) return error.InvalidNode;
             }
@@ -2362,7 +2459,7 @@ pub const SemanticEditor = struct {
             var removals: usize = 0;
             for (receipt.reference_changes) |change| {
                 const before = change.before orelse continue;
-                if (!std.meta.eql(before, payload.read_reference)) continue;
+                if (!std.meta.eql(before, event.read_origin)) continue;
                 if (change.after) |after| if (after.symbol_id == event.symbol_id) return error.InvalidSymbol;
                 removals += 1;
             }
@@ -2398,9 +2495,33 @@ pub const SemanticEditor = struct {
             }
             if (aliases.items.len == 0 or candidate.scopes.items[event.before.scope_id.toIndex()].symbol_count == 0) return error.InvalidScope;
             for (candidate.symbol_ids.items, 0..) |id, raw| if (id == sid and raw != @backingInt(event.binding)) {
-                if (raw != @backingInt(payload.read)) return error.InvalidSymbol;
-                const tag = candidate.ast.nodes.items[raw].tag;
-                if (tag == .identifier_reference or tag == .assignment_target_identifier or tag == .binding_identifier) return error.InvalidSymbol;
+                if (raw == @backingInt(payload.read)) {
+                    const tag = candidate.ast.nodes.items[raw].tag;
+                    if (tag == .identifier_reference or tag == .assignment_target_identifier or tag == .binding_identifier) return error.InvalidSymbol;
+                    continue;
+                }
+                // Flow and other source binding producers keep their original
+                // declaration anchor after attaching the same SID to its real
+                // output binding. Only an exact, initially inactive snapshot
+                // from this journal may be consumed with that output binding.
+                if (live.isSet(raw) or candidate.scope_owner_map.contains(@intCast(raw))) return error.InvalidSymbol;
+                var matches: usize = 0;
+                for (read_anchors) |anchor| if (@backingInt(anchor.node) == raw) {
+                    if (!sameRetirementNodePayload(candidate.ast.nodes.items[raw], anchor.before_node)) return error.InvalidSymbol;
+                    matches += 1;
+                };
+                for (receipt.inactive_bindings) |anchor| if (@backingInt(anchor.node) == raw) {
+                    if (anchor.symbol_id != event.symbol_id or !std.meta.eql(anchor.before_node.span, event.before.name) or
+                        !sameRetirementNodePayload(candidate.ast.nodes.items[raw], anchor.before_node)) return error.InvalidSymbol;
+                    switch (anchor.before_node.tag) {
+                        .binding_identifier, .flow_match_binding_pattern, .identifier_reference => {},
+                        .flow_match_rest => if (anchor.before_node.data.none == 0) return error.InvalidSymbol,
+                        else => return error.InvalidSymbol,
+                    }
+                    matches += 1;
+                };
+                if (matches != 1) return error.InvalidSymbol;
+                for (candidate.references.items) |row| if (row.node_index == @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(raw)))) or row.declaration_node_index == @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(raw))))) return error.InvalidSymbol;
             };
             try candidate.source_owned_retirements.put(candidate.allocator, sid, .{
                 .symbol_id = event.symbol_id,

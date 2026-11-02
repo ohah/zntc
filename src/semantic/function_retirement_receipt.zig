@@ -45,7 +45,28 @@ pub const MaterializedRead = struct {
     before_symbol_id: u32,
 };
 
+pub const InactiveBindingAnchor = struct {
+    node: ast_mod.NodeIndex,
+    symbol_id: @import("symbol.zig").SymbolId,
+    before_node: ast_mod.Node,
+};
+
+pub const ReferenceStep = struct {
+    kind: enum { copy, empty_arrow_elide, consume },
+    source: ast_mod.NodeIndex,
+    target: ast_mod.NodeIndex,
+    source_reference: ?Reference,
+    target_reference: ?Reference,
+    result_reference: ?Reference,
+    read_origin: ?Reference,
+    scope: ?ScopeId = null,
+    parent: ?ScopeId = null,
+};
+
 pub const ApplicationReceipt = struct {
+    inactive_bindings: []const InactiveBindingAnchor = &.{},
+    identity_baseline: []const Reference = &.{},
+    reference_steps: []const ReferenceStep = &.{},
     /// The physical, stable candidate header bound before the first edit.
     domain: *const ast_mod.Ast,
     reference_changes: []const ReferenceChange,

@@ -1097,6 +1097,7 @@ fn inlineTopLevelPrimitiveConstants(ast: *Ast, ctx: MinifyCtx, live_nodes: ?*con
                 if (!isLiveMinifyNode(live_nodes, @intCast(read_i))) continue;
                 if (sourceSpanStart(read_node) <= decl_start) continue;
                 if (!sites.readRunsAfterDecl(ast, scratch, @intCast(read_i), node_i)) continue;
+                if (ctx.semantic_journal) |journal| journal.recordReadConsumption(ast, @intCast(read_i), ctx.symbol_ids);
                 ast.nodes.items[read_i] = .{
                     .tag = init_node.tag,
                     .span = init_node.span,
@@ -1285,6 +1286,7 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
         if (!journal.recordInlinedLocalBinding(ast, decl_stmt_idx, decl_raw, name_raw, init_ni, read_ni, sym_id, pure_compound and !at_stmt_root, ctx.symbol_ids)) return;
     }
     if (pure_compound and !at_stmt_root) {
+        if (ctx.semantic_journal) |journal| journal.recordReadConsumption(ast, read_ni, ctx.symbol_ids);
         ast.nodes.items[read_ni] = .{
             .tag = .parenthesized_expression,
             .span = init_node.span,
