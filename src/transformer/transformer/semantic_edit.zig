@@ -177,16 +177,24 @@ pub fn programScope(self: *Transformer) ScopeId {
 pub fn markOpaqueDefineScopeChain(self: *Transformer, start: ScopeId) Transformer.Error!void {
     if (!self.semantic_edit_enabled or start.isNone()) return;
     const editor = try editorFor(self);
+    const prepared = try self.allocator.dupe(@import("../../semantic/scope.zig").Scope, editor.scopes.items);
+    defer self.allocator.free(prepared);
     var scope = start;
     var hops: usize = 0;
     while (!scope.isNone()) : (hops += 1) {
-        if (hops >= editor.scopes.items.len or scope.toIndex() >= editor.scopes.items.len)
+        if (hops >= prepared.len or scope.toIndex() >= prepared.len)
             std.debug.panic("opaque define expression has an invalid lexical scope chain", .{});
-        const current = &editor.scopes.items[scope.toIndex()];
+        const current = &prepared[scope.toIndex()];
         current.subtree_has_direct_eval = true;
         current.subtree_has_with = true;
         scope = current.parent;
     }
+    const parent = prepared[start.toIndex()].parent;
+    editor.scope_history.recordFrames(self.allocator, self.ast, editor.scopes.items, prepared, &editor.scope_owner_map, start, if (parent.isNone()) start else parent, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => @panic("opaque define dynamic lookup lost its scope-frame history"),
+    };
+    @memcpy(editor.scopes.items, prepared);
 }
 
 /// Plugin statements are born after source analysis. Publish their actual
