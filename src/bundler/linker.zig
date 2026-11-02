@@ -894,16 +894,12 @@ pub const Linker = struct {
             var it = sem.scope_maps[scope_index].iterator();
             while (it.next()) |entry| {
                 const symbol_index = entry.value_ptr.*;
-                if (symbol_index >= sem.symbols.items.len) return error.InvalidTopLevelOwnerSymbolIdentity;
-                const symbol = sem.symbols.items[symbol_index];
                 // The map row is only a candidate index. Confirm the SID's
                 // declared spelling and lexical owner before filtering, so a
                 // poisoned row cannot disappear behind either a non-hoistable
                 // decoy kind or a same-name module binding.
-                if (symbol.scope_id.isNone() or symbol.scope_id.toIndex() != scope_index)
-                    return error.InvalidTopLevelOwnerSymbolIdentity;
-                self.validateTopLevelOwnerSpelling(m, &sem, entry.key_ptr.*, symbol_index) catch
-                    return error.InvalidTopLevelOwnerSymbolIdentity;
+                try self.validateScopeMapOwnerIdentity(m, &sem, entry.key_ptr.*, scope_index, symbol_index);
+                const symbol = sem.symbols.items[symbol_index];
                 switch (symbol.kind) {
                     .variable_let, .variable_const, .class_decl, .function_decl => {},
                     else => continue,
@@ -1125,6 +1121,24 @@ pub const Linker = struct {
             break :blk m.source[start..end];
         };
         if (!Scanner.identifierNamesEqual(actual_name, name)) return error.InvalidTopLevelOwnerSymbolIdentity;
+    }
+
+    /// Validate a scope-map lookup before its index becomes a SymbolId write
+    /// target. Maps are useful indexes, not independent ownership witnesses.
+    fn validateScopeMapOwnerIdentity(
+        self: *const Linker,
+        m: Module,
+        sem: *const ModuleSemanticData,
+        name: []const u8,
+        scope_index: usize,
+        symbol_index: usize,
+    ) !void {
+        if (symbol_index >= sem.symbols.items.len) return error.InvalidTopLevelOwnerSymbolIdentity;
+        const symbol = sem.symbols.items[symbol_index];
+        if (symbol.scope_id.isNone() or symbol.scope_id.toIndex() != scope_index)
+            return error.InvalidTopLevelOwnerSymbolIdentity;
+        self.validateTopLevelOwnerSpelling(m, sem, name, symbol_index) catch
+            return error.InvalidTopLevelOwnerSymbolIdentity;
     }
 
     fn topLevelOwnerIdentity(
@@ -3625,6 +3639,7 @@ pub const Linker = struct {
         for (csem.scope_maps, 0..) |scope_map, sidx| {
             if (sidx < min_scope) continue;
             const sym_idx = scope_map.get(name) orelse continue;
+            try self.validateScopeMapOwnerIdentity(c.*, csem, name, sidx, sym_idx);
             const sid = bundler_symbol.SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(ci))), sym_idx);
             if (self.rename_table.get(sid) != null) continue;
             const cand = try self.pickConsumerShadowName(name, ci, c, name_to_owners);
@@ -7732,6 +7747,60 @@ test "ES5 hoisted-block owner keeps its exact SID in a cross-module collision" {
         saw_provider_owner = saw_provider_owner or bundler_symbol.SymbolID.eql(owner_id, provider_id);
     }
     try std.testing.expect(saw_block_owner and saw_provider_owner);
+}
+
+test "consumer shadow renaming rejects a same-name SID from another scope" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "entry.mjs",
+        .data = "const target = 1; function nested() { const target = 2; return target; }",
+    });
+    const entry_path = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry_path);
+
+    var cache = @import("resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry_path});
+
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    const module_index = graph.path_to_module.get(entry_path) orelse return error.MissingEntryModule;
+    const module = graph.getModule(module_index) orelse return error.MissingEntryModule;
+    const semantic = &(module.semantic orelse return error.MissingEntrySemantic);
+    if (semantic.scope_maps.len < 2) return error.MissingNestedTargetScope;
+    const root_symbol = semantic.scope_maps[0].get("target") orelse return error.MissingRootTarget;
+    var nested_symbol: ?usize = null;
+    for (semantic.scope_maps[1..]) |scope_map| {
+        const candidate = scope_map.get("target") orelse continue;
+        if (candidate < semantic.symbols.items.len and
+            semantic.symbols.items[candidate].scope_id.toIndex() > 0)
+        {
+            nested_symbol = candidate;
+            break;
+        }
+    }
+    const wrong_owner = nested_symbol orelse return error.MissingNestedTarget;
+    try std.testing.expect(root_symbol != wrong_owner);
+
+    // The root spelling still reads "target", but the row now points to the
+    // nested declaration's valid, same-spelling SymbolId.
+    try @constCast(&semantic.scope_maps[0]).put(std.testing.allocator, "target", wrong_owner);
+    var name_to_owners: Linker.NameToOwnersMap = .empty;
+    try std.testing.expectError(
+        error.InvalidTopLevelOwnerSymbolIdentity,
+        linker.renameConsumerScopeBindings(
+            module_index.toU32(),
+            module,
+            semantic,
+            "target",
+            &name_to_owners,
+            0,
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 0), linker.rename_table.count());
 }
 
 test "default-export compatibility owner rejects a missing SID beside a same-named synthetic decoy" {
