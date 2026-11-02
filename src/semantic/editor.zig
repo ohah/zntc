@@ -488,10 +488,24 @@ pub const SemanticEditor = struct {
         const body_scope = self.parameterBodyFunctionScope(parameter.scope_id) orelse return false;
         if (!self.scopes.items[body_scope.toIndex()].blocksMangling()) return false;
         const name = if (parameter.synthetic_name.len > 0) parameter.synthetic_name else self.ast.getText(parameter.name);
-        const body_raw = self.scope_maps.items[body_scope.toIndex()].get(name) orelse return false;
-        if (body_raw >= self.symbols.items.len or body_raw == @backingInt(id)) return false;
-        const body_var = self.symbols.items[body_raw];
-        return body_var.kind == .variable_var and body_var.scope_id == body_scope;
+        // Analyzer maps may retain both cooked and escaped spellings; every
+        // matching alias must still identify the same body binding.
+        var body_raw: ?usize = null;
+        var bindings = self.scope_maps.items[body_scope.toIndex()].iterator();
+        while (bindings.next()) |entry| {
+            if (!Scanner.identifierNamesEqual(entry.key_ptr.*, name)) continue;
+            if (body_raw) |existing| {
+                if (existing != entry.value_ptr.*) return false;
+            } else {
+                body_raw = entry.value_ptr.*;
+            }
+        }
+        const selected_body_raw = body_raw orelse return false;
+        if (selected_body_raw >= self.symbols.items.len or selected_body_raw == @backingInt(id)) return false;
+        const body_var = self.symbols.items[selected_body_raw];
+        const body_name = if (body_var.synthetic_name.len > 0) body_var.synthetic_name else self.ast.getText(body_var.name);
+        return body_var.kind == .variable_var and body_var.scope_id == body_scope and
+            Scanner.identifierNamesEqual(body_name, name);
     }
 
     fn parameterBodyFunctionScope(self: *const SemanticEditor, parameter_scope: ScopeId) ?ScopeId {
@@ -3407,6 +3421,51 @@ test "parameter rename preserves the body function binding and rejects inconsist
     try std.testing.expectEqual(@as(usize, 1), declaration_count);
     try std.testing.expectEqualSlices(?u32, node_ids, editor.symbol_ids.items);
     _ = try editor.finish();
+}
+
+// Inline because the test also verifies the private parameter/body owner proof.
+test "dynamic-body parameter rename resolves escaped aliases and rejects a wrong-name body owner" {
+    for ([_]bool{ false, true }) |poison_body_owner| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const source = "function f(\\u006futer = 0) { var outer = 2, decoy = 3; eval(''); }";
+        var scanner = try @import("../lexer/scanner.zig").Scanner.init(allocator, source);
+        var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".js");
+        _ = try parser.parse();
+        var analyzer = @import("analyzer.zig").SemanticAnalyzer.init(allocator, &parser.ast);
+        try analyzer.analyze();
+        try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+        var editor = try SemanticEditor.init(allocator, &parser.ast, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, analyzer.scope_owner_map, analyzer.references.items, analyzer.symbol_ids.items, analyzer.helper_scope_map);
+
+        var parameter_id: SymbolId = .none;
+        var body_var_id: SymbolId = .none;
+        var decoy_id: SymbolId = .none;
+        for (editor.symbols.items, 0..) |symbol, raw| {
+            const raw_name = parser.ast.getText(symbol.name);
+            if (symbol.kind == .parameter and Scanner.identifierNamesEqual(raw_name, "outer")) parameter_id = @fromBackingInt(@intCast(raw));
+            if (symbol.kind != .variable_var) continue;
+            if (std.mem.eql(u8, raw_name, "outer")) body_var_id = @fromBackingInt(@intCast(raw));
+            if (std.mem.eql(u8, raw_name, "decoy")) decoy_id = @fromBackingInt(@intCast(raw));
+        }
+        try std.testing.expect(!parameter_id.isNone() and !body_var_id.isNone() and !decoy_id.isNone());
+        const parameter_scope = editor.symbols.items[@backingInt(parameter_id)].scope_id;
+        const body_scope = editor.parameterBodyFunctionScope(parameter_scope) orelse return error.TestUnexpectedResult;
+        try std.testing.expect(editor.scopes.items[body_scope.toIndex()].blocksMangling());
+        try std.testing.expectEqual(@as(?usize, @backingInt(body_var_id)), editor.scope_maps.items[body_scope.toIndex()].get("outer"));
+
+        if (poison_body_owner) {
+            editor.scope_maps.items[body_scope.toIndex()].getPtr("outer").?.* = @backingInt(decoy_id);
+            try std.testing.expectError(error.InvalidScope, editor.renameParameterEnvironmentBindingForDynamicBody(parameter_id, "outer$1"));
+            try std.testing.expectEqual(@as(?usize, @backingInt(parameter_id)), editor.scope_maps.items[parameter_scope.toIndex()].get("\\u006futer"));
+        } else {
+            try editor.renameParameterEnvironmentBindingForDynamicBody(parameter_id, "outer$1");
+            try std.testing.expectEqual(@as(?usize, @backingInt(parameter_id)), editor.scope_maps.items[parameter_scope.toIndex()].get("outer$1"));
+            try std.testing.expectEqual(@as(?usize, @backingInt(body_var_id)), editor.scope_maps.items[body_scope.toIndex()].get("outer"));
+            _ = try editor.finish();
+        }
+    }
 }
 
 test "synthetic declaration, explicit references, move and removal keep stable IDs" {
