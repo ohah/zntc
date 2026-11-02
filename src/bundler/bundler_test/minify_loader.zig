@@ -4863,12 +4863,21 @@ test "#4603 module worker 는 ESM 으로 방출해 IIFE factory 로 감싸지 �
 }
 
 test "#4598 code splitting 청크는 위임하지 않는다 — bare await 가 non-async function 에 떨어지면 SyntaxError" {
-    // splitting 의 IIFE 청크는 async factory 가 아니라
-    // `__zntc_register({"m.js": function(exports, module, require) {...}})` — plain function.
-    // 위임하면 `const v = await ...` 가 그 안에 그대로 들어가 **청크 전체가 파싱조차 안 된다**.
-    // 모듈 단위 래핑은 #4598 로 여전히 깨져 있지만(ReferenceError) 적어도 파싱은 된다.
+    // Registry factories remain synchronous. Real async methods inside them
+    // are valid; parsing each whole emitted script checks the actual nesting.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    try writeFile(tmp.dir, "invalid.cjs", "function factory(){const v=await Promise.resolve(41);}");
+    const invalid_path = try absPath(&tmp, "invalid.cjs");
+    defer std.testing.allocator.free(invalid_path);
+    const invalid = try std.process.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ "node", "--check", invalid_path },
+    });
+    defer std.testing.allocator.free(invalid.stdout);
+    defer std.testing.allocator.free(invalid.stderr);
+    try std.testing.expect(invalid.term == .exited and invalid.term.exited != 0);
+    try std.testing.expect(std.mem.indexOf(u8, invalid.stderr, "SyntaxError") != null);
+
     try writeFile(tmp.dir, "dep.ts", "const v = await Promise.resolve(41);\nexport const val = v + 1;");
     try writeFile(tmp.dir, "index.ts", "import { val } from './dep';\nconsole.log(val);\nimport('./dep').then((m) => console.log(m.val));");
     const entry = try absPath(&tmp, "index.ts");
@@ -4888,12 +4897,19 @@ test "#4598 code splitting 청크는 위임하지 않는다 — bare await 가 n
 
     const outs = result.outputs orelse return error.TestUnexpectedResult;
     var saw_dep = false;
-    for (outs) |o| {
-        const aw = std.mem.indexOf(u8, o.contents, "await ") orelse continue;
-        saw_dep = true;
-        // `await` 보다 **앞에** async 래퍼가 있어야 한다 = await 가 async 문맥 안이다.
-        const wrap = std.mem.indexOf(u8, o.contents, "(async") orelse return error.BareAwaitInNonAsyncChunk;
-        try std.testing.expect(wrap < aw);
+    for (outs, 0..) |o, index| {
+        const name = try std.fmt.allocPrint(std.testing.allocator, "output-{d}.cjs", .{index});
+        defer std.testing.allocator.free(name);
+        try writeFile(tmp.dir, name, o.contents);
+        const output_path = try absPath(&tmp, name);
+        defer std.testing.allocator.free(output_path);
+        const parsed = try std.process.run(std.testing.allocator, std.testing.io, .{
+            .argv = &.{ "node", "--check", output_path },
+        });
+        defer std.testing.allocator.free(parsed.stdout);
+        defer std.testing.allocator.free(parsed.stderr);
+        try std.testing.expect(parsed.term == .exited and parsed.term.exited == 0);
+        if (std.mem.indexOf(u8, o.contents, "await ") != null) saw_dep = true;
     }
     try std.testing.expect(saw_dep);
 }

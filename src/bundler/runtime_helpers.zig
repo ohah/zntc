@@ -338,7 +338,8 @@ pub const ZNTC_IIFE_GLOBAL = "(typeof globalThis!==\"undefined\"?globalThis:this
 /// 코어**다. MF P1 의 container/shared scope 는 여기 `__zntc_require`/
 /// `__zntc_mods`/`__zntc_cache` + `ZNTC_REGISTER_INSTALL` 위에 얹는다
 /// (중복 구현 금지, MF RFC §4.1/§6.1).
-pub const ZNTC_IIFE_RESOLVE_BROWSER =
+fn zntcIifeResolveBrowser(comptime native_import: bool) []const u8 {
+    return
     \\(function (g) {
     \\  if (g.__zntc_require) return;
     \\  var __zntc_cache = {};
@@ -365,30 +366,46 @@ pub const ZNTC_IIFE_RESOLVE_BROWSER =
     \\      } else if (typeof importScripts === "function") {
     \\        try { importScripts(url); res(); } catch (e) { rej(e); }
     \\      } else {
-    \\        Promise.resolve().then(function () { return import(url); }).then(function () { res(); }, rej);
-    \\      }
-    \\    }));
-    \\  };
-    \\})(typeof globalThis !== "undefined" ? globalThis : this);
     \\
-;
-pub const ZNTC_IIFE_RESOLVE_BROWSER_MIN =
-    "(function(g){if(g.__zntc_require)return;var __zntc_cache={},__zntc_cs={};" ++
-    "g.__zntc_require=function(id){var c=__zntc_cache[id];if(c)return c.exports;" ++
-    "var m={exports:{}};__zntc_cache[id]=m;(0,g.__zntc_mods[id])(m.exports,m,g.__zntc_require);return m.exports};" ++
-    "g.__zntc_load_chunk=function(spec){if(__zntc_cs[spec])return __zntc_cs[spec];" ++
-    "var url=(g.__zntc_public_path||\"\")+spec;" ++
-    "return __zntc_cs[spec]=new Promise(function(res,rej){" ++
-    "if(typeof document!==\"undefined\"&&document.createElement){var s=document.createElement(\"script\");" ++
-    "s.src=url;if(g.__zntc_nonce)s.setAttribute(\"nonce\",g.__zntc_nonce);s.onload=function(){res()};" ++
-    "s.onerror=function(){rej(new Error(\"chunk load failed: \"+spec))};document.head.appendChild(s)}" ++
-    "else if(typeof importScripts===\"function\"){try{importScripts(url);res()}catch(e){rej(e)}}" ++
-    "else{Promise.resolve().then(function(){return import(url)}).then(function(){res()},rej)}})};" ++
-    "})(typeof globalThis!==\"undefined\"?globalThis:this);";
+    ++ (if (native_import)
+        "        Promise.resolve().then(function () { return import(url); }).then(function () { res(); }, rej);\n"
+    else
+        "        rej(new Error(\"chunk loading requires document or importScripts\"));\n") ++
+        \\      }
+        \\    }));
+        \\  };
+        \\})(typeof globalThis !== "undefined" ? globalThis : this);
+        \\
+    ;
+}
+fn zntcIifeResolveBrowserMin(comptime native_import: bool) []const u8 {
+    return "(function(g){if(g.__zntc_require)return;var __zntc_cache={},__zntc_cs={};" ++
+        "g.__zntc_require=function(id){var c=__zntc_cache[id];if(c)return c.exports;" ++
+        "var m={exports:{}};__zntc_cache[id]=m;(0,g.__zntc_mods[id])(m.exports,m,g.__zntc_require);return m.exports};" ++
+        "g.__zntc_load_chunk=function(spec){if(__zntc_cs[spec])return __zntc_cs[spec];" ++
+        "var url=(g.__zntc_public_path||\"\")+spec;" ++
+        "return __zntc_cs[spec]=new Promise(function(res,rej){" ++
+        "if(typeof document!==\"undefined\"&&document.createElement){var s=document.createElement(\"script\");" ++
+        "s.src=url;if(g.__zntc_nonce)s.setAttribute(\"nonce\",g.__zntc_nonce);s.onload=function(){res()};" ++
+        "s.onerror=function(){rej(new Error(\"chunk load failed: \"+spec))};document.head.appendChild(s)}" ++
+        "else if(typeof importScripts===\"function\"){try{importScripts(url);res()}catch(e){rej(e)}}" ++
+        (if (native_import)
+            "else{Promise.resolve().then(function(){return import(url)}).then(function(){res()},rej)}})};"
+        else
+            "else{rej(new Error(\"chunk loading requires document or importScripts\"))}})};") ++
+        "})(typeof globalThis!==\"undefined\"?globalThis:this);";
+}
+pub const ZNTC_IIFE_RESOLVE_BROWSER = zntcIifeResolveBrowser(true);
+pub const ZNTC_IIFE_RESOLVE_BROWSER_MIN = zntcIifeResolveBrowserMin(true);
+pub const ZNTC_IIFE_RESOLVE_BROWSER_CLASSIC = zntcIifeResolveBrowser(false);
+pub const ZNTC_IIFE_RESOLVE_BROWSER_CLASSIC_MIN = zntcIifeResolveBrowserMin(false);
 
 /// entry 청크에 해석 계층(브라우저)을 1회 주입.
-pub fn appendZntcResolveBrowser(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool) !void {
-    try buf.appendSlice(allocator, if (minify) ZNTC_IIFE_RESOLVE_BROWSER_MIN else ZNTC_IIFE_RESOLVE_BROWSER);
+pub fn appendZntcResolveBrowser(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, native_import: bool) !void {
+    try buf.appendSlice(allocator, if (native_import)
+        (if (minify) ZNTC_IIFE_RESOLVE_BROWSER_MIN else ZNTC_IIFE_RESOLVE_BROWSER)
+    else
+        (if (minify) ZNTC_IIFE_RESOLVE_BROWSER_CLASSIC_MIN else ZNTC_IIFE_RESOLVE_BROWSER_CLASSIC));
 }
 
 /// __export: ESM namespace 객체에 live getter 등록 (esbuild 호환).

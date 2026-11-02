@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build, close, init } from '../../../packages/core/index';
 import { createFixture, runZntc } from './helpers';
@@ -57,16 +57,18 @@ async function bundle(
   mode: ExportMode,
   splitting = false,
   preserveModules = false,
+  entryName = 'entry.mjs',
+  globalName = 'ReadyLibrary',
 ): Promise<string> {
-  const out = join(dir, 'dist', 'entry.js');
+  const out = join(dir, 'dist', entryName.replace(/\.[^.]+$/, '') + '.js');
   if (surface === 'cli') {
     const args = [
       '--bundle',
-      join(dir, 'entry.mjs'),
+      join(dir, entryName),
       `--format=${format}`,
       `--target=${target}`,
       '--platform=node',
-      '--global-name=ReadyLibrary',
+      `--global-name=${globalName}`,
       `--output-exports=${mode}`,
       ...(minifier === 'full'
         ? ['--minify']
@@ -81,7 +83,7 @@ async function bundle(
     expect(result.exitCode, result.stderr).toBe(0);
   } else {
     const result = await build({
-      entryPoints: [join(dir, 'entry.mjs')],
+      entryPoints: [join(dir, entryName)],
       rootDir: dir,
       ...(splitting || preserveModules ? { outdir: join(dir, 'dist') } : { outfile: out }),
       write: true,
@@ -91,7 +93,7 @@ async function bundle(
       splitting,
       preserveModules,
       ...(preserveModules ? { preserveModulesRoot: dir } : {}),
-      globalName: 'ReadyLibrary',
+      globalName,
       outputExports: mode,
       minifyIdentifiers: minifier !== 'plain',
       minifySyntax: minifier === 'full',
@@ -804,4 +806,196 @@ console.log(JSON.stringify({events,value:globalThis.__value,lazy:globalThis.__la
           }
         });
       }
+});
+
+// Node controls prove the values/evaluation order. The candidate runs all real
+// registry chunks in a VM with no CommonJS/AMD bindings: non-entry factories
+// register in sorted order, entry loads last, and the emitted DOM loader still
+// handles dynamic requests. This is a script-loader simulation, not browser or
+// Hermes execution evidence. ES5 chunks separately pass through real hermesc.
+describe('TLA library IIFE UMD registry split readiness (#4598)', () => {
+  beforeAll(() => init());
+  afterAll(() => close());
+  for (const surface of surfaces)
+    for (const format of ['iife', 'umd'] as const)
+      for (const target of ['es2017', 'es5'] as const)
+        for (const minifier of minifiers)
+          for (const library of [false, true]) {
+            test(`${surface} ${format} ${target} ${minifier}: ${library ? 'default-only namespace and dynamic live provider' : 'original console static and dynamic 42'}`, async () => {
+              const entryName = library ? 'entry.mjs' : 'index.ts';
+              const files = library
+                ? {
+                    'entry.mjs': `import {val} from './dep.mjs';
+export default val;
+globalThis.__registryLoad = () => import('./dep.mjs');`,
+                    'dep.mjs': `export let val = 0;
+globalThis.__registryEvents.push('start');
+await globalThis.__registryGate;
+val = 42;
+globalThis.__registryEvents.push('ready');
+export function increment() { val++; }
+export default val;`,
+                  }
+                : {
+                    // Exact minify_loader #4598 fixture. Native controls below change
+                    // only file extensions/specifiers so Node can resolve the files.
+                    'index.ts':
+                      "import { val } from './dep';\nconsole.log(val);\nimport('./dep').then((m) => console.log(m.val));",
+                    'dep.ts': 'const v = await Promise.resolve(41);\nexport const val = v + 1;',
+                    'native-index.mjs':
+                      "import { val } from './native-dep.mjs';\nconsole.log(val);\nimport('./native-dep.mjs').then((m) => console.log(m.val));",
+                    'native-dep.mjs':
+                      'const v = await Promise.resolve(41);\nexport const val = v + 1;',
+                  };
+              const fixture = await createFixture(files);
+              try {
+                const nativeScript = library
+                  ? `
+import assert from 'node:assert/strict';
+globalThis.__registryEvents = [];
+globalThis.__registryGate = Promise.resolve();
+const entry = await import(${JSON.stringify(pathToFileURL(join(fixture.dir, 'entry.mjs')).href)});
+assert.equal(typeof entry, 'object');
+assert.deepEqual(Object.keys(entry), ['default']);
+assert.equal(entry.default, 42);
+const provider = await globalThis.__registryLoad();
+assert.equal(provider.val, 42); assert.equal(provider.default, 42);
+provider.increment(); assert.equal(provider.val, 43);
+assert.equal(entry.default, 42);
+console.log(JSON.stringify({entryKeys:Object.keys(entry),value:entry.default,live:provider.val,providerDefault:provider.default,events:globalThis.__registryEvents}));`
+                  : `await import(${JSON.stringify(pathToFileURL(join(fixture.dir, 'native-index.mjs')).href)});`;
+                const native = spawnSync(
+                  'node',
+                  ['--input-type=module', '--unhandled-rejections=strict', '-e', nativeScript],
+                  { encoding: 'utf8', timeout: 10000 },
+                );
+                expect(native.error, native.stderr).toBeUndefined();
+                expect(native.status, native.stderr).toBe(0);
+                const expected = {
+                  entryKeys: ['default'],
+                  value: 42,
+                  live: 43,
+                  providerDefault: 42,
+                  events: ['start', 'ready'],
+                };
+                if (library) expect(JSON.parse(native.stdout)).toEqual(expected);
+                else expect(native.stdout).toBe('42\n42\n');
+
+                const out = await bundle(
+                  fixture.dir,
+                  surface,
+                  format,
+                  target,
+                  minifier,
+                  'auto',
+                  true,
+                  false,
+                  entryName,
+                  'App',
+                );
+                const dist = join(fixture.dir, 'dist');
+                const outputs = readdirSync(dist, { recursive: true })
+                  .map(String)
+                  .filter((path) => path.endsWith('.js'))
+                  .sort();
+                expect(
+                  outputs.length,
+                  'registry entry, provider and helper chunks must actually exist',
+                ).toBeGreaterThan(2);
+                const entry = relative(dist, out);
+                expect(outputs).toContain(entry);
+                expect(outputs.some((path) => path.startsWith('dep-'))).toBe(true);
+                const script = `
+const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+(async () => {
+  const dir = ${JSON.stringify(dist)}, entry = ${JSON.stringify(entry)}, files = ${JSON.stringify(outputs)};
+  const logs = [], requests = [], evaluated = [], events = [];
+  let signalStarted, signalLogs, release;
+  const started = new Promise(resolve=>{signalStarted=resolve;});
+  const logged = new Promise(resolve=>{signalLogs=resolve;});
+  const gate = new Promise(resolve=>{release=resolve;});
+  Object.defineProperty(events,'push',{enumerable:false,value:function(...items){const length=Array.prototype.push.apply(this,items);if(items.includes('start'))signalStarted();return length;}});
+  const context = vm.createContext({console:{log(...values){logs.push(values.join(' '));if(logs.length===2)signalLogs();},error(...values){console.error(...values);}},setTimeout,clearTimeout,__registryEvents:events,__registryGate:gate});
+  function evaluate(file) {
+    assert.ok(files.includes(file), 'load only an actual emitted registry chunk');
+    evaluated.push(file);
+    vm.runInContext(fs.readFileSync(path.join(dir,file),'utf8'),context,{filename:file});
+  }
+  context.document={createElement(){return {setAttribute(){}};},head:{appendChild(script){const file=script.src.replace(/^\\.\\//,'');requests.push(file);try{evaluate(file);if(script.onload)script.onload();}catch(error){if(script.onerror)script.onerror(error);else throw error;}}}};
+  for(const file of files)if(file!==entry)evaluate(file);
+  assert.deepEqual(logs,[],'registration alone must not run module bodies');
+  evaluate(entry);
+  assert.equal(typeof context.__zntc_require,'function');
+  const ready = context.App;
+  ${
+    library
+      ? `assert.equal(typeof ready.then,'function','App is Promise<namespace>, including default-only libraries');
+  let settled=false;
+  const completion=Promise.resolve(ready).then(value=>{settled=true;return value;},error=>{settled=true;throw error;});
+  await started;assert.equal(settled,false);assert.deepEqual(events,['start']);release();
+  const ns=await completion;
+  assert.equal(typeof ns,'object');assert.equal(ns.default,42);assert.deepEqual(Object.keys(ns),['default']);
+  const provider=await context.__registryLoad();
+  assert.equal(provider.val,42);assert.equal(provider.default,42);provider.increment();assert.equal(provider.val,43);assert.equal(ns.default,42);
+  assert.equal(await context.__registryLoad(),provider,'registry dynamic import preserves provider identity');
+  console.log(JSON.stringify({entryKeys:Object.keys(ns),value:ns.default,live:provider.val,providerDefault:provider.default,events}));`
+      : `await Promise.resolve(ready);await logged;assert.deepEqual(logs,['42','42']);console.log(logs.join('\\n'));`
+  }
+  assert.ok(requests.length>0,'exercise the real emitted dynamic chunk loader');
+  assert.ok(evaluated.includes(entry));
+  fs.writeFileSync(${JSON.stringify(join(dist, 'registry-loader-observations.json'))},JSON.stringify({entry,evaluated,requests,library:${library}},null,2));
+})().catch(error=>{console.error(error);process.exitCode=1;});`;
+                const child = spawnSync('node', ['--unhandled-rejections=strict', '-e', script], {
+                  encoding: 'utf8',
+                  timeout: 10000,
+                });
+                expect(child.error, child.stderr).toBeUndefined();
+                expect(child.status, child.stderr).toBe(0);
+                if (library) expect(JSON.parse(child.stdout)).toEqual(expected);
+                else expect(child.stdout).toBe(native.stdout);
+                writeFileSync(
+                  join(dist, 'registry-node-control.json'),
+                  JSON.stringify(
+                    {
+                      native: { status: native.status, stdout: native.stdout },
+                      candidate: { status: child.status, stdout: child.stdout },
+                      format,
+                      target,
+                      minifier,
+                      library,
+                    },
+                    null,
+                    2,
+                  ),
+                );
+                if (target === 'es5') {
+                  const packageDir = dirname(
+                    Bun.resolveSync('hermes-engine-cli/package.json', process.cwd()),
+                  );
+                  const host =
+                    process.platform === 'darwin'
+                      ? 'osx-bin'
+                      : process.platform === 'win32'
+                        ? 'win64-bin'
+                        : 'linux64-bin';
+                  const hermesc = join(
+                    packageDir,
+                    host,
+                    process.platform === 'win32' ? 'hermesc.exe' : 'hermesc',
+                  );
+                  for (const path of outputs) {
+                    const parsed = spawnSync(
+                      hermesc,
+                      ['-emit-binary', '-out', join(dist, path + '.hbc'), join(dist, path)],
+                      { encoding: 'utf8', timeout: 10000 },
+                    );
+                    expect(parsed.error, `${hermesc}: ${parsed.stderr}`).toBeUndefined();
+                    expect(parsed.status, `${hermesc} ${path}: ${parsed.stderr}`).toBe(0);
+                  }
+                }
+              } finally {
+                await fixture.cleanup();
+              }
+            });
+          }
 });
