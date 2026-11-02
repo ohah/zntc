@@ -129,6 +129,7 @@ test {
     // `pub const` 가 아닌 file-private const 로만 import → 다른 파일이
     // dev 를 직접 reference 안 하면 test reachability 안 잡힘.
     _ = @import("emitter/dev.zig");
+    _ = @import("emitter/dead_store.zig"); // exact export SID guards DSE liveness
     _ = @import("emitter/entry_exports.zig"); // public wrapped-entry writer regressions
     _ = @import("emitter/chunks.zig"); // inline test (rewriteImportSpecifier 등)
     _ = @import("tree_shaker/cjs_patterns.zig"); // inline retained-graph fallback regressions
