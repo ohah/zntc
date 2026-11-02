@@ -2527,9 +2527,8 @@ pub const TreeShaker = struct {
             const m = self.moduleAtMut(@intCast(i)) orelse continue;
             if (m.wrap_kind != .cjs) continue;
             // This is a value optimization, not a graph-repair requirement.
-            // Keep both runtime branches and the original graph when eval or
-            // with can change the source-local capability aliases.
-            if (!cjs_patterns.nodeBufferCapabilityValuesAreStable(m)) continue;
+            // The typed plan owns the conservative stability proof and keeps
+            // both runtime branches when eval or with can change source aliases.
             const arena = m.parse_arena orelse continue;
             const plan = (cjs_patterns.prepareNodeBufferCapabilityPlan(arena.allocator(), m) catch null) orelse continue;
             var prepared = (@import("graph/transform_prepass.zig").prepareNodeBufferCapabilityFold(

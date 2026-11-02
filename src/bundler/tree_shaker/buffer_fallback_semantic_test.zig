@@ -850,6 +850,33 @@ const dynamic_value_cases = [_]DynamicValueCase{
     .{ .source = prefix ++ "if(" ++ condition ++ "){exports.Buffer=B}else{exports.Buffer=SafeBuffer}function SafeBuffer(){return 'DYNAMIC_FALLBACK:'}SafeBuffer.from='DYNAMIC_FALLBACK:';", .code = "", .no_fold = false },
 };
 
+test "Buffer production plan rejects eval-mutable capability aliases without editing the graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const helpers = @import("../test_helpers.zig");
+    const source = "var buffer=require('buffer');var B=buffer.Buffer;eval(\"B={from:0,alloc:0,allocUnsafe:0,allocUnsafeSlow:0}\");if(B.from&&B.alloc&&B.allocUnsafe&&B.allocUnsafeSlow){module.exports=buffer}else{module.exports=0}";
+    try helpers.writeFile(tmp.dir, "entry.cjs", source);
+    const entry = try helpers.absPath(&tmp, "entry.cjs");
+    defer std.testing.allocator.free(entry);
+
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+    defer cache.deinit();
+    var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const module = @constCast(graph.getModule(@fromBackingInt(@as(u32, 0))).?);
+    try std.testing.expect(!patterns.nodeBufferCapabilityValuesAreStable(module));
+
+    const before_nodes = try allocator.dupe(ast_mod.Node, module.ast.?.nodes.items);
+    const before_references = try allocator.dupe(Reference, module.semantic.?.references);
+    try std.testing.expect((try patterns.prepareNodeBufferCapabilityPlan(allocator, module)) == null);
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(before_nodes), std.mem.sliceAsBytes(module.ast.?.nodes.items));
+    try std.testing.expectEqualSlices(Reference, before_references, module.semantic.?.references);
+}
+
 test "Buffer dynamic local aliases keep both runtime branches and their original values" {
     const helpers = @import("../test_helpers.zig");
     const profile = @import("../../profile.zig");
