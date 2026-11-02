@@ -1501,6 +1501,22 @@ pub const Module = struct {
         return sym_idx;
     }
 
+    /// Return an export SID only when its exact source local node still carries
+    /// that identity in this module's current AST and semantic map.
+    pub fn exportBindingLocalNodeSemanticIndex(self: *const Module, eb: ExportBinding) ?u32 {
+        const sym_idx = self.exportBindingSemanticIndex(eb) orelse return null;
+        const local_node = eb.local_symbol_node orelse return null;
+        if (local_node.isNone()) return null;
+        const raw = @backingInt(local_node);
+        const ast = self.ast orelse return null;
+        const sem = self.semantic orelse return null;
+        if (raw >= ast.nodes.items.len or raw >= sem.symbol_ids.len) return null;
+        const node = ast.nodes.items[raw];
+        if (node.tag != .binding_identifier and node.tag != .identifier_reference) return null;
+        if (sem.symbol_ids[raw] != sym_idx) return null;
+        return sym_idx;
+    }
+
     /// A ModuleStore hit moves this same source graph to a new build index.
     /// Validate all local carriers before publishing the index-only handoff;
     /// source SymbolIds and the independent codegen output owner stay intact.

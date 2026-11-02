@@ -947,6 +947,58 @@ test "tree-shaking fails closed when a local export root map points at a decoy" 
     try std.testing.expect(shaker.isExportUsed(provider_idx, "live"));
 }
 
+test "tree-shaker preserves all dynamic target exports when an export SID points at a decoy" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import('./provider');");
+    try writeFile(tmp.dir, "provider.ts", "export const live = 1; export const decoy = 2; const hidden = 3;");
+
+    const allocator = std.testing.allocator;
+    var setup = try buildLinkedGraph(allocator, &tmp, "entry.ts", &.{"provider.ts"});
+    defer setup.deinit();
+
+    const provider_idx = setup.findModule("provider.ts") orelse return error.MissingProvider;
+    const provider = setup.graph.moduleAtMut(ModuleIndex.fromUsize(provider_idx)) orelse return error.MissingProvider;
+
+    const live_binding = @constCast(provider.findExportBinding("live") orelse return error.MissingLiveExport);
+    const semantic = if (provider.semantic) |*value| value else return error.MissingProviderSemantic;
+    const live_sid = provider.exportBindingSemanticIndex(live_binding.*) orelse return error.MissingLiveSID;
+    const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoySID;
+    live_binding.symbol = SymbolRef.makeSemantic(provider.index, decoy_sid);
+
+    var shaker = try TreeShaker.init(allocator, setup.graph, &setup.linker);
+    defer shaker.deinit();
+    try shaker.analyze(&.{setup.entry_path});
+
+    const infos = shaker.getModuleStmtInfos(provider_idx) orelse return error.MissingProviderStmtInfos;
+    const live_stmt = infos.declaredStmtBySymbol(live_sid) orelse return error.MissingLiveStatement;
+    try std.testing.expect(shaker.isStmtReachable(provider_idx, live_stmt));
+}
+
+test "tree-shaker does not mark an export used from another export's reachable SID" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { live } from './provider'; console.log(live);");
+    try writeFile(tmp.dir, "provider.ts", "export const live = 1; export const decoy = 2;");
+
+    const allocator = std.testing.allocator;
+    var setup = try buildLinkedGraph(allocator, &tmp, "entry.ts", &.{"provider.ts"});
+    defer setup.deinit();
+
+    const provider_idx = setup.findModule("provider.ts") orelse return error.MissingProvider;
+    const provider = setup.graph.moduleAtMut(ModuleIndex.fromUsize(provider_idx)) orelse return error.MissingProvider;
+    const decoy_binding = @constCast(provider.findExportBinding("decoy") orelse return error.MissingDecoyExport);
+    const live_sid = provider.findLocalExportSemanticIndex("live") orelse return error.MissingLiveSID;
+    decoy_binding.symbol = SymbolRef.makeSemantic(provider.index, live_sid);
+
+    var shaker = try TreeShaker.init(allocator, setup.graph, &setup.linker);
+    defer shaker.deinit();
+    try shaker.analyze(&.{setup.entry_path});
+
+    try std.testing.expect(shaker.isExportUsed(provider_idx, "live"));
+    try std.testing.expect(!shaker.isExportUsed(provider_idx, "decoy"));
+}
+
 test "tree-shaking fails closed when canonical export fallback sees a decoy SID" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
