@@ -12,16 +12,9 @@ const TreeShaker = @import("../tree_shaker.zig").TreeShaker;
 const profile = @import("../../profile.zig");
 
 fn purityImportLocalSemanticIndex(module: *const Module, sem: *const ModuleSemanticData, ib: ImportBinding) ?u32 {
-    if (ib.local_symbol.isValid()) {
-        _ = module.checkedImportBindingLocalName(ib) catch return null;
-        if (ib.local_symbol.moduleIndex() != module.index) return null;
-        const sid = ib.local_symbol.semanticIndex() orelse return null;
-        if (sid >= sem.symbols.items.len or sem.symbols.items[sid].kind != .import_binding) return null;
-        return sid;
-    }
-
     const anchored = module.checkedImportBindingSourceSymbol(ib) catch return null;
     if (!anchored.isValid() or anchored.moduleIndex() != module.index) return null;
+    if (ib.local_symbol.isValid() and !ib.local_symbol.eql(anchored)) return null;
     const sid = anchored.semanticIndex() orelse return null;
     if (sid >= sem.symbols.items.len or sem.symbols.items[sid].kind != .import_binding) return null;
     return sid;
@@ -111,6 +104,12 @@ pub fn propagateCrossModulePurity(
             if (ib.import_record_index >= module.import_records.len) continue;
             const record = module.import_records[ib.import_record_index];
             if (record.resolved.isNone() or record.is_external) continue;
+            const direct_source = linker.graph.getModule(record.resolved) orelse continue;
+            const direct_export = direct_source.findExportBinding(ib.imported_name) orelse continue;
+            // `ib.symbol` is populated from this direct edge. Re-check the pair
+            // before following a canonical re-export chain, which may otherwise
+            // lend purity from a same-named but unrelated export.
+            if (!ib.symbol.isValid() or !ib.symbol.eql(direct_export.symbol)) continue;
             const canonical = linker.resolveExportChain(record.resolved, ib.imported_name, 0) orelse continue;
             if (canonical.synthetic_member != null) continue;
             const target_module = linker.graph.getModule(canonical.module_index) orelse continue;
