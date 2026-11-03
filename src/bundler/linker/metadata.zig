@@ -212,6 +212,12 @@ fn importBindingLocalSemanticIndex(
         if (ib.local_symbol.moduleIndex() != ModuleIndex.fromUsize(module_index)) return null;
         const symbol_index = ib.local_symbol.semanticIndex() orelse return null;
         if (!importBindingHasExpectedKind(ib, semantic, symbol_index)) return null;
+        // A same-module SID of the expected kind is not enough: verify it
+        // still names this scanner-owned import when source is available.
+        if (module.ast != null) {
+            const anchored = module.checkedSourceImportLocalSymbol(ib) catch return null;
+            if (!anchored.eql(ib.local_symbol)) return null;
+        }
         return symbol_index;
     }
     if (ib.local_symbol_node != null) {
@@ -1271,7 +1277,10 @@ pub fn buildMetadataForAstWithHolderReservations(
                 // A prior lowering can inline an import completely while the scanner's
                 // ImportBinding row remains for this metadata pass. With no live local
                 // SymbolId, only the scanner-captured spelling remains available here.
-                const import_local_name = if (ib.local_symbol.isValid()) m.importBindingLocalName(ib) else ib.local_name;
+                const import_local_name = if (ib.local_symbol.isValid())
+                    (m.checkedImportBindingIdentity(ib) catch return error.InvalidImportLocalSymbol).name
+                else
+                    ib.local_name;
                 lazy_esm_import = self.inline_requires and
                     m.wrap_kind == .esm and
                     rec.kind == .static_import and
@@ -1659,7 +1668,8 @@ pub fn buildMetadataForAstWithHolderReservations(
                     if (synth_member == null and m.wrap_kind == .esm and canonical_m_opt != null and
                         canonical_m_opt.?.wrap_kind == .esm)
                     {
-                        try export_getter_overrides.put(self.allocator, m.importBindingLocalName(ib), rename_value);
+                        const import_identity = m.checkedImportBindingIdentity(ib) catch return error.InvalidImportLocalSymbol;
+                        try export_getter_overrides.put(self.allocator, import_identity.name, rename_value);
                     }
                 }
             }
