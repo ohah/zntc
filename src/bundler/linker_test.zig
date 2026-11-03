@@ -4923,6 +4923,171 @@ test "preamble: CJS module import — named import generates require_xxx" {
     try std.testing.expect(std.mem.indexOf(u8, preamble, ".x") != null);
 }
 
+test "metadata CJS named import rename uses exact source anchor when cached SID is missing" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import { value as selected } from './c';\nconst decoy = 7;\nconsole.log(selected, decoy);");
+    try writeFile(tmp.dir, "c.js", "module.exports = { value: 42 };");
+    try writeFile(tmp.dir, "root.cjs", "require('./entry.mjs');");
+
+    var r = try buildLinkAndRename(allocator, &tmp, "root.cjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingEntry;
+    const cjs_index = findModuleIdx(r.graph, "c.js") orelse return error.MissingCjsModule;
+    const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingEntry);
+    try std.testing.expectEqual(types.WrapKind.esm, entry.wrap_kind);
+    const semantic = entry.semantic orelse return error.MissingEntrySemantic;
+    const binding = for (entry.import_bindings) |*candidate| {
+        if (std.mem.eql(u8, candidate.local_name, "selected")) break candidate;
+    } else return error.MissingImportBinding;
+    const source_anchor = binding.local_symbol_node orelse return error.MissingImportAnchor;
+    const source_ref = try entry.checkedSourceImportLocalSymbol(binding.*);
+    const source_sid = source_ref.semanticIndex() orelse return error.MissingSourceSID;
+    const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoy;
+    try std.testing.expect(source_sid != decoy_sid);
+
+    binding.local_symbol = .invalid;
+    try @constCast(semantic.scope_maps)[0].put(allocator, "selected", decoy_sid);
+    r.linker.rename_table.clear();
+
+    var direct_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+    defer direct_metadata.deinit();
+    const direct_rename = direct_metadata.renames.get(source_sid) orelse return error.MissingAnchoredDirectCjsRename;
+    try std.testing.expect(std.mem.indexOf(u8, direct_rename, "().value") != null);
+    try std.testing.expect(direct_metadata.renames.get(@intCast(decoy_sid)) == null);
+    try std.testing.expect(!binding.local_symbol.isValid());
+
+    // Put the CJS provider in a different chunk. The cross-chunk fast path
+    // must attach its global name to the same anchored importer SID.
+    const module_to_chunk = try allocator.alloc(types.ChunkIndex, r.graph.moduleCount());
+    defer allocator.free(module_to_chunk);
+    @memset(module_to_chunk, .none);
+    module_to_chunk[entry_index.toU32()] = @fromBackingInt(@intCast(0));
+    module_to_chunk[cjs_index.toU32()] = @fromBackingInt(@intCast(1));
+    r.linker.module_to_chunk = module_to_chunk;
+    defer r.linker.module_to_chunk = null;
+    try r.linker.putCrossChunkGlobalName(cjs_index.toU32(), "value", try allocator.dupe(u8, "cross_chunk_value"));
+
+    var cross_chunk_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+    defer cross_chunk_metadata.deinit();
+    try std.testing.expectEqualStrings(
+        "cross_chunk_value",
+        cross_chunk_metadata.renames.get(source_sid) orelse return error.MissingAnchoredCrossChunkRename,
+    );
+    try std.testing.expect(cross_chunk_metadata.renames.get(@intCast(decoy_sid)) == null);
+
+    // With both exact carriers absent, a correct-looking spelling row must
+    // not be used to recreate either direct or cross-chunk rename identity.
+    binding.local_symbol_node = null;
+    try @constCast(semantic.scope_maps)[0].put(allocator, "selected", source_sid);
+    var anchorless_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+    defer anchorless_metadata.deinit();
+    try std.testing.expect(anchorless_metadata.renames.get(source_sid) == null);
+    try std.testing.expect(anchorless_metadata.renames.get(@intCast(decoy_sid)) == null);
+    try std.testing.expect(!binding.local_symbol.isValid());
+    binding.local_symbol_node = source_anchor;
+}
+
+test "metadata CJS default import preamble uses exact source anchor when cached SID is missing" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import selected from './c';\nconst decoy = 7;\nconsole.log(selected, decoy);");
+    try writeFile(tmp.dir, "c.js", "module.exports = 42;");
+    try writeFile(tmp.dir, "root.cjs", "require('./entry.mjs');");
+
+    var r = try buildLinkAndRename(allocator, &tmp, "root.cjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingEntry;
+    const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingEntry);
+    try std.testing.expectEqual(types.WrapKind.esm, entry.wrap_kind);
+    const semantic = entry.semantic orelse return error.MissingEntrySemantic;
+    const binding = &entry.import_bindings[0];
+    const source_anchor = binding.local_symbol_node orelse return error.MissingImportAnchor;
+    const source_ref = try entry.checkedSourceImportLocalSymbol(binding.*);
+    const source_sid = source_ref.semanticIndex() orelse return error.MissingSourceSID;
+    const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoy;
+
+    binding.local_symbol = .invalid;
+    try @constCast(semantic.scope_maps)[0].put(allocator, "selected", decoy_sid);
+    r.linker.rename_table.clear();
+
+    var anchored_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+    defer anchored_metadata.deinit();
+    try std.testing.expect(anchored_metadata.cjs_import_preamble != null);
+    try std.testing.expect(std.mem.indexOf(u8, anchored_metadata.cjs_import_preamble.?, "selected") != null);
+    try std.testing.expectEqualStrings(
+        "selected",
+        anchored_metadata.renames.get(source_sid) orelse return error.MissingAnchoredPreambleRename,
+    );
+    try std.testing.expect(anchored_metadata.renames.get(@intCast(decoy_sid)) == null);
+    try std.testing.expect(!binding.local_symbol.isValid());
+
+    // The anchorless state must fail closed even when the root map claims the
+    // right spelling; no preamble or rename may be built from that claim.
+    binding.local_symbol_node = null;
+    try @constCast(semantic.scope_maps)[0].put(allocator, "selected", source_sid);
+    try std.testing.expectError(
+        error.InvalidImportLocalSymbol,
+        buildMetadataForModule(&r, entry_index.toU32(), true),
+    );
+    binding.local_symbol_node = source_anchor;
+}
+
+test "metadata CJS namespace import preamble uses exact source anchor when cached SID is missing" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import * as selected from './c';\nconst decoy = 7;\nconsole.log(selected, decoy);");
+    try writeFile(tmp.dir, "c.js", "module.exports = { value: 42 };");
+    try writeFile(tmp.dir, "root.cjs", "require('./entry.mjs');");
+
+    var r = try buildLinkAndRename(allocator, &tmp, "root.cjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingEntry;
+    const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingEntry);
+    try std.testing.expectEqual(types.WrapKind.esm, entry.wrap_kind);
+    const semantic = entry.semantic orelse return error.MissingEntrySemantic;
+    const binding = &entry.import_bindings[0];
+    const source_anchor = binding.local_symbol_node orelse return error.MissingImportAnchor;
+    const source_ref = try entry.checkedSourceImportLocalSymbol(binding.*);
+    const source_sid = source_ref.semanticIndex() orelse return error.MissingSourceSID;
+    const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoy;
+
+    binding.local_symbol = .invalid;
+    try @constCast(semantic.scope_maps)[0].put(allocator, "selected", decoy_sid);
+    r.linker.rename_table.clear();
+
+    var anchored_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+    defer anchored_metadata.deinit();
+    try std.testing.expect(anchored_metadata.cjs_import_preamble != null);
+    try std.testing.expect(std.mem.indexOf(u8, anchored_metadata.cjs_import_preamble.?, "selected") != null);
+    try std.testing.expectEqualStrings(
+        "selected",
+        anchored_metadata.renames.get(source_sid) orelse return error.MissingAnchoredPreambleRename,
+    );
+    try std.testing.expect(anchored_metadata.renames.get(@intCast(decoy_sid)) == null);
+    try std.testing.expect(!binding.local_symbol.isValid());
+
+    binding.local_symbol_node = null;
+    try @constCast(semantic.scope_maps)[0].put(allocator, "selected", source_sid);
+    try std.testing.expectError(
+        error.InvalidImportLocalSymbol,
+        buildMetadataForModule(&r, entry_index.toU32(), true),
+    );
+    binding.local_symbol_node = source_anchor;
+}
+
 test "preamble: CJS module import — direct module.exports default import skips __toESM" {
     // ESM에서 CJS 모듈의 default import를 가져올 때
     // __toESM 래퍼가 생성되는지 검증
