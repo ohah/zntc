@@ -14,6 +14,8 @@ const member = {
   '-100': 'exponent',
   true: 'truthy',
   undefined: 'undefined',
+  number: 'numeric',
+  string: 'string',
 };
 const items = [1, 2];
 const result = (
@@ -45,6 +47,14 @@ const result = (
       voidLogicalNotKey: member[void !false],
       voidBitwiseNotKey: member[void ~1],
       voidSignedPositiveKey: member[void +2],
+      typeofNumber: typeof 0,
+      typeofBigInt: typeof 0n,
+      typeofBoolean: typeof true,
+      typeofNull: typeof null,
+      typeofString: typeof 'x',
+      typeofTemplate: typeof `static`,
+      keyTypeofNumber: member[typeof 0],
+      keyTypeofString: member[typeof `x`],
     }}
     key='k'
   >
@@ -81,5 +91,13 @@ console.log(
   result.props.voidLogicalNotKey,
   result.props.voidBitwiseNotKey,
   result.props.voidSignedPositiveKey,
+  result.props.typeofNumber,
+  result.props.typeofBigInt,
+  result.props.typeofBoolean,
+  result.props.typeofNull,
+  result.props.typeofString,
+  result.props.typeofTemplate,
+  result.props.keyTypeofNumber,
+  result.props.keyTypeofString,
   JSON.stringify(result.children),
 );
