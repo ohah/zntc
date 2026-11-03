@@ -1538,19 +1538,19 @@ test "ES2018: props then spread" {
 test "ES2018: spread then props" {
     var r = try e2eTarget(std.testing.allocator, "const x = { ...obj, b: 2 };", .es2017);
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=Object.assign({},obj,{b:2});", r.output);
+    try std.testing.expectEqualStrings("const x=Object.assign(Object.assign({},obj),{b:2});", r.output);
 }
 
 test "ES2018: mixed spread" {
     var r = try e2eTarget(std.testing.allocator, "const x = { a: 1, ...obj, b: 2 };", .es2017);
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=Object.assign({a:1},obj,{b:2});", r.output);
+    try std.testing.expectEqualStrings("const x=Object.assign(Object.assign({a:1},obj),{b:2});", r.output);
 }
 
 test "ES2018: multiple spreads" {
     var r = try e2eTarget(std.testing.allocator, "const x = { ...a, ...b };", .es2017);
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=Object.assign({},a,b);", r.output);
+    try std.testing.expectEqualStrings("const x=Object.assign(Object.assign({},a),b);", r.output);
 }
 
 test "ES2018: no transform on es2018" {

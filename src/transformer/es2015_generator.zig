@@ -856,47 +856,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         const sent_stmt = try buildSentExprStmt(self, stmt.span);
                         try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = sent_stmt } });
                     } else if (expr.tag == .assignment_expression) {
-                        // x = yield value / x = await value / x += await value 패턴 감지.
-                        // compound (`+=`, `-=`, ...) 의 경우 expr.data.binary.flags 가 op kind
-                        // (Kind.plus_eq 등) 를 보존 — assignment node 만들 때 그대로 전달해야
-                        // `sum += _state.sent()` 가 `sum = _state.sent()` 로 떨어지지 않음 (#1896).
-                        const right_idx = expr.data.binary.right;
-                        const right = self.ast.getNode(right_idx);
-                        if (right.tag == .yield_expression or right.tag == .await_expression) {
-                            const yield_value_idx = right.data.unary.operand;
-                            const new_yield_value = try visitExprWithYieldExtraction(self, yield_value_idx, ops, next_label);
-                            try ops.append(self.allocator, .{ .code = .yield_op, .arg = .{ .node = new_yield_value } });
-                            next_label.* += 1;
-                            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
-                            // `[this.#y, o.b] = yield v` lowers like any assignment (#5728).
-                            const assign_stmt = if (patternNeedsLowering(self, expr.data.binary.left)) pattern: {
-                                const sent = try buildSentCall(self, stmt.span);
-                                const lowered = try es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignmentWithRight(self, expr, sent, false);
-                                break :pattern try es_helpers.makeExprStmt(self, lowered, stmt.span);
-                            } else plain: {
-                                const new_left = try self.visitNode(expr.data.binary.left);
-                                const sent_call = try buildSentCall(self, stmt.span);
-                                const new_left_node = self.ast.getNode(new_left);
-                                const is_destructuring = new_left_node.tag == .object_pattern or new_left_node.tag == .array_pattern;
-                                // Destructuring 은 spec 상 compound op 불가 (`{a} += x` invalid) → 전용 helper (flags=0 + paren wrap).
-                                break :plain if (is_destructuring)
-                                    try makeDestructuringAssignStmt(self, new_left, sent_call, stmt.span, self.generator_state_machine_scope)
-                                else
-                                    try es_helpers.makeAssignStmt(self, new_left, sent_call, stmt.span, expr.data.binary.flags);
-                            };
-                            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
-                        } else if (es2015_scan.containsYield(self, expr_idx)) {
-                            // x = [yield 5, yield 6] — 중첩 yield가 있는 assignment.
-                            // ⚠️ 우변만 보면 `o[yield k] = 1` 처럼 **좌변**에 있는 yield 를
-                            // 놓쳐 raw `yield` 가 남는다 (#4721).
-                            // visitExprWithYieldExtraction으로 전체 assignment를 처리하여
-                            // 각 yield를 temp 변수로 추출하고 _state.sent()로 대체
-                            const new_expr = try visitExprWithYieldExtraction(self, expr_idx, ops, next_label);
-                            const new_stmt = try es_helpers.makeExprStmt(self, new_expr, stmt.span);
-                            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
+                        // The expression planner owns the complete Reference,
+                        // including a top-level `target = await rhs` statement.
+                        // Extracting only rhs here delays target/old-value reads.
+                        if (es2015_scan.containsYield(self, expr_idx)) {
+                            const value = try visitExprWithYieldExtraction(self, expr_idx, ops, next_label);
+                            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = try es_helpers.makeExprStmt(self, value, stmt.span) } });
                         } else {
-                            const new_stmt = try self.visitNode(stmt_idx);
-                            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
+                            const visited = try self.visitNode(stmt_idx);
+                            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = visited } });
                         }
                     } else if (es2015_scan.containsYield(self, expr_idx)) {
                         // foo(await x) — 중첩 yield를 추출 후 expression statement
@@ -2749,6 +2717,244 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return es_helpers.makeCallExpr(self, await_ref, &.{value}, node.span);
         }
 
+        /// A prefix value must survive both suspension and mutations made by
+        /// subsequent operands. Even an identifier is a value read here.
+        fn freezeSuspensionPrefix(self: *Transformer, value: NodeIndex, source_span: Span, ops: *std.ArrayList(Operation)) Transformer.Error!HoistedStateTemp {
+            const name = try es_helpers.makeTempVarSpan(self);
+            const producer = try captureGeneratorTempProducer(self, name, source_span);
+            // This storage is not a source NamedEvaluation binding. Keep an
+            // anonymous function/class anonymous when moving it into a temp.
+            const stored = if (self.ast.isAnonymousFunctionDefinition(value)) blk: {
+                const zero = try es_helpers.makeNumericLiteral(self, 0);
+                break :blk try self.ast.addNode(.{ .tag = .sequence_expression, .span = source_span, .data = .{ .list = try self.ast.addNodeList(&.{ zero, value }) } });
+            } else value;
+            try appendAssignTempStmt(self, ops, producer, stored, source_span);
+            return producer;
+        }
+
+        fn freezeValue(self: *Transformer, value: NodeIndex, span: Span, ops: *std.ArrayList(Operation)) Transformer.Error!NodeIndex {
+            const producer = try freezeSuspensionPrefix(self, value, span, ops);
+            return makeGeneratorTempRefForProducer(self, producer, span, .{ .read = true });
+        }
+
+        const PreparedReference = struct {
+            source: NodeIndex,
+            tag: Tag,
+            base: ?HoistedStateTemp = null,
+            key: NodeIndex = .none,
+            key_producer: ?HoistedStateTemp = null,
+            flags: u32 = 0,
+        };
+
+        fn prepareSuspensionReference(self: *Transformer, source_idx: NodeIndex, ops: *std.ArrayList(Operation), labels: *u32) Transformer.Error!PreparedReference {
+            const index = es_helpers.unwrapTransparentWrappers(self, source_idx);
+            const node = self.ast.getNode(index);
+            var result: PreparedReference = .{ .source = index, .tag = node.tag };
+            if (node.tag != .static_member_expression and node.tag != .computed_member_expression) return result;
+            const base_idx = self.readNodeIdx(node.data.extra, 0);
+            const key_idx = self.readNodeIdx(node.data.extra, 1);
+            result.flags = self.readU32(node.data.extra, 2);
+            const base = try visitExprWithYieldExtraction(self, base_idx, ops, labels);
+            result.base = try freezeSuspensionPrefix(self, base, node.span, ops);
+            if (node.tag == .computed_member_expression) {
+                const key = try visitExprWithYieldExtraction(self, key_idx, ops, labels);
+                // Keep raw ReferencedName. For `a[b] = c`, key coercion is
+                // performed by PutValue after c, not when the key is selected.
+                result.key_producer = try freezeSuspensionPrefix(self, key, node.span, ops);
+            } else result.key = key_idx;
+            return result;
+        }
+
+        fn referenceNode(self: *Transformer, reference: PreparedReference, read: bool) Transformer.Error!NodeIndex {
+            const source = self.ast.getNode(reference.source);
+            if (reference.base) |base| {
+                const object = try makeGeneratorTempRefForProducer(self, base, source.span, .{ .read = true });
+                const key = if (reference.key_producer) |key_producer|
+                    try makeGeneratorTempRefForProducer(self, key_producer, source.span, .{ .read = true })
+                else
+                    reference.key;
+                const extra = try self.ast.addExtras(&.{ @backingInt(object), @backingInt(key), reference.flags });
+                return self.ast.addNode(.{ .tag = reference.tag, .span = source.span, .data = .{ .extra = extra } });
+            }
+            if (!read) return reference.source;
+            const copy = try es_helpers.cloneNode(self, reference.source);
+            try self.splitCompoundAssignmentIdentifierReference(reference.source, copy);
+            return copy;
+        }
+
+        fn extractAssignmentEvaluation(self: *Transformer, node: Node, ops: *std.ArrayList(Operation), labels: *u32) Transformer.Error!NodeIndex {
+            const reference = try prepareSuspensionReference(self, node.data.binary.left, ops, labels);
+            const base_op = @import("es2015_class/assign_ops.zig").compoundAssignBaseOp(node.data.binary.flags);
+            const assignment_operator: token_mod.Kind = @fromBackingInt(@as(u8, @intCast(node.data.binary.flags)));
+            if (assignment_operator == .amp2_eq or assignment_operator == .pipe2_eq or assignment_operator == .question2_eq) {
+                const start = ops.items.len;
+                const read = try referenceNode(self, reference, true);
+                const result = try freezeSuspensionPrefix(self, read, node.span, ops);
+                const condition_read = try makeGeneratorTempRefForProducer(self, result, node.span, .{ .read = true });
+                const condition = if (assignment_operator == .question2_eq) try es_helpers.makeNeqNull(self, condition_read, node.span) else condition_read;
+                try ops.append(self.allocator, .{ .code = if (assignment_operator == .amp2_eq) .break_when_false else .break_when_true, .arg = .{ .label_and_node = .{ .label = EXPR_LAZY_BRANCH_END_SENTINEL, .node = condition } } });
+                const value = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, labels);
+                const write = try self.ast.addNode(.{ .tag = .assignment_expression, .span = node.span, .data = .{ .binary = .{ .left = try referenceNode(self, reference, false), .right = value, .flags = 0 } } });
+                try appendAssignTempStmt(self, ops, result, write, node.span);
+                const end = labels.*;
+                labels.* += 1;
+                try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+                fixupSentinel(ops.items[start..], EXPR_LAZY_BRANCH_END_SENTINEL, end);
+                return makeGeneratorTempRefForProducer(self, result, node.span, .{ .read = true });
+            }
+            const old_value = if (base_op != null)
+                try freezeValue(self, try referenceNode(self, reference, true), node.span, ops)
+            else
+                NodeIndex.none;
+            var right = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, labels);
+            if (base_op) |operator| right = try self.ast.addNode(.{ .tag = .binary_expression, .span = node.span, .data = .{ .binary = .{ .left = old_value, .right = right, .flags = operator } } });
+            return self.ast.addNode(.{ .tag = .assignment_expression, .span = node.span, .data = .{ .binary = .{ .left = try referenceNode(self, reference, false), .right = right, .flags = if (base_op != null) 0 else node.data.binary.flags } } });
+        }
+
+        fn extractOptionalEvaluation(self: *Transformer, node: Node, base_idx: NodeIndex, ops: *std.ArrayList(Operation), labels: *u32) Transformer.Error!NodeIndex {
+            const start = ops.items.len;
+            var optional_receiver: ?HoistedStateTemp = null;
+            const base_node = self.ast.getNode(es_helpers.unwrapTransparentWrappers(self, base_idx));
+            const member_call = node.tag == .call_expression and
+                (self.readU32(node.data.extra, 3) & ast_mod.CallFlags.optional_chain) != 0 and
+                (base_node.tag == .static_member_expression or base_node.tag == .computed_member_expression);
+            const base = if (member_call) blk: {
+                const reference = try prepareSuspensionReference(self, base_idx, ops, labels);
+                optional_receiver = reference.base;
+                break :blk try referenceNode(self, reference, true);
+            } else try visitExprWithYieldExtraction(self, base_idx, ops, labels);
+            const producer = try freezeSuspensionPrefix(self, base, node.span, ops);
+            const result_span = try es_helpers.makeTempVarSpan(self);
+            const result = try captureGeneratorTempProducer(self, result_span, node.span);
+            try appendAssignTempStmt(self, ops, result, try es_helpers.makeVoidZero(self, node.span), node.span);
+            const test_ref = try makeGeneratorTempRefForProducer(self, producer, node.span, .{ .read = true });
+            try ops.append(self.allocator, .{ .code = .break_when_false, .arg = .{ .label_and_node = .{ .label = EXPR_LAZY_BRANCH_END_SENTINEL, .node = try es_helpers.makeNeqNull(self, test_ref, node.span) } } });
+            const use = try makeGeneratorTempRefForProducer(self, producer, node.span, .{ .read = true });
+            const Optional = @import("es2020.zig").ES2020(Transformer);
+            const tail = if (optional_receiver) |receiver| blk: {
+                self.suspension_invoke_used = true;
+                const helper = try es_helpers.makeRuntimeHelperRef(self, "__suspensionInvoke");
+                const actual_receiver = try makeGeneratorTempRefForProducer(self, receiver, node.span, .{ .read = true });
+                const args: NodeList = .{ .start = self.readU32(node.data.extra, 1), .len = self.readU32(node.data.extra, 2) };
+                const array = try self.ast.addNode(.{ .tag = .array_expression, .span = node.span, .data = .{ .list = args } });
+                break :blk try es_helpers.makeCallExpr(self, helper, &.{ use, actual_receiver, array }, node.span);
+            } else try Optional.replaceOptionalBoundaryForSuspension(self, node, base_idx, use);
+            const value = try visitExprWithYieldExtraction(self, tail, ops, labels);
+            try appendAssignTempStmt(self, ops, result, value, node.span);
+            const end = labels.*;
+            labels.* += 1;
+            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+            fixupSentinel(ops.items[start..], EXPR_LAZY_BRANCH_END_SENTINEL, end);
+            return makeGeneratorTempRefForProducer(self, result, node.span, .{ .read = true });
+        }
+
+        fn evaluatedArgumentArray(self: *Transformer, args: NodeList, span: Span) Transformer.Error!NodeIndex {
+            const node: Node = .{ .tag = .array_expression, .span = span, .data = .{ .list = args } };
+            const Spread = @import("es2015_spread.zig").ES2015Spread(Transformer);
+            if (self.options.unsupported.spread and Spread.hasSpreadInArray(self, node))
+                return Spread.lowerSpreadArrayWithPrevisitedChildren(self, node);
+            return self.ast.addNode(node);
+        }
+
+        /// Only call/new evaluation planning is shared here; generator label,
+        /// sent(), lazy-branch and abrupt-completion ownership stays unchanged.
+        fn extractCallEvaluation(self: *Transformer, node: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!NodeIndex {
+            const e = node.data.extra;
+            const source_callee = self.readNodeIdx(e, 0);
+            const args_start = self.readU32(e, 1);
+            const args_len = self.readU32(e, 2);
+            const flags = self.readU32(e, 3);
+            var last_suspending: ?u32 = null;
+            for (0..args_len) |i| {
+                const arg: NodeIndex = @fromBackingInt(self.ast.extra_data.items[args_start + i]);
+                if (es2015_scan.containsYield(self, arg)) last_suspending = @intCast(i);
+            }
+            var reference_callee = source_callee;
+            while (true) {
+                const wrapper = self.ast.getNode(reference_callee);
+                if (wrapper.tag != .parenthesized_expression and !Tag.isTransparentTypeWrapper(wrapper.tag)) break;
+                reference_callee = wrapper.data.unary.operand;
+            }
+            const source = self.ast.getNode(reference_callee);
+            const member = source.tag == .static_member_expression or source.tag == .computed_member_expression;
+            // These are Reference semantics, not ordinary function values.
+            // Preserve their existing dedicated lowering boundary.
+            const direct_eval = @import("static_class_capture.zig").isDirectEvalCall(self, node);
+            const super_member = member and self.ast.getNode(self.readNodeIdx(source.data.extra, 0)).tag == .super_expression;
+            const special = direct_eval or source.tag == .super_expression or super_member or
+                (flags & ast_mod.CallFlags.optional_chain) != 0 or
+                (member and (self.readU32(source.data.extra, 2) & ast_mod.MemberFlags.optional_chain) != 0);
+            var receiver: ?HoistedStateTemp = null;
+            var callee: NodeIndex = undefined;
+            if (node.tag == .call_expression and super_member) {
+                const Super = @import("es2015_class/super_props.zig").SuperProps(Transformer);
+                const key_source = self.readNodeIdx(source.data.extra, 1);
+                const key = if (source.tag == .computed_member_expression)
+                    try visitExprWithYieldExtraction(self, key_source, ops, next_label)
+                else
+                    try Super.makeStaticSuperPropArg(self, key_source);
+                receiver = try freezeSuspensionPrefix(self, try Super.buildSuperReceiver(self, source.span), source.span, ops);
+                const callable = try freezeSuspensionPrefix(self, try Super.buildSuperPropGet(self, key, source.span), source.span, ops);
+                callee = try makeGeneratorTempRefForProducer(self, callable, source.span, .{ .read = true });
+            } else if (node.tag == .call_expression and member and !special) {
+                const member_e = source.data.extra;
+                const object_source = self.readNodeIdx(member_e, 0);
+                const key_source = self.readNodeIdx(member_e, 1);
+                const member_flags = self.readU32(member_e, 2);
+                const object = try visitExprWithYieldExtraction(self, object_source, ops, next_label);
+                receiver = try freezeSuspensionPrefix(self, object, source.span, ops);
+                const key = if (source.tag == .computed_member_expression)
+                    try visitExprWithYieldExtraction(self, key_source, ops, next_label)
+                else
+                    key_source;
+                const object_read = try makeGeneratorTempRefForProducer(self, receiver.?, source.span, .{ .read = true });
+                const member_extra = try self.ast.addExtras(&.{ @backingInt(object_read), @backingInt(key), member_flags });
+                const get_value = try self.ast.addNode(.{ .tag = source.tag, .span = source.span, .data = .{ .extra = member_extra } });
+                // GetValue runs the actual getter before argument evaluation.
+                const callable = try freezeSuspensionPrefix(self, get_value, source.span, ops);
+                callee = try makeGeneratorTempRefForProducer(self, callable, source.span, .{ .read = true });
+            } else {
+                callee = try visitExprWithYieldExtraction(self, source_callee, ops, next_label);
+                if (last_suspending != null and !special) {
+                    const callable = try freezeSuspensionPrefix(self, callee, source.span, ops);
+                    callee = try makeGeneratorTempRefForProducer(self, callable, source.span, .{ .read = true });
+                }
+            }
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            for (0..args_len) |i| {
+                const original: NodeIndex = @fromBackingInt(self.ast.extra_data.items[args_start + i]);
+                const arg = self.ast.getNode(original);
+                var value = if (arg.tag == .spread_element)
+                    try visitExprWithYieldExtraction(self, arg.data.unary.operand, ops, next_label)
+                else
+                    try visitExprWithYieldExtraction(self, original, ops, next_label);
+                const must_freeze = if (last_suspending) |last| i < last else false;
+                if (arg.tag == .spread_element) {
+                    const spread = try self.ast.addNode(.{ .tag = .spread_element, .span = arg.span, .data = .{ .unary = .{ .operand = value, .flags = arg.data.unary.flags } } });
+                    if (must_freeze) {
+                        const expanded = try evaluatedArgumentArray(self, try self.ast.addNodeList(&.{spread}), arg.span);
+                        const producer = try freezeSuspensionPrefix(self, expanded, arg.span, ops);
+                        value = try makeGeneratorTempRefForProducer(self, producer, arg.span, .{ .read = true });
+                        value = try self.ast.addNode(.{ .tag = .spread_element, .span = arg.span, .data = .{ .unary = .{ .operand = value, .flags = arg.data.unary.flags } } });
+                    } else value = spread;
+                } else if (must_freeze) {
+                    const producer = try freezeSuspensionPrefix(self, value, arg.span, ops);
+                    value = try makeGeneratorTempRefForProducer(self, producer, arg.span, .{ .read = true });
+                }
+                try self.scratch.append(self.allocator, value);
+            }
+            const args = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            if (receiver) |actual| {
+                self.suspension_invoke_used = true;
+                const invoke = try es_helpers.makeRuntimeHelperRef(self, "__suspensionInvoke");
+                const receiver_read = try makeGeneratorTempRefForProducer(self, actual, source.span, .{ .read = true });
+                const array = try evaluatedArgumentArray(self, args, node.span);
+                return es_helpers.makeCallExpr(self, invoke, &.{ callee, receiver_read, array }, node.span);
+            }
+            return @import("transformer/calls.zig").lowerCallWithEvaluatedChildren(self, node, callee, args);
+        }
+
         fn visitExprWithYieldExtraction(self: *Transformer, expr_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!NodeIndex {
             if (expr_idx.isNone()) return .none;
             const node = self.ast.getNode(expr_idx);
@@ -2787,6 +2993,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (!es2015_scan.containsYield(self, expr_idx)) {
                 return self.visitNode(expr_idx);
             }
+
+            if (@import("es2020.zig").ES2020(Transformer).findOptionalChainBase(self, node)) |base|
+                return extractOptionalEvaluation(self, node, base, ops, next_label);
 
             // parenthesized_expression: 내부 재귀. paren 은 precedence 재유도가 처리 (#4042 PR8)
             if (node.tag == .parenthesized_expression) {
@@ -2841,7 +3050,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // binary expression: 양쪽 재귀
             if (node.tag == .binary_expression) {
-                const new_left = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
+                var new_left = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
+                if (es2015_scan.containsYield(self, node.data.binary.right)) new_left = try freezeValue(self, new_left, node.span, ops);
                 const new_right = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
                 return self.ast.addNode(.{
                     .tag = node.tag,
@@ -2907,24 +3117,24 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const new_right = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
                     return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignmentWithRight(self, node, new_right, true);
                 }
-                const new_left = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
-                const new_right = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
-                return self.ast.addNode(.{
-                    .tag = .assignment_expression,
-                    .span = node.span,
-                    .data = .{ .binary = .{ .left = new_left, .right = new_right, .flags = node.data.binary.flags } },
-                });
+                return extractAssignmentEvaluation(self, node, ops, next_label);
+            }
+
+            if (node.tag == .tagged_template_expression) {
+                const tag = self.readNodeIdx(node.data.extra, 0);
+                const template = self.readNodeIdx(node.data.extra, 1);
+                const call = try @import("transformer/tagged_template.zig").lowerTaggedTemplateForSuspension(self, tag, template, node.span);
+                return extractCallEvaluation(self, self.ast.getNode(call), ops, next_label);
             }
 
             // extra = [child0, child1, flags] — member expression, tagged template
-            if (node.tag == .static_member_expression or node.tag == .computed_member_expression or
-                node.tag == .tagged_template_expression)
-            {
+            if (node.tag == .static_member_expression or node.tag == .computed_member_expression) {
                 const e = node.data.extra;
                 const child0_idx: NodeIndex = self.readNodeIdx(e, 0);
                 const child1_idx: NodeIndex = self.readNodeIdx(e, 1);
                 const flags = self.readU32(e, 2);
-                const new_child0 = try visitExprWithYieldExtraction(self, child0_idx, ops, next_label);
+                var new_child0 = try visitExprWithYieldExtraction(self, child0_idx, ops, next_label);
+                if (es2015_scan.containsYield(self, child1_idx)) new_child0 = try freezeValue(self, new_child0, node.span, ops);
                 const new_child1 = try visitExprWithYieldExtraction(self, child1_idx, ops, next_label);
                 const new_extra = try self.ast.addExtras(&.{
                     @backingInt(new_child0),
@@ -2938,38 +3148,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 });
             }
 
-            // call/new expression: callee + args 재귀
-            if (node.tag == .call_expression or node.tag == .new_expression) {
-                const e = node.data.extra;
-                const callee_idx: NodeIndex = self.readNodeIdx(e, 0);
-                const args_start = self.readU32(e, 1);
-                const args_len = self.readU32(e, 2);
-                const call_flags = self.readU32(e, 3);
-
-                const new_callee = try visitExprWithYieldExtraction(self, callee_idx, ops, next_label);
-
-                const scratch_top = self.scratch.items.len;
-                defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                // visitExprWithYieldExtraction이 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
-                var i_arg: u32 = 0;
-                while (i_arg < args_len) : (i_arg += 1) {
-                    const arg_raw = self.ast.extra_data.items[args_start + i_arg];
-                    const new_arg = try visitExprWithYieldExtraction(self, @fromBackingInt(@intCast(arg_raw)), ops, next_label);
-                    try self.scratch.append(self.allocator, new_arg);
-                }
-                const new_args = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-                const new_extra = try self.ast.addExtras(&.{
-                    @backingInt(new_callee),
-                    new_args.start,
-                    new_args.len,
-                    call_flags,
-                });
-                return self.ast.addNode(.{
-                    .tag = node.tag, // call_expression or new_expression
-                    .span = node.span,
-                    .data = .{ .extra = new_extra },
-                });
-            }
+            if (node.tag == .call_expression or node.tag == .new_expression)
+                return extractCallEvaluation(self, node, ops, next_label);
 
             // list 기반: array, object, sequence, template literal
             if (node.tag == .array_expression or node.tag == .object_expression or
@@ -2987,18 +3167,52 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const list_start = node.data.list.start;
                 const list_len = node.data.list.len;
                 // visitExprWithYieldExtraction이 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
+                var last_suspending: ?u32 = null;
+                for (0..list_len) |index| {
+                    const child: NodeIndex = @fromBackingInt(self.ast.extra_data.items[list_start + index]);
+                    if (es2015_scan.containsYield(self, child)) last_suspending = @intCast(index);
+                }
                 var i_elem: u32 = 0;
                 while (i_elem < list_len) : (i_elem += 1) {
                     const raw_idx = self.ast.extra_data.items[list_start + i_elem];
                     const elem_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
                     // An object method lowers like in any object literal (`n() {}` →
                     // `n: function () {}`); its body is its own function (#4736).
-                    const new_elem = if (node.tag == .object_expression and
+                    var new_elem = if (node.tag == .object_expression and
                         self.ast.getNode(elem_idx).tag == .method_definition and
                         !es2015_scan.containsYield(self, elem_idx))
                         try @import("es2015_object_methods.zig").ES2015ObjectMethods(Transformer).lowerObjectMember(self, elem_idx)
                     else
                         try visitExprWithYieldExtraction(self, elem_idx, ops, next_label);
+                    const before_suspend = if (last_suspending) |last| i_elem < last else false;
+                    if (before_suspend and !new_elem.isNone() and self.ast.getNode(new_elem).tag != .template_element) {
+                        const element = self.ast.getNode(new_elem);
+                        if (node.tag == .object_expression and element.tag == .object_property) {
+                            var key = element.data.binary.left;
+                            if (self.ast.getNode(key).tag == .computed_property_key) {
+                                const original_key = self.ast.getNode(key);
+                                const converted = try es_helpers.makePropertyKeyValue(self, original_key.data.unary.operand, original_key.span);
+                                const captured = try freezeValue(self, converted, original_key.span, ops);
+                                key = try self.ast.addNode(.{ .tag = .computed_property_key, .span = original_key.span, .data = .{ .unary = .{ .operand = captured, .flags = original_key.data.unary.flags } } });
+                            }
+                            var value = element.data.binary.right;
+                            if (value.isNone()) value = try self.visitNode(element.data.binary.left);
+                            const original_element = self.ast.getNode(elem_idx);
+                            if (original_element.tag == .object_property and !original_element.data.binary.right.isNone())
+                                value = try @import("parameter_environment.zig").nameLoweredProperty(self, value, element.data.binary.left, original_element.data.binary.right, element.span);
+                            value = try freezeValue(self, value, element.span, ops);
+                            new_elem = try self.ast.addNode(.{ .tag = .object_property, .span = element.span, .data = .{ .binary = .{ .left = key, .right = value, .flags = element.data.binary.flags } } });
+                        } else if (element.tag == .spread_element) {
+                            const snapshot = if (node.tag == .object_expression)
+                                try es_helpers.lowerObjectSpreadProps(self, &.{new_elem}, element.span)
+                            else
+                                try evaluatedArgumentArray(self, try self.ast.addNodeList(&.{new_elem}), element.span);
+                            const captured = try freezeValue(self, snapshot, element.span, ops);
+                            new_elem = try self.ast.addNode(.{ .tag = .spread_element, .span = element.span, .data = .{ .unary = .{ .operand = captured, .flags = element.data.unary.flags } } });
+                        } else if (element.tag != .method_definition) {
+                            new_elem = try freezeValue(self, new_elem, element.span, ops);
+                        }
+                    }
                     try self.scratch.append(self.allocator, new_elem);
                 }
                 const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -3007,13 +3221,26 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     .span = node.span,
                     .data = .{ .list = new_list },
                 });
-                if (home) |h| return object_super.wrapWithHome(self, h, rebuilt, node.span);
-                return rebuilt;
+                var lowered = rebuilt;
+                if (node.tag == .array_expression and self.options.unsupported.spread) {
+                    const Spread = @import("es2015_spread.zig").ES2015Spread(Transformer);
+                    if (Spread.hasSpreadInArray(self, self.ast.getNode(rebuilt))) lowered = try Spread.lowerSpreadArrayWithPrevisitedChildren(self, self.ast.getNode(rebuilt));
+                } else if (node.tag == .object_expression and self.options.unsupported.object_spread) {
+                    lowered = try es_helpers.lowerObjectSpreadProps(self, self.scratch.items[scratch_top..], node.span);
+                }
+                if (home) |h| return object_super.wrapWithHome(self, h, lowered, node.span);
+                return lowered;
             }
 
             // object_property: binary (key: value)
             if (node.tag == .object_property) {
-                const new_key = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
+                var new_key = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
+                if (es2015_scan.containsYield(self, node.data.binary.right) and self.ast.getNode(new_key).tag == .computed_property_key) {
+                    const source_key = self.ast.getNode(new_key);
+                    const converted = try es_helpers.makePropertyKeyValue(self, source_key.data.unary.operand, source_key.span);
+                    const key = try freezeValue(self, converted, source_key.span, ops);
+                    new_key = try self.ast.addNode(.{ .tag = .computed_property_key, .span = source_key.span, .data = .{ .unary = .{ .operand = key, .flags = source_key.data.unary.flags } } });
+                }
                 const new_value = if (!node.data.binary.right.isNone())
                     try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label)
                 else
@@ -6164,4 +6391,211 @@ test "nested for-of declaration handoff leaves one physical storage per generate
         generated += 1;
     }
     try std.testing.expect(generated >= 10);
+}
+
+fn checkSuspensionEvaluationRuntime(source: []const u8) !void {
+    return checkSuspensionEvaluationRuntimeWithNames(source, false);
+}
+
+fn checkSuspensionEvaluationRuntimeWithNames(source: []const u8, keep_names: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("", native.stderr);
+    const Cell = struct { target: @import("compat.zig").ESTarget, full: bool };
+    for ([_]Cell{ .{ .target = .es5, .full = false }, .{ .target = .es5, .full = true }, .{ .target = .es2017, .full = false } }) |cell| {
+        errdefer std.debug.print("suspension evaluation target={s} full={} source={s}\n", .{ @tagName(cell.target), cell.full, source });
+        const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
+            .keep_names = keep_names,
+            .unsupported = @import("compat.zig").fromESTarget(cell.target),
+            .minify_identifiers = cell.full,
+            .minify_syntax = cell.full,
+            .minify_whitespace = cell.full,
+        });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+            std.debug.print("suspension result code={s} stderr={s} expected={s} actual={s}\n", .{ result.code, actual.stderr, native.stdout, actual.stdout });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("", actual.stderr);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    }
+}
+
+test "suspension ordered call and new prefixes preserve exact source values" {
+    const sources = [_][]const u8{
+        "var events=[];var receiver={};Object.defineProperty(receiver,'method',{get:function(){events.push('getter');return function(x){events.push(this===receiver?'receiver-ok':'receiver-bad');return x+1}}});function getReceiver(){events.push('receiver');return receiver}async function test(){return getReceiver().method(await (events.push('await-operand'),Promise.resolve(41)))}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))});",
+        "var events=[];function original(x){events.push('original');return x+1}function replacement(x){events.push('replacement');return x+100}var fn=original;function* test(){return fn(yield (events.push('yield-operand'),fn=replacement,41))}var it=test();var first=it.next();events.push('resume');var last=it.next(41);console.log(JSON.stringify({value:last.value,yielded:first.value,done:last.done,events:events}));",
+        "var events=[];function first(){events.push('first');return 20}function f(x,y){events.push('call');return x+y}async function test(){return f(first(),await (events.push('await-operand'),Promise.resolve(22)))}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))});",
+        "var events=[];function A(x){events.push('A');this.value=x+1}function B(x){events.push('B');this.value=x+100}var C=A;function getCtor(){events.push('getCtor');return C}function* test(){return new (getCtor())(yield(events.push('yield-operand'),C=B,41))}var it=test();var first=it.next();events.push('resume');var last=it.next(41);console.log(JSON.stringify({value:last.value.value,yielded:first.value,done:last.done,events:events}));",
+        "var events=[];var receiver={};Object.defineProperty(receiver,'method',{get:function(){events.push('getter');return function(x){events.push(this===receiver?'receiver-ok':'receiver-bad');return x+1}}});function getReceiver(){events.push('receiver');return receiver}function getKey(){events.push('key');return 'method'}async function test(){return getReceiver()[getKey()](await (events.push('await-operand'),Promise.resolve(41)))}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))});",
+    };
+    for (sources) |source| try checkSuspensionEvaluationRuntime(source);
+}
+
+test "suspension invocation preserves receiver getters spread and direct eval boundaries" {
+    const sources = [_][]const u8{
+        "var events=[];var o={x:40};var f=function(x){events.push(this===o?'this-ok':'this-bad');return this.x+x};Object.defineProperty(f,'call',{get:function(){throw Error('own-call')}});Object.defineProperty(f,'apply',{get:function(){throw Error('own-apply')}});o.m=f;async function g(){return o.m(await Promise.resolve(2))}g().then(function(v){console.log(JSON.stringify([v,events]))});",
+        "var events=[];var o={};Object.defineProperty(o,'m',{get:function(){events.push('getter');throw Error('GET')}});function operand(){events.push('operand');return Promise.resolve(2)}async function g(){return o.m(await operand())}g().catch(function(e){console.log(JSON.stringify([e.message,events]))});",
+        "var events=[];function* values(){events.push('iterate');yield 20;events.push('done')}function f(a,b){events.push('call');return a+b}async function g(){return f(...values(),await(events.push('operand'),Promise.resolve(22)))}g().then(function(v){console.log(JSON.stringify([v,events]))});",
+        "function* g(){var local=42;return eval(yield 'local')}var i=g();i.next();console.log(i.next('local').value);",
+        "var events=[];async function g(Function,__suspensionInvoke){var o={x:40,m:function(v){return this.x+v}};return o.m(await Promise.resolve(2))}g(7,8).then(function(v){console.log(v)});",
+        "function* g(){var local=42;return e\\u0076al(yield 'local')}var i=g();i.next();console.log(i.next('local').value);",
+    };
+    for (sources) |source| try checkSuspensionEvaluationRuntime(source);
+}
+
+test "suspension prefix preserves anonymous names and large ordered argument storage" {
+    const sources = [_][]const u8{
+        "function f(fn,x){return [fn.name,x]}async function g(){return f(function(){},await Promise.resolve(42))}g().then(function(v){console.log(JSON.stringify(v))});",
+        "async function g(){return new (function(v){this.observed=this.constructor.name;this.value=v})(await Promise.resolve(42))}g().then(function(v){console.log(JSON.stringify([v.observed,v.value]))});",
+        "function f(C,x){return [C.name,x]}async function g(){return f(class{},await Promise.resolve(42))}g().then(function(v){console.log(JSON.stringify(v))});",
+        "var events=[];function mark(v){events.push(v);return v}function f(){var n=0;for(var i=0;i<arguments.length;i++)n+=arguments[i];return n}async function g(){return f(mark(1),mark(2),mark(3),mark(4),mark(5),mark(6),mark(7),mark(8),mark(9),mark(10),mark(11),mark(12),mark(13),mark(14),mark(15),mark(16),mark(17),mark(18),mark(19),mark(20),mark(21),mark(22),mark(23),mark(24),mark(25),mark(26),mark(27),mark(28),mark(29),mark(30),mark(31),mark(32),mark(33),mark(34),mark(35),mark(36),mark(37),mark(38),mark(39),mark(40),mark(41),mark(42),mark(43),mark(44),mark(45),mark(46),mark(47),mark(48),mark(49),mark(50),mark(51),mark(52),mark(53),mark(54),mark(55),mark(56),mark(57),mark(58),mark(59),mark(60),mark(61),mark(62),mark(63),mark(64),await(events.push('await65'),Promise.resolve(65)))}g().then(function(v){console.log(JSON.stringify([v,events]))});",
+        "var events=[];function mark(v){events.push(v);return v}function f(a,b,c,d,e,f){return a+b+c+d+e+f}async function g(){return f(mark(1),await(events.push('await2'),Promise.resolve(2)),mark(3),await(events.push('await4'),Promise.resolve(4)),mark(5),await(events.push('await6'),Promise.resolve(6)))}g().then(function(v){console.log(JSON.stringify([v,events]))});",
+    };
+    for (sources) |source| try checkSuspensionEvaluationRuntime(source);
+}
+
+test "suspension prefix keeps existing source inferred and explicit names" {
+    try checkSuspensionEvaluationRuntimeWithNames("function f(a,b,c,x){return[a.name,b.name,c.name,x]}async function g(){var inferred=function(){};var klass=class{};return f(inferred,function Named(){},klass,await Promise.resolve(42))}g().then(function(x){console.log(JSON.stringify(x))});", true);
+}
+
+fn checkSuspensionPrefixProducerIdentity(parent_allocator: std.mem.Allocator) !void {
+    var arena = std.heap.ArenaAllocator.init(parent_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Transformer = @import("transformer.zig").Transformer;
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    var scanner = try Scanner.init(a, "function* g(value){return value(yield 1)}");
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var function: NodeIndex = .none;
+    var value: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .function_declaration) function = @fromBackingInt(@as(u32, @intCast(raw)));
+        if (node.tag == .call_expression) value = @fromBackingInt(parser.ast.extra_data.items[node.data.extra]);
+    }
+    try std.testing.expect(!function.isNone() and !value.isNone());
+    const owner: ScopeId = @fromBackingInt(analyzer.scope_owner_map.get(@backingInt(function)).?);
+    var transformer = try Transformer.init(a, &parser.ast, .{ .unsupported = @import("compat.zig").fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = owner;
+    // buildStateMachine installs the actual wrapper scope before collecting
+    // expressions. This primitive fixture enters that same prepared frame.
+    const wrapper_scope = transformer.nearestVarScope(owner);
+    try std.testing.expectEqual(owner, wrapper_scope);
+    try std.testing.expect(analyzer.scopes.items[owner.toIndex()].kind.isVarScope());
+    try std.testing.expectEqual(@as(?u32, @backingInt(owner)), analyzer.scope_owner_map.get(@backingInt(function)));
+    transformer.generator_state_machine_scope = wrapper_scope;
+    const original_id = transformer.getSymbolIdAt(value).?;
+    const Generator = ES2015Generator(Transformer);
+    var frame = try Generator.enterStateMachineTempsForScope(&transformer, owner);
+    defer Generator.leaveStateMachineTemps(&transformer, &frame);
+    var ops: std.ArrayList(Operation) = .empty;
+    const producer = try Generator.freezeSuspensionPrefix(&transformer, value, transformer.ast.getNode(value).span, &ops);
+    try std.testing.expect(producer.symbol_id != null and producer.symbol_id.? != original_id);
+    try std.testing.expectEqual(owner, producer.owner_scope);
+    try std.testing.expect(producer.temp_producer_id != null and producer.temp_producer_id.? != 0);
+    try std.testing.expectEqual(@as(usize, 1), ops.items.len);
+    const statement = ops.items[0].arg.node;
+    const assignment = transformer.ast.getNode(transformer.ast.getNode(statement).data.unary.operand);
+    try std.testing.expectEqual(value, assignment.data.binary.right);
+    const write = assignment.data.binary.left;
+    const read = try Generator.makeGeneratorTempRefForProducer(&transformer, producer, producer.name_span, .{ .read = true });
+    try std.testing.expect(write != read and write != value and read != value);
+    const old_extra = transformer.ast.extra_data.items.ptr;
+    _ = try a.alloc(u8, 65536);
+    try transformer.ast.extra_data.ensureUnusedCapacity(a, 4096);
+    try std.testing.expect(old_extra != transformer.ast.extra_data.items.ptr);
+    try std.testing.expectEqual(@as(?u32, original_id), transformer.getSymbolIdAt(value));
+    for ([_]NodeIndex{ write, read }) |reference|
+        try std.testing.expectEqual(producer.symbol_id, transformer.getSymbolIdAt(reference));
+    const symbols = transformer.semantic_editor.?.symbols.items;
+    try std.testing.expectEqual(owner, symbols[producer.symbol_id.?].scope_id);
+    var writes: usize = 0;
+    var reads: usize = 0;
+    for (transformer.generator_state_semantic_refs.items) |reference| {
+        if (reference.symbol_id != producer.symbol_id.?) continue;
+        try std.testing.expectEqual(owner, reference.scope);
+        if (reference.node == write and reference.flags.write and !reference.flags.read) writes += 1;
+        if (reference.node == read and reference.flags.read and !reference.flags.write) reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), writes);
+    try std.testing.expectEqual(@as(usize, 1), reads);
+}
+
+test "suspension prefix actual producer identity survives relocation and allocation failure" {
+    try checkSuspensionPrefixProducerIdentity(std.testing.allocator);
+    var fail_index: usize = 0;
+    while (fail_index < 512) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
+        const outcome = checkSuspensionPrefixProducerIdentity(failing.allocator());
+        if (outcome) |_| {
+            try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+            if (!failing.has_induced_failure) break;
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expect(failing.has_induced_failure);
+            try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        }
+    }
+    try std.testing.expect(fail_index < 512);
+}
+
+test "suspension value reference and optional branches preserve nine native expression families" {
+    const sources = [_][]const u8{
+        "var events=[];async function test(){function first(){events.push('first');return 20}var value=[first(),await(events.push('second'),Promise.resolve(22))];return value;}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+        "var events=[];async function test(){var original={},other={},current=original;function getObj(){events.push('object');return current}function getKey(){events.push('key');return 'value'}getObj()[getKey()]=await(events.push('rhs'),current=other,Promise.resolve(42));return [original.value,other.value===undefined];}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+        "var events=[];async function test(){var left=20;var value=left+await(events.push('rhs'),left=100,Promise.resolve(22));return [value,left];}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+        "var events=[];async function test(){var object={value:20};object.value+=await(events.push('rhs'),object.value=100,Promise.resolve(22));return object.value;}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+        "var events=[];async function test(){var original={key:42},other={key:900},current=original;function getObj(){events.push('object');return current}var value=getObj()[await(events.push('key'),current=other,Promise.resolve('key'))];return [value,current===other];}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+        "var events=[];async function test(){function first(){events.push('first');return 20}var value={a:first(),b:await(events.push('second'),Promise.resolve(22))};return value;}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+        "var events=[];async function test(){var object=null;var value=object?.method(await(events.push('operand'),Promise.resolve(42)));return [value===undefined,events.length];}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+        "var events=[];async function test(){class Base{get method(){events.push('getter');return function(value){events.push(this instanceof Child?'receiver-ok':'receiver-bad');return value+1}}}class Child extends Base{async read(){return super.method(await(events.push('operand'),Promise.resolve(41)))}}return await new Child().read();}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+        "var events=[];async function test(){function original(strings,value){events.push('original');return value+1}function replacement(strings,value){events.push('replacement');return value+100}var tag=original;var value=tag`prefix${await(events.push('operand'),tag=replacement,Promise.resolve(41))}suffix`;return value;}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+    };
+    for (sources) |source| try checkSuspensionEvaluationRuntime(source);
+}
+
+test "suspension coercion iterator template and lazy boundaries preserve native evaluation" {
+    const sources = [_][]const u8{
+        "var events=[];async function test(){function* items(){events.push('iterator-start');yield 20;events.push('iterator-end')}var value=[...items(),await(events.push('rhs'),Promise.resolve(22))];return value;}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+        "var events=[];async function test(){var state=20;var object={valueOf:function(){events.push('primitive:'+state);return state}};var value=object+await(events.push('rhs'),state=100,Promise.resolve(22));return value;}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+        "var events=[];async function test(){var original={},replacement={},target=original;var key={toString:function(){events.push('key-coercion');return 'value'}};function getTarget(){events.push('target');return target}getTarget()[key]=await(events.push('rhs'),target=replacement,Promise.resolve(42));return [original.value,replacement.value===undefined];}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+        "var events=[];async function test(){var source=new Proxy({left:20},{ownKeys:function(target){events.push('ownKeys');return Reflect.ownKeys(target)},getOwnPropertyDescriptor:function(target,key){events.push('descriptor:'+key);return Object.getOwnPropertyDescriptor(target,key)},get:function(target,key,receiver){events.push('get:'+String(key));return Reflect.get(target,key,receiver)}});var value={...source,right:await(events.push('rhs'),Promise.resolve(22))};return value;}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+        "var events=[];async function test(){var object=null;var value=object?.method(await(events.push('operand'),Promise.resolve(42)));return [value===undefined,events.length];}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+        "var events=[];async function test(){var previous;var holder={tag:function(strings,value){events.push(this===holder?'this-ok':'this-bad');events.push(previous===undefined?'first-template':previous===strings?'same-template':'different-template');previous=strings;return value}};async function site(value){return holder.tag`head${await(events.push('operand:'+value),Promise.resolve(value))}tail`}return [await site(20),await site(22)];}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+    };
+    for (sources) |source| try checkSuspensionEvaluationRuntime(source);
+}
+
+test "suspension statement assignment shares the full Reference planner" {
+    const sources = [_][]const u8{
+        "var events=[];async function test(){var original={},other={},current=original;function getObj(){events.push('object');return current}function getKey(){events.push('key');return 'value'}getObj()[getKey()]=await(events.push('rhs'),current=other,Promise.resolve(42));return [original.value,other.value===undefined];}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+        "var events=[];async function test(){var object={value:20};object.value+=await(events.push('rhs'),object.value=100,Promise.resolve(22));return object.value;}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+        "var events=[];async function test(){var original={},replacement={},target=original;var key={toString:function(){events.push('key-coercion');return 'value'}};function getTarget(){events.push('target');return target}getTarget()[key]=await(events.push('rhs'),target=replacement,Promise.resolve(42));return [original.value,replacement.value===undefined];}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+    };
+    for (sources) |source| try checkSuspensionEvaluationRuntime(source);
+}
+
+test "suspension tagged template cache helper owns its actual hoisted function" {
+    const sources = [_][]const u8{
+        "var events=[];async function test(){function original(strings,value){events.push('original');return value+1}function replacement(strings,value){events.push('replacement');return value+100}var tag=original;var value=tag`prefix${await(events.push('operand'),tag=replacement,Promise.resolve(41))}suffix`;return value;}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+        "var events=[];async function test(){var previous;var holder={tag:function(strings,value){events.push(this===holder?'this-ok':'this-bad');events.push(previous===undefined?'first-template':previous===strings?'same-template':'different-template');previous=strings;return value}};async function site(value){return holder.tag`head${await(events.push('operand:'+value),Promise.resolve(value))}tail`}return [await site(20),await site(22)];}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+    };
+    for (sources) |source| try checkSuspensionEvaluationRuntime(source);
 }

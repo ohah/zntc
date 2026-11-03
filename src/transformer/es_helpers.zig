@@ -1401,6 +1401,10 @@ pub fn memoizeComputedKey(self: anytype, key_expr: NodeIndex, span: Span, field_
 /// TypeScript 동작이라 tsc 처럼 원래 값을 담는다.
 pub fn makeToPropertyKey(self: anytype, key: NodeIndex, span: Span) !NodeIndex {
     if (!self.options.use_define_for_class_fields) return key;
+    return makePropertyKeyValue(self, key, span);
+}
+
+pub fn makePropertyKeyValue(self: anytype, key: NodeIndex, span: Span) !NodeIndex {
     switch (self.ast.getNode(key).tag) {
         .string_literal, .numeric_literal => return key,
         else => {},
@@ -3431,76 +3435,41 @@ pub fn makeObjectAssignCall(self: anytype, args: []const NodeIndex, span: Span) 
     return makeCallExpr(self, callee, args, span);
 }
 
-/// 이미 변환된 프로퍼티 목록(ast 노드, spread 포함)을 Object.assign()으로 변환.
-///
-/// { a: 1, ...obj, b: 2 } → Object.assign({ a: 1 }, obj, { b: 2 })
-///
-/// 알고리즘:
-/// 1. 프로퍼티를 순회하면서 spread/non-spread 그룹으로 분할
-/// 2. 연속된 non-spread 프로퍼티는 하나의 object literal로 묶음
-/// 3. spread 프로퍼티는 피연산자만 추출 (spread를 벗김)
-/// 4. 첫 번째 인자가 이미 object literal이면 그것이 target, 아니면 {}를 삽입
-/// 5. Object.assign(target, ...groups) 호출로 변환
+/// Lower already-visited properties while completing each spread copy before
+/// evaluating the next property group. A flat Object.assign argument list would
+/// evaluate later values (including await operands) before copying earlier
+/// spread getters. The first spread always copies into a fresh target, even
+/// when its operand itself happens to be an object literal.
 pub fn lowerObjectSpreadProps(self: anytype, properties: []const NodeIndex, span: Span) !NodeIndex {
-    // properties가 scratch의 슬라이스일 수 있으므로 먼저 복사.
-    // scratch append로 재할당되면 슬라이스가 무효화됨 (use-after-free 방지).
+    // Child builders can relocate scratch; retain indices rather than a slice
+    // into the caller's live scratch frame.
     const owned_props = try self.allocator.dupe(NodeIndex, properties);
     defer self.allocator.free(owned_props);
-
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-    var group_start: usize = scratch_top;
-
+    var result: NodeIndex = .none;
     for (owned_props) |prop_idx| {
         const prop = self.ast.getNode(prop_idx);
-        if (prop.tag == .spread_element) {
-            // 쌓아둔 non-spread 그룹을 object literal로 플러시
-            if (self.scratch.items.len > group_start) {
-                const obj = try makeObjectLiteral(self, self.scratch.items[group_start..], span);
-                self.scratch.shrinkRetainingCapacity(group_start);
-                try self.scratch.append(self.allocator, obj);
-                group_start = self.scratch.items.len;
-            }
-
-            // spread의 피연산자를 인자로 추가
-            try self.scratch.append(self.allocator, prop.data.unary.operand);
-            group_start = self.scratch.items.len;
-        } else {
-            // non-spread: 그룹에 추가
+        if (prop.tag != .spread_element) {
             try self.scratch.append(self.allocator, prop_idx);
+            continue;
         }
-    }
 
-    // 마지막 남은 non-spread 그룹 플러시
-    if (self.scratch.items.len > group_start) {
-        const obj = try makeObjectLiteral(self, self.scratch.items[group_start..], span);
-        self.scratch.shrinkRetainingCapacity(group_start);
-        try self.scratch.append(self.allocator, obj);
-    }
-
-    const args_slice = self.scratch.items[scratch_top..];
-
-    // 첫 인자가 object literal이 아니면 빈 {}를 target으로 삽입
-    const need_empty_target = args_slice.len == 0 or blk: {
-        const first_node = self.ast.getNode(args_slice[0]);
-        break :blk first_node.tag != .object_expression;
-    };
-
-    if (need_empty_target) {
-        const empty_obj = try makeObjectLiteral(self, &.{}, span);
-        try self.scratch.ensureUnusedCapacity(self.allocator, 1);
-        const old_args_len = args_slice.len;
-        if (old_args_len > 0) {
-            self.scratch.appendAssumeCapacity(.none);
-            const items = self.scratch.items;
-            std.mem.copyBackwards(NodeIndex, items[scratch_top + 1 .. scratch_top + 1 + old_args_len], items[scratch_top .. scratch_top + old_args_len]);
+        if (self.scratch.items.len > scratch_top) {
+            const group = try makeObjectLiteral(self, self.scratch.items[scratch_top..], span);
+            self.scratch.shrinkRetainingCapacity(scratch_top);
+            result = if (result.isNone()) group else try makeObjectAssignCall(self, &.{ result, group }, span);
         }
-        self.scratch.items[scratch_top] = empty_obj;
+        if (result.isNone()) result = try makeObjectLiteral(self, &.{}, span);
+        result = try makeObjectAssignCall(self, &.{ result, prop.data.unary.operand }, span);
     }
 
-    const final_args = self.scratch.items[scratch_top..];
-    return makeObjectAssignCall(self, final_args, span);
+    if (self.scratch.items.len > scratch_top) {
+        const group = try makeObjectLiteral(self, self.scratch.items[scratch_top..], span);
+        result = if (result.isNone()) group else try makeObjectAssignCall(self, &.{ result, group }, span);
+    }
+    return if (result.isNone()) makeObjectLiteral(self, &.{}, span) else result;
 }
 
 /// 프로퍼티 배열로 object_expression 생성 (spread 없는 단순 객체).

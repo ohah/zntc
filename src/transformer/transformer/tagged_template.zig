@@ -36,6 +36,14 @@ pub fn visitTaggedTemplate(self: *Transformer, node: Node) Error!NodeIndex {
 ///   function _templateObject() { var data = __taggedTemplateLiteral(["hello "," world"]); _templateObject = function(){ return data; }; return data; }
 ///   tag(_templateObject(), name)
 fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeIndex, span: Span) Error!NodeIndex {
+    return lowerTaggedTemplateImpl(self, tag_idx, tmpl_idx, span, true);
+}
+
+pub fn lowerTaggedTemplateForSuspension(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeIndex, span: Span) Error!NodeIndex {
+    return lowerTaggedTemplateImpl(self, tag_idx, tmpl_idx, span, false);
+}
+
+fn lowerTaggedTemplateImpl(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeIndex, span: Span, visit_children: bool) Error!NodeIndex {
     const tmpl = self.ast.getNode(tmpl_idx);
     const source = self.ast.source;
 
@@ -120,7 +128,7 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
             const raw_idx3 = self.ast.extra_data.items[tl_start3 + k];
             const member3 = self.ast.getNode(@fromBackingInt(@intCast(raw_idx3)));
             if (member3.tag != .template_element) {
-                try self.scratch.append(self.allocator, try self.visitNode(@fromBackingInt(@intCast(raw_idx3))));
+                try self.scratch.append(self.allocator, if (visit_children) try self.visitNode(@fromBackingInt(@intCast(raw_idx3))) else @fromBackingInt(@as(u32, @intCast(raw_idx3))));
             }
         }
     }
@@ -250,10 +258,13 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
     self.runtime_helpers.tagged_template_literal = true;
 
     // --- tag(_templateObject(), ...exprs) 호출 ---
-    const new_tag = try self.visitNode(tag_idx);
+    const new_tag = if (visit_children) try self.visitNode(tag_idx) else tag_idx;
     const fn_call_ref = try es_helpers.makeExactSyntheticRef(self, fn_name);
     if (self.semantic_edit_enabled) {
         const outer_scope = try self.addGeneratedFunctionScope(program_scope, fn_decl);
+        // This exact helper read belongs to the real hoisted cache function,
+        // not to the source generator that requested the template site.
+        try self.relocateRuntimeHelperRef(helper_ref, outer_scope);
         const inner_scope = try self.addGeneratedFunctionScope(outer_scope, inner_func);
         const fn_id = try self.declareSyntheticInScope(fn_name_binding, span, .function_decl, program_scope);
         if (late_template_output_name) {

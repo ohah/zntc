@@ -40,6 +40,7 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     super_set: ?[]const u8 = null,
     class_call_check: ?[]const u8 = null,
     class_define_property: ?[]const u8 = null,
+    suspension_invoke: ?[]const u8 = null,
     async_helper: ?[]const u8 = null,
     async_generator: ?[]const u8 = null,
     await_helper: ?[]const u8 = null,
@@ -732,6 +733,11 @@ fn readinessAllRuntime(comptime name: []const u8) []const u8 {
         "  return ready;\n" ++
         "};\n";
 }
+/// Capture the actual invocation intrinsic before user evaluation. Invocation
+/// never reads a user function's own call/apply properties. ES5 bind is native.
+pub const SUSPENSION_INVOKE_RUNTIME = "var __suspensionInvoke = (function(){}).call.bind((function(){}).apply);";
+pub const SUSPENSION_INVOKE_RUNTIME_MIN = "var " ++ NAMES.SUSPENSION_INVOKE_MIN ++ "=(function(){}).call.bind((function(){}).apply);";
+
 pub const READINESS_ALL_RUNTIME = readinessAllRuntime("__tlaReadyAll");
 pub const READINESS_ALL_RUNTIME_MIN = readinessAllRuntime(NAMES.READINESS_ALL_MIN);
 
@@ -2166,6 +2172,9 @@ fn appendRuntimeHelpersInternal(
             if (minify) YIELD_STAR_RUNTIME_MIN else YIELD_STAR_RUNTIME,
             &replacements,
         );
+    }
+    if (local_names.suspension_invoke) |local| {
+        try appendRuntimeTemplateWithLocalName(buf, allocator, if (minify) SUSPENSION_INVOKE_RUNTIME_MIN else SUSPENSION_INVOKE_RUNTIME, helperName("__suspensionInvoke", minify), local);
     }
     if (helpers.public_field) {
         const default_name = helperName("__publicField", minify);

@@ -360,7 +360,7 @@ pub fn SuperProps(comptime Transformer: type) type {
             });
         }
 
-        fn makeStaticSuperPropArg(self: *Transformer, prop_idx: NodeIndex) Transformer.Error!NodeIndex {
+        pub fn makeStaticSuperPropArg(self: *Transformer, prop_idx: NodeIndex) Transformer.Error!NodeIndex {
             const prop = self.ast.getNode(prop_idx);
             if (prop.tag == .identifier_reference or prop.tag == .binding_identifier) {
                 const raw = self.ast.getText(prop.data.string_ref);
@@ -492,7 +492,7 @@ pub fn SuperProps(comptime Transformer: type) type {
             return buildPrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
         }
 
-        fn buildSuperReceiver(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
+        pub fn buildSuperReceiver(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
             if (try @import("../retained_field_arrow.zig").superReceiver(self, span)) |receiver| return receiver;
             if (self.current_super_static_receiver) |receiver_span| {
                 if (try @import("../static_class_capture.zig").makeThisReference(self)) |capture| return capture;
@@ -506,7 +506,7 @@ pub fn SuperProps(comptime Transformer: type) type {
             return makeThisOrAlias(self, span);
         }
 
-        fn buildSuperPropGet(self: *Transformer, prop_arg: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        pub fn buildSuperPropGet(self: *Transformer, prop_arg: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             // V2/V5: current_super_class=null 인 non-derived 케이스도 lowering — buildSuperBaseRef
             // 가 Object.prototype / Function.prototype 으로 fallback.
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__superGet");
