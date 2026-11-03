@@ -1316,53 +1316,83 @@ pub const Module = struct {
         }
     }
 
-    /// Check only the declaration supplied by the scanner. No AST-wide owner
-    /// discovery or name-to-SID search participates in import authority.
-    pub fn importBindingOwnsSource(self: *const Module, ib: ImportBinding, ast: *const Ast) bool {
-        if (ib.local_role != .import_binding) return true; // typed storage handoff has its own declaration role
-        const declaration = ib.local_declaration_node orelse return false;
-        const local = ib.local_symbol_node orelse return false;
-        // The source declaration may import the same property under several
-        // distinct local names. A genuine sibling node/SID pair is not the
-        // scanner's binding unless its original local datum also agrees.
-        if (local.isNone() or @backingInt(local) >= ast.nodes.items.len) return false;
-        const local_span = ast.identifierNameSpan(ast.getNode(local));
-        const local_table = local_span.start & Ast.STRING_TABLE_BIT != 0;
-        if ((local_span.end & Ast.STRING_TABLE_BIT != 0) != local_table) return false;
-        const local_start = local_span.start & ~Ast.STRING_TABLE_BIT;
-        const local_end = local_span.end & ~Ast.STRING_TABLE_BIT;
-        const local_limit = if (local_table) ast.string_table.items.len else ast.source.len;
-        if (local_start > local_end or local_end > local_limit) return false;
-        if (!@import("../lexer/scanner.zig").Scanner.identifierValueEquals(ast.getText(local_span), ib.local_name)) return false;
-        if (declaration.isNone() or @backingInt(declaration) >= ast.nodes.items.len or ib.import_record_index >= self.import_records.len) return false;
+    /// Find the exact import specifier that owns the parser-captured local
+    /// anchor. This proves local declaration identity without trusting the
+    /// cached foreign import kind or requested export name.
+    const SourceImportSpecifier = struct {
+        specifier: @import("../parser/ast.zig").NodeIndex,
+        source: @import("../parser/ast.zig").NodeIndex,
+    };
+
+    fn sourceImportSpecifier(ib: ImportBinding, ast: *const Ast) ?SourceImportSpecifier {
+        const declaration = ib.source_local_declaration_node orelse return null;
+        const local = ib.local_symbol_node orelse return null;
+        const source_local = ib.source_local_symbol_node orelse return null;
+        if (ib.local_role == .import_binding and source_local != local) return null;
+        if (local.isNone() or @backingInt(local) >= ast.nodes.items.len or
+            source_local.isNone() or @backingInt(source_local) >= ast.nodes.items.len) return null;
+        const source_span = ast.identifierNameSpan(ast.getNode(source_local));
+        const source_table = source_span.start & Ast.STRING_TABLE_BIT != 0;
+        if ((source_span.end & Ast.STRING_TABLE_BIT != 0) != source_table) return null;
+        const source_start = source_span.start & ~Ast.STRING_TABLE_BIT;
+        const source_end = source_span.end & ~Ast.STRING_TABLE_BIT;
+        const source_limit = if (source_table) ast.string_table.items.len else ast.source.len;
+        if (source_start > source_end or source_end > source_limit) return null;
+        if (!@import("../lexer/scanner.zig").Scanner.identifierValueEquals(ast.getText(source_span), ib.local_name)) return null;
+        if (declaration.isNone() or @backingInt(declaration) >= ast.nodes.items.len) return null;
         const owner = ast.getNode(declaration);
-        if (owner.tag != .import_declaration) return false;
+        if (owner.tag != .import_declaration) return null;
         const e = owner.data.extra;
-        if (e > ast.extra_data.items.len or ast.extra_data.items.len - e < 6) return false;
+        if (e > ast.extra_data.items.len or ast.extra_data.items.len - e < 6) return null;
         const x = @import("../parser/module.zig").readImportDeclExtras(ast, e);
-        if (x.specs_start > ast.extra_data.items.len or x.specs_len > ast.extra_data.items.len - x.specs_start) return false;
-        const record = self.import_records[ib.import_record_index];
-        if (record.source_node != x.source or x.source.isNone() or @backingInt(x.source) >= ast.nodes.items.len or ast.getNode(x.source).tag != .string_literal) return false;
-        var matches: usize = 0;
+        if (x.specs_start > ast.extra_data.items.len or x.specs_len > ast.extra_data.items.len - x.specs_start) return null;
+        if (x.source.isNone() or @backingInt(x.source) >= ast.nodes.items.len or ast.getNode(x.source).tag != .string_literal) return null;
+        var matched_spec: ?@import("../parser/ast.zig").NodeIndex = null;
         for (ast.extra_data.items[x.specs_start..][0..x.specs_len]) |raw| {
-            if (raw >= ast.nodes.items.len) return false;
+            if (raw >= ast.nodes.items.len) return null;
             const spec: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(raw);
             const node = ast.getNode(spec);
             const actual_local = switch (node.tag) {
                 .import_default_specifier, .import_namespace_specifier => spec,
                 .import_specifier => if (!node.data.binary.right.isNone()) node.data.binary.right else node.data.binary.left,
-                else => return false,
+                else => return null,
             };
-            if (actual_local != local) continue;
-            switch (node.tag) {
-                .import_default_specifier => if (ib.kind != .default or !std.mem.eql(u8, ib.imported_name, "default")) return false,
-                .import_namespace_specifier => if (ib.kind != .namespace or !std.mem.eql(u8, ib.imported_name, "*")) return false,
-                .import_specifier => if (ib.kind != .named or node.data.binary.flags & @import("../parser/module.zig").SPEC_FLAG_TYPE_ONLY != 0 or !importPropertyMatches(ast, node.data.binary.left, ib.imported_name)) return false,
-                else => unreachable,
-            }
-            matches += 1;
+            if (actual_local != source_local) continue;
+            if (matched_spec != null) return null;
+            matched_spec = spec;
         }
-        return matches == 1;
+        return .{ .specifier = matched_spec orelse return null, .source = x.source };
+    }
+
+    /// Prove that the exact local anchor still represents the cached foreign
+    /// import property and source record. This remains valid after local
+    /// storage materialization moves the current declaration carrier.
+    fn sourceImportMatchesBinding(self: *const Module, ib: ImportBinding, ast: *const Ast, source: SourceImportSpecifier) bool {
+        if (ib.import_record_index >= self.import_records.len or
+            self.import_records[ib.import_record_index].source_node != source.source) return false;
+        const node = ast.getNode(source.specifier);
+        switch (node.tag) {
+            .import_default_specifier => return ib.kind == .default and std.mem.eql(u8, ib.imported_name, "default"),
+            .import_namespace_specifier => return ib.kind == .namespace and std.mem.eql(u8, ib.imported_name, "*"),
+            .import_specifier => return ib.kind == .named and
+                node.data.binary.flags & @import("../parser/module.zig").SPEC_FLAG_TYPE_ONLY == 0 and
+                importPropertyMatches(ast, node.data.binary.left, ib.imported_name),
+            else => return false,
+        }
+    }
+
+    /// Check only the declaration supplied by the scanner. No AST-wide owner
+    /// discovery or name-to-SID search participates in import authority.
+    /// Foreign kind/name metadata is validated separately by strict consumers.
+    pub fn importBindingOwnsSource(self: *const Module, ib: ImportBinding, ast: *const Ast) bool {
+        if (ib.local_role != .import_binding) return false;
+        const local = ib.local_symbol_node orelse return false;
+        const source_local = ib.source_local_symbol_node orelse return false;
+        const source_declaration = ib.source_local_declaration_node orelse return false;
+        if (local != source_local) return false;
+        if (ib.local_declaration_node != source_declaration) return false;
+        const source = sourceImportSpecifier(ib, ast) orelse return false;
+        return self.sourceImportMatchesBinding(ib, ast, source);
     }
 
     /// Require the derived current-module reference to be present and equal to
@@ -1391,11 +1421,23 @@ pub const Module = struct {
             };
         }
 
-        const actual = try self.checkedSourceImportLocalSymbol(ib);
+        const actual = try self.checkedImportBindingSourceSymbol(ib);
         if (!actual.isValid() or (ib.local_symbol.isValid() and !actual.eql(ib.local_symbol))) {
             return error.InvalidImportLocalSymbol;
         }
         return .{ .symbol = actual, .name = self.refName(actual) orelse return error.InvalidImportLocalSymbol };
+    }
+
+    /// Resolve the exact local SymbolId and prove its source import property
+    /// and import record. This remains valid when a materialization moves the
+    /// current storage declaration but retains the parser-owned source pair.
+    pub fn checkedImportBindingSourceSymbol(self: *const Module, ib: ImportBinding) error{InvalidImportLocalSymbol}!symbol_mod.SymbolRef {
+        const actual = try self.checkedSourceImportLocalSymbol(ib);
+        const ast = if (self.ast) |*value| value else return error.InvalidImportLocalSymbol;
+        const source = sourceImportSpecifier(ib, ast) orelse return error.InvalidImportLocalSymbol;
+        if ((ib.local_role == .import_binding and ib.local_declaration_node != ib.source_local_declaration_node) or
+            !self.sourceImportMatchesBinding(ib, ast, source)) return error.InvalidImportLocalSymbol;
+        return actual;
     }
 
     /// Scanner-owned source identity is available before Linker publishes the
@@ -1404,7 +1446,11 @@ pub const Module = struct {
         const sem = self.semantic orelse return error.InvalidImportLocalSymbol;
         const ast = if (self.ast) |*value| value else return error.InvalidImportLocalSymbol;
         const actual = binding_scanner.resolveImportLocalSymbol(ib, .{ .module_index = self.index, .ast = ast, .symbol_ids = sem.symbol_ids, .symbols = sem.symbols.items });
-        if (!actual.isValid() or !self.importBindingOwnsSource(ib, ast)) return error.InvalidImportLocalSymbol;
+        if (!actual.isValid() or sourceImportSpecifier(ib, ast) == null) return error.InvalidImportLocalSymbol;
+        const source_local = ib.source_local_symbol_node orelse return error.InvalidImportLocalSymbol;
+        const source_raw = @backingInt(source_local);
+        if (source_local.isNone() or source_raw >= sem.symbol_ids.len or
+            sem.symbol_ids[source_raw] != actual.semanticIndex()) return error.InvalidImportLocalSymbol;
         return actual;
     }
 

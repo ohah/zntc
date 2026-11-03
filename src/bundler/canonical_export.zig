@@ -170,7 +170,7 @@ fn validateAlias(a: std.mem.Allocator, owner: *const Module, binding: Binding) E
         if (binding_import.import_record_index != record) continue;
         const actual = @import("binding_scanner.zig").resolveImportLocalSymbol(binding_import, .{ .module_index = owner.index, .ast = tree, .symbol_ids = semantic.symbol_ids, .symbols = semantic.symbols.items });
         if (actual.semanticIndex() != @as(?u32, sid)) continue;
-        _ = owner.checkedSourceImportLocalSymbol(binding_import) catch return error.InvalidCrossChunkExport;
+        _ = owner.checkedImportBindingSourceSymbol(binding_import) catch return error.InvalidCrossChunkExport;
         imports += 1;
     }
     if (imports != 1) return error.InvalidCrossChunkExport;
@@ -186,7 +186,7 @@ pub fn sameImportedSourceLocal(owner: *const Module, exported: Binding, imported
     const sid = semantic.symbol_ids[@backingInt(anchor)] orelse return false;
     const actual = @import("binding_scanner.zig").resolveImportLocalSymbol(imported, .{ .module_index = owner.index, .ast = tree, .symbol_ids = semantic.symbol_ids, .symbols = semantic.symbols.items });
     if (actual.semanticIndex() != @as(?u32, sid)) return false;
-    _ = owner.checkedSourceImportLocalSymbol(imported) catch return false;
+    _ = owner.checkedImportBindingSourceSymbol(imported) catch return false;
     return true;
 }
 

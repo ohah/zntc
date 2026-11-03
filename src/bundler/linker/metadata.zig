@@ -161,14 +161,14 @@ pub fn isImportBindingTypeOnly(
             // A same-kind SID cannot stand in for the source declaration.
             // When source is present, require the exact scanner anchor even
             // if the retained node field was lost.
-            const anchored = module.checkedSourceImportLocalSymbol(ib) catch return false;
+            const anchored = module.checkedImportBindingSourceSymbol(ib) catch return false;
             if (!ib.local_symbol.eql(anchored)) return false;
         }
         break :blk sid;
     } else blk: {
         // A missing derived ref may use the source anchor, but never a
         // spelling-map row. Anchorless analyzed modules stay conservative.
-        const anchored = module.checkedSourceImportLocalSymbol(ib) catch return false;
+        const anchored = module.checkedImportBindingSourceSymbol(ib) catch return false;
         if (anchored.moduleIndex() != module.index) return false;
         break :blk anchored.semanticIndex() orelse return false;
     };
@@ -218,13 +218,13 @@ fn importBindingLocalSemanticIndex(
         // A same-module SID of the expected kind is not enough: verify it
         // still names this scanner-owned import when source is available.
         if (module.ast != null) {
-            const anchored = module.checkedSourceImportLocalSymbol(ib) catch return null;
+            const anchored = module.checkedImportBindingSourceSymbol(ib) catch return null;
             if (!anchored.eql(ib.local_symbol)) return null;
         }
         return symbol_index;
     }
     if (ib.local_symbol_node != null) {
-        const anchored = module.checkedSourceImportLocalSymbol(ib) catch return null;
+        const anchored = module.checkedImportBindingSourceSymbol(ib) catch return null;
         if (!anchored.isValid() or anchored.moduleIndex() != ModuleIndex.fromUsize(module_index)) return null;
         const symbol_index = anchored.semanticIndex() orelse return null;
         if (!importBindingHasExpectedKind(ib, semantic, symbol_index)) return null;
@@ -524,7 +524,7 @@ fn importBindingNameFromMetadataIdentity(
 
     const symbol_index = importBindingLocalSemanticIndex(self, ib, module, semantic, module_scope, module_index) orelse
         return error.InvalidImportLocalSymbol;
-    const source_ref = module.checkedSourceImportLocalSymbol(ib) catch return error.InvalidImportLocalSymbol;
+    const source_ref = module.checkedImportBindingSourceSymbol(ib) catch return error.InvalidImportLocalSymbol;
     if (source_ref.moduleIndex() != module.index or source_ref.semanticIndex() != symbol_index) {
         return error.InvalidImportLocalSymbol;
     }
@@ -954,7 +954,7 @@ pub fn buildMetadataForAstWithHolderReservations(
                         // source anchor into a local copy so output naming never
                         // trusts or repairs the stored ImportBinding.
                         var anchored_binding = ib;
-                        const source_ref = m.checkedSourceImportLocalSymbol(ib) catch {
+                        const source_ref = m.checkedImportBindingSourceSymbol(ib) catch {
                             anchored_binding.local_symbol = .invalid;
                             break :blk importBindingName(self, module_index, anchored_binding, ib.local_name);
                         };
@@ -1896,7 +1896,7 @@ pub fn buildMetadataForAstWithHolderReservations(
             if (!ib.is_helper) continue;
             // This output pass classifies a producer-owned helper import;
             // use its scanner node as identity when the derived SID is absent.
-            const source_ref = m.checkedSourceImportLocalSymbol(ib) catch continue;
+            const source_ref = m.checkedImportBindingSourceSymbol(ib) catch continue;
             if (source_ref.moduleIndex() != m.index or
                 source_ref.semanticIndex() != @as(?u32, @intCast(raw_symbol_id))) continue;
             // Missing derived identity can use the exact anchor; a present
@@ -2376,13 +2376,13 @@ fn crossModuleConstImportLocalSemanticIndex(
             // A same-module SID of the expected role is not provenance. When
             // source AST is available, require its exact scanner/declaration
             // anchor even if the retained node field was lost.
-            const anchored = module.checkedSourceImportLocalSymbol(binding) catch return null;
+            const anchored = module.checkedImportBindingSourceSymbol(binding) catch return null;
             if (!binding.local_symbol.eql(anchored)) return null;
         }
         return sid;
     }
     if (binding.local_symbol_node == null) return null;
-    const anchored = module.checkedSourceImportLocalSymbol(binding) catch return null;
+    const anchored = module.checkedImportBindingSourceSymbol(binding) catch return null;
     if (!anchored.isValid() or anchored.moduleIndex() != module.index) return null;
     const sid = anchored.semanticIndex() orelse return null;
     if (sid >= semantic.symbols.items.len or semantic.symbols.items[sid].kind != expected_kind) return null;

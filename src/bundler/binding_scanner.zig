@@ -79,6 +79,12 @@ pub const ImportBinding = struct {
     /// at the parser binding; materialization explicitly hands off to its real
     /// storage binding node while retaining the same SymbolId.
     local_symbol_node: ?NodeIndex = null,
+    /// Original import specifier local node, retained if a lowering moves the
+    /// current identity carrier to generated storage.
+    source_local_symbol_node: ?NodeIndex = null,
+    /// Original import declaration owner, retained with the source local node
+    /// if a lowering moves the current carrier to generated storage.
+    source_local_declaration_node: ?NodeIndex = null,
     /// Actual import declaration owner, captured alongside the local anchor.
     /// Retained clones/rewrites hand this carrier forward without AST scans.
     local_declaration_node: ?NodeIndex = null,
@@ -376,6 +382,8 @@ pub fn extractImportBindings(
                         .local_span = spec_node.span,
                         .import_record_index = rec_idx,
                         .local_symbol_node = spec,
+                        .source_local_symbol_node = spec,
+                        .source_local_declaration_node = @fromBackingInt(ni),
                         .local_declaration_node = @fromBackingInt(ni),
                     });
                 },
@@ -388,6 +396,8 @@ pub fn extractImportBindings(
                         .local_span = spec_node.span,
                         .import_record_index = rec_idx,
                         .local_symbol_node = spec,
+                        .source_local_symbol_node = spec,
+                        .source_local_declaration_node = @fromBackingInt(ni),
                         .local_declaration_node = @fromBackingInt(ni),
                     });
                 },
@@ -426,6 +436,8 @@ pub fn extractImportBindings(
                         .import_record_index = rec_idx,
                         .is_helper = is_helper,
                         .local_symbol_node = local_node_idx,
+                        .source_local_symbol_node = local_node_idx,
+                        .source_local_declaration_node = @fromBackingInt(ni),
                         .local_declaration_node = @fromBackingInt(ni),
                     });
                 },

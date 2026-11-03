@@ -7618,6 +7618,202 @@ test "missing export diagnostics select exact import identity across ten poisone
     try std.testing.expectEqual(@as(usize, 0), conservative_mismatches);
 }
 
+test "missing export diagnostics do not borrow a sibling import read identity" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { absent as local, present as spare } from './dep'; console.log(local);");
+    try writeFile(tmp.dir, "dep.ts", "export const present = 1;");
+
+    var result = try buildAndLink(std.testing.allocator, &tmp, "entry.ts");
+    defer result.cache.deinit();
+    defer result.destroyGraph();
+    defer result.linker.deinit();
+
+    const entry_index = findModuleIdx(result.graph, "entry.ts") orelse return error.MissingDiagnosticEntry;
+    const module = result.graph.moduleAtMut(entry_index) orelse return error.MissingDiagnosticEntry;
+    try std.testing.expectEqual(@as(usize, 2), module.import_bindings.len);
+    const missing_binding = &module.import_bindings[0];
+    const spare = module.import_bindings[1];
+    try std.testing.expectEqualStrings("absent", missing_binding.imported_name);
+    try std.testing.expectEqualStrings("present", spare.imported_name);
+    try std.testing.expectEqual(@as(?bool, false), missing_binding.source_type_only);
+    var baseline_missing = false;
+    for (result.linker.fatal_diagnostics.items) |diagnostic| {
+        if (diagnostic.code == .missing_export) baseline_missing = true;
+    }
+    try std.testing.expect(baseline_missing);
+
+    // Keep the public missing export and declaration record, but redirect its
+    // local carrier to an unused sibling import. A name/SID-only consumer sees
+    // no read and incorrectly suppresses the missing-export diagnostic.
+    missing_binding.local_name = spare.local_name;
+    missing_binding.local_span = spare.local_span;
+    missing_binding.local_symbol_node = spare.local_symbol_node;
+    missing_binding.local_symbol = spare.local_symbol;
+
+    result.linker.deinit();
+    result.linker = Linker.init(std.testing.allocator, result.graph, .esm);
+    try result.linker.link();
+    result.linker.populateImportSymbols();
+    try std.testing.expect(!missing_binding.local_symbol.isValid());
+    var retained_missing = false;
+    for (result.linker.fatal_diagnostics.items) |diagnostic| {
+        if (diagnostic.code == .missing_export) retained_missing = true;
+    }
+    try std.testing.expect(retained_missing);
+}
+
+test "missing export diagnostics distinguish same-export sibling import owners" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { absent as local } from './dep'; import { absent as spare } from './dep'; console.log(local);");
+    try writeFile(tmp.dir, "dep.ts", "export const present = 1;");
+
+    var result = try buildAndLink(std.testing.allocator, &tmp, "entry.ts");
+    defer result.cache.deinit();
+    defer result.destroyGraph();
+    defer result.linker.deinit();
+
+    const entry_index = findModuleIdx(result.graph, "entry.ts") orelse return error.MissingDiagnosticEntry;
+    const module = result.graph.moduleAtMut(entry_index) orelse return error.MissingDiagnosticEntry;
+    try std.testing.expectEqual(@as(usize, 2), module.import_bindings.len);
+    const missing_binding = &module.import_bindings[0];
+    const spare = module.import_bindings[1];
+    try std.testing.expectEqualStrings("absent", missing_binding.imported_name);
+    try std.testing.expectEqualStrings(missing_binding.imported_name, spare.imported_name);
+    try std.testing.expectEqual(@as(?bool, false), missing_binding.source_type_only);
+    var baseline_missing = false;
+    for (result.linker.fatal_diagnostics.items) |diagnostic| {
+        if (diagnostic.code == .missing_export) baseline_missing = true;
+    }
+    try std.testing.expect(baseline_missing);
+
+    // Both specifiers share the same remote name, so their textual import
+    // properties cannot distinguish the used local from its unused sibling.
+    missing_binding.local_name = spare.local_name;
+    missing_binding.local_span = spare.local_span;
+    missing_binding.local_symbol_node = spare.local_symbol_node;
+    missing_binding.local_symbol = spare.local_symbol;
+
+    result.linker.deinit();
+    result.linker = Linker.init(std.testing.allocator, result.graph, .esm);
+    try result.linker.link();
+    result.linker.populateImportSymbols();
+    try std.testing.expect(!missing_binding.local_symbol.isValid());
+    var retained_missing = false;
+    for (result.linker.fatal_diagnostics.items) |diagnostic| {
+        if (diagnostic.code == .missing_export) retained_missing = true;
+    }
+    try std.testing.expect(retained_missing);
+}
+
+test "missing export diagnostics reject a redirected source import anchor" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { absent as local } from './dep'; import { absent as spare } from './dep'; console.log(local);");
+    try writeFile(tmp.dir, "dep.ts", "export const present = 1;");
+
+    var result = try buildAndLink(std.testing.allocator, &tmp, "entry.ts");
+    defer result.cache.deinit();
+    defer result.destroyGraph();
+    defer result.linker.deinit();
+
+    const entry_index = findModuleIdx(result.graph, "entry.ts") orelse return error.MissingDiagnosticEntry;
+    const module = result.graph.moduleAtMut(entry_index) orelse return error.MissingDiagnosticEntry;
+    try std.testing.expectEqual(@as(usize, 2), module.import_bindings.len);
+    const missing_binding = &module.import_bindings[0];
+    const spare = module.import_bindings[1];
+    try std.testing.expectEqualStrings("absent", missing_binding.imported_name);
+    try std.testing.expectEqual(missing_binding.local_symbol_node, missing_binding.source_local_symbol_node);
+    try std.testing.expectEqual(missing_binding.local_declaration_node, missing_binding.source_local_declaration_node);
+    try std.testing.expectEqualStrings(missing_binding.imported_name, spare.imported_name);
+    var baseline_missing = false;
+    for (result.linker.fatal_diagnostics.items) |diagnostic| {
+        if (diagnostic.code == .missing_export) baseline_missing = true;
+    }
+    try std.testing.expect(baseline_missing);
+
+    // Preserve the current import local and corrupt only its independent
+    // parser witness to a same-remote-name sibling specifier.
+    const source_local = missing_binding.source_local_symbol_node;
+    missing_binding.source_local_symbol_node = spare.source_local_symbol_node;
+
+    result.linker.deinit();
+    result.linker = Linker.init(std.testing.allocator, result.graph, .esm);
+    try result.linker.link();
+    result.linker.populateImportSymbols();
+    try std.testing.expect(!missing_binding.local_symbol.isValid());
+    var retained_missing = false;
+    for (result.linker.fatal_diagnostics.items) |diagnostic| {
+        if (diagnostic.code == .missing_export) retained_missing = true;
+    }
+    try std.testing.expect(retained_missing);
+
+    // A source local node remains insufficient if its captured declaration
+    // owner is redirected independently.
+    missing_binding.source_local_symbol_node = source_local;
+    missing_binding.source_local_declaration_node = spare.source_local_declaration_node;
+    result.linker.deinit();
+    result.linker = Linker.init(std.testing.allocator, result.graph, .esm);
+    try result.linker.link();
+    result.linker.populateImportSymbols();
+    try std.testing.expect(!missing_binding.local_symbol.isValid());
+}
+
+test "missing export diagnostics reject a materialized carrier from a same-name local" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { absent as local, present as spare } from './dep'; function unused(){ var local; } console.log(local);");
+    try writeFile(tmp.dir, "dep.ts", "export const present = 1;");
+
+    var result = try buildAndLink(std.testing.allocator, &tmp, "entry.ts");
+    defer result.cache.deinit();
+    defer result.destroyGraph();
+    defer result.linker.deinit();
+
+    const entry_index = findModuleIdx(result.graph, "entry.ts") orelse return error.MissingDiagnosticEntry;
+    const module = result.graph.moduleAtMut(entry_index) orelse return error.MissingDiagnosticEntry;
+    const semantic = module.semantic orelse return error.MissingDiagnosticSemantic;
+    const missing_binding = &module.import_bindings[0];
+    try std.testing.expectEqualStrings("absent", missing_binding.imported_name);
+    var decoy_node: ?@import("../parser/ast.zig").NodeIndex = null;
+    var decoy_sid: ?u32 = null;
+    for (module.ast.?.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or raw >= semantic.symbol_ids.len or
+            !std.mem.eql(u8, module.ast.?.getText(node.span), "local")) continue;
+        const sid = semantic.symbol_ids[raw] orelse continue;
+        if (sid >= semantic.symbols.items.len or semantic.symbols.items[sid].kind != .variable_var) continue;
+        decoy_node = @fromBackingInt(@intCast(raw));
+        decoy_sid = sid;
+        break;
+    }
+    const storage_node = decoy_node orelse return error.MissingSameNameStorageNode;
+    const storage_sid = decoy_sid orelse return error.MissingSameNameStorageSymbol;
+    try std.testing.expect(missing_binding.source_local_symbol_node != storage_node);
+    var baseline_missing = false;
+    for (result.linker.fatal_diagnostics.items) |diagnostic| {
+        if (diagnostic.code == .missing_export) baseline_missing = true;
+    }
+    try std.testing.expect(baseline_missing);
+
+    // This role/node/SID combination previously passed the storage-role
+    // shortcut and borrowed an unread nested `var local` to suppress the error.
+    missing_binding.local_role = .materialized_var;
+    missing_binding.local_symbol_node = storage_node;
+    missing_binding.local_symbol = bundler_symbol.SymbolRef.makeSemantic(module.index, storage_sid);
+
+    result.linker.deinit();
+    result.linker = Linker.init(std.testing.allocator, result.graph, .esm);
+    try result.linker.link();
+    result.linker.populateImportSymbols();
+    try std.testing.expect(!missing_binding.local_symbol.isValid());
+    var retained_missing = false;
+    for (result.linker.fatal_diagnostics.items) |diagnostic| {
+        if (diagnostic.code == .missing_export) retained_missing = true;
+    }
+    try std.testing.expect(retained_missing);
+}
+
 test "#4819: export presence fallback treats poisoned root owners as uncertain" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

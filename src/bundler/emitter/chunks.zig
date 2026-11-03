@@ -6748,7 +6748,7 @@ fn checkAliasedPurity(source: []const u8, expected_pure: bool, missing_import_si
         const binding = for (m.import_bindings) |*candidate| {
             if (std.mem.eql(u8, candidate.local_name, "visible")) break candidate;
         } else return error.MissingPurityImportBinding;
-        const exact_local = try m.checkedSourceImportLocalSymbol(binding.*);
+        const exact_local = try m.checkedImportBindingSourceSymbol(binding.*);
         const local_sid = exact_local.semanticIndex() orelse return error.MissingPurityImportSymbol;
         const decoy_sid = sem.scope_maps[0].get("decoy") orelse return error.MissingPurityDecoy;
         try std.testing.expect(local_sid != decoy_sid);
