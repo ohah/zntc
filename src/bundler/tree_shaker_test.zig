@@ -932,6 +932,65 @@ test "tree-shaker preserves a used import when its captured SID conflicts with i
     try std.testing.expect(shaker.isIncluded(lib_index));
 }
 
+test "tree-shaker rejects a same-named nested const as a materialized import owner" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "entry.ts",
+        "import { used } from './lib'; function decoy() { const used = 0; } console.log(used);",
+    );
+    try writeFile(tmp.dir, "lib.ts", "export let used = 1;");
+
+    var result = try buildAndShake(std.testing.allocator, &tmp, "entry.ts");
+    defer result.deinit();
+
+    const entry_index = result.findModule("entry.ts") orelse return error.MissingEntry;
+    const entry = @constCast(result.graph.getModule(ModuleIndex.fromUsize(entry_index)) orelse return error.MissingEntry);
+    const semantic = entry.semantic orelse return error.MissingEntrySemantic;
+    const ast_mod = @import("../parser/ast.zig");
+    const ast = entry.ast orelse return error.MissingEntryAst;
+    var binding: ?*ImportBinding = null;
+    for (entry.import_bindings) |*candidate| {
+        if (std.mem.eql(u8, candidate.local_name, "used")) binding = candidate;
+    }
+    const imported = binding orelse return error.MissingImportBinding;
+    const import_sid = imported.local_symbol.semanticIndex() orelse return error.MissingImportSymbol;
+
+    var nested_const_sid: ?u32 = null;
+    for (semantic.symbols.items, 0..) |symbol, index| {
+        if (symbol.kind == .variable_const and std.mem.eql(u8, ast.getText(symbol.name), "used")) {
+            nested_const_sid = @intCast(index);
+            break;
+        }
+    }
+    const decoy_sid = nested_const_sid orelse return error.MissingNestedConst;
+    try std.testing.expect(import_sid != decoy_sid);
+    try std.testing.expect(!result.shaker.isImportSymbolLive(entry_index, SymbolRef.makeSemantic(entry.index, decoy_sid)));
+    const decoy_anchor: ast_mod.NodeIndex = blk: {
+        for (semantic.symbol_ids, 0..) |maybe_sid, raw| {
+            if (maybe_sid) |sid| {
+                if (sid == decoy_sid and ast.nodes.items[raw].tag == .binding_identifier) {
+                    break :blk @fromBackingInt(@as(u32, @intCast(raw)));
+                }
+            }
+        }
+        return error.MissingNestedConstAnchor;
+    };
+
+    // Poison all current-side carrier fields together. The nested const has
+    // the same spelling and role expected after materialization, but it is
+    // not the import's parser-owned source binding. Liveness must stay
+    // conservative instead of observing the dead nested declaration.
+    imported.local_role = .materialized_const;
+    imported.local_symbol_node = decoy_anchor;
+    imported.local_symbol = SymbolRef.makeSemantic(entry.index, decoy_sid);
+    try std.testing.expect(result.shaker.isImportLiveInModule(entry_index, "used"));
+
+    imported.local_symbol = .invalid;
+    try std.testing.expect(result.shaker.isImportLiveInModule(entry_index, "used"));
+}
+
 test "tree-shaking fails closed when a local export root map points at a decoy" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
