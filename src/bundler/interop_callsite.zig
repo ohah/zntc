@@ -147,7 +147,7 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
     }
 }
 
-fn expectHostileRejection(graph: *@import("graph.zig").ModuleGraph, module: *Module, corruption: usize) !void {
+fn expectHostileOutcome(graph: *@import("graph.zig").ModuleGraph, module: *Module, corruption: usize) !void {
     const ast = if (module.ast) |*value| value else return error.MissingCallsiteAst;
     const sem = if (module.semantic) |*value| value else return error.MissingCallsiteSemantic;
     const a = module.parse_arena.?.allocator();
@@ -173,6 +173,42 @@ fn expectHostileRejection(graph: *@import("graph.zig").ModuleGraph, module: *Mod
     }
     try std.testing.expect(builder.references.items.len >= 3 and callbacks.items.len > 0);
     try validateAll(&builder, callbacks.items);
+    if (corruption == 10) {
+        var selected: ?usize = null;
+        for (module.import_bindings, 0..) |binding, index| {
+            if (binding.callsite_target == null) continue;
+            selected = index;
+            break;
+        }
+        const index = selected orelse return error.MissingCallsiteBinding;
+        const original = module.import_bindings[index].local_symbol;
+        module.import_bindings[index].local_symbol = @import("symbol.zig").SymbolRef.invalid;
+        try validateAll(&builder, callbacks.items);
+        try std.testing.expect(!module.import_bindings[index].local_symbol.isValid());
+        module.import_bindings[index].local_symbol = original;
+        return;
+    }
+    if (corruption == 11) {
+        var selected: ?usize = null;
+        var decoy: ?@import("symbol.zig").SymbolRef = null;
+        for (module.import_bindings, 0..) |binding, index| {
+            if (binding.callsite_target == null or !binding.local_symbol.isValid()) continue;
+            if (selected == null) {
+                selected = index;
+            } else {
+                decoy = binding.local_symbol;
+                break;
+            }
+        }
+        const index = selected orelse return error.MissingCallsiteBinding;
+        const poison = decoy orelse return error.MissingCallsiteSibling;
+        const original = module.import_bindings[index].local_symbol;
+        try std.testing.expect(!original.eql(poison));
+        module.import_bindings[index].local_symbol = poison;
+        try std.testing.expectError(error.InvalidCallsiteBinding, validateAll(&builder, callbacks.items));
+        module.import_bindings[index].local_symbol = original;
+        return;
+    }
     const callback = callbacks.items[0];
     const reference_node = builder.references.items[0].node;
     const expected_error = switch (corruption) {
@@ -307,7 +343,12 @@ test "single output import callsites own exact references through ten source con
             if (module.transform_cache) |transformed| try std.testing.expectEqual(sem.symbol_ids.len, transformed.symbol_ids.len);
         }
         try std.testing.expect(callsites > 0);
-        try expectHostileRejection(&graph, graph.moduleAtMut(hostile_module.?).?, context);
+        const hostile = graph.moduleAtMut(hostile_module.?).?;
+        try expectHostileOutcome(&graph, hostile, context);
+        if (context == 0) {
+            try expectHostileOutcome(&graph, hostile, 10);
+            try expectHostileOutcome(&graph, hostile, 11);
+        }
     }
     if (missing_providers > 0) std.debug.print("missing actual dynamic callsite providers: {d}/10\n", .{missing_providers});
     try std.testing.expectEqual(@as(usize, 0), missing_providers);
