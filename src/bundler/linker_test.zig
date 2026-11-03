@@ -2880,6 +2880,84 @@ test "linker: external import not resolved (no binding)" {
     try std.testing.expectEqual(@as(usize, 0), linker.diagnostics.items.len);
 }
 
+test "metadata external IIFE import preamble uses exact source anchor when cached SID is missing" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { value as selected, other as second } from 'react';\nconst decoy = 7;\nconsole.log(selected, second, decoy);");
+
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const entry_path = try std.fs.path.resolve(allocator, &.{ root, "entry.js" });
+    defer allocator.free(entry_path);
+
+    var cache = resolve_cache_mod.ResolveCache.init(allocator, .{ .external_patterns = &.{"react"} });
+    defer cache.deinit();
+    var graph = ModuleGraph.init(allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry_path});
+
+    var linker = Linker.init(allocator, &graph, .iife);
+    defer linker.deinit();
+    const iife_globals = [_]types.GlobalEntry{.{ .specifier = "react", .global_name = "React" }};
+    linker.iife_globals = &iife_globals;
+    try linker.link();
+
+    const entry_index = findModuleIdx(&graph, "entry.js") orelse return error.MissingEntry;
+    const entry = @constCast(graph.getModule(entry_index) orelse return error.MissingEntry);
+    const semantic = entry.semantic orelse return error.MissingEntrySemantic;
+    const binding = &entry.import_bindings[0];
+    const source_anchor = binding.local_symbol_node orelse return error.MissingImportAnchor;
+    const source_ref = try entry.checkedSourceImportLocalSymbol(binding.*);
+    const source_sid = source_ref.semanticIndex() orelse return error.MissingSourceSID;
+    const other_binding_index = for (entry.import_bindings, 0..) |candidate, index| {
+        if (std.mem.eql(u8, candidate.local_name, "second")) break index;
+    } else return error.MissingSecondImport;
+    const other_symbol = try entry.checkedSourceImportLocalSymbol(entry.import_bindings[other_binding_index]);
+    const other_sid = other_symbol.semanticIndex() orelse return error.MissingSecondSID;
+    const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoy;
+    try std.testing.expect(source_sid != decoy_sid);
+    try std.testing.expect(source_sid != other_sid);
+    try std.testing.expectEqual(.import_binding, semantic.symbols.items[other_sid].kind);
+
+    // The external global should bind the source import local even if its
+    // derived SID is missing and the same-spelling map row points elsewhere.
+    binding.local_symbol = .invalid;
+    try @constCast(semantic.scope_maps)[0].put(allocator, "selected", decoy_sid);
+    const ast: *const Ast = &(entry.ast orelse return error.MissingEntryAst);
+    var anchored = try linker.buildMetadataForAst(ast, entry_index.toU32(), true, null, linker.format, true);
+    defer anchored.deinit();
+    const preamble = anchored.cjs_import_preamble orelse return error.MissingAnchoredExternalPreamble;
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "var selected = React.value;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "decoy = React.value") == null);
+    try std.testing.expect(!binding.local_symbol.isValid());
+
+    // A valid but mismatched same-kind SID must fail closed without poisoning
+    // the other import's independent preamble.
+    binding.local_symbol = other_symbol;
+    const ast_with_stale_sid: *const Ast = &(entry.ast orelse return error.MissingEntryAst);
+    var stale = try linker.buildMetadataForAst(ast_with_stale_sid, entry_index.toU32(), true, null, linker.format, true);
+    defer stale.deinit();
+    const stale_preamble = stale.cjs_import_preamble orelse return error.MissingSecondExternalPreamble;
+    try std.testing.expect(std.mem.indexOf(u8, stale_preamble, "var selected = React.value;") == null);
+    try std.testing.expect(std.mem.indexOf(u8, stale_preamble, "var second = React.other;") != null);
+    binding.local_symbol = .invalid;
+
+    // Without the exact scanner anchor, a correct-looking scope-map row is
+    // insufficient to recreate the import identity.
+    binding.local_symbol_node = null;
+    try @constCast(semantic.scope_maps)[0].put(allocator, "selected", source_sid);
+    const ast_without_anchor: *const Ast = &(entry.ast orelse return error.MissingEntryAst);
+    var anchorless = try linker.buildMetadataForAst(ast_without_anchor, entry_index.toU32(), true, null, linker.format, true);
+    defer anchorless.deinit();
+    if (anchorless.cjs_import_preamble) |anchorless_preamble| {
+        try std.testing.expect(std.mem.indexOf(u8, anchorless_preamble, "var selected = React.value;") == null);
+        try std.testing.expect(std.mem.indexOf(u8, anchorless_preamble, "var second = React.other;") != null);
+    }
+    try std.testing.expect(!binding.local_symbol.isValid());
+    binding.local_symbol_node = source_anchor;
+}
+
 test "namespace export collection carries exact SID through local and aliased exports" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
