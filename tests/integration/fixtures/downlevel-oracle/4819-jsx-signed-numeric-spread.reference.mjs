@@ -14,6 +14,7 @@ const member = {
   undefined: 'undefined',
   number: 'numeric',
   string: 'string',
+  boolean: 'boolean',
 };
 const items = [1, 2];
 const result = React.createElement(
@@ -53,6 +54,11 @@ const result = React.createElement(
     typeofTemplate: typeof `static`,
     keyTypeofNumber: member[typeof 0],
     keyTypeofString: member[typeof `x`],
+    valueNestedTypeofDelete: typeof delete 0,
+    keyNestedTypeofDelete: member[typeof delete 0],
+    valueNestedDeleteNot: delete !0,
+    valueNestedVoidNot: void !!0,
+    keyNestedVoidNot: member[void !!0],
     valueDeleteZero: delete 0,
     keyDeleteZero: member[delete 0],
     valueVoidDeleteZero: void delete 0,
@@ -99,6 +105,11 @@ console.log(
   result.props.typeofTemplate,
   result.props.keyTypeofNumber,
   result.props.keyTypeofString,
+  result.props.valueNestedTypeofDelete,
+  result.props.keyNestedTypeofDelete,
+  result.props.valueNestedDeleteNot,
+  result.props.valueNestedVoidNot,
+  result.props.keyNestedVoidNot,
   result.props.valueDeleteZero,
   result.props.keyDeleteZero,
   result.props.valueVoidDeleteZero,
