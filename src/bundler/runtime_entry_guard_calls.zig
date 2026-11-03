@@ -148,8 +148,14 @@ pub fn validate(graph: anytype, invocation: Invocation) !void {
         const binding = module.import_bindings[i];
         const target = binding.callsite_target orelse return error.InvalidGuardInvocation;
         const foreign = graph.getModule(target.symbol.module) orelse return error.InvalidGuardInvocation;
+        // The source node and semantic table above already establish `sid`.
+        // Check the derived import identity against that exact anchor without
+        // requiring the cached local_symbol field to be populated.
+        const local_identity = module.checkedImportBindingIdentity(binding) catch return error.InvalidGuardInvocation;
         if (foreign.semantic == null or target.owner == .unassigned or foreign.semantic.?.owner_token != target.owner or
-            binding.local_symbol.semanticIndex() != @backingInt(sid) or !target.symbol.eql(if (i == 0) invocation.guard_target else invocation.init_target)) return error.InvalidGuardInvocation;
+            local_identity.symbol.moduleIndex() != module.index or
+            local_identity.symbol.semanticIndex() != @as(?u32, @backingInt(sid)) or
+            !target.symbol.eql(if (i == 0) invocation.guard_target else invocation.init_target)) return error.InvalidGuardInvocation;
         try @import("runtime_callsite_targets.zig").validateTargetRole(graph, target);
     }
 }
@@ -259,6 +265,24 @@ test "split entry guard bootstrap uses a distinct artifact scope and exact forei
     try @import("runtime_entry_guard_ast.zig").installCandidate(&graph, std.testing.io);
     const invocation = try install(&graph, std.testing.io, target_index);
     try validate(&graph, invocation);
+    const artifact = graph.moduleAtMut(invocation.module_index).?;
+    for (0..artifact.import_bindings.len) |index| {
+        const other = 1 - index;
+        const exact = artifact.import_bindings[index].local_symbol;
+        const decoy = artifact.import_bindings[other].local_symbol;
+        try std.testing.expect(!exact.eql(decoy));
+
+        artifact.import_bindings[index].local_symbol = .invalid;
+        try validate(&graph, invocation);
+        try std.testing.expect(!artifact.import_bindings[index].local_symbol.isValid());
+
+        artifact.import_bindings[index].local_symbol = decoy;
+        try std.testing.expectError(error.InvalidGuardInvocation, validate(&graph, invocation));
+        try std.testing.expect(artifact.import_bindings[index].local_symbol.eql(decoy));
+
+        artifact.import_bindings[index].local_symbol = exact;
+        try validate(&graph, invocation);
+    }
     for (0..10) |mutation| {
         var bad = invocation;
         switch (mutation) {
