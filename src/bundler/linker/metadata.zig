@@ -2546,25 +2546,6 @@ pub fn finalizeNamespaceData(
     };
 }
 
-/// import binding의 local_span으로 symbol_id를 탐색한다.
-/// 파서에서 import specifier의 로컬 이름은 identifier_reference 또는 binding_identifier로 생성되므로
-/// 두 태그 모두 매칭한다.
-fn findSymbolIdBySpan(symbol_ids: []const ?u32, ast: *const Ast, span: Span) ?u32 {
-    const node_count = ast.nodes.items.len;
-    for (symbol_ids, 0..) |maybe_sid, node_i| {
-        if (maybe_sid) |sid| {
-            if (node_i >= node_count) continue;
-            const node = ast.nodes.items[node_i];
-            if ((node.tag == .binding_identifier or node.tag == .identifier_reference) and
-                node.span.start == span.start and node.span.end == span.end)
-            {
-                return sid;
-            }
-        }
-    }
-    return null;
-}
-
 /// Dev mode용 LinkingMetadata를 생성한다.
 ///
 /// 프로덕션 buildMetadataForAst와의 차이:
@@ -2704,13 +2685,13 @@ pub fn buildDevMetadataForAst(
     }
 
     if (ns_record_count > 0) {
-        if (m.semantic) |sem| {
+        if (m.semantic != null) {
             for (m.import_bindings) |ib| {
                 if (ib.kind != .named) continue;
                 if (ib.import_record_index >= m.import_records.len) continue;
                 const ns_var = ns_var_for_record[ib.import_record_index] orelse continue;
-                // binding_identifier의 span으로 symbol_id 탐색
-                const sym_id = findSymbolIdBySpan(sem.symbol_ids, ast, ib.local_span) orelse continue;
+                const import_identity = m.checkedImportBindingIdentity(ib) catch return error.InvalidImportLocalSymbol;
+                const sym_id = import_identity.symbol.semanticIndex() orelse continue;
                 const rename = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ ns_var, ib.imported_name });
                 try owned_rename_values.append(self.allocator, rename);
                 try renames.put(self.allocator, sym_id, rename);

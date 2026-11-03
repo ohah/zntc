@@ -5664,6 +5664,80 @@ test "preamble: dev mode — named import uses namespace access pattern" {
     try std.testing.expect(rename_found);
 }
 
+test "dev metadata named import renames require exact source identity" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "entry.ts",
+        "import { add as selected, sub as decoy } from './math'; console.log(selected(1, 2), decoy(3, 1));",
+    );
+    try writeFile(tmp.dir, "math.ts", "export function add(a: number, b: number) { return a + b; } export function sub(a: number, b: number) { return a - b; }");
+
+    var r = try buildLinkAndRename(allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.ts") orelse return error.MissingDevMetadataEntry;
+    const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingDevMetadataEntry);
+    const semantic = entry.semantic orelse return error.MissingDevMetadataSemantic;
+    const selected = for (entry.import_bindings) |*binding| {
+        if (std.mem.eql(u8, binding.local_name, "selected")) break binding;
+    } else return error.MissingDevMetadataSelectedImport;
+    const decoy = for (entry.import_bindings) |*binding| {
+        if (std.mem.eql(u8, binding.local_name, "decoy")) break binding;
+    } else return error.MissingDevMetadataDecoyImport;
+    const source_ref = try entry.checkedSourceImportLocalSymbol(selected.*);
+    const source_sid = source_ref.semanticIndex() orelse return error.MissingDevMetadataSourceSID;
+    const decoy_ref = try entry.checkedSourceImportLocalSymbol(decoy.*);
+    const decoy_sid = decoy_ref.semanticIndex() orelse return error.MissingDevMetadataDecoySID;
+    const source_anchor = selected.local_symbol_node orelse return error.MissingDevMetadataSourceAnchor;
+    const decoy_anchor = decoy.local_symbol_node orelse return error.MissingDevMetadataDecoyAnchor;
+    try std.testing.expect(source_sid != decoy_sid);
+    const ast: *const Ast = &(entry.ast orelse return error.MissingDevMetadataAst);
+
+    // Missing cached SID uses the scanner-owned node even when the root name
+    // map points at another same-kind import, without repairing the field.
+    selected.local_symbol = .invalid;
+    try @constCast(semantic.scope_maps)[0].put(allocator, "selected", decoy_sid);
+    var anchored_metadata = try r.linker.buildDevMetadataForAst(ast, entry_index.toU32());
+    defer anchored_metadata.deinit();
+    try std.testing.expectEqualStrings(
+        "__ns_0_0.add",
+        anchored_metadata.renames.get(source_sid) orelse return error.MissingAnchoredDevRename,
+    );
+    try std.testing.expectEqualStrings(
+        "__ns_0_0.sub",
+        anchored_metadata.renames.get(decoy_sid) orelse return error.MissingDevDecoyRename,
+    );
+    try std.testing.expect(!selected.local_symbol.isValid());
+
+    selected.local_symbol = decoy_ref;
+    try std.testing.expectError(
+        error.InvalidImportLocalSymbol,
+        r.linker.buildDevMetadataForAst(ast, entry_index.toU32()),
+    );
+
+    selected.local_symbol = source_ref;
+    selected.local_symbol_node = decoy_anchor;
+    try std.testing.expectError(
+        error.InvalidImportLocalSymbol,
+        r.linker.buildDevMetadataForAst(ast, entry_index.toU32()),
+    );
+
+    selected.local_symbol_node = null;
+    try @constCast(semantic.scope_maps)[0].put(allocator, "selected", source_sid);
+    try std.testing.expectError(
+        error.InvalidImportLocalSymbol,
+        r.linker.buildDevMetadataForAst(ast, entry_index.toU32()),
+    );
+
+    selected.local_symbol = source_ref;
+    selected.local_symbol_node = source_anchor;
+}
+
 test "preamble: dev mode — default import uses .default" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
