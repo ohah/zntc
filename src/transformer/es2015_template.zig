@@ -27,6 +27,14 @@ const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 
+/// ToPropertyKey uses the same string-hint ToPrimitive as ToString, but
+/// preserves Symbols. Concatenate only that primitive key: Symbols throw and
+/// objects are never subjected to an incorrect default-hint coercion.
+pub fn coerceTemplateSubstitution(self: anytype, value: NodeIndex, span: Span) !NodeIndex {
+    const key = try @import("es_helpers.zig").makePropertyKeyValue(self, value, span);
+    return buildBinaryPlus(self, try buildStringLiteral(self, ""), key, span);
+}
+
 pub fn ES2015Template(comptime Transformer: type) type {
     return struct {
         /// template_literal을 string concatenation (+)으로 변환한다.
@@ -42,6 +50,16 @@ pub fn ES2015Template(comptime Transformer: type) type {
         ///   `${x}` → "" + x
         ///   `text` → "text"
         pub fn lowerTemplateLiteral(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            return lowerTemplateLiteralImpl(self, node, false);
+        }
+
+        /// Each substitution already completed its string-hint ToString at
+        /// its source evaluation point. Never revisit or delay those effects.
+        pub fn lowerTemplateLiteralWithCoercedChildren(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            return lowerTemplateLiteralImpl(self, node, true);
+        }
+
+        fn lowerTemplateLiteralImpl(self: *Transformer, node: Node, children_coerced: bool) Transformer.Error!NodeIndex {
             const span = node.span;
 
             // Data는 extern union이므로 data.none=0 시 data.list는 미초기화.
@@ -93,12 +111,17 @@ pub fn ES2015Template(comptime Transformer: type) type {
                         result = try buildBinaryPlus(self, result, str_node, span);
                     }
                 } else {
-                    var visited = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
+                    const child: NodeIndex = @fromBackingInt(@as(u32, @intCast(raw_idx)));
+                    const visited = if (children_coerced) child else try self.visitNode(child);
                     if (!visited.isNone()) {
+                        // The accumulated left operand is already a string.
+                        // Its concatenation completes ToString (and rejects a
+                        // Symbol) after this exact string-hint primitive step.
+                        const text = if (children_coerced) visited else try @import("es_helpers.zig").makePropertyKeyValue(self, visited, member.span);
                         // 보간 표현식이 + 연산자 right에 올 때 우선순위 문제 방지.
                         // 예: `${1+2}` → "" + (1 + 2), `${x ? "a" : "b"}` → "" + (x ? "a" : "b")
                         // (paren removed) emitParen 투명화 + precedence 재유도가 괄호 처리 (#4042 PR8)
-                        result = try buildBinaryPlus(self, result, visited, span);
+                        result = try buildBinaryPlus(self, result, text, span);
                     }
                 }
             }

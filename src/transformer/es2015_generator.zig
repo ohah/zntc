@@ -3184,6 +3184,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         try @import("es2015_object_methods.zig").ES2015ObjectMethods(Transformer).lowerObjectMember(self, elem_idx)
                     else
                         try visitExprWithYieldExtraction(self, elem_idx, ops, next_label);
+                    if (node.tag == .template_literal and !new_elem.isNone() and self.ast.getNode(new_elem).tag != .template_element)
+                        new_elem = try @import("es2015_template.zig").coerceTemplateSubstitution(self, new_elem, self.ast.getNode(elem_idx).span);
                     const before_suspend = if (last_suspending) |last| i_elem < last else false;
                     if (before_suspend and !new_elem.isNone() and self.ast.getNode(new_elem).tag != .template_element) {
                         const element = self.ast.getNode(new_elem);
@@ -3222,7 +3224,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     .data = .{ .list = new_list },
                 });
                 var lowered = rebuilt;
-                if (node.tag == .array_expression and self.options.unsupported.spread) {
+                if (node.tag == .template_literal and self.options.unsupported.template_literal) {
+                    lowered = try @import("es2015_template.zig").ES2015Template(Transformer).lowerTemplateLiteralWithCoercedChildren(self, self.ast.getNode(rebuilt));
+                } else if (node.tag == .array_expression and self.options.unsupported.spread) {
                     const Spread = @import("es2015_spread.zig").ES2015Spread(Transformer);
                     if (Spread.hasSpreadInArray(self, self.ast.getNode(rebuilt))) lowered = try Spread.lowerSpreadArrayWithPrevisitedChildren(self, self.ast.getNode(rebuilt));
                 } else if (node.tag == .object_expression and self.options.unsupported.object_spread) {
@@ -6596,6 +6600,14 @@ test "suspension tagged template cache helper owns its actual hoisted function" 
     const sources = [_][]const u8{
         "var events=[];async function test(){function original(strings,value){events.push('original');return value+1}function replacement(strings,value){events.push('replacement');return value+100}var tag=original;var value=tag`prefix${await(events.push('operand'),tag=replacement,Promise.resolve(41))}suffix`;return value;}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
         "var events=[];async function test(){var previous;var holder={tag:function(strings,value){events.push(this===holder?'this-ok':'this-bad');events.push(previous===undefined?'first-template':previous===strings?'same-template':'different-template');previous=strings;return value}};async function site(value){return holder.tag`head${await(events.push('operand:'+value),Promise.resolve(value))}tail`}return [await site(20),await site(22)];}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))},function(error){console.error(error.stack);process.exitCode=1});\n",
+    };
+    for (sources) |source| try checkSuspensionEvaluationRuntime(source);
+}
+
+test "suspension plain template string coercion precedes later await and rejects symbols" {
+    const sources = [_][]const u8{
+        "var events=[];async function g(){var key={toString:function(){events.push('key-coercion');return 'slot'}};function pick(){events.push('key-expression');return key}var out={[pick()]:await(events.push('operand'),Promise.resolve(42))};return out.slot}g().then(function(value){console.log(JSON.stringify({value:value,events:events}))});",
+        "var events=[];async function g(){var state=20;var value={};value[Symbol.toPrimitive]=function(hint){events.push(hint+':'+state);return state};var text=`${value}:${await(events.push('operand'),state=100,Promise.resolve(22))}`;var symbolThrows=false;try{`${Symbol('x')}`}catch(e){symbolThrows=e instanceof TypeError}return{text:text,events:events,symbolThrows:symbolThrows}}g().then(function(value){console.log(JSON.stringify(value))});",
     };
     for (sources) |source| try checkSuspensionEvaluationRuntime(source);
 }
