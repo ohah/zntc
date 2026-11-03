@@ -2915,10 +2915,17 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
             if (ib.import_record_index >= m.import_records.len) continue;
             const rec = m.import_records[ib.import_record_index];
             if (rec.resolved.isNone()) continue;
-            const sym_idx = ib.local_symbol.semanticIndex() orelse continue;
+            const sym_idx = importBindingLocalSemanticIndex(
+                self,
+                ib,
+                &m,
+                &sem,
+                &sem.scope_maps[0],
+                module_index,
+            ) orelse continue;
 
             const target_name = self.getCanonicalByRef(ib.symbol) orelse ib.imported_name;
-            const local_name = m.importBindingLocalName(ib);
+            const local_name = m.symbolName(@fromBackingInt(sym_idx)) orelse continue;
 
             if (!std.mem.eql(u8, local_name, target_name)) {
                 try renames.put(self.allocator, sym_idx, target_name);
