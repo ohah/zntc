@@ -1111,6 +1111,8 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
     var non_simple_parameter_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer non_simple_parameter_scopes.deinit(self.allocator);
     try collectOutputNonSimpleParameterScopes(self, editor, root, &non_simple_parameter_scopes);
+    var output_var_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer output_var_bindings.deinit(self.allocator);
     var stack: std.ArrayList(OutputScopeWork) = .empty;
     defer stack.deinit(self.allocator);
     var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -1129,6 +1131,23 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
         if (seen.contains(raw)) continue;
         try seen.put(self.allocator, raw, {});
         const node = self.ast.getNode(work.node);
+        // A var pattern's physical leaves have the same function-storage role
+        // as its scalar binding. Select them from this actual declaration edge,
+        // including nested properties/default/rest wrappers, before descent.
+        if (node.tag == .variable_declaration and self.ast.variableDeclarationKind(node) == .@"var") {
+            const start = self.readU32(node.data.extra, 1);
+            const count = self.readU32(node.data.extra, 2);
+            for (0..count) |i| {
+                const declarator = self.ast.getNode(@fromBackingInt(self.ast.extra_data.items[start + i]));
+                if (declarator.tag != .variable_declarator) return error.InvalidNode;
+                var bindings = try ast_walk.bindingIdentifiers(self.allocator, self.ast, self.readNodeIdx(declarator.data.extra, 0), .{});
+                defer bindings.deinit();
+                while (try bindings.next()) |binding| {
+                    if (self.ast.getNode(binding).tag == .binding_identifier)
+                        try output_var_bindings.put(self.allocator, @backingInt(binding), {});
+                }
+            }
+        }
         var scope = self.outputOwnedScope(work.node) orelse work.scope;
         if (node.tag == .import_expression) {
             const provenance = editor.node_scope_provenance.get(work.node) orelse return error.InvalidScope;
@@ -1204,10 +1223,7 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
                 const is_declaration_name = !work.parent.isNone() and
                     self.ast.getNode(work.parent).tag == .function_declaration and
                     self.readNodeIdx(self.ast.getNode(work.parent).data.extra, ast_mod.FunctionExtra.name) == work.node;
-                const output_var = !work.parent.isNone() and !work.grandparent.isNone() and
-                    self.ast.getNode(work.parent).tag == .variable_declarator and
-                    self.ast.getNode(work.grandparent).tag == .variable_declaration and
-                    self.ast.variableDeclarationKind(self.ast.getNode(work.grandparent)) == .@"var";
+                const output_var = output_var_bindings.contains(raw);
                 const target_scope = if (isNamedFunctionExpressionBinding(self, work.parent, work.node))
                     symbol.scope_id
                 else
@@ -1222,10 +1238,7 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
                     const is_declaration_name = !work.parent.isNone() and
                         self.ast.getNode(work.parent).tag == .function_declaration and
                         self.readNodeIdx(self.ast.getNode(work.parent).data.extra, ast_mod.FunctionExtra.name) == work.node;
-                    const output_var = !work.parent.isNone() and !work.grandparent.isNone() and
-                        self.ast.getNode(work.parent).tag == .variable_declarator and
-                        self.ast.getNode(work.grandparent).tag == .variable_declaration and
-                        self.ast.variableDeclarationKind(self.ast.getNode(work.grandparent)) == .@"var";
+                    const output_var = output_var_bindings.contains(raw);
                     const target_scope = if (isNamedFunctionExpressionBinding(self, work.parent, work.node))
                         symbol.scope_id
                     else

@@ -3910,7 +3910,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 self.generator_function_storage_changed = true;
                 try self.generator_function_storage_scopes.put(self.allocator, @backingInt(owner), {});
                 const declarator = self.ast.getNode(declaration.declarator);
-                if (self.readNodeIdx(declarator.data.extra, 0) != declaration.binding or !self.readNodeIdx(declarator.data.extra, 1).isNone())
+                if (self.readNodeIdx(declarator.data.extra, 0) != declaration.binding or !self.readNodeIdx(declarator.data.extra, 2).isNone())
                     @panic("FDI storage move requires its separate initializer operation");
                 const node = self.ast.getNode(declaration.node);
                 const start = self.readU32(node.data.extra, 1);
