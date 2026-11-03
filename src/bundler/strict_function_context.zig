@@ -327,7 +327,7 @@ fn restoreSourceImportDeclarations(module: *Module, editor: anytype, root: NodeI
         const anchor = binding.local_symbol_node orelse continue;
         const local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = module.index, .ast = ast, .symbol_ids = editor.symbol_ids.items, .symbols = editor.symbols.items });
         const sid = local.semanticIndex() orelse continue;
-        if (binding.local_symbol.semanticIndex()) |cached| if (cached != sid) return error.InvalidStrictFunctionRole;
+        if (binding.local_symbol.isValid() and !binding.local_symbol.eql(local)) return error.InvalidStrictFunctionRole;
         const slot = try bindings.getOrPut(allocator, .{ .node = anchor, .symbol = sid });
         const declaration = binding.local_declaration_node;
         const owner: Owner = .{ .record = binding.import_record_index, .declaration = declaration };
@@ -784,6 +784,100 @@ test "strict simple function directives preserve source prologue and nested coor
         _ = try output_parser.parse();
         try std.testing.expectEqual(@as(usize, 0), output_parser.errors.items.len);
     }
+}
+
+test "strict import restoration distinguishes a missing cached ref from a poisoned ref" {
+    const CacheState = enum { missing, foreign_module_same_sid, alias_ref };
+    const states = [_]CacheState{ .missing, .foreign_module_same_sid, .alias_ref };
+    var accepted_poisoned_refs: usize = 0;
+    for (states) |cache_state| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const source = "import{value}from'./dep.mjs';export function read(input=1){return value+input;}";
+        var scanner = try @import("../lexer/scanner.zig").Scanner.init(allocator, source);
+        scanner.is_module = true;
+        var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+        parser.is_module = true;
+        const root = try parser.parse();
+        try std.testing.expectEqual(ast_mod.Node.Tag.program, parser.ast.getNode(root).tag);
+        var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_module = true;
+        analyzer.enable_stmt_info = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+
+        const records = try @import("import_scanner.zig").extractImports(allocator, &parser.ast);
+        const bindings = try @import("binding_scanner.zig").extractImportBindings(allocator, &parser.ast, records, null);
+        try std.testing.expectEqual(@as(usize, 1), bindings.len);
+        const binding_scanner = @import("binding_scanner.zig");
+        for (bindings) |*binding| {
+            binding.local_symbol = binding_scanner.resolveImportLocalSymbol(binding.*, .{
+                .module_index = .fromUsize(0),
+                .ast = &parser.ast,
+                .symbol_ids = analyzer.symbol_ids.items,
+                .symbols = analyzer.symbols.items,
+            });
+        }
+        const local = bindings[0].local_symbol;
+        const local_sid = local.semanticIndex() orelse return error.MissingStrictImportLocalSID;
+
+        var module = Module.init(.fromUsize(0), "strict.mjs");
+        module.ast = parser.ast;
+        module.source = source;
+        module.parse_arena = &arena;
+        module.wrap_kind = .esm;
+        module.import_records = records;
+        module.import_bindings = bindings;
+        module.semantic = .{
+            .symbols = analyzer.symbols,
+            .scopes = analyzer.scopes.items,
+            .scope_maps = analyzer.scope_maps.items,
+            .scope_owner_map = analyzer.scope_owner_map,
+            .node_scope_provenance = analyzer.node_scope_provenance,
+            .exported_names = analyzer.exported_names,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .unresolved_references = analyzer.unresolved_references,
+            .references = analyzer.references.items,
+        };
+
+        switch (cache_state) {
+            .missing => bindings[0].local_symbol = .invalid,
+            .foreign_module_same_sid => bindings[0].local_symbol = @import("symbol.zig").SymbolRef.makeSemantic(.fromUsize(1), local_sid),
+            .alias_ref => bindings[0].local_symbol = .{ .alias = .{ .module = .fromUsize(0), .symbol = @fromBackingInt(@as(u32, 0)) } },
+        }
+
+        const module_ast = &module.ast.?;
+        const statements = module_ast.getNode(root).data.list;
+        var retained: std.ArrayList(NodeIndex) = .empty;
+        var iter = module_ast.iterateExtraList(statements);
+        while (iter.next()) |statement| {
+            if (module_ast.getNode(statement).tag != .import_declaration) try retained.append(allocator, statement);
+        }
+        try std.testing.expect(retained.items.len > 0);
+        module_ast.nodes.items[@backingInt(root)].data.list = try module_ast.addNodeList(retained.items);
+        module_ast.transformed_root = root;
+
+        switch (cache_state) {
+            .missing => {
+                try lowerModule(&module);
+                const restored = module_ast.iterateExtraList(module_ast.getNode(root).data.list);
+                var found_import = false;
+                var check = restored;
+                while (check.next()) |statement| found_import = found_import or module_ast.getNode(statement).tag == .import_declaration;
+                try std.testing.expect(found_import);
+                try std.testing.expect(!bindings[0].local_symbol.isValid());
+            },
+            .foreign_module_same_sid, .alias_ref => {
+                lowerModule(&module) catch |err| {
+                    try std.testing.expectEqual(error.InvalidStrictFunctionRole, err);
+                    continue;
+                };
+                accepted_poisoned_refs += 1;
+            },
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), accepted_poisoned_refs);
 }
 
 test "strict module prologue is executable before prefixes while CJS remains sloppy" {
