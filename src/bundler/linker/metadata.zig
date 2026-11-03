@@ -2350,7 +2350,10 @@ fn crossModuleConstImportLocalSemanticIndex(
         if (binding.local_symbol.moduleIndex() != module.index) return null;
         const sid = binding.local_symbol.semanticIndex() orelse return null;
         if (sid >= semantic.symbols.items.len or semantic.symbols.items[sid].kind != expected_kind) return null;
-        if (binding.local_symbol_node != null) {
+        if (module.ast != null) {
+            // A same-module SID of the expected role is not provenance. When
+            // source AST is available, require its exact scanner/declaration
+            // anchor even if the retained node field was lost.
             const anchored = module.checkedSourceImportLocalSymbol(binding) catch return null;
             if (!binding.local_symbol.eql(anchored)) return null;
         }
