@@ -1111,7 +1111,26 @@ pub const Linker = struct {
         _ = self;
         if (symbol_index >= sem.symbols.items.len) return error.InvalidTopLevelOwnerSymbolIdentity;
         const symbol = sem.symbols.items[symbol_index];
-        const actual_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else blk: {
+        // Enum IIFE parameters may have a distinct emitted name (for example
+        // `Self` becomes `_Self` when an enum member also uses `Self`). Scope
+        // maps still use the lexical source name, so validate this one role
+        // against its AST span; linker output naming continues to use its SID.
+        const actual_name = if (symbol.synthetic_kind == .enum_iife_parameter) blk: {
+            if (symbol.kind != .parameter or !symbol.decl_flags.is_parameter or symbol.scope_id.isNone() or
+                symbol.synthetic_name.len == 0)
+                return error.InvalidTopLevelOwnerSymbolIdentity;
+            const ast = if (m.ast) |*value| value else return error.InvalidTopLevelOwnerSymbolIdentity;
+            const span = symbol.name;
+            if ((span.start & ast_mod.Ast.STRING_TABLE_BIT) != 0) {
+                const start: usize = @intCast(span.start & ~ast_mod.Ast.STRING_TABLE_BIT);
+                const end: usize = @intCast(span.end & ~ast_mod.Ast.STRING_TABLE_BIT);
+                if ((span.end & ast_mod.Ast.STRING_TABLE_BIT) == 0 or end < start or end > ast.string_table.items.len)
+                    return error.InvalidTopLevelOwnerSymbolIdentity;
+            } else if ((span.end & ast_mod.Ast.STRING_TABLE_BIT) != 0 or span.end < span.start or span.end > ast.source.len) {
+                return error.InvalidTopLevelOwnerSymbolIdentity;
+            }
+            break :blk ast.getText(span);
+        } else if (symbol.synthetic_name.len > 0) symbol.synthetic_name else blk: {
             const span = symbol.name;
             if ((span.start & ast_mod.Ast.STRING_TABLE_BIT) != 0 or span.end < span.start)
                 return error.InvalidTopLevelOwnerSymbolIdentity;
@@ -1120,7 +1139,8 @@ pub const Linker = struct {
             if (end > m.source.len) return error.InvalidTopLevelOwnerSymbolIdentity;
             break :blk m.source[start..end];
         };
-        if (!Scanner.identifierNamesEqual(actual_name, name)) return error.InvalidTopLevelOwnerSymbolIdentity;
+        if (!Scanner.identifierNamesEqual(actual_name, name))
+            return error.InvalidTopLevelOwnerSymbolIdentity;
     }
 
     /// Validate a scope-map lookup before its index becomes a SymbolId write
@@ -1246,6 +1266,111 @@ pub const Linker = struct {
     }
 
     // Private identity capture and canonical sink need direct white-box coverage.
+    test "top-level owner spelling validates enum parameter source names" {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
+
+        var cache = @import("resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var linker = Linker.init(std.testing.allocator, &graph, .esm);
+        defer linker.deinit();
+
+        const source = "\\u0053elf;";
+        var ast = ast_mod.Ast.init(arena_allocator, source);
+        const string_table_name = try ast.addString("Self");
+        const other_string_table_name = try ast.addString("Other");
+        const source_name_span: Span = .{ .start = 0, .end = @intCast(source.len - 1) };
+        var symbols: std.ArrayList(semantic_symbol.Symbol) = .empty;
+        try symbols.append(arena_allocator, .{
+            .name = source_name_span,
+            .scope_id = @fromBackingInt(@as(u32, 1)),
+            .kind = .parameter,
+            .decl_flags = .{ .is_parameter = true },
+            .synthetic_kind = .enum_iife_parameter,
+            .synthetic_name = "_Self",
+            .output_name_hint = "_Self",
+            .declaration_span = .{ .start = 0, .end = @intCast(source.len - 1) },
+        });
+        const scopes = [_]SemanticScope{
+            .{ .parent = .none, .kind = .module, .is_strict = true },
+            .{ .parent = @fromBackingInt(@as(u32, 0)), .kind = .function, .is_strict = true },
+        };
+        const root_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+        var enum_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+        try enum_scope_map.put(arena_allocator, "Self", 0);
+        const scope_maps = [_]std.StringHashMapUnmanaged(usize){ root_scope_map, enum_scope_map };
+        var semantic = ModuleSemanticData{
+            .symbols = symbols,
+            .scopes = &scopes,
+            .scope_maps = &scope_maps,
+            .exported_names = .empty,
+            .symbol_ids = &.{},
+            .unresolved_references = .empty,
+        };
+        var module = Module.init(@fromBackingInt(@as(u32, 0)), "entry.ts");
+        module.source = source;
+        module.ast = ast;
+
+        try linker.validateScopeMapOwnerIdentity(module, &semantic, "Self", 1, 0);
+        try std.testing.expectError(
+            error.InvalidTopLevelOwnerSymbolIdentity,
+            linker.validateScopeMapOwnerIdentity(module, &semantic, "Other", 1, 0),
+        );
+        try std.testing.expectError(
+            error.InvalidTopLevelOwnerSymbolIdentity,
+            linker.validateScopeMapOwnerIdentity(module, &semantic, "Self", 0, 0),
+        );
+
+        semantic.symbols.items[0].kind = .variable_let;
+        try std.testing.expectError(
+            error.InvalidTopLevelOwnerSymbolIdentity,
+            linker.validateScopeMapOwnerIdentity(module, &semantic, "Self", 1, 0),
+        );
+        semantic.symbols.items[0].kind = .parameter;
+
+        semantic.symbols.items[0].name = .{ .start = 0, .end = @intCast(source.len + 1) };
+        try std.testing.expectError(
+            error.InvalidTopLevelOwnerSymbolIdentity,
+            linker.validateScopeMapOwnerIdentity(module, &semantic, "Self", 1, 0),
+        );
+        semantic.symbols.items[0].name = source_name_span;
+
+        const saved_ast = module.ast;
+        module.ast = null;
+        try std.testing.expectError(
+            error.InvalidTopLevelOwnerSymbolIdentity,
+            linker.validateScopeMapOwnerIdentity(module, &semantic, "Self", 1, 0),
+        );
+        module.ast = saved_ast;
+
+        semantic.symbols.items[0].synthetic_kind = null;
+        try std.testing.expectError(
+            error.InvalidTopLevelOwnerSymbolIdentity,
+            linker.validateScopeMapOwnerIdentity(module, &semantic, "Self", 1, 0),
+        );
+        semantic.symbols.items[0].synthetic_kind = .enum_iife_parameter;
+
+        semantic.symbols.items[0].name = string_table_name;
+        try linker.validateScopeMapOwnerIdentity(module, &semantic, "Self", 1, 0);
+        semantic.symbols.items[0].name = other_string_table_name;
+        try std.testing.expectError(
+            error.InvalidTopLevelOwnerSymbolIdentity,
+            linker.validateScopeMapOwnerIdentity(module, &semantic, "Self", 1, 0),
+        );
+
+        semantic.symbols.items[0].name = .{
+            .start = ast_mod.Ast.STRING_TABLE_BIT | 99,
+            .end = ast_mod.Ast.STRING_TABLE_BIT | 100,
+        };
+        try std.testing.expectError(
+            error.InvalidTopLevelOwnerSymbolIdentity,
+            linker.validateScopeMapOwnerIdentity(module, &semantic, "Self", 1, 0),
+        );
+    }
+
     test "synthetic top-level owners keep exact SIDs after scope-map redirection" {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
