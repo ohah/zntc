@@ -159,6 +159,21 @@ describe.skipIf(!(NODE_MAJOR >= 24))(
       });
     }
 
+    test('#6193 signed numeric JSX spread values match native Node', async () => {
+      const entry = join(FIXTURE_DIR, '4819-jsx-signed-numeric-spread.tsx');
+      const reference = join(FIXTURE_DIR, '4819-jsx-signed-numeric-spread.reference.mjs');
+      const expected = await run(['node', reference]);
+      expect(expected.exitCode, `native reference failed: ${expected.stderr}`).toBe(0);
+
+      const outDir = mkdtempSync(join(tmpdir(), 'zntc-jsx-signed-numeric-'));
+      try {
+        const failing = await failingCells(entry, true, expected, outDir);
+        expect(failing).toEqual([]);
+      } finally {
+        rmSync(outDir, { recursive: true, force: true });
+      }
+    });
+
     test('KNOWN_FAILURES 의 fixture 이름이 모두 존재한다', () => {
       const names = new Set(listFixtures().map((f) => f.name));
       expect(Object.keys(KNOWN_FAILURES).filter((n) => !names.has(n))).toEqual([]);
