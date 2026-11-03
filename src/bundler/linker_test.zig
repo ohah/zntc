@@ -3419,6 +3419,48 @@ test "linker: cross-module const facts use the source anchor when the cached imp
     binding.local_symbol_node = source_anchor;
 }
 
+test "linker: cross-module const facts reject same-kind import SID without source anchor" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs",
+        \\import { value as selected, other as decoy } from './provider.mjs';
+        \\console.log(selected, decoy);
+    );
+    try writeFile(tmp.dir, "provider.mjs", "export const value = 42; export let other = 9; other++;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingEntryModule;
+    const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingEntryModule);
+    const semantic = entry.semantic orelse return error.MissingEntrySemantic;
+    const selected = for (entry.import_bindings) |*binding| {
+        if (std.mem.eql(u8, binding.local_name, "selected")) break binding;
+    } else return error.MissingSelectedImport;
+    const decoy = for (entry.import_bindings) |binding| {
+        if (std.mem.eql(u8, binding.local_name, "decoy")) break binding;
+    } else return error.MissingDecoyImport;
+    const selected_ref = try entry.checkedSourceImportLocalSymbol(selected.*);
+    const decoy_ref = try entry.checkedSourceImportLocalSymbol(decoy);
+    const selected_sid = selected_ref.semanticIndex() orelse return error.MissingSelectedSID;
+    const decoy_sid = decoy_ref.semanticIndex() orelse return error.MissingDecoySID;
+    try std.testing.expect(selected_sid != decoy_sid);
+    try std.testing.expectEqual(.import_binding, semantic.symbols.items[selected_sid].kind);
+    try std.testing.expectEqual(.import_binding, semantic.symbols.items[decoy_sid].kind);
+
+    // Without its source anchor, a same-kind sibling import SID cannot prove
+    // which local binding owns the provider's constant value.
+    selected.local_symbol = decoy_ref;
+    selected.local_symbol_node = null;
+    var const_values = try r.linker.buildCrossModuleConstValues(entry, semantic);
+    defer const_values.deinit(std.testing.allocator);
+    try std.testing.expect(const_values.get(selected_sid) == null);
+    try std.testing.expect(const_values.get(decoy_sid) == null);
+    try std.testing.expect(selected.local_symbol.eql(decoy_ref));
+}
+
 test "rename: no conflict — no rename" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
