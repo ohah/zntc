@@ -1178,7 +1178,14 @@ pub fn buildMetadataForAstWithHolderReservations(
                 // 도 같이 drop 한다. `tree_shaker_active` 가 false (linker 단독 unit test)
                 // 면 `is_included` 비트가 신뢰할 수 없으므로 가드를 적용하지 않는다.
                 if (self.tree_shaker_active and !canonical_m_opt.?.is_included) continue;
-                const preamble_name = importBindingName(self, module_index, ib, m.importBindingLocalName(ib));
+                const preamble_name = try importBindingNameFromMetadataIdentity(
+                    self,
+                    module_index,
+                    ib,
+                    &m,
+                    &sem,
+                    &module_scope,
+                );
                 const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, @intCast(canonical_mod));
                 if (!self.isInteropImportLive(&m, ib)) {
                     // The source's evaluation remains observable even though
@@ -1420,7 +1427,14 @@ pub fn buildMetadataForAstWithHolderReservations(
             // 롤다운 shimMissingExports 호환: 소스 모듈에 해당 export가 없으면
             // strict mode ReferenceError 대신 undefined를 반환하도록 shim 생성.
             if (resolved == null and self.shim_missing_exports) {
-                const shim_name = importBindingName(self, module_index, ib, m.importBindingLocalName(ib));
+                const shim_name = try importBindingNameFromMetadataIdentity(
+                    self,
+                    module_index,
+                    ib,
+                    &m,
+                    &sem,
+                    &module_scope,
+                );
                 try preamble.write("var ");
                 try preamble.write(shim_name);
                 try preamble.write(" = void 0;\n");
@@ -1436,7 +1450,14 @@ pub fn buildMetadataForAstWithHolderReservations(
                 const cjs_mod: u32 = @intCast(@backingInt(rb.canonical.module_index));
                 const cjs_mod_opt = self.graph.getModule(rb.canonical.module_index);
                 if (cjs_mod_opt != null and cjs_mod_opt.?.wrap_kind == .cjs) {
-                    const preamble_name = importBindingName(self, module_index, ib, m.importBindingLocalName(ib));
+                    const preamble_name = try importBindingNameFromMetadataIdentity(
+                        self,
+                        module_index,
+                        ib,
+                        &m,
+                        &sem,
+                        &module_scope,
+                    );
                     const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, cjs_mod);
                     // re-export 체인은 **소비자**가 아니라 CJS 를 직접 import 한 모듈이
                     // interop 을 정한다 (#4659 파생). 위 직접-import 분기와 달리 여기 `m` 은

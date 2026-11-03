@@ -4906,6 +4906,160 @@ fn buildMetadataForModule(
     return r.linker.buildMetadataForAst(ast, module_index, is_entry, null, r.linker.format, true);
 }
 
+test "CJS import metadata names use exact source anchors when cached SIDs are missing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "entry.mjs",
+        "import selected from './lib.cjs'; import other from './other.cjs'; const decoy = 7; console.log(selected, other, decoy);",
+    );
+    try writeFile(tmp.dir, "lib.cjs", "module.exports = 42;");
+    try writeFile(tmp.dir, "other.cjs", "module.exports = 9;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingCjsMetadataEntry;
+    const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingCjsMetadataEntry);
+    const semantic = entry.semantic orelse return error.MissingCjsMetadataSemantic;
+    const selected_index = for (entry.import_bindings, 0..) |binding, index| {
+        if (std.mem.eql(u8, binding.local_name, "selected")) break index;
+    } else return error.MissingSelectedCjsImport;
+    const other_index = for (entry.import_bindings, 0..) |binding, index| {
+        if (std.mem.eql(u8, binding.local_name, "other")) break index;
+    } else return error.MissingOtherCjsImport;
+    const selected = &entry.import_bindings[selected_index];
+    const other_ref = try entry.checkedSourceImportLocalSymbol(entry.import_bindings[other_index]);
+    const selected_ref = try entry.checkedSourceImportLocalSymbol(selected.*);
+    const selected_sid = selected_ref.semanticIndex() orelse return error.MissingSelectedCjsSID;
+    const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingCjsMetadataDecoy;
+    const selected_anchor = selected.local_symbol_node orelse return error.MissingSelectedCjsAnchor;
+    const other_anchor = entry.import_bindings[other_index].local_symbol_node orelse return error.MissingOtherCjsAnchor;
+
+    try @constCast(semantic.scope_maps)[0].put(entry.parse_arena.?.allocator(), "selected", decoy_sid);
+    selected.local_symbol = .invalid;
+    var metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+    defer metadata.deinit();
+    const preamble = metadata.cjs_import_preamble orelse return error.MissingAnchoredCjsImportPreamble;
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "selected") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "decoy =") == null);
+    try std.testing.expect(!selected.local_symbol.isValid());
+
+    // A valid same-kind SID and a stolen source node both remain rejected.
+    selected.local_symbol = other_ref;
+    try std.testing.expectError(error.InvalidImportLocalSymbol, buildMetadataForModule(&r, entry_index.toU32(), true));
+    selected.local_symbol = selected_ref;
+    selected.local_symbol_node = other_anchor;
+    try std.testing.expectError(error.InvalidImportLocalSymbol, buildMetadataForModule(&r, entry_index.toU32(), true));
+    selected.local_symbol_node = selected_anchor;
+
+    // A spelling-map row cannot recover identity after the source anchor is gone.
+    selected.local_symbol = .invalid;
+    selected.local_symbol_node = null;
+    try @constCast(semantic.scope_maps)[0].put(entry.parse_arena.?.allocator(), "selected", selected_sid);
+    try std.testing.expectError(error.InvalidImportLocalSymbol, buildMetadataForModule(&r, entry_index.toU32(), true));
+    selected.local_symbol_node = selected_anchor;
+}
+
+test "re-exported CJS metadata names use the consumer's exact source anchor" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "entry.mjs",
+        "import { value as selected } from './barrel.mjs'; const decoy = 7; console.log(selected, decoy);",
+    );
+    try writeFile(tmp.dir, "barrel.mjs", "export { default as value } from './lib.cjs';");
+    try writeFile(tmp.dir, "lib.cjs", "module.exports = 42;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingCjsReexportEntry;
+    const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingCjsReexportEntry);
+    const semantic = entry.semantic orelse return error.MissingCjsReexportSemantic;
+    const binding = for (entry.import_bindings) |*candidate| {
+        if (std.mem.eql(u8, candidate.local_name, "selected")) break candidate;
+    } else return error.MissingCjsReexportBinding;
+    const direct_record = entry.import_records[binding.import_record_index];
+    const direct_target = r.graph.getModule(direct_record.resolved) orelse return error.MissingCjsReexportBarrel;
+    try std.testing.expect(direct_target.wrap_kind != .cjs);
+    const resolved = r.linker.getResolvedBinding(entry_index.toU32(), binding.local_span) orelse return error.MissingCjsReexportResolution;
+    const canonical_target = r.graph.getModule(resolved.canonical.module_index) orelse return error.MissingCjsReexportProvider;
+    try std.testing.expectEqual(.cjs, canonical_target.wrap_kind);
+    const source_ref = try entry.checkedSourceImportLocalSymbol(binding.*);
+    const source_sid = source_ref.semanticIndex() orelse return error.MissingCjsReexportSID;
+    const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingCjsReexportDecoy;
+
+    binding.local_symbol = .invalid;
+    try @constCast(semantic.scope_maps)[0].put(entry.parse_arena.?.allocator(), "selected", decoy_sid);
+    var metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+    defer metadata.deinit();
+    const preamble = metadata.cjs_import_preamble orelse return error.MissingCjsReexportPreamble;
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "selected") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "decoy =") == null);
+    try std.testing.expect(!binding.local_symbol.isValid());
+
+    binding.local_symbol_node = null;
+    try @constCast(semantic.scope_maps)[0].put(entry.parse_arena.?.allocator(), "selected", source_sid);
+    try std.testing.expectError(error.InvalidImportLocalSymbol, buildMetadataForModule(&r, entry_index.toU32(), true));
+}
+
+test "missing-export shim metadata uses an exact import source anchor" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "entry.mjs",
+        "import { selected } from './provider.mjs'; const decoy = 7; console.log(selected, decoy);",
+    );
+    try writeFile(tmp.dir, "provider.mjs", "export const present = 42;");
+    const entry_path = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry_path);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry_path});
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    linker.shim_missing_exports = true;
+    try linker.link();
+    try linker.computeRenames();
+    linker.populateImportSymbols();
+
+    const entry_index = findModuleIdx(&graph, "entry.mjs") orelse return error.MissingShimEntry;
+    const entry = graph.moduleAtMut(entry_index) orelse return error.MissingShimEntry;
+    const semantic = entry.semantic orelse return error.MissingShimSemantic;
+    const binding = &entry.import_bindings[0];
+    const source_ref = try entry.checkedSourceImportLocalSymbol(binding.*);
+    const source_sid = source_ref.semanticIndex() orelse return error.MissingShimSourceSID;
+    const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingShimDecoy;
+
+    binding.local_symbol = .invalid;
+    try @constCast(semantic.scope_maps)[0].put(entry.parse_arena.?.allocator(), "selected", decoy_sid);
+    const ast: *const Ast = &(entry.ast orelse return error.MissingShimAst);
+    var metadata = try linker.buildMetadataForAst(ast, entry_index.toU32(), true, null, .esm, true);
+    defer metadata.deinit();
+    const preamble = metadata.cjs_import_preamble orelse return error.MissingShimPreamble;
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "var selected = void 0;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "var decoy = void 0;") == null);
+    try std.testing.expect(!binding.local_symbol.isValid());
+
+    binding.local_symbol_node = null;
+    try @constCast(semantic.scope_maps)[0].put(entry.parse_arena.?.allocator(), "selected", source_sid);
+    try std.testing.expectError(
+        error.InvalidImportLocalSymbol,
+        linker.buildMetadataForAst(ast, entry_index.toU32(), true, null, .esm, true),
+    );
+}
+
 fn expectMetadataIdentityError(r: *const TestResult, module_index: u32, legacy: bool) !void {
     const metadata = if (legacy)
         r.linker.buildMetadata(module_index, true) catch |err| {
