@@ -55,7 +55,13 @@ pub const Builder = struct {
             if (target.owner == .unassigned or target.owner != foreign_sem.owner_token or @backingInt(target.symbol.inner) >= foreign_sem.symbols.items.len) return error.InvalidCallsiteTarget;
             try @import("runtime_callsite_targets.zig").validateTargetRole(self.graph, target);
             const local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = self.module.index, .ast = self.ast, .symbol_ids = self.editor.symbol_ids.items, .symbols = self.editor.symbols.items });
-            if (!local.isValid() or !local.eql(binding.local_symbol) or !binding.symbol.eql(target.symbol.toRef())) return error.InvalidCallsiteBinding;
+            // The scanner-owned node and current editor graph are the local
+            // identity authority. A missing linker cache must not discard an
+            // otherwise valid callsite, and validation never fills that cache.
+            // A present cache still has to match the exact node-derived SID.
+            if (!local.isValid() or
+                (binding.local_symbol.isValid() and !local.eql(binding.local_symbol)) or
+                !binding.symbol.eql(target.symbol.toRef())) return error.InvalidCallsiteBinding;
             const local_raw = local.semanticIndex().?;
             const row = self.editor.symbols.items[local_raw];
             if (row.scope_id.isNone() or row.scope_id.toIndex() >= self.editor.scope_maps.items.len or self.editor.scope_maps.items[row.scope_id.toIndex()].get(self.ast.getText(row.name)) != @as(?usize, local_raw)) return error.InvalidCallsiteBinding;
