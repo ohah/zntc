@@ -2865,8 +2865,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const args_len = self.readU32(e, 2);
             const flags = self.readU32(e, 3);
             var last_suspending: ?u32 = null;
+            var has_spread = false;
             for (0..args_len) |i| {
                 const arg: NodeIndex = @fromBackingInt(self.ast.extra_data.items[args_start + i]);
+                has_spread = has_spread or self.ast.getNode(arg).tag == .spread_element;
                 if (es2015_scan.containsYield(self, arg)) last_suspending = @intCast(i);
             }
             var reference_callee = source_callee;
@@ -2896,7 +2898,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 receiver = try freezeSuspensionPrefix(self, try Super.buildSuperReceiver(self, source.span), source.span, ops);
                 const callable = try freezeSuspensionPrefix(self, try Super.buildSuperPropGet(self, key, source.span), source.span, ops);
                 callee = try makeGeneratorTempRefForProducer(self, callable, source.span, .{ .read = true });
-            } else if (node.tag == .call_expression and member and !special) {
+            } else if (node.tag == .call_expression and member and !special and (last_suspending != null or has_spread)) {
+                // Only a later suspension (or the existing spread ABI) needs
+                // to separate callable+receiver from their native Reference.
+                // Receiver/key-only suspension can keep the final member call.
                 const member_e = source.data.extra;
                 const object_source = self.readNodeIdx(member_e, 0);
                 const key_source = self.readNodeIdx(member_e, 1);
@@ -6610,4 +6615,28 @@ test "suspension plain template string coercion precedes later await and rejects
         "var events=[];async function g(){var state=20;var value={};value[Symbol.toPrimitive]=function(hint){events.push(hint+':'+state);return state};var text=`${value}:${await(events.push('operand'),state=100,Promise.resolve(22))}`;var symbolThrows=false;try{`${Symbol('x')}`}catch(e){symbolThrows=e instanceof TypeError}return{text:text,events:events,symbolThrows:symbolThrows}}g().then(function(value){console.log(JSON.stringify(value))});",
     };
     for (sources) |source| try checkSuspensionEvaluationRuntime(source);
+}
+
+test "suspension member receiver and key only retain native call without invoke demand" {
+    const sources = [_][]const u8{
+        "var events=[];var receiver={value:40};var fn=function(v){events.push(this===receiver?'this-ok':'this-bad');return this.value+v};Object.defineProperty(fn,'call',{get:function(){events.push('own-call');throw Error('own-call')}});Object.defineProperty(fn,'apply',{get:function(){events.push('own-apply');throw Error('own-apply')}});Object.defineProperty(receiver,'method',{get:function(){events.push('getter');return fn}});function arg(){events.push('arg');return 2}function getReceiver(){events.push('receiver');return receiver}async function g(){return (await getReceiver()).method(arg())}g().then(function(value){console.log(JSON.stringify({value:value,events:events}))});",
+        "var events=[];var receiver={value:40};var fn=function(v){events.push(this===receiver?'this-ok':'this-bad');return this.value+v};Object.defineProperty(fn,'call',{get:function(){events.push('own-call');throw Error('own-call')}});Object.defineProperty(fn,'apply',{get:function(){events.push('own-apply');throw Error('own-apply')}});Object.defineProperty(receiver,'method',{get:function(){events.push('getter');return fn}});function arg(){events.push('arg');return 2}function getKey(){events.push('key');return 'method'}async function g(){return receiver[await getKey()](arg())}g().then(function(value){console.log(JSON.stringify({value:value,events:events}))});",
+    };
+    for (sources) |source| {
+        try checkSuspensionEvaluationRuntime(source);
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, source);
+        var parser = Parser.init(a, &scanner);
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        const Transformer = @import("transformer.zig").Transformer;
+        var transformer = try Transformer.init(a, &parser.ast, .{ .unsupported = @import("compat.zig").fromESTarget(.es5) });
+        _ = try transformer.transform();
+        try std.testing.expect(!transformer.suspension_invoke_used);
+        try std.testing.expect(!transformer.runtime_helper_symbol_ids.contains("__suspensionInvoke"));
+        const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{ .unsupported = @import("compat.zig").fromESTarget(.es5) });
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "__suspensionInvoke") == null);
+    }
 }
