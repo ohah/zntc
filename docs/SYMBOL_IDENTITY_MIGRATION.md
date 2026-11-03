@@ -16,7 +16,7 @@
 - 출력 별칭과 원본 함수·클래스의 `.name`은 별도 계약이다. alias 예약은 Unicode escape를 해석한 identifier StringValue로 비교하고, 이름 복원은 정확한 초기화 식 노드와 선언 SID에 연결한다. 같은 선언의 이름을 변환기와 codegen이 중복 복원하지 않는다.
 - 의도적인 분석 생략 또는 저수준 Transformer의 `semantic_edit_enabled=false` 경로는 적용 범위를 별도로 기록한다. 해당 경로의 `null`을 심볼 기반 경로에서 누락을 허용하는 근거로 사용하지 않는다.
 - generator 상태 머신 안에서 추출된 루프의 `for-in` 임시변수는 원본 loop node의 오래된 scope 대신 현재 상태 머신의 정확한 wrapper function `ScopeId`에 등록한다. 최종 hoist binding도 이 SID를 재사용한다.
-- exact coverage 보고서는 observation·diagnostic·invariant의 field name과 분류를 stable schema fingerprint로 출력하고 integration gate가 독립 상수와 대조한다. field 개수만 같은 진단 항목 교체도 통과하지 않는다. observation과 diagnostic field의 type shape도 컴파일 시 검증한다. `legacy_debt_fingerprint`는 보고 observation으로 분류되지만 `isClean()`과 출력 이름 할당 전 identity gate도 무부채 초기값을 요구하므로, 카운터 보고가 누락되어도 생성 identity 부채를 통과시키지 않는다.
+- exact coverage 보고서는 observation·diagnostic·invariant의 field name, 분류, logical payload shape를 stable schema fingerprint로 출력하고 integration gate가 독립 상수와 대조한다. field 개수만 같은 진단 항목 교체도 통과하지 않는다. 모든 field type은 컴파일 시 예상 타입과 대조한다. `legacy_debt_fingerprint`는 보고 observation으로 분류되지만 `isClean()`과 출력 이름 할당 전 identity gate도 무부채 초기값을 요구하므로, 카운터 보고가 누락되어도 생성 identity 부채를 통과시키지 않는다.
 - exact coverage audit은 reachable declaration binding의 각 `SymbolId`에 실제 declaration `NodeIndex`를 가리키는 행이 있는지 확인한다. 동일 `SymbolId`를 공유하는 merged namespace 선언은 허용하되, 같은 binding node의 중복 anchor는 거부한다. standalone audit 전용 추적은 `stmt_idx`/`scope_stmt_idx`를 채우지 않아 optimizer의 statement metadata를 바꾸지 않는다.
 
 ## 이름 생성자와 남은 경계
@@ -456,6 +456,7 @@ Fallback을 제거할 조건은 모든 지원되는 Worklet 호출자가 semanti
 - 2026-10-29: `--drop=console`의 dropped-only TypeScript import coverage를 default·namespace binding으로 확장했다. 두 경우 모두 retained graph와 모듈 평가 side effect를 확인했다. 별도 compiler 변경 없이 focused integration table 1/1 (776 assertions), 포맷/diff, lint(오류 0, 기존 경고 2)가 통과했다. 이는 앞서 병합한 gate의 추가 import-kind 회귀 coverage이며 A안 전체 재분석 제거를 뜻하지 않는다.
 - 2026-11-03: captured-temp reference가 exact `SymbolId`와 stable producer ID를 모두 잃었을 때 이름/span으로 심볼을 재발견하던 semantic fallback을 제거했다. 알려진 owner는 캡처된 SID를 그대로 쓰고, deferred owner는 producer ID로만 handoff하며, semantic editing을 끈 graphless 경로는 계속 reference를 등록하지 않는다. 정상 exact-SID/deferred 결합과 누락 identity panic을 검사했고, spelling/span fallback을 되살린 적대적 변이는 회귀 테스트를 실패시켰다. 이는 captured-temp consumer 하나의 경계이며 A안 전체 완료를 뜻하지 않는다.
 - 2026-11-03: Bundler enum IIFE parameter의 lexical scope-map 이름은 emitted synthetic 이름이 아니라 exact parameter SID의 AST name span으로 검증한다. `enum Self { Self = 9, B = Self + 1 }`에서 출력 parameter가 `_Self`로 달라져도 decoded source spelling `Self`와 동일한 owner를 유지한다. wrong name/scope/role, AST 부재, source/StringValue 범위 오류와 다른 interned 이름을 hostile 테스트로 거부했다. 공개 API의 minify/coverage 네 조합은 `10\n`을 출력했고, 직접 실행 Debug Zig 테스트 8,816 + 1개와 focused integration 208 assertions가 통과했다. 이는 enum IIFE lexical-name 검증 경계 하나이며 전체 #4819/A안 완료를 뜻하지 않는다.
+- 2026-11-03: exact coverage report의 진단 필드 17개를 예상 payload 타입에 각각 연결해 `optional` 안의 잘못된 타입도 compile-time error로 거부한다. schema fingerprint v2는 필드 이름·분류뿐 아니라 logical payload shape도 포함하며, integration gate는 기존 field-name-only fingerprint를 거부한다. `first_missing_binding: ?u32` 적대적 변이가 새 compile-time type guard에서 실패하는 것을 확인했다. 이는 coverage schema 불변식 하나를 강화하며 실제 producer/consumer 이관이나 A안 완료를 뜻하지 않는다.
 
 ## AST producer census baseline (#6120; `origin/main` `7346fc2cb48980257f9fc5a8625dc627eb7f0768`)
 
