@@ -4906,6 +4906,62 @@ fn buildMetadataForModule(
     return r.linker.buildMetadataForAst(ast, module_index, is_entry, null, r.linker.format, true);
 }
 
+test "inline requires strict-order metadata does not defer with mismatched import identity" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "entry.mjs",
+        "import { value as selected, other as decoy } from './provider.cjs'; console.log(selected);",
+    );
+    try writeFile(tmp.dir, "provider.cjs", "module.exports = { value: 42, other: 9 };");
+    try writeFile(tmp.dir, "root.cjs", "require('./entry.mjs');");
+
+    var r = try buildLinkAndRename(allocator, &tmp, "root.cjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingInlineRequiresEntry;
+    const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingInlineRequiresEntry);
+    try std.testing.expectEqual(types.WrapKind.esm, entry.wrap_kind);
+    const selected = for (entry.import_bindings) |*binding| {
+        if (std.mem.eql(u8, binding.local_name, "selected")) break binding;
+    } else return error.MissingInlineRequiresImport;
+    const decoy = for (entry.import_bindings) |binding| {
+        if (std.mem.eql(u8, binding.local_name, "decoy")) break binding;
+    } else return error.MissingInlineRequiresDecoy;
+    const source_ref = try entry.checkedSourceImportLocalSymbol(selected.*);
+    const source_sid = source_ref.semanticIndex() orelse return error.MissingInlineRequiresSourceSID;
+    const decoy_ref = try entry.checkedSourceImportLocalSymbol(decoy);
+
+    r.linker.inline_requires = true;
+    r.linker.strict_execution_order = true;
+    selected.local_symbol = decoy_ref;
+
+    var mismatched_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+    defer mismatched_metadata.deinit();
+    const eager_preamble = mismatched_metadata.cjs_import_preamble orelse return error.MissingMismatchedImportPreamble;
+    try std.testing.expect(eager_preamble.len > 0);
+    try std.testing.expect(mismatched_metadata.renames.get(source_sid) == null);
+
+    // A verified cached SID and a missing cached SID with the exact source
+    // anchor both retain the existing lazy deferral behavior.
+    selected.local_symbol = source_ref;
+    var verified_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+    defer verified_metadata.deinit();
+    try std.testing.expect(verified_metadata.cjs_import_preamble == null);
+    try std.testing.expect(verified_metadata.renames.get(source_sid) != null);
+
+    selected.local_symbol = .invalid;
+    var anchored_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+    defer anchored_metadata.deinit();
+    try std.testing.expect(anchored_metadata.cjs_import_preamble == null);
+    try std.testing.expect(anchored_metadata.renames.get(source_sid) != null);
+    try std.testing.expect(!selected.local_symbol.isValid());
+}
+
 test "CJS import metadata names use exact source anchors when cached SIDs are missing" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
