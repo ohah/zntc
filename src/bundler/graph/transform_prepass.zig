@@ -2370,12 +2370,14 @@ fn isRetainableJsxSpreadChild(
 
 /// Keep identifier operands only with their exact source binding. Inline
 /// object literals are limited to static data properties with primitive
-/// literals (including no-substitution templates), exact bound reads, member
-/// chains rooted in a bound identifier, the unresolved global undefined, or
-/// void over primitive literals or the exact unresolved global undefined.
-/// Member chains allow dot names, primitive literal bracket keys, void over
-/// primitive literals or the exact unresolved global undefined, exact bound
-/// identifier keys, or the unresolved global undefined.
+/// literals (including no-substitution templates), signed numeric literals,
+/// exact bound reads, member chains rooted in a bound identifier, the
+/// unresolved global undefined, or void over primitive literals or the exact
+/// unresolved global undefined.
+/// Member chains allow dot names, primitive literal bracket keys, signed
+/// numeric literals, void over primitive literals or the exact unresolved
+/// global undefined, exact bound identifier keys, or the unresolved global
+/// undefined.
 /// A bound bracket key keeps its own source binding; other computed-key effects,
 /// new scopes, and nested spreads are not admitted.
 fn isRetainableJsxMemberChain(
@@ -2406,7 +2408,8 @@ fn isRetainableJsxMemberChain(
                 .template_literal => isExactJsxNoSubstitutionTemplateLiteral(ast, property_idx),
                 .identifier_reference => isBoundSourceIdentifierReference(ast, semantic, property_idx) or
                     isUnresolvedGlobalUndefinedReference(ast, semantic, property_idx),
-                .unary_expression => isRetainableJsxVoidValue(ast, semantic, property_idx),
+                .unary_expression => isRetainableJsxSignedNumericValue(ast, property_idx) or
+                    isRetainableJsxVoidValue(ast, semantic, property_idx),
                 else => false,
             },
             else => false,
@@ -2463,7 +2466,8 @@ fn isRetainableJsxSpreadPropsOperand(
                 if (!isRetainableJsxMemberChain(ast, semantic, value_idx)) return false;
             },
             .unary_expression => {
-                if (!isRetainableJsxVoidValue(ast, semantic, value_idx)) return false;
+                if (!isRetainableJsxSignedNumericValue(ast, value_idx) and
+                    !isRetainableJsxVoidValue(ast, semantic, value_idx)) return false;
             },
             else => return false,
         }
@@ -3136,6 +3140,39 @@ fn isExactJsxNoSubstitutionTemplateLiteral(ast: *const ast_mod.Ast, node_idx: as
     if (node.tag != .template_literal) return false;
     const list = node.data.list;
     return list.len == 0 and list.start <= ast.extra_data.items.len;
+}
+
+/// A single unary plus/minus over a numeric literal is a pure Number value.
+/// Keep this narrower than general constant folding: identifier reads,
+/// BigInt operands, nested unary expressions, and malformed AST flags all
+/// stay on the conservative path.
+fn isRetainableJsxSignedNumericValue(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
+    if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[@backingInt(node_idx)];
+    if (node.tag != .unary_expression) return false;
+    const extras = ast.extra_data.items;
+    const extra = node.data.extra;
+    if (extra > extras.len or extras.len - extra < 2) return false;
+
+    const operator_flags = extras[extra + 1];
+    const operator_raw = operator_flags & 0xff;
+    const plus_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.plus)));
+    const minus_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.minus)));
+    if ((operator_raw != plus_raw and operator_raw != minus_raw) or operator_flags != operator_raw) return false;
+
+    var operand_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+    var remaining_nodes = ast.nodes.items.len;
+    while (remaining_nodes > 0) : (remaining_nodes -= 1) {
+        if (operand_idx.isNone() or @backingInt(operand_idx) >= ast.nodes.items.len) return false;
+        const operand = ast.nodes.items[@backingInt(operand_idx)];
+        if (operand.tag == .parenthesized_expression) {
+            if (operand.data.unary.flags != 0) return false;
+            operand_idx = operand.data.unary.operand;
+            continue;
+        }
+        return operand.tag == .numeric_literal;
+    }
+    return false;
 }
 
 /// `void` over a parenthesized chain ending in a primitive literal has no
@@ -17565,7 +17602,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), classic_member_key_read_count);
     try std.testing.expectEqual(@as(usize, 2), classic_undefined_read_count);
 
-    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" }, \"undefined\": \"U\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...props} {...{ staticTemplateValue: `static`, id: label, count: count, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;";
+    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" }, \"undefined\": \"U\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...props} {...{ staticTemplateValue: `static`, id: label, count: count, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], signedNegativeZero: -0, signedPositiveOne: +1, signedNegativeParen: -(2), signedPositiveHex: +(0x10), signedNegativeExponent: -1e2, signedNegativeZeroKey: member[-0], signedPositiveOneKey: member[+1], signedNegativeParenKey: member[-(2)], signedPositiveHexKey: member[+(0x10)], signedNegativeExponentKey: member[-1e2], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;";
     var key_fallback_fixture = try jsxSpreadChildTestFixture(allocator, key_fallback_source);
     const key_fallback_owner = key_fallback_fixture.semantic.captureOwnerToken();
     var key_fallback_item_symbol: ?u32 = null;
@@ -17674,7 +17711,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), key_fallback_props_read_count);
     try std.testing.expectEqual(@as(usize, 1), key_fallback_label_read_count);
     try std.testing.expectEqual(@as(usize, 1), key_fallback_count_read_count);
-    try std.testing.expectEqual(@as(usize, 6), key_fallback_member_read_count);
+    try std.testing.expectEqual(@as(usize, 11), key_fallback_member_read_count);
     try std.testing.expectEqual(@as(usize, 1), key_fallback_member_key_read_count);
     try std.testing.expectEqual(@as(usize, 2), key_fallback_undefined_read_count);
 
@@ -25437,6 +25474,112 @@ test "#6193 automatic key fallback props accepts only exact no-substitution temp
     fixture.ast.nodes.items[template_raw].data.list.len = 1;
     try std.testing.expect(!isExactJsxNoSubstitutionTemplateLiteral(&fixture.ast, template));
     try std.testing.expect(!auditedJsxSpreadPropsOperandForTest(&fixture));
+}
+
+test "#6193 JSX spread admits only pure signed numeric literals" {
+    const allocator = std.testing.allocator;
+    const safe_sources = [_][]const u8{
+        "const items = [1]; const result = <Comp {...{ value: -0 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: +1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: -(2) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: +(0x10) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: -1e2 }} key=\"k\">{...items}</Comp>;",
+        "const member = { \"0\": \"zero\" }; const items = [1]; const result = <Comp {...{ value: member[-0] }} key=\"k\">{...items}</Comp>;",
+        "const member = { \"1\": \"one\" }; const items = [1]; const result = <Comp {...{ value: member[+1] }} key=\"k\">{...items}</Comp>;",
+        "const member = { \"-2\": \"minus-two\" }; const items = [1]; const result = <Comp {...{ value: member[-(2)] }} key=\"k\">{...items}</Comp>;",
+        "const member = { \"16\": \"hex\" }; const items = [1]; const result = <Comp {...{ value: member[+(0x10)] }} key=\"k\">{...items}</Comp>;",
+        "const member = { \"-100\": \"exponent\" }; const items = [1]; const result = <Comp {...{ value: member[-1e2] }} key=\"k\">{...items}</Comp>;",
+    };
+    for (safe_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(auditedJsxSpreadPropsOperandForTest(&fixture));
+    }
+
+    const hostile_sources = [_][]const u8{
+        "const member = {}; const key = 1; const items = [1]; const result = <Comp {...{ value: member[-key] }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const key = 1; const items = [1]; const result = <Comp {...{ value: member[+key] }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; function getKey() { return 1; } const items = [1]; const result = <Comp {...{ value: member[-getKey()] }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; function getKey() { return 1; } const items = [1]; const result = <Comp {...{ value: member[+getKey()] }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ value: member[-1n] }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ value: member[+1n] }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ value: member[-(-0)] }} key=\"k\">{...items}</Comp>;",
+        "let key = 1; const member = {}; const items = [1]; const result = <Comp {...{ value: member[--key] }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ value: member[-({ value: 1 })] }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ value: member[+[]] }} key=\"k\">{...items}</Comp>;",
+    };
+    for (hostile_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(!auditedJsxSpreadPropsOperandForTest(&fixture));
+    }
+
+    var malformed_arena = std.heap.ArenaAllocator.init(allocator);
+    defer malformed_arena.deinit();
+    var malformed = try jsxSpreadChildTestFixture(
+        malformed_arena.allocator(),
+        "const items = [1]; const result = <Comp {...{ value: -(0) }} key=\"k\">{...items}</Comp>;",
+    );
+    var signed_node: ?ast_mod.NodeIndex = null;
+    var paren_node: ?ast_mod.NodeIndex = null;
+    for (malformed.ast.nodes.items, 0..) |node, raw| {
+        const node_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+        if (node.tag == .unary_expression and isRetainableJsxSignedNumericValue(&malformed.ast, node_idx)) {
+            signed_node = node_idx;
+            const operand = node.data.extra;
+            if (operand < malformed.ast.extra_data.items.len) {
+                const child_raw = malformed.ast.extra_data.items[operand];
+                if (child_raw < malformed.ast.nodes.items.len and
+                    malformed.ast.nodes.items[child_raw].tag == .parenthesized_expression)
+                {
+                    paren_node = @fromBackingInt(@intCast(child_raw));
+                }
+            }
+            break;
+        }
+    }
+    const signed = signed_node orelse return error.MissingSignedNumericJsxValue;
+    const signed_raw: usize = @intCast(@backingInt(signed));
+    const signed_extra = malformed.ast.nodes.items[signed_raw].data.extra;
+    const saved_flags = malformed.ast.extra_data.items[signed_extra + 1];
+    malformed.ast.extra_data.items[signed_extra + 1] = saved_flags | 0x100;
+    try std.testing.expect(!isRetainableJsxSignedNumericValue(&malformed.ast, signed));
+    malformed.ast.extra_data.items[signed_extra + 1] = saved_flags | 0x10000;
+    try std.testing.expect(!isRetainableJsxSignedNumericValue(&malformed.ast, signed));
+    malformed.ast.extra_data.items[signed_extra + 1] = std.math.maxInt(u32);
+    try std.testing.expect(!isRetainableJsxSignedNumericValue(&malformed.ast, signed));
+    malformed.ast.extra_data.items[signed_extra + 1] = 0xff;
+    try std.testing.expect(!isRetainableJsxSignedNumericValue(&malformed.ast, signed));
+    malformed.ast.extra_data.items[signed_extra + 1] = saved_flags;
+
+    const saved_operand = malformed.ast.extra_data.items[signed_extra];
+    malformed.ast.extra_data.items[signed_extra] = @intCast(malformed.ast.nodes.items.len);
+    try std.testing.expect(!isRetainableJsxSignedNumericValue(&malformed.ast, signed));
+    malformed.ast.extra_data.items[signed_extra] = saved_operand;
+    const saved_extra = malformed.ast.nodes.items[signed_raw].data.extra;
+    malformed.ast.nodes.items[signed_raw].data.extra = std.math.maxInt(u32);
+    try std.testing.expect(!isRetainableJsxSignedNumericValue(&malformed.ast, signed));
+    malformed.ast.nodes.items[signed_raw].data.extra = @intCast(malformed.ast.extra_data.items.len);
+    try std.testing.expect(!isRetainableJsxSignedNumericValue(&malformed.ast, signed));
+    malformed.ast.nodes.items[signed_raw].data.extra = saved_extra;
+
+    const paren = paren_node orelse return error.MissingSignedNumericJsxParentheses;
+    const paren_raw: usize = @intCast(@backingInt(paren));
+    const saved_paren_flags = malformed.ast.nodes.items[paren_raw].data.unary.flags;
+    malformed.ast.nodes.items[paren_raw].data.unary.flags = 1;
+    try std.testing.expect(!isRetainableJsxSignedNumericValue(&malformed.ast, signed));
+    malformed.ast.nodes.items[paren_raw].data.unary.flags = saved_paren_flags;
+    const saved_paren_operand = malformed.ast.nodes.items[paren_raw].data.unary.operand;
+    malformed.ast.nodes.items[paren_raw].data.unary.operand = .none;
+    try std.testing.expect(!isRetainableJsxSignedNumericValue(&malformed.ast, signed));
+    malformed.ast.nodes.items[paren_raw].data.unary.operand = saved_paren_operand;
+
+    const saved_numeric = malformed.ast.nodes.items[@intCast(@backingInt(saved_paren_operand))];
+    malformed.ast.nodes.items[@intCast(@backingInt(saved_paren_operand))].tag = .bigint_literal;
+    try std.testing.expect(!isRetainableJsxSignedNumericValue(&malformed.ast, signed));
+    malformed.ast.nodes.items[@intCast(@backingInt(saved_paren_operand))] = saved_numeric;
 }
 
 test "#6193 automatic key fallback props spread admits static data and bound value reads" {
