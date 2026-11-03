@@ -3178,9 +3178,9 @@ fn isRetainableJsxSignedNumericValue(ast: *const ast_mod.Ast, node_idx: ast_mod.
     return false;
 }
 
-/// Unary `!`, `~`, and `typeof` over primitive literal values cannot call user
-/// code or add semantic edges. Restrict operands to literal syntax so object,
-/// reference, and call expressions cannot add effects or semantic edges.
+/// Unary `!`, `~`, `typeof`, and `delete` over primitive literal values cannot
+/// call user code or add semantic edges. Restrict operands to literal syntax so
+/// object, reference, and call expressions cannot add effects or semantic edges.
 fn isRetainableJsxLiteralUnaryValue(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
     if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
     const node = ast.nodes.items[@backingInt(node_idx)];
@@ -3194,7 +3194,9 @@ fn isRetainableJsxLiteralUnaryValue(ast: *const ast_mod.Ast, node_idx: ast_mod.N
     const bang_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.bang)));
     const tilde_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.tilde)));
     const typeof_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.kw_typeof)));
-    if ((operator_raw != bang_raw and operator_raw != tilde_raw and operator_raw != typeof_raw) or
+    const delete_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.kw_delete)));
+    if ((operator_raw != bang_raw and operator_raw != tilde_raw and operator_raw != typeof_raw and
+        operator_raw != delete_raw) or
         operator_flags != operator_raw) return false;
 
     var operand_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
@@ -17648,7 +17650,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), classic_member_key_read_count);
     try std.testing.expectEqual(@as(usize, 2), classic_undefined_read_count);
 
-    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" }, \"undefined\": \"U\", true: \"truthy\", \"-2\": \"minus-two\", number: \"N\", string: \"S\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...props} {...{ staticTemplateValue: `static`, id: label, count: count, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], signedNegativeZero: -0, signedPositiveOne: +1, signedNegativeParen: -(2), signedPositiveHex: +(0x10), signedNegativeExponent: -1e2, signedNegativeZeroKey: member[-0], signedPositiveOneKey: member[+1], signedNegativeParenKey: member[-(2)], signedPositiveHexKey: member[+(0x10)], signedNegativeExponentKey: member[-1e2], logicalNotZero: !0, logicalNotBigInt: !0n, logicalNotFalse: !false, logicalNotTemplate: !`static`, bitwiseNotZero: ~(0), bitwiseNotBigInt: ~1n, bitwiseNotString: ~`2`, logicalNotKey: member[!false], bitwiseNotKey: member[~1], bitwiseNotBigIntKey: member[~1n], voidLogicalNotValue: void (!0), voidBitwiseNotValue: void (~1n), voidSignedNegativeValue: void (-0), voidLogicalNotKey: member[void (!false)], voidBitwiseNotKey: member[void (~1)], voidSignedPositiveKey: member[void (+2)], typeofNumber: typeof 0, typeofNull: typeof null, typeofTemplate: typeof `static`, typeofNumberKey: member[typeof 0], typeofStringKey: member[typeof `static`], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;";
+    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" }, \"undefined\": \"U\", true: \"truthy\", \"-2\": \"minus-two\", number: \"N\", string: \"S\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...props} {...{ staticTemplateValue: `static`, id: label, count: count, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], signedNegativeZero: -0, signedPositiveOne: +1, signedNegativeParen: -(2), signedPositiveHex: +(0x10), signedNegativeExponent: -1e2, signedNegativeZeroKey: member[-0], signedPositiveOneKey: member[+1], signedNegativeParenKey: member[-(2)], signedPositiveHexKey: member[+(0x10)], signedNegativeExponentKey: member[-1e2], logicalNotZero: !0, logicalNotBigInt: !0n, logicalNotFalse: !false, logicalNotTemplate: !`static`, bitwiseNotZero: ~(0), bitwiseNotBigInt: ~1n, bitwiseNotString: ~`2`, logicalNotKey: member[!false], bitwiseNotKey: member[~1], bitwiseNotBigIntKey: member[~1n], voidLogicalNotValue: void (!0), voidBitwiseNotValue: void (~1n), voidSignedNegativeValue: void (-0), voidLogicalNotKey: member[void (!false)], voidBitwiseNotKey: member[void (~1)], voidSignedPositiveKey: member[void (+2)], typeofNumber: typeof 0, typeofNull: typeof null, typeofTemplate: typeof `static`, typeofNumberKey: member[typeof 0], typeofStringKey: member[typeof `static`], deletePrimitive: delete 0, deleteKey: member[delete 0], voidDeletePrimitive: void (delete 0), voidDeleteKey: member[void (delete 0)], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;";
     var key_fallback_fixture = try jsxSpreadChildTestFixture(allocator, key_fallback_source);
     const key_fallback_owner = key_fallback_fixture.semantic.captureOwnerToken();
     var key_fallback_item_symbol: ?u32 = null;
@@ -17757,7 +17759,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), key_fallback_props_read_count);
     try std.testing.expectEqual(@as(usize, 1), key_fallback_label_read_count);
     try std.testing.expectEqual(@as(usize, 1), key_fallback_count_read_count);
-    try std.testing.expectEqual(@as(usize, 19), key_fallback_member_read_count);
+    try std.testing.expectEqual(@as(usize, 21), key_fallback_member_read_count);
     try std.testing.expectEqual(@as(usize, 1), key_fallback_member_key_read_count);
     try std.testing.expectEqual(@as(usize, 2), key_fallback_undefined_read_count);
 
@@ -25772,7 +25774,6 @@ test "#6193 JSX spread admits typeof over primitive literals" {
         "function getKey() { return \"x\"; } const member = {}; const items = [1]; const result = <Comp {...{ value: member[typeof getKey()] }} key=\"k\">{...items}</Comp>;",
         "function getKey() { return \"x\"; } const member = {}; const items = [1]; const result = <Comp {...{ value: member[typeof `${getKey()}`] }} key=\"k\">{...items}</Comp>;",
         "const member = {}; const items = [1]; const result = <Comp {...{ value: member[typeof ({})] }} key=\"k\">{...items}</Comp>;",
-        "const items = [1]; const result = <Comp {...{ value: delete 0 }} key=\"k\">{...items}</Comp>;",
     };
     for (hostile_sources) |source| {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -25839,6 +25840,124 @@ test "#6193 JSX spread admits typeof over primitive literals" {
     malformed.ast.nodes.items[paren_raw].data.unary.operand = saved_paren_operand;
 }
 
+test "#6193 JSX spread admits delete over primitive literals" {
+    const allocator = std.testing.allocator;
+    const safe_sources = [_][]const u8{
+        "const items = [1]; const result = <Comp {...{ value: delete 0 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete 0n }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete false }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete null }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete \"text\" }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete `static` }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete (0) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete ((0n)) }} key=\"k\">{...items}</Comp>;",
+        "const member = { true: \"truthy\" }; const items = [1]; const result = <Comp {...{ value: member[delete 0] }} key=\"k\">{...items}</Comp>;",
+        "const member = { true: \"truthy\" }; const items = [1]; const result = <Comp {...{ value: member[delete (false)] }} key=\"k\">{...items}</Comp>;",
+        "const member = { true: \"truthy\" }; const items = [1]; const result = <Comp {...{ value: member[delete `x`] }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: void (delete 0) }} key=\"k\">{...items}</Comp>;",
+        "const member = { undefined: \"undefined\" }; const items = [1]; const result = <Comp {...{ value: member[void (delete 0)] }} key=\"k\">{...items}</Comp>;",
+    };
+    for (safe_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(auditedJsxSpreadPropsOperandForTest(&fixture));
+    }
+
+    const hostile_sources = [_][]const u8{
+        "const key = 0; const items = [1]; const result = <Comp {...{ value: delete (key + \"\") }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ value: delete member.value }} key=\"k\">{...items}</Comp>;",
+        "function getValue() { return 0; } const items = [1]; const result = <Comp {...{ value: delete getValue() }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete ({ value: 1 }) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete [] }} key=\"k\">{...items}</Comp>;",
+        "function getKey() { return \"x\"; } const items = [1]; const result = <Comp {...{ value: delete `${getKey()}` }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete (!0) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete (1n + 2n) }} key=\"k\">{...items}</Comp>;",
+        "function getKey() { return \"x\"; } const member = {}; const items = [1]; const result = <Comp {...{ value: member[delete getKey()] }} key=\"k\">{...items}</Comp>;",
+        "const key = 0; const member = {}; const items = [1]; const result = <Comp {...{ value: member[delete (key + \"\")] }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ value: delete member?.value }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete \"text\".length }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: void (delete member.value) }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ value: member[void (delete member.value)] }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete `${`static`}` }} key=\"k\">{...items}</Comp>;",
+    };
+    for (hostile_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(!auditedJsxSpreadPropsOperandForTest(&fixture));
+    }
+
+    var malformed_arena = std.heap.ArenaAllocator.init(allocator);
+    defer malformed_arena.deinit();
+    var malformed = try jsxSpreadChildTestFixture(
+        malformed_arena.allocator(),
+        "const items = [1]; const result = <Comp {...{ value: delete ((0)) }} key=\"k\">{...items}</Comp>;",
+    );
+    var delete_node: ?ast_mod.NodeIndex = null;
+    var paren_node: ?ast_mod.NodeIndex = null;
+    for (malformed.ast.nodes.items, 0..) |node, raw| {
+        const node_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+        if (node.tag != .unary_expression or !isRetainableJsxLiteralUnaryValue(&malformed.ast, node_idx)) continue;
+        delete_node = node_idx;
+        const extra = node.data.extra;
+        if (extra < malformed.ast.extra_data.items.len) {
+            const child_raw = malformed.ast.extra_data.items[extra];
+            if (child_raw < malformed.ast.nodes.items.len and
+                malformed.ast.nodes.items[child_raw].tag == .parenthesized_expression)
+            {
+                paren_node = @fromBackingInt(@intCast(child_raw));
+            }
+        }
+        break;
+    }
+    const delete_idx = delete_node orelse return error.MissingPrimitiveDeleteJsxValue;
+    const delete_raw: usize = @intCast(@backingInt(delete_idx));
+    const delete_extra = malformed.ast.nodes.items[delete_raw].data.extra;
+    const saved_flags = malformed.ast.extra_data.items[delete_extra + 1];
+    malformed.ast.extra_data.items[delete_extra + 1] = saved_flags | 0x100;
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, delete_idx));
+    malformed.ast.extra_data.items[delete_extra + 1] = saved_flags | 0x10000;
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, delete_idx));
+    malformed.ast.extra_data.items[delete_extra + 1] = 0xff;
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, delete_idx));
+    malformed.ast.extra_data.items[delete_extra + 1] = saved_flags;
+
+    const saved_operand = malformed.ast.extra_data.items[delete_extra];
+    malformed.ast.extra_data.items[delete_extra] = @intCast(malformed.ast.nodes.items.len);
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, delete_idx));
+    malformed.ast.extra_data.items[delete_extra] = saved_operand;
+    var identifier_reference_raw: ?usize = null;
+    for (malformed.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .identifier_reference) {
+            identifier_reference_raw = raw;
+            break;
+        }
+    }
+    malformed.ast.extra_data.items[delete_extra] = @intCast(
+        identifier_reference_raw orelse return error.MissingPrimitiveDeleteIdentifierReference,
+    );
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, delete_idx));
+    malformed.ast.extra_data.items[delete_extra] = saved_operand;
+    const saved_extra = malformed.ast.nodes.items[delete_raw].data.extra;
+    malformed.ast.nodes.items[delete_raw].data.extra = @intCast(malformed.ast.extra_data.items.len);
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, delete_idx));
+    malformed.ast.nodes.items[delete_raw].data.extra = @intCast(malformed.ast.extra_data.items.len + 1);
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, delete_idx));
+    malformed.ast.nodes.items[delete_raw].data.extra = saved_extra;
+
+    const paren = paren_node orelse return error.MissingPrimitiveDeleteJsxParentheses;
+    const paren_raw: usize = @intCast(@backingInt(paren));
+    const saved_paren_flags = malformed.ast.nodes.items[paren_raw].data.unary.flags;
+    malformed.ast.nodes.items[paren_raw].data.unary.flags = 1;
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, delete_idx));
+    malformed.ast.nodes.items[paren_raw].data.unary.flags = saved_paren_flags;
+    const saved_paren_operand = malformed.ast.nodes.items[paren_raw].data.unary.operand;
+    malformed.ast.nodes.items[paren_raw].data.unary.operand = .none;
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, delete_idx));
+    malformed.ast.nodes.items[paren_raw].data.unary.operand = saved_paren_operand;
+}
+
 test "#6193 JSX spread admits void over one pure unary literal" {
     const allocator = std.testing.allocator;
     const safe_sources = [_][]const u8{
@@ -25859,6 +25978,8 @@ test "#6193 JSX spread admits void over one pure unary literal" {
         "const member = { undefined: \"u\" }; const items = [1]; const result = <Comp {...{ value: member[void (+(0x10))] }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ value: void (typeof 0) }} key=\"k\">{...items}</Comp>;",
         "const member = { undefined: \"u\" }; const items = [1]; const result = <Comp {...{ value: member[void (typeof 0)] }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: void (delete 0) }} key=\"k\">{...items}</Comp>;",
+        "const member = { undefined: \"u\" }; const items = [1]; const result = <Comp {...{ value: member[void (delete 0)] }} key=\"k\">{...items}</Comp>;",
     };
     for (safe_sources) |source| {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -25872,8 +25993,8 @@ test "#6193 JSX spread admits void over one pure unary literal" {
         "const items = [1]; const result = <Comp {...{ value: void (~~0) }} key=\"k\">{...items}</Comp>;",
         "const key = false; const items = [1]; const result = <Comp {...{ value: void (!key) }} key=\"k\">{...items}</Comp>;",
         "const key = 1; const items = [1]; const result = <Comp {...{ value: void (~key) }} key=\"k\">{...items}</Comp>;",
-        "const items = [1]; const result = <Comp {...{ value: delete 0 }} key=\"k\">{...items}</Comp>;",
-        "const member = {}; const items = [1]; const result = <Comp {...{ value: member[delete 0] }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ value: void (delete member.value) }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ value: member[void (delete member.value)] }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ value: void (~({ value: 1 })) }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ value: void (~([])) }} key=\"k\">{...items}</Comp>;",
         "function getValue() { return 1; } const items = [1]; const result = <Comp {...{ value: void (~getValue()) }} key=\"k\">{...items}</Comp>;",
