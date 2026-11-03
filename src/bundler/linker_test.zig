@@ -5689,6 +5689,57 @@ test "type-only import classification uses exact source anchor when cached SID i
     binding.local_symbol_node = source_anchor;
 }
 
+test "type-only import classification rejects same-kind SID without source anchor" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { value as selected, Shape as decoy } from './provider';
+        \\console.log(selected);
+        \\type Alias = decoy;
+    );
+    try writeFile(
+        tmp.dir,
+        "provider.ts",
+        "console.log('provider init'); export const value = 42; export interface Shape { value: string }",
+    );
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.ts") orelse return error.MissingEntry;
+    const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingEntry);
+    const semantic = entry.semantic orelse return error.MissingEntrySemantic;
+    const selected = for (entry.import_bindings) |*binding| {
+        if (std.mem.eql(u8, binding.local_name, "selected")) break binding;
+    } else return error.MissingSelectedImport;
+    const decoy = for (entry.import_bindings) |binding| {
+        if (std.mem.eql(u8, binding.local_name, "decoy")) break binding;
+    } else return error.MissingDecoyImport;
+    const selected_ref = try entry.checkedSourceImportLocalSymbol(selected.*);
+    const decoy_ref = try entry.checkedSourceImportLocalSymbol(decoy);
+    const selected_sid = selected_ref.semanticIndex() orelse return error.MissingSelectedSID;
+    const decoy_sid = decoy_ref.semanticIndex() orelse return error.MissingDecoySID;
+    try std.testing.expect(selected_sid != decoy_sid);
+    try std.testing.expectEqual(.import_binding, semantic.symbols.items[selected_sid].kind);
+    try std.testing.expectEqual(.import_binding, semantic.symbols.items[decoy_sid].kind);
+
+    // Force semantic reference classification. The decoy is used only as a
+    // type, while selected is read at runtime and keeps provider side effects.
+    selected.source_type_only = null;
+    try std.testing.expect(!@import("linker/metadata.zig").isImportBindingTypeOnly(entry, &semantic, selected.*));
+    try std.testing.expect(!@import("linker/metadata.zig").isImportElided(entry, &semantic, selected.*));
+
+    // With the exact source anchor missing, the sibling import's same-kind SID
+    // cannot prove selected is type-only or permit dropping provider evaluation.
+    selected.local_symbol = decoy_ref;
+    selected.local_symbol_node = null;
+    try std.testing.expect(!@import("linker/metadata.zig").isImportBindingTypeOnly(entry, &semantic, selected.*));
+    try std.testing.expect(!@import("linker/metadata.zig").isImportElided(entry, &semantic, selected.*));
+    try std.testing.expect(selected.local_symbol.eql(decoy_ref));
+}
+
 test "preamble: CJS module import — direct module.exports default import skips __toESM" {
     // ESM에서 CJS 모듈의 default import를 가져올 때
     // __toESM 래퍼가 생성되는지 검증

@@ -157,7 +157,10 @@ pub fn isImportBindingTypeOnly(
     const sym_idx = if (ib.local_symbol.isValid()) blk: {
         if (ib.local_symbol.moduleIndex() != module.index) return false;
         const sid = ib.local_symbol.semanticIndex() orelse return false;
-        if (ib.local_symbol_node != null) {
+        if (module.ast != null) {
+            // A same-kind SID cannot stand in for the source declaration.
+            // When source is present, require the exact scanner anchor even
+            // if the retained node field was lost.
             const anchored = module.checkedSourceImportLocalSymbol(ib) catch return false;
             if (!ib.local_symbol.eql(anchored)) return false;
         }
