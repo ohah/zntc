@@ -13,6 +13,7 @@ const member = {
   '16': 'hex',
   '-100': 'exponent',
   true: 'truthy',
+  undefined: 'undefined',
 };
 const items = [1, 2];
 const result = (
@@ -38,6 +39,12 @@ const result = (
       keyLogicalNot: member[!false],
       keyBitwiseNot: member[~1],
       keyBitwiseNotBigInt: member[~1n],
+      voidLogicalNot: void !0,
+      voidBitwiseNotBigInt: void ~1n,
+      voidSignedNegativeZero: void -0,
+      voidLogicalNotKey: member[void !false],
+      voidBitwiseNotKey: member[void ~1],
+      voidSignedPositiveKey: member[void +2],
     }}
     key='k'
   >
@@ -68,5 +75,11 @@ console.log(
   result.props.keyLogicalNot,
   result.props.keyBitwiseNot,
   result.props.keyBitwiseNotBigInt,
+  result.props.voidLogicalNot,
+  result.props.voidBitwiseNotBigInt,
+  result.props.voidSignedNegativeZero,
+  result.props.voidLogicalNotKey,
+  result.props.voidBitwiseNotKey,
+  result.props.voidSignedPositiveKey,
   JSON.stringify(result.children),
 );

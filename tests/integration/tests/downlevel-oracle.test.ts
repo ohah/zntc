@@ -159,7 +159,7 @@ describe.skipIf(!(NODE_MAJOR >= 24))(
       });
     }
 
-    test('#6193 signed numeric JSX spread values match native Node', async () => {
+    test('#6193 literal unary and void JSX spread values match native Node', async () => {
       const entry = join(FIXTURE_DIR, '4819-jsx-signed-numeric-spread.tsx');
       const reference = join(FIXTURE_DIR, '4819-jsx-signed-numeric-spread.reference.mjs');
       const expected = await run(['node', reference]);
