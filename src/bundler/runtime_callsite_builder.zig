@@ -54,6 +54,12 @@ pub const Builder = struct {
             const foreign_sem = foreign.semantic orelse return error.InvalidCallsiteTarget;
             if (target.owner == .unassigned or target.owner != foreign_sem.owner_token or @backingInt(target.symbol.inner) >= foreign_sem.symbols.items.len) return error.InvalidCallsiteTarget;
             try @import("runtime_callsite_targets.zig").validateTargetRole(self.graph, target);
+            if (binding.local_role != .import_binding or
+                binding.local_declaration_node != target.declaration or
+                binding.import_record_index >= self.module.import_records.len) return error.InvalidCallsiteBinding;
+            const record = self.module.import_records[binding.import_record_index];
+            if (record.kind != .static_import or record.resolved != target.symbol.module or
+                !self.module.importBindingOwnsSource(binding, self.ast)) return error.InvalidCallsiteBinding;
             const local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = self.module.index, .ast = self.ast, .symbol_ids = self.editor.symbol_ids.items, .symbols = self.editor.symbols.items });
             // The scanner-owned node and current editor graph are the local
             // identity authority. A missing linker cache must not discard an

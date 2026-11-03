@@ -1318,7 +1318,7 @@ pub const Module = struct {
 
     /// Check only the declaration supplied by the scanner. No AST-wide owner
     /// discovery or name-to-SID search participates in import authority.
-    fn importBindingOwnsSource(self: *const Module, ib: ImportBinding, ast: *const Ast) bool {
+    pub fn importBindingOwnsSource(self: *const Module, ib: ImportBinding, ast: *const Ast) bool {
         if (ib.local_role != .import_binding) return true; // typed storage handoff has its own declaration role
         const declaration = ib.local_declaration_node orelse return false;
         const local = ib.local_symbol_node orelse return false;

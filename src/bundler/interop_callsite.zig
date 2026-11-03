@@ -209,6 +209,29 @@ fn expectHostileOutcome(graph: *@import("graph.zig").ModuleGraph, module: *Modul
         module.import_bindings[index].local_symbol = original;
         return;
     }
+    if (corruption == 12) {
+        var selected: ?usize = null;
+        var decoy: ?usize = null;
+        for (module.import_bindings, 0..) |binding, index| {
+            if (binding.callsite_target == null) continue;
+            if (selected == null) {
+                selected = index;
+            } else {
+                decoy = index;
+                break;
+            }
+        }
+        const index = selected orelse return error.MissingCallsiteBinding;
+        const sibling = decoy orelse return error.MissingCallsiteSibling;
+        const original = module.import_bindings[index];
+        const sibling_binding = module.import_bindings[sibling];
+        module.import_bindings[index].local_name = sibling_binding.local_name;
+        module.import_bindings[index].local_symbol_node = sibling_binding.local_symbol_node;
+        module.import_bindings[index].local_symbol = sibling_binding.local_symbol;
+        try std.testing.expectError(error.InvalidCallsiteBinding, validateAll(&builder, callbacks.items));
+        module.import_bindings[index] = original;
+        return;
+    }
     const callback = callbacks.items[0];
     const reference_node = builder.references.items[0].node;
     const expected_error = switch (corruption) {
@@ -348,6 +371,7 @@ test "single output import callsites own exact references through ten source con
         if (context == 0) {
             try expectHostileOutcome(&graph, hostile, 10);
             try expectHostileOutcome(&graph, hostile, 11);
+            try expectHostileOutcome(&graph, hostile, 12);
         }
     }
     if (missing_providers > 0) std.debug.print("missing actual dynamic callsite providers: {d}/10\n", .{missing_providers});
