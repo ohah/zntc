@@ -158,6 +158,14 @@ pub fn ES2015Spread(comptime Transformer: type) type {
 
         /// new Foo(...args) → new (Foo.bind.apply(Foo, [null].concat(args)))()
         pub fn lowerSpreadNew(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            return lowerSpreadNewImpl(self, node, false);
+        }
+
+        pub fn lowerSpreadNewWithPrevisitedArgs(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            return lowerSpreadNewImpl(self, node, true);
+        }
+
+        fn lowerSpreadNewImpl(self: *Transformer, node: Node, previsited: bool) Transformer.Error!NodeIndex {
             const e = node.data.extra;
             const span = node.span;
 
@@ -166,7 +174,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             const args_start = self.ast.extra_data.items[e + 1];
             const args_len = self.ast.extra_data.items[e + 2];
 
-            const new_callee = try self.visitNode(callee_idx);
+            const new_callee = if (previsited) callee_idx else try self.visitNode(callee_idx);
 
             // callee 는 **두 번** 필요하다 — `X.bind` 의 수신자, 그리고 `apply` 의 첫 인자.
             // 단순 식별자면 부작용이 없어 복제로 충분하지만(`Foo.bind.apply(Foo, ...)`),
@@ -224,7 +232,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             });
 
             // args 조합
-            const combined_args = try buildSpreadArgs(self, args_start, args_len, span, 0);
+            const combined_args = try buildSpreadArgs(self, args_start, args_len, span, if (previsited) args_len else 0);
 
             // [null].concat(combined_args)
             const concat_prop = try es_helpers.makePropertyName(self, "concat");
@@ -311,6 +319,14 @@ pub fn ES2015Spread(comptime Transformer: type) type {
         /// array spread를 [].concat()으로 변환.
         /// [...arr, x] → [].concat(arr, [x])
         pub fn lowerSpreadArray(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            return lowerSpreadArrayImpl(self, node, false);
+        }
+
+        pub fn lowerSpreadArrayWithPrevisitedChildren(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            return lowerSpreadArrayImpl(self, node, true);
+        }
+
+        fn lowerSpreadArrayImpl(self: *Transformer, node: Node, previsited: bool) Transformer.Error!NodeIndex {
             const span = node.span;
             const members_start = node.data.list.start;
             const members_len = node.data.list.len;
@@ -341,12 +357,12 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                     }
                     // spread 값을 __toConsumableArray()로 감싸서 concat 인자로 추가.
                     // Iterator/Iterable(Map.values() 등)을 배열로 안전하게 변환.
-                    const visited = try self.visitNode(elem.data.unary.operand);
+                    const visited = if (previsited) elem.data.unary.operand else try self.visitNode(elem.data.unary.operand);
                     const wrapped = try wrapWithToConsumableArray(self, visited, span);
                     try self.scratch.append(self.allocator, wrapped);
                     non_spread_top = self.scratch.items.len;
                 } else {
-                    const visited = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
+                    const visited = if (previsited) @as(NodeIndex, @fromBackingInt(@intCast(raw_idx))) else try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
                     if (!visited.isNone()) {
                         try self.scratch.append(self.allocator, visited);
                     }
@@ -417,7 +433,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                         non_spread_top = self.scratch.items.len;
                         has_non_spread = true;
                     }
-                    const visited = try self.visitNode(arg.data.unary.operand);
+                    const visited = if (i_loop < previsited_prefix_len) arg.data.unary.operand else try self.visitNode(arg.data.unary.operand);
                     const wrapped = try wrapWithToConsumableArray(self, visited, span);
                     try self.scratch.append(self.allocator, wrapped);
                     non_spread_top = self.scratch.items.len;

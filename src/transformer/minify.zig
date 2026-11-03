@@ -416,6 +416,14 @@ fn isLiveMinifyNode(live_nodes: ?*const std.DynamicBitSet, node_idx: u32) bool {
 
 fn markCallCalleeSequences(ast: *const Ast, protected_sequences: *std.DynamicBitSet) void {
     for (ast.nodes.items) |node| {
+        // Unwrapping `(0, function(){})` at a binding/assignment RHS adds a
+        // NamedEvaluation name which that source value never had.
+        const named_value: NodeIndex = switch (node.tag) {
+            .assignment_expression => if (ast.getNode(node.data.binary.left).tag == .identifier_reference) node.data.binary.right else .none,
+            .variable_declarator => if (ast.getNode(ast.readExtraNode(node.data.extra, 0)).tag == .binding_identifier) ast.readExtraNode(node.data.extra, 2) else .none,
+            else => .none,
+        };
+        markAnonymousValueSequence(ast, named_value, protected_sequences);
         // tagged template 의 tag 도 callee 자리다(extra[0]) — `` (0, o.tag)`x` `` 의 sequence 를
         // 풀면 tag 가 this=o 로 호출된다(`` o.tag`x` ``). #4500 의 파서 수정으로 tagged template 이
         // new 의 callee 로도 들어오면서(`` new (0, o.tag)`x`() ``) 같은 경로가 새로 열렸다.
@@ -423,6 +431,15 @@ fn markCallCalleeSequences(ast: *const Ast, protected_sequences: *std.DynamicBit
             node.tag != .tagged_template_expression) continue;
         markSequenceInCallee(ast, @fromBackingInt(@intCast(ast.readExtra(node.data.extra, 0))), protected_sequences);
     }
+}
+
+fn markAnonymousValueSequence(ast: *const Ast, idx: NodeIndex, protected: *std.DynamicBitSet) void {
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return;
+    const node = ast.getNode(idx);
+    if (node.tag == .parenthesized_expression) return markAnonymousValueSequence(ast, node.data.unary.operand, protected);
+    if (node.tag != .sequence_expression or node.data.list.len == 0) return;
+    const last: NodeIndex = @fromBackingInt(ast.extra_data.items[node.data.list.start + node.data.list.len - 1]);
+    if (ast.isAnonymousFunctionDefinition(last) and @backingInt(idx) < protected.capacity()) protected.set(@backingInt(idx));
 }
 
 fn markSequenceInCallee(ast: *const Ast, idx: NodeIndex, protected_sequences: *std.DynamicBitSet) void {

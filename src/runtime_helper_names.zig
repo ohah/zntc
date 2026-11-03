@@ -48,6 +48,7 @@ pub const NAMES = struct {
     pub const NATIVE_CTOR_THIS_MIN = "$nC"; // __nativeCtorThis
     pub const TDZ_MIN = "$td"; // __tdz
     pub const READ_MIN = "$rd"; // __read
+    pub const SUSPENSION_INVOKE_MIN = "$sI";
     pub const READINESS_ALL_MIN = "$tRa"; // __tlaReadyAll
     pub const ASYNC_MIN = "$aS"; // __async (async/await → generator)
     pub const ASYNC_VALUES_MIN = "$aV"; // __asyncValues (for-await-of)
@@ -244,6 +245,7 @@ pub const PAIRS = [_]struct { base: []const u8, short: []const u8 }{
     .{ .base = "__nativeCtorThis", .short = NAMES.NATIVE_CTOR_THIS_MIN },
     .{ .base = "__tdz", .short = NAMES.TDZ_MIN },
     .{ .base = "__read", .short = NAMES.READ_MIN },
+    .{ .base = "__suspensionInvoke", .short = NAMES.SUSPENSION_INVOKE_MIN },
     .{ .base = "__tlaReadyAll", .short = NAMES.READINESS_ALL_MIN },
     .{ .base = "__async", .short = NAMES.ASYNC_MIN },
     .{ .base = "__asyncValues", .short = NAMES.ASYNC_VALUES_MIN },

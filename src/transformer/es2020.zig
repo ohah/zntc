@@ -539,6 +539,10 @@ pub fn ES2020(comptime Transformer: type) type {
             });
         }
 
+        pub fn replaceOptionalBoundaryForSuspension(self: *Transformer, node: Node, source: NodeIndex, value: NodeIndex) Transformer.Error!NodeIndex {
+            return replaceOptionalBoundaryWithTemp(self, node, source, value);
+        }
+
         fn replaceOptionalBoundaryWithTemp(
             self: *Transformer,
             node: Node,
@@ -566,6 +570,10 @@ pub fn ES2020(comptime Transformer: type) type {
                     const args_start = self.readU32(extra, 1);
                     const args_len = self.readU32(extra, 2);
                     const flags = self.readU32(extra, 3);
+                    if (old_callee == receiver_base and (flags & ast_mod.CallFlags.optional_chain) != 0) {
+                        const new_extra = try self.ast.addExtras(&.{ @backingInt(chain_base), args_start, args_len, flags & ~ast_mod.CallFlags.optional_chain });
+                        return self.ast.addNode(.{ .tag = .call_expression, .span = node.span, .data = .{ .extra = new_extra } });
+                    }
                     const new_callee = try replaceOptionalBoundaryWithTemp(self, self.ast.getNode(old_callee), receiver_base, chain_base);
                     const new_extra = try self.ast.addExtras(&.{ @backingInt(new_callee), args_start, args_len, flags });
                     return self.ast.addNode(.{ .tag = .call_expression, .span = node.span, .data = .{ .extra = new_extra } });

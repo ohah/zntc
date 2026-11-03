@@ -166,6 +166,11 @@ const MODULES = [_]HelperModule{
         .body = .{ .plain = rt.CLASS_CALL_CHECK_RUNTIME, .min = rt.CLASS_CALL_CHECK_RUNTIME_MIN },
     },
     .{
+        .short = "suspension-invoke",
+        .helpers = &.{"__suspensionInvoke"},
+        .body = .{ .plain = rt.SUSPENSION_INVOKE_RUNTIME, .min = rt.SUSPENSION_INVOKE_RUNTIME_MIN },
+    },
+    .{
         .short = "readiness-all",
         .helpers = &.{"__tlaReadyAll"},
         .body = .{ .plain = rt.READINESS_ALL_RUNTIME, .min = rt.READINESS_ALL_RUNTIME_MIN },
@@ -559,6 +564,7 @@ fn catalogFor(m: *const HelperModule) ?source_origin.Catalog {
         .{ .short = "super-set", .catalog = .super_set },
         .{ .short = "wrap-regex", .catalog = .wrap_regex },
         .{ .short = "readiness-all", .catalog = .readiness_all },
+        .{ .short = "suspension-invoke", .catalog = .suspension_invoke },
     };
     for (known) |entry| if (m == findModule(entry.short).?) return entry.catalog;
     return null;
@@ -572,6 +578,7 @@ fn moduleForCatalog(catalog: source_origin.Catalog) *const HelperModule {
         .super_set => "super-set",
         .wrap_regex => "wrap-regex",
         .readiness_all => "readiness-all",
+        .suspension_invoke => "suspension-invoke",
     }).?;
 }
 

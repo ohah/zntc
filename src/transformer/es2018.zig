@@ -3,8 +3,8 @@
 //! --target < es2018 일 때 활성화.
 //! { ...obj }           → Object.assign({}, obj)
 //! { a: 1, ...obj }     → Object.assign({ a: 1 }, obj)
-//! { ...obj, b: 2 }     → Object.assign({}, obj, { b: 2 })
-//! { a: 1, ...x, b: 2 } → Object.assign({ a: 1 }, x, { b: 2 })
+//! { ...obj, b: 2 }     → Object.assign(Object.assign({}, obj), { b: 2 })
+//! { a: 1, ...x, b: 2 } → Object.assign(Object.assign({ a: 1 }, x), { b: 2 })
 //!
 //! 스펙:
 //! - object rest/spread: https://tc39.es/ecma262/#sec-object-initializer (ES2018, TC39 Stage 4: 2018-01)
@@ -39,7 +39,7 @@ pub fn ES2018(comptime Transformer: type) type {
             return false;
         }
 
-        /// `{ a: 1, ...obj, b: 2 }` → `Object.assign({ a: 1 }, obj, { b: 2 })`
+        /// `{ a: 1, ...obj, b: 2 }` → `Object.assign(Object.assign({ a: 1 }, obj), { b: 2 })`
         ///
         /// ast의 object_expression을 방문하면서 각 프로퍼티를 visitNode로 변환하고,
         /// 결과를 es_helpers.lowerObjectSpreadProps에 넘겨 Object.assign 호출을 생성한다.
@@ -83,4 +83,8 @@ pub fn ES2018(comptime Transformer: type) type {
 test "ES2018 module compiles" {
     // 모듈 컴파일 확인용 빈 테스트
     _ = ES2018;
+}
+
+test {
+    _ = @import("es2018_test.zig");
 }

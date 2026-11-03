@@ -5733,6 +5733,8 @@ fn transpileWithCallbackInternal(
         }
         if (transformer.runtime_helpers.class_call_check)
             local_names.class_call_check = try helper_name_resolver.resolve("__classCallCheck", options.minify_whitespace);
+        if (transformer.suspension_invoke_used)
+            local_names.suspension_invoke = try helper_name_resolver.resolve("__suspensionInvoke", options.minify_whitespace);
         if (transformer.class_define_property_used)
             local_names.class_define_property = try helper_name_resolver.resolve("__classDefineProperty", options.minify_whitespace);
         if (transformer.runtime_helpers.class_private_method_init)

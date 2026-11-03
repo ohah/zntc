@@ -170,6 +170,7 @@ pub fn appendHelperImports(
             try emitOne(self, def.bases, span, out);
         }
     }
+    if (self.suspension_invoke_used) try emitOne(self, &.{"__suspensionInvoke"}, span, out);
     if (self.class_define_property_used) {
         try emitOne(self, &.{"__classDefineProperty"}, span, out);
     }
