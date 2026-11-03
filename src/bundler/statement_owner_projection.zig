@@ -67,10 +67,28 @@ pub fn project(
             if (sid.* >= semantic.symbols.items.len) return null;
             const symbol = semantic.symbols.items[sid.*];
             if (symbol.kind != .class_decl or symbol.scope_id.isNone() or
-                symbol.scope_id.toIndex() >= semantic.scopes.len or
-                semantic.scopes[symbol.scope_id.toIndex()].kind != .class_body) return null;
+                symbol.scope_id.toIndex() >= semantic.scopes.len) return null;
+            if (semantic.scopes[symbol.scope_id.toIndex()].kind != .class_body) return null;
             // The class-self table retains the initial source role; the actual
             // current class node owns that same exact ScopeId after AST copies.
+            slot.* = class_scope_contexts.get(@backingInt(symbol.scope_id)) orelse return null;
+        }
+        // A class expression can lose its source-side class_self_symbol_map
+        // key when lowering relocates that entry to the generated wrapper
+        // binding. The original inner class declaration row remains
+        // anchorless, but its exact class-body ScopeId still has one live AST
+        // owner. Project that row by ScopeId even when the sidecar no longer
+        // names the original class node.
+        var anchorless = anchorless_contexts.iterator();
+        while (anchorless.next()) |entry| {
+            const slot = entry.value_ptr;
+            if (slot.* != null) continue;
+            const sid = entry.key_ptr.*;
+            if (sid >= semantic.symbols.items.len) continue;
+            const symbol = semantic.symbols.items[sid];
+            if (symbol.kind != .class_decl or symbol.scope_id.isNone() or
+                symbol.scope_id.toIndex() >= semantic.scopes.len or
+                semantic.scopes[symbol.scope_id.toIndex()].kind != .class_body) continue;
             slot.* = class_scope_contexts.get(@backingInt(symbol.scope_id)) orelse return null;
         }
         var implicit = entry_contexts.iterator();
@@ -94,6 +112,93 @@ pub fn project(
         reference.scope_stmt_idx = context.scope_stmt_idx;
     }
     return updated;
+}
+
+test "anchorless class self follows the exact current class body owner" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(allocator, "class Named {}");
+    var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var source_class: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_declaration) {
+            source_class = @intCast(raw);
+            break;
+        }
+    }
+    const source_class_raw = source_class orelse return error.MissingSourceClass;
+    const source_class_node = parser.ast.nodes.items[source_class_raw];
+    const source_name_raw = parser.ast.extra_data.items[source_class_node.data.extra + ast_mod.ClassExtra.name];
+    const outer_sid = analyzer.symbol_ids.items[source_name_raw] orelse return error.MissingOuterClassSymbol;
+    const inner_sid = analyzer.class_self_symbol_map.get(source_class_raw) orelse return error.MissingInnerClassSymbol;
+    try std.testing.expect(outer_sid != inner_sid);
+
+    const source_name_node = parser.ast.nodes.items[source_name_raw];
+    const output_name = try parser.ast.addLeafNode(
+        .binding_identifier,
+        source_name_node.span,
+        .{ .string_ref = source_name_node.data.string_ref },
+    );
+    var class_extra = try allocator.dupe(u32, parser.ast.extra_data.items[source_class_node.data.extra..][0..8]);
+    class_extra[ast_mod.ClassExtra.name] = @backingInt(output_name);
+    const class_extra_start = try parser.ast.addExtras(class_extra);
+    const output_class = try parser.ast.addExtraNode(.class_declaration, source_class_node.span, class_extra_start);
+    const output_class_raw = @backingInt(output_class);
+    const source_root_span = parser.ast.getNode(root).span;
+    const output_body = try parser.ast.addNodeList(&.{output_class});
+    const output_root = try parser.ast.addListNode(.program, source_root_span, output_body);
+    parser.ast.transformed_root = output_root;
+
+    var symbol_ids = try allocator.alloc(?u32, parser.ast.nodes.items.len);
+    @memset(symbol_ids, null);
+    @memcpy(symbol_ids[0..analyzer.symbol_ids.items.len], analyzer.symbol_ids.items);
+    symbol_ids[@backingInt(output_name)] = outer_sid;
+    const references = try allocator.dupe(@TypeOf(analyzer.references.items[0]), analyzer.references.items);
+    var reanchored_outer = false;
+    for (references) |*reference| {
+        if (reference.flags.declare and @backingInt(reference.symbol_id) == outer_sid) {
+            reference.declaration_node_index = output_name;
+            reanchored_outer = true;
+        }
+    }
+    try std.testing.expect(reanchored_outer);
+
+    const class_scope = analyzer.scope_owner_map.get(source_class_raw) orelse return error.MissingClassScopeOwner;
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    try scope_owner_map.put(allocator, output_class_raw, class_scope);
+    var semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_owner_map = scope_owner_map,
+        .class_self_symbol_map = @TypeOf(analyzer.class_self_symbol_map).empty,
+        .symbol_ids = symbol_ids,
+        .references = references,
+    };
+
+    const projected = (try project(allocator, &parser.ast, output_root, &semantic)) orelse return error.ClassSelfProjectionRejected;
+    try std.testing.expectEqual(references.len, projected.len);
+    var found_inner_declaration = false;
+    for (projected) |reference| {
+        if (!reference.flags.declare or @backingInt(reference.symbol_id) != inner_sid) continue;
+        found_inner_declaration = true;
+        try std.testing.expectEqual(@as(u32, 0), reference.stmt_idx);
+        try std.testing.expectEqual(@as(u32, 0), reference.scope_stmt_idx);
+    }
+    try std.testing.expect(found_inner_declaration);
+
+    // A missing output class-scope owner must still fail closed.
+    semantic.scope_owner_map = .empty;
+    try std.testing.expect((try project(allocator, &parser.ast, output_root, &semantic)) == null);
 }
 
 /// Statement metadata may change; SymbolId/ScopeId and source read identities do not.

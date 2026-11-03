@@ -19,6 +19,96 @@ const semantic_symbol = @import("../semantic/symbol.zig");
 const PreservedRenames = bundler_symbol.PreservedRenames;
 const chunk_mod = @import("chunk.zig");
 
+test "class self-name synchronization reads the transformed output SymbolId table" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "class Named { static self() { return Named; } }");
+    const path = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(path);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{path});
+    const module = graph.modules.at(0);
+    const ast = &module.ast.?;
+    const semantic = &module.semantic.?;
+
+    var source_class: ?u32 = null;
+    for (ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_declaration) {
+            source_class = @intCast(raw);
+            break;
+        }
+    }
+    const class_raw = source_class orelse return error.MissingSourceClass;
+    const class_node = ast.nodes.items[class_raw];
+    const class_name_raw = ast.extra_data.items[class_node.data.extra + @import("../parser/ast.zig").ClassExtra.name];
+    const outer_id = semantic.symbol_ids[class_name_raw] orelse return error.MissingSourceClassOuterSymbol;
+    const inner_id = semantic.class_self_symbol_map.get(class_raw) orelse return error.MissingSourceClassSelfSymbol;
+    try std.testing.expect(outer_id != inner_id);
+
+    var root_span: ?@import("../lexer/token.zig").Span = null;
+    for (ast.nodes.items) |node| {
+        if (node.tag == .program) {
+            root_span = node.span;
+            break;
+        }
+    }
+    const source_root_span = root_span orelse return error.MissingSourceRoot;
+    const source_name = ast.nodes.items[class_name_raw];
+    const generated_name = try ast.addLeafNode(
+        .binding_identifier,
+        source_name.span,
+        .{ .string_ref = source_name.data.string_ref },
+    );
+    var generated_class_extra = try std.testing.allocator.dupe(
+        u32,
+        ast.extra_data.items[class_node.data.extra..][0..8],
+    );
+    defer std.testing.allocator.free(generated_class_extra);
+    generated_class_extra[@import("../parser/ast.zig").ClassExtra.name] = @backingInt(generated_name);
+    const generated_class_extra_start = try ast.addExtras(generated_class_extra);
+    const generated_class = try ast.addExtraNode(.class_declaration, class_node.span, generated_class_extra_start);
+    const output_body = try ast.addNodeList(&.{generated_class});
+    const output_root = try ast.addListNode(.program, source_root_span, output_body);
+    ast.transformed_root = output_root;
+
+    var output_symbol_ids = try std.testing.allocator.alloc(?u32, ast.nodes.items.len);
+    defer std.testing.allocator.free(output_symbol_ids);
+    @memset(output_symbol_ids, null);
+    @memcpy(output_symbol_ids[0..semantic.symbol_ids.len], semantic.symbol_ids);
+    output_symbol_ids[@backingInt(generated_name)] = outer_id;
+
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    try linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+    try linker.rename_table.put(
+        std.testing.allocator,
+        bundler_symbol.SymbolID.make(module.index, outer_id),
+        "NamedOutput",
+    );
+
+    var metadata = try linker.buildMetadataForAst(ast, module.index.toU32(), true, output_symbol_ids, .esm, true);
+    defer metadata.deinit();
+    try std.testing.expectEqualStrings("NamedOutput", metadata.renames.get(inner_id) orelse return error.MissingSynchronizedClassSelfName);
+
+    // An in-range output slot with no identity must not fall back to source IDs.
+    output_symbol_ids[@backingInt(generated_name)] = null;
+    try std.testing.expectError(
+        error.MissingClassDeclarationOutputSymbolId,
+        linker.buildMetadataForAst(ast, module.index.toU32(), true, output_symbol_ids, .esm, true),
+    );
+
+    // The output binding must still fail closed if its exact generated ID is absent.
+    try std.testing.expectError(
+        error.InvalidClassDeclarationOutputName,
+        linker.buildMetadataForAst(ast, module.index.toU32(), true, output_symbol_ids[0..@backingInt(generated_name)], .esm, true),
+    );
+}
+
 fn addTestChunk(
     chunk_graph: *chunk_mod.ChunkGraph,
     allocator: std.mem.Allocator,
