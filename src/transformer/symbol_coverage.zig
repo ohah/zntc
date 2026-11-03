@@ -339,8 +339,9 @@ pub const ExactReport = struct {
                 }
                 counts.observation_fields += 1;
             } else if (comptime isDiagnosticField(name)) {
-                if (comptime @typeInfo(field_type) != .optional)
-                    @compileError("ExactReport diagnostic fields must remain optional findings");
+                const diagnostic_schema = comptime exactDiagnosticFieldSchema(name);
+                if (comptime field_type != diagnostic_schema.expected_type)
+                    @compileError("ExactReport diagnostic field payload type changed");
                 counts.diagnostic_fields += 1;
             } else {
                 if (comptime field_type != usize) @compileError("unclassified ExactReport field");
@@ -351,21 +352,31 @@ pub const ExactReport = struct {
     }
 
     /// Stable schema signature pinned independently by the integration gate.
-    /// Counts alone cannot detect one diagnostic field replacing another.
+    /// Counts alone cannot detect one field replacing another or changing its payload shape.
     pub fn schemaFingerprint() u64 {
         var hash: u64 = 0xcbf29ce484222325;
-        feedSchemaFingerprint(&hash, "zntc.ExactReport/v1\x00");
+        feedSchemaFingerprint(&hash, "zntc.ExactReport/v2\x00");
         const info = @typeInfo(ExactReport).@"struct";
-        inline for (info.field_names) |name| {
+        inline for (info.field_names, info.field_types) |name, field_type| {
             const category = if (comptime isObservationField(name))
                 "observation"
             else if (comptime isDiagnosticField(name))
                 "diagnostic"
             else
                 "invariant";
+            const shape = if (comptime isDiagnosticField(name))
+                exactDiagnosticFieldSchema(name).fingerprint_shape
+            else if (comptime std.mem.eql(u8, name, "legacy_debt_fingerprint"))
+                "u64"
+            else if (comptime field_type == usize)
+                "usize"
+            else
+                @compileError("unclassified ExactReport field type shape");
             feedSchemaFingerprint(&hash, name);
             feedSchemaFingerprint(&hash, "\x00");
             feedSchemaFingerprint(&hash, category);
+            feedSchemaFingerprint(&hash, "\x00");
+            feedSchemaFingerprint(&hash, shape);
             feedSchemaFingerprint(&hash, "\n");
         }
         return hash;
@@ -507,6 +518,44 @@ pub const AstLayoutFinding = struct {
     issue: AstLayoutIssue,
     data_index: ?usize = null,
 };
+
+const ExactDiagnosticFieldSchema = struct {
+    expected_type: type,
+    fingerprint_shape: []const u8,
+};
+
+fn exactDiagnosticFieldSchema(comptime name: []const u8) ExactDiagnosticFieldSchema {
+    @setEvalBranchQuota(20_000);
+    if (comptime std.mem.eql(u8, name, "first_missing_binding") or
+        std.mem.eql(u8, name, "first_missing_reference") or
+        std.mem.eql(u8, name, "first_declaration_anchor_mismatch") or
+        std.mem.eql(u8, name, "first_unclassified_reference") or
+        std.mem.eql(u8, name, "first_shadowed_external_reference"))
+        return .{ .expected_type = ?ExactFinding, .fingerprint_shape = "optional<ExactFinding>" };
+    if (comptime std.mem.eql(u8, name, "first_scope_owner_mismatch") or
+        std.mem.eql(u8, name, "first_scope_owner_parent_mismatch") or
+        std.mem.eql(u8, name, "first_duplicate_scope_owner"))
+        return .{ .expected_type = ?ScopeOwnerFinding, .fingerprint_shape = "optional<ScopeOwnerFinding>" };
+    if (comptime std.mem.eql(u8, name, "first_scope_strictness_mismatch"))
+        return .{ .expected_type = ?ScopeStrictnessFinding, .fingerprint_shape = "optional<ScopeStrictnessFinding>" };
+    if (comptime std.mem.eql(u8, name, "first_scope_map_mismatch"))
+        return .{ .expected_type = ?ScopeMapFinding, .fingerprint_shape = "optional<ScopeMapFinding>" };
+    if (comptime std.mem.eql(u8, name, "first_ambiguous_ast_parent"))
+        return .{ .expected_type = ?AstParentFinding, .fingerprint_shape = "optional<AstParentFinding>" };
+    if (comptime std.mem.eql(u8, name, "first_invalid_ast_root"))
+        return .{ .expected_type = ?u32, .fingerprint_shape = "optional<u32>" };
+    if (comptime std.mem.eql(u8, name, "first_invalid_ast_edge"))
+        return .{ .expected_type = ?AstEdgeFinding, .fingerprint_shape = "optional<AstEdgeFinding>" };
+    if (comptime std.mem.eql(u8, name, "first_invalid_ast_layout"))
+        return .{ .expected_type = ?AstLayoutFinding, .fingerprint_shape = "optional<AstLayoutFinding>" };
+    if (comptime std.mem.eql(u8, name, "first_reference_statement_mismatch"))
+        return .{ .expected_type = ?ReferenceStatementFinding, .fingerprint_shape = "optional<ReferenceStatementFinding>" };
+    if (comptime std.mem.eql(u8, name, "first_reference_scope_statement_alias"))
+        return .{ .expected_type = ?ReferenceScopeStatementAliasFinding, .fingerprint_shape = "optional<ReferenceScopeStatementAliasFinding>" };
+    if (comptime std.mem.eql(u8, name, "first_reference_node_use_alias"))
+        return .{ .expected_type = ?ReferenceNodeUseAliasFinding, .fingerprint_shape = "optional<ReferenceNodeUseAliasFinding>" };
+    @compileError("unmapped ExactReport diagnostic field type shape");
+}
 
 fn invalidExactAstLayout(ast: *const Ast, node_index: u32) ?AstLayoutFinding {
     const node = ast.nodes.items[node_index];

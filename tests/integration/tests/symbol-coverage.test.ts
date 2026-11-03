@@ -109,25 +109,36 @@ const EXACT_MATRIX_REPORT_PREFIX_BY_KIND = {
   post: 'zntc: symbol-identity-post-minify ',
 } as const;
 const EXACT_MATRIX_OBSERVATION_FINGERPRINT =
-  'd1b232e3e6a3e617e8b88f77694da1a93fc7340fc463b358de3a2ab7b2b1b426';
+  '40836a5bcbeb770295c7b593dd452e45bb68f5182f79ef124b4eac299d013fab';
 const EXACT_MATRIX_OBSERVATION_TOTALS = {
-  'exact.generated_bindings': 14811,
-  'exact.generated_references': 45918,
-  'exact.generated_scope_owners_checked': 13071,
-  'exact.external': 13221,
-  'exact.declaration_anchors_checked': 46323,
+  'exact.generated_bindings': 15156,
+  'exact.generated_references': 47070,
+  'exact.generated_scope_owners_checked': 13344,
+  'exact.external': 14280,
+  'exact.declaration_anchors_checked': 48291,
   'exact.namespace_iife_params': 270,
   'exact.enum_iife_params': 36,
-  'coverage.new_user_idents': 7689,
-  'strict.bound': 58692,
-  'strict.external': 1869,
-  'strict.marked_synthetic': 51225,
-  'post.bindings': 47742,
-  'post.references': 103674,
-  'post.external': 13221,
-  'post.helpers': 7812,
+  'coverage.new_user_idents': 7914,
+  'strict.bound': 60102,
+  'strict.external': 1956,
+  'strict.marked_synthetic': 52410,
+  'post.bindings': 49743,
+  'post.references': 108432,
+  'post.external': 14280,
+  'post.helpers': 8028,
   'post.preserved_transform_refs': 204,
 } as const;
+// These module entries intentionally contain top-level await. The identity
+// reports remain useful at every matrix target, while ES5–ES2017 correctly
+// reject that source feature before producing a successful transform.
+const EXACT_MATRIX_EXPECTED_TARGET_DIAGNOSTICS = new Map<string, readonly string[]>([
+  ['4746-tla-multi-var-native-for/main.mjs|es5', ['ZNTC0001']],
+  ['4746-tla-multi-var-native-for/main.mjs|es2015', ['ZNTC0001']],
+  ['4746-tla-multi-var-native-for/main.mjs|es2017', ['ZNTC0001']],
+  ['4746-nested-forof-declaration-owner/main.mjs|es5', ['ZNTC0001']],
+  ['4746-nested-forof-declaration-owner/main.mjs|es2015', ['ZNTC0001']],
+  ['4746-nested-forof-declaration-owner/main.mjs|es2017', ['ZNTC0001']],
+]);
 const LOOP_BINDING_MANIFEST = [
   {
     file: '4819-generator-loop-callers.mjs',
@@ -277,6 +288,10 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
 const LENIENT_UNKNOWN_PARSE_DIAGNOSTICS = new Map<string, readonly string[]>([
   ['4730-using-module/lib.mjs', ['ZNTC0305']],
   ['4730-using-module/main.mjs', ['ZNTC0300']],
+  ['4746-nested-forof-declaration-owner/main.mjs', ['ZNTC0300']],
+  ['4746-nested-forof-declaration-owner/sync.mjs', ['ZNTC0305']],
+  ['4746-tla-multi-var-native-for/main.mjs', ['ZNTC0300']],
+  ['4746-tla-multi-var-native-for/sync.mjs', ['ZNTC0305']],
   ['4760-module-block-export-shadow.mjs', ['ZNTC0305']],
   ['4790-object-rest-decl-temps.mjs', ['ZNTC0305']],
   ['4819-classic-jsx-member-factory.tsx', ['ZNTC0600', 'ZNTC0912']],
@@ -1201,7 +1216,7 @@ const EXACT_SINGLETON_FIELDS = [
   ['legacy_debt_fingerprint', '[0-9a-fA-F]+'],
   ['schema_fingerprint', '[0-9a-fA-F]+'],
 ] as const;
-const EXACT_REPORT_SCHEMA_FINGERPRINT = '8b9ddfc8e8f7120b';
+const EXACT_REPORT_SCHEMA_FINGERPRINT = '41454302a0dc783a';
 const EXACT_NO_DEBT_FINGERPRINT = 'cbf29ce484222325';
 const EXACT_OBSERVATION_FIELD_COUNT = 8;
 const EXACT_DIAGNOSTIC_FIELD_COUNT = 17;
@@ -1966,6 +1981,33 @@ function exactMatrixObservationCensusFingerprint(rows: readonly string[]): strin
     .digest('hex');
 }
 
+function exactMatrixTargetDiagnosticProblems(
+  fixture: string,
+  target: string,
+  exitCode: number,
+  stderr: string,
+): string[] {
+  const key = `${fixture}|${target}`;
+  const expectedCodes = EXACT_MATRIX_EXPECTED_TARGET_DIAGNOSTICS.get(key);
+  const actualCodes = [...stderr.matchAll(/\[(ZNTC\d{4})\]/g)]
+    .map((match) => match[1] ?? '')
+    .sort();
+  if (expectedCodes === undefined) {
+    return exitCode === 0
+      ? []
+      : [`unexpected exit ${exitCode} with diagnostics [${actualCodes.join(', ')}]`];
+  }
+  if (exitCode === 0)
+    return [`expected target diagnostic [${expectedCodes.join(', ')}], got success`];
+  if (exitCode !== 1) return [`expected exit 1 for target diagnostics, got ${exitCode}`];
+  if (actualCodes.join('\0') !== [...expectedCodes].sort().join('\0')) {
+    return [
+      `expected target diagnostics [${expectedCodes.join(', ')}], got [${actualCodes.join(', ')}]`,
+    ];
+  }
+  return [];
+}
+
 describe('symbol identity coverage gate (#4819)', () => {
   const fixtures = collectFixtures(FIXTURE_DIR);
 
@@ -2176,12 +2218,12 @@ describe('symbol identity coverage gate (#4819)', () => {
     const fixtureInventory = createHash('sha256')
       .update(fixtureNames.join('\n') + '\n')
       .digest('hex');
-    expect(fixtureNames).toHaveLength(304);
+    expect(fixtureNames).toHaveLength(317);
     expect(fixtureInventory).toBe(
-      '622c96bbf0fa056dcc31c2c24ffc81cf73c58626a30e812adccce59d946b74c6',
+      '94035c9096d38fec2eabc7dc2fb3d7f6846c0c286c3318deaf4996d56487cd3b',
     );
     expect(fixtureContentFingerprint(fixtures, FIXTURE_DIR)).toBe(
-      'c844e5ee4feab20f4598d8a17c8867f4c1208790baa4eb0e3559a5b344c30f71',
+      'e1727e7568ef2bdff5e75793ba240169e6237d6835c3e3f771ed6ad40021fa1a',
     );
     expect(TARGETS).toEqual([
       { name: 'es5', arg: '--target=es5' },
@@ -2331,6 +2373,35 @@ describe('symbol identity coverage gate (#4819)', () => {
         `${kind}.${field} census mutation`,
       ).not.toBe(fingerprint);
     }
+  });
+
+  test('exact matrix accepts only pinned unsupported-target diagnostics', () => {
+    expect(EXACT_MATRIX_EXPECTED_TARGET_DIAGNOSTICS.size).toBe(6);
+    const fixture = '4746-tla-multi-var-native-for/main.mjs';
+    expect(
+      exactMatrixTargetDiagnosticProblems(fixture, 'es5', 1, 'Top-level await [ZNTC0001]'),
+    ).toEqual([]);
+    expect(
+      exactMatrixTargetDiagnosticProblems(fixture, 'es5', 0, 'Top-level await [ZNTC0001]'),
+    ).toEqual(['expected target diagnostic [ZNTC0001], got success']);
+    expect(
+      exactMatrixTargetDiagnosticProblems(fixture, 'es5', -1, 'Top-level await [ZNTC0001]'),
+    ).toEqual(['expected exit 1 for target diagnostics, got -1']);
+    expect(
+      exactMatrixTargetDiagnosticProblems(fixture, 'es5', 1, 'Wrong diagnostic [ZNTC0002]'),
+    ).toEqual(['expected target diagnostics [ZNTC0001], got [ZNTC0002]']);
+    expect(
+      exactMatrixTargetDiagnosticProblems(
+        fixture,
+        'es5',
+        1,
+        'Duplicate diagnostic [ZNTC0001] [ZNTC0001]',
+      ),
+    ).toEqual(['expected target diagnostics [ZNTC0001], got [ZNTC0001, ZNTC0001]']);
+    expect(exactMatrixTargetDiagnosticProblems(fixture, 'es2022', 0, '')).toEqual([]);
+    expect(
+      exactMatrixTargetDiagnosticProblems('unexpected.mjs', 'es5', 1, 'Unexpected [ZNTC0001]'),
+    ).toEqual(['unexpected exit 1 with diagnostics [ZNTC0001]']);
   });
 
   test('required producer observation inventory cannot shrink or pass vacuously', () => {
@@ -3042,7 +3113,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('exact report schema detects omitted or reclassified invariant fields', () => {
+  test('exact report schema detects omitted, reclassified, and payload-shape changes', () => {
     const complete = [
       `invariant_counter_count=${EXACT_ZERO_COUNTERS.length}`,
       `observation_field_count=${EXACT_OBSERVATION_FIELD_COUNT}`,
@@ -3079,6 +3150,17 @@ describe('symbol identity coverage gate (#4819)', () => {
         ),
       ),
     ).toContain('schema_fingerprint=0000000000000001, expected ' + EXACT_REPORT_SCHEMA_FINGERPRINT);
+    const previousFieldNameOnlyFingerprint = '8b9ddfc8e8f7120b';
+    expect(
+      exactSchemaProblems(
+        complete.replace(
+          `schema_fingerprint=${EXACT_REPORT_SCHEMA_FINGERPRINT}`,
+          `schema_fingerprint=${previousFieldNameOnlyFingerprint}`,
+        ),
+      ),
+    ).toContain(
+      `schema_fingerprint=${previousFieldNameOnlyFingerprint}, expected ${EXACT_REPORT_SCHEMA_FINGERPRINT}`,
+    );
     expect(exactSchemaProblems(complete.replace(' clean=1', ' clean=0'))).toContain(
       'clean=0, expected 1',
     );
@@ -3928,9 +4010,9 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(successful + observedParseFailures.size).toBe(fixtures.length);
       expect([...observedParseFailures].sort()).toEqual([...expectedParseFailures].sort());
       const expectedSuccessful = fixtures.length - expectedParseFailures.size;
-      expect(expectedSuccessful).toBe(290);
+      expect(expectedSuccessful).toBe(299);
       expect(successful).toBe(expectedSuccessful);
-      expect(retained).toBe(290);
+      expect(retained).toBe(299);
       expect(retained).toBe(expectedSuccessful - LENIENT_UNKNOWN_REANALYZED_FIXTURES.length);
       expect(reanalyzedFixtures.sort()).toEqual([...LENIENT_UNKNOWN_REANALYZED_FIXTURES].sort());
 
@@ -16401,8 +16483,14 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             mode.name + ': ' + report,
           ).toBe(0);
         }
-        expect(report, mode.name).toMatch(/shadowed_external_reference=1(?:\s|$)/);
+        expect(report, mode.name).toMatch(/shadowed_external_reference=2(?:\s|$)/);
         expect(report, mode.name).toMatch(/clean=0(?:\s|$)/);
+        const shadowedExternalNodes = (proc.stderr ?? '').split(/\r?\n/).flatMap((line) => {
+          const match = line.match(/^zntc: symbol-shadowed-external node=(\d+) name=Object$/);
+          return match ? [match[1]] : [];
+        });
+        expect(shadowedExternalNodes, mode.name).toHaveLength(2);
+        expect(new Set(shadowedExternalNodes).size, mode.name).toBe(2);
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, mode.name + ': ' + actual.stderr).toBe(0);
         expect(actual.stdout, mode.name).toBe('42 source onetwo\n');
@@ -38208,9 +38296,28 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         for (const target of TARGETS) {
           const { stderr, exitCode } = runCoverage(file, target, outDir);
           if (exitCode !== 0) {
-            // A transform may fail after the exact identity report is emitted
-            // but before the source-only summary is printed. Keep checking the
-            // same owner counters from that authoritative report on this path.
+            const targetDiagnosticProblems = exactMatrixTargetDiagnosticProblems(
+              name.replaceAll('\\', '/'),
+              target.name,
+              exitCode,
+              stderr,
+            );
+            if (targetDiagnosticProblems.length > 0) {
+              for (const targetDiagnosticProblem of targetDiagnosticProblems) {
+                problems.push(
+                  `${name} ${target.name}: ${targetDiagnosticProblem}: ${stderr.trim()}`,
+                );
+              }
+              continue;
+            }
+            // A pinned unsupported-target error still emits the exact audit
+            // rows. Validate those rows and count the run so TLA fixtures stay
+            // covered without treating target incompatibility as identity debt.
+            problems.push(
+              ...transformIdentityAuditProblems(stderr).map(
+                (problem) => `${name} ${target.name}: expected target report ${problem}: ${stderr}`,
+              ),
+            );
             const identityLines = stderr
               .split('\n')
               .filter((line) => line.startsWith('zntc: symbol-identity '));
@@ -38219,13 +38326,66 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
                 `${name} ${target.name}: expected one exact identity audit for failed transform, got ${identityLines.length}`,
               );
             } else {
-              for (const scopeOwnerProblem of scopeOwnerAuditProblems(identityLines[0])) {
+              const identity = identityLines[0];
+              for (const observationProblem of exactIdentityObservationProblems(identity)) {
                 problems.push(
-                  `${name} ${target.name}: exact identity scope-owner audit ${scopeOwnerProblem}: ${identityLines[0]}`,
+                  `${name} ${target.name}: exact identity ${observationProblem}: ${identity}`,
+                );
+              }
+              const generatedBindingsMatch = identity.match(/generated_bindings=(\d+)/);
+              const generatedReferencesMatch = identity.match(/generated_references=(\d+)/);
+              const declarationAnchorsMatch = identity.match(/declaration_anchors_checked=(\d+)/);
+              if (
+                !generatedBindingsMatch ||
+                !generatedReferencesMatch ||
+                !declarationAnchorsMatch
+              ) {
+                problems.push(`${name} ${target.name}: missing generated-node totals: ${identity}`);
+              } else {
+                generatedBindings += Number(generatedBindingsMatch[1]);
+                generatedReferences += Number(generatedReferencesMatch[1]);
+                declarationAnchorsChecked += Number(declarationAnchorsMatch[1]);
+              }
+            }
+            const coverageLines = stderr
+              .split('\n')
+              .filter((line) => line.startsWith('zntc: symbol-coverage '));
+            if (coverageLines.length !== 1) {
+              problems.push(
+                `${name} ${target.name}: expected one coverage report for pinned target diagnostic, got ${coverageLines.length}`,
+              );
+            } else {
+              const coverageCounts = coverageLines[0].match(
+                /(?:^| )missing=(\d+) wrong=(\d+)(?: |$)/,
+              );
+              if (!coverageCounts || coverageCounts[1] !== '0' || coverageCounts[2] !== '0') {
+                problems.push(
+                  `${name} ${target.name}: exact target coverage missing=${coverageCounts?.[1] ?? 'missing'} wrong=${coverageCounts?.[2] ?? 'missing'}: ${coverageLines[0]}`,
                 );
               }
             }
-            problems.push(`${name} ${target.name}: exit=${exitCode} ${stderr.trim()}`);
+            const strictLines = stderr
+              .split('\n')
+              .filter((line) => line.startsWith('zntc: synthetic-coverage '));
+            if (strictLines.length === 1) {
+              const externalCount = strictLines[0].match(/external=(\d+)/)?.[1];
+              if (externalCount === undefined) {
+                problems.push(
+                  `${name} ${target.name}: missing strict external count: ${strictLines[0]}`,
+                );
+              } else {
+                strictExternalReferences += Number(externalCount);
+              }
+              const rawScopeMismatchCount = strictLines[0].match(/scope_mismatch=(\d+)/)?.[1];
+              if (rawScopeMismatchCount === undefined) {
+                problems.push(
+                  `${name} ${target.name}: missing strict raw scope count: ${strictLines[0]}`,
+                );
+              } else {
+                strictRawScopeMismatches += Number(rawScopeMismatchCount);
+              }
+            }
+            runs++;
             continue;
           }
           const sourceScopeOwnerLines = stderr
@@ -44405,9 +44565,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
               }
               observationTotals[`${kind}.${field}`] += value;
             });
-            if (exitCode !== 0) {
+            for (const diagnosticProblem of exactMatrixTargetDiagnosticProblems(
+              relative(FIXTURE_DIR, file).replaceAll('\\', '/'),
+              target.name,
+              exitCode,
+              stderr,
+            )) {
               problems.push(
-                `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: ${stderr}`,
+                `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: ${diagnosticProblem}: ${stderr}`,
               );
             }
             for (const auditProblem of transformIdentityAuditProblems(stderr)) {
@@ -44461,11 +44626,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       expect(transpileModeRuns).toBe(fixtures.length * MINIFY_TARGETS.length * 2);
       expect(retainedGraphRuns).toBeGreaterThan(0);
       expect(retainedGraphRuns + reanalyzedGraphRuns).toBe(transpileModeRuns);
+      expect(problems).toEqual([]);
       expect(observationTotals).toEqual(EXACT_MATRIX_OBSERVATION_TOTALS);
       expect(exactMatrixObservationCensusFingerprint(observationCensusRows)).toBe(
         EXACT_MATRIX_OBSERVATION_FINGERPRINT,
       );
-      expect(problems).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
