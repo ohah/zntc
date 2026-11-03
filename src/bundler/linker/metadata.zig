@@ -476,6 +476,34 @@ fn importBindingName(self: *const Linker, module_index: u32, ib: anytype, fallba
     return self.getCanonicalByRef(ib.local_symbol) orelse fallback;
 }
 
+/// Build an import's emitted name from its exact local identity. A missing
+/// linker-derived ref may use the scanner-owned source anchor, but spelling
+/// maps never recreate it and the stored ImportBinding remains untouched.
+fn importBindingNameFromMetadataIdentity(
+    self: *const Linker,
+    module_index: u32,
+    ib: ImportBinding,
+    module: *const Module,
+    semantic: *const ModuleSemanticData,
+    module_scope: *const std.StringHashMapUnmanaged(usize),
+) error{InvalidImportLocalSymbol}![]const u8 {
+    if (ib.local_symbol.isValid()) {
+        const fallback = module.checkedImportBindingLocalName(ib) catch return error.InvalidImportLocalSymbol;
+        return importBindingName(self, module_index, ib, fallback);
+    }
+
+    const symbol_index = importBindingLocalSemanticIndex(self, ib, module, semantic, module_scope, module_index) orelse
+        return error.InvalidImportLocalSymbol;
+    const source_ref = module.checkedSourceImportLocalSymbol(ib) catch return error.InvalidImportLocalSymbol;
+    if (source_ref.moduleIndex() != module.index or source_ref.semanticIndex() != symbol_index) {
+        return error.InvalidImportLocalSymbol;
+    }
+    const fallback = module.symbolName(@fromBackingInt(symbol_index)) orelse return error.InvalidImportLocalSymbol;
+    var anchored_binding = ib;
+    anchored_binding.local_symbol = source_ref;
+    return importBindingName(self, module_index, anchored_binding, fallback);
+}
+
 /// `Linker.unified_result` 에서 현재 모듈의 Phase B (nested) rename 을
 /// `renames` 에 merge. Phase A 심볼 (module_scope_symbols bitset set) 은
 /// 스킵 — self-rename 루프가 canonical_name 경로로 이미 처리했음.
@@ -1062,7 +1090,7 @@ pub fn buildMetadataForAstWithHolderReservations(
                     const canon_mi = @backingInt(canon.module_index);
                     if (self.isCrossChunkConsumer(module_index, canon_mi)) {
                         if (self.getCrossChunkGlobalName(canon_mi, canon.export_name)) |g| {
-                            if (ib.local_symbol.semanticIndex()) |sym_idx| {
+                            if (importBindingLocalSemanticIndex(self, ib, &m, &sem, &module_scope, module_index)) |sym_idx| {
                                 try putOwnedRename(self, &renames, &owned_nested_renames, sym_idx, g);
                             }
                             continue;
@@ -1080,7 +1108,7 @@ pub fn buildMetadataForAstWithHolderReservations(
                         !std.mem.eql(u8, ib.imported_name, "default") and
                         !isMetroNonInlinedRequireSpecifier(rec.specifier))
                     {
-                        if (ib.local_symbol.semanticIndex()) |sym_idx| {
+                        if (importBindingLocalSemanticIndex(self, ib, &m, &sem, &module_scope, module_index)) |sym_idx| {
                             // (#4510) 비-식별자 멤버명(`import { 'foo-bar' as x }`)은 점 접근이
                             // 문법 오류 → `require_x()["foo-bar"]` computed 접근. 두 형태 모두
                             // `isImportExpressionRename` 이 인식해야 codegen 이 import 선언을 skip 한다.
@@ -1093,7 +1121,14 @@ pub fn buildMetadataForAstWithHolderReservations(
                         }
                     } else {
                         const interop_mode = cjsInteropMode(self, &m);
-                        const preamble_name = importBindingName(self, module_index, ib, m.importBindingLocalName(ib));
+                        const preamble_name = try importBindingNameFromMetadataIdentity(
+                            self,
+                            module_index,
+                            ib,
+                            &m,
+                            &sem,
+                            &module_scope,
+                        );
                         const hoisted_name = try self.allocator.dupe(u8, preamble_name);
                         errdefer self.allocator.free(hoisted_name);
                         try ns_var_list.append(self.allocator, hoisted_name);
@@ -1103,7 +1138,7 @@ pub fn buildMetadataForAstWithHolderReservations(
                             try preamble.writeCjsImportAssignOnly(preamble_name, ib.imported_name, req_var, ib.kind == .namespace, interop_mode);
                         }
 
-                        if (ib.local_symbol.semanticIndex()) |sym_idx| {
+                        if (importBindingLocalSemanticIndex(self, ib, &m, &sem, &module_scope, module_index)) |sym_idx| {
                             try putOwnedRename(self, &renames, &owned_nested_renames, sym_idx, preamble_name);
                         }
                     }
