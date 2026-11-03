@@ -5130,6 +5130,65 @@ test "metadata CJS namespace import preamble uses exact source anchor when cache
     binding.local_symbol_node = source_anchor;
 }
 
+test "type-only import classification uses exact source anchor when cached SID is missing" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "entry.ts",
+        "import { Shape, Other } from './types';\ntype Alias = Shape;\nconst decoy = 7;\nconsole.log(decoy);",
+    );
+    try writeFile(tmp.dir, "types.ts", "export interface Shape { value: number }\nexport interface Other { value: string }");
+
+    var r = try buildAndLink(allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.ts") orelse return error.MissingEntry;
+    const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingEntry);
+    const semantic = entry.semantic orelse return error.MissingEntrySemantic;
+    const binding = &entry.import_bindings[0];
+    const source_anchor = binding.local_symbol_node orelse return error.MissingImportAnchor;
+    const source_ref = try entry.checkedSourceImportLocalSymbol(binding.*);
+    const source_sid = source_ref.semanticIndex() orelse return error.MissingSourceSID;
+    const other_binding_index = for (entry.import_bindings, 0..) |candidate, index| {
+        if (std.mem.eql(u8, candidate.local_name, "Other")) break index;
+    } else return error.MissingOtherImport;
+    const other_symbol = try entry.checkedSourceImportLocalSymbol(entry.import_bindings[other_binding_index]);
+    const other_sid = other_symbol.semanticIndex() orelse return error.MissingOtherSID;
+    const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoy;
+    try std.testing.expect(source_sid != decoy_sid);
+    try std.testing.expect(source_sid != other_sid);
+    try std.testing.expectEqual(.import_binding, semantic.symbols.items[other_sid].kind);
+
+    // Make the runtime classification depend on references and the exact
+    // source anchor. A poisoned same-scope row must not select the value-used
+    // decoy and turn this type-only import into a runtime dependency.
+    binding.source_type_only = null;
+    binding.local_symbol = .invalid;
+    try @constCast(semantic.scope_maps)[0].put(allocator, "Shape", decoy_sid);
+
+    try std.testing.expect(@import("linker/metadata.zig").isImportBindingTypeOnly(entry, &semantic, binding.*));
+    try std.testing.expect(@import("linker/metadata.zig").isImportElided(entry, &semantic, binding.*));
+    try std.testing.expect(!binding.local_symbol.isValid());
+
+    // A stale but otherwise valid import SID must not override the source
+    // anchor, even when the other import is the same semantic kind.
+    binding.local_symbol = other_symbol;
+    try std.testing.expect(!@import("linker/metadata.zig").isImportBindingTypeOnly(entry, &semantic, binding.*));
+    binding.local_symbol = .invalid;
+
+    // With no exact source anchor, even a root row pointing back to the
+    // original SID cannot prove type-only use.
+    binding.local_symbol_node = null;
+    try @constCast(semantic.scope_maps)[0].put(allocator, "Shape", source_sid);
+    try std.testing.expect(!@import("linker/metadata.zig").isImportBindingTypeOnly(entry, &semantic, binding.*));
+    try std.testing.expect(!@import("linker/metadata.zig").isImportElided(entry, &semantic, binding.*));
+    binding.local_symbol_node = source_anchor;
+}
+
 test "preamble: CJS module import — direct module.exports default import skips __toESM" {
     // ESM에서 CJS 모듈의 default import를 가져올 때
     // __toESM 래퍼가 생성되는지 검증

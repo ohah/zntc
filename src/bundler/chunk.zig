@@ -2030,7 +2030,7 @@ fn cjsDirectCrossChunkCanonical(
     if (ib.kind == .namespace or ib.is_helper) return null;
     if (std.mem.eql(u8, ib.imported_name, linker_mod.CJS_NS_EXPORT_NAME)) return null;
     if (m.semantic) |*sem| {
-        if (metadata_mod.isImportBindingTypeOnly(sem, ib)) return null;
+        if (metadata_mod.isImportBindingTypeOnly(m, sem, ib)) return null;
     }
     const canon = lnk.cjsDirectCanonical(m, ib) orelse return null;
     return cjsCrossChunkProviderOk(lnk, chunk_graph, canon);
@@ -2052,7 +2052,7 @@ fn cjsNsCrossChunkCanonical(
     if (chunk_graph.preserve_modules) return null;
     if (ib.kind != .namespace or ib.is_helper) return null;
     if (m.semantic) |*sem| {
-        if (metadata_mod.isImportBindingTypeOnly(sem, ib)) return null;
+        if (metadata_mod.isImportBindingTypeOnly(m, sem, ib)) return null;
     }
     const canon = lnk.cjsNamespaceCanonical(m, ib) orelse return null;
     return cjsCrossChunkProviderOk(lnk, chunk_graph, canon);
