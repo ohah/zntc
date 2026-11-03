@@ -1110,28 +1110,37 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (node.tag != .variable_declaration or self.ast.variableDeclarationKind(node) != .@"var") return false;
             if (@backingInt(index) < self.parser_node_count) return true;
             // TLA visits this source header before the generator revisits it.
-            // The declaration node is new, but its actual parser binding and
-            // declaration row still prove the same source-var storage.
-            if (!self.semantic_edit_enabled or self.readU32(node.data.extra, 2) != 1) return false;
-            const item = self.ast.getNode(@fromBackingInt(self.ast.extra_data.items[self.readU32(node.data.extra, 1)]));
-            if (item.tag != .variable_declarator) return false;
-            const binding = self.readNodeIdx(item.data.extra, 0);
-            if (binding.isNone() or @backingInt(binding) >= self.parser_node_count or
-                self.ast.getNode(binding).tag != .binding_identifier) return false;
-            const id = self.getSymbolIdAt(binding) orelse return false;
+            // Match every declarator, in source order, to its original parser
+            // binding and exact declaration row; a new header alone is no proof.
+            if (!self.semantic_edit_enabled) return false;
+            const count = self.readU32(node.data.extra, 2);
+            if (count == 0) return false;
+            const start = self.readU32(node.data.extra, 1);
             const editor = &self.semantic_editor.?;
-            if (id >= editor.symbols.items.len or editor.symbols.items[id].kind != .variable_var or
-                @backingInt(binding) >= editor.symbol_ids.items.len or editor.symbol_ids.items[@backingInt(binding)] != id) return false;
-            var declared = false;
-            for (editor.references.items) |row| {
-                if (row.flags.declare and row.declaration_node_index == binding and @backingInt(row.symbol_id) == id) declared = true;
-            }
-            if (!declared) return false;
-            for (self.ast.nodes.items[0..self.parser_node_count]) |source| {
+            source_headers: for (self.ast.nodes.items[0..self.parser_node_count]) |source| {
                 if (source.tag != .variable_declaration or source.span.start != node.span.start or source.span.end != node.span.end or
-                    self.ast.variableDeclarationKind(source) != .@"var" or self.readU32(source.data.extra, 2) != 1) continue;
-                const source_item = self.ast.getNode(@fromBackingInt(self.ast.extra_data.items[self.readU32(source.data.extra, 1)]));
-                if (source_item.tag == .variable_declarator and self.readNodeIdx(source_item.data.extra, 0) == binding) return true;
+                    self.ast.variableDeclarationKind(source) != .@"var" or self.readU32(source.data.extra, 2) != count) continue;
+                const source_start = self.readU32(source.data.extra, 1);
+                for (0..count) |i| {
+                    const item = self.ast.getNode(@fromBackingInt(self.ast.extra_data.items[start + i]));
+                    const original = self.ast.getNode(@fromBackingInt(self.ast.extra_data.items[source_start + i]));
+                    if (item.tag != .variable_declarator or original.tag != .variable_declarator or
+                        item.span.start != original.span.start or item.span.end != original.span.end) continue :source_headers;
+                    const binding = self.readNodeIdx(item.data.extra, 0);
+                    if (binding.isNone() or @backingInt(binding) >= self.parser_node_count or
+                        self.ast.getNode(binding).tag != .binding_identifier or
+                        self.readNodeIdx(original.data.extra, 0) != binding) continue :source_headers;
+                    const id = self.getSymbolIdAt(binding) orelse continue :source_headers;
+                    if (id >= editor.symbols.items.len or editor.symbols.items[id].kind != .variable_var or
+                        @backingInt(binding) >= editor.symbol_ids.items.len or editor.symbol_ids.items[@backingInt(binding)] != id) continue :source_headers;
+                    var declared = false;
+                    for (editor.references.items) |row| {
+                        if (row.flags.declare and row.declaration_node_index == binding and @backingInt(row.symbol_id) == id and
+                            row.scope_id == editor.symbols.items[id].scope_id) declared = true;
+                    }
+                    if (!declared) continue :source_headers;
+                }
+                return true;
             }
             return false;
         }
@@ -5924,4 +5933,124 @@ test "TLA revisited native var header retains one physical storage and its exact
         if (@backingInt(row.symbol_id) == id and row.flags.declare) declarations += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), declarations);
+}
+
+test "TLA multi-var source header requires every original binding and declaration witness" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, "for(var i=0,j=1;i<2;i++){}");
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.is_module = true;
+    _ = try parser.parse();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_stmt_info = true;
+    try analyzer.analyze();
+    const Transformer = @import("transformer.zig").Transformer;
+    var transformer = try Transformer.init(a, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    var header: NodeIndex = .none;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag == .for_statement) header = @fromBackingInt(parser.ast.extra_data.items[node.data.extra]);
+    }
+    try std.testing.expect(!header.isNone());
+    const source = transformer.ast.getNode(header);
+    const source_start = transformer.readU32(source.data.extra, 1);
+    const first_item: NodeIndex = @fromBackingInt(transformer.ast.extra_data.items[source_start]);
+    const first_binding = transformer.readNodeIdx(transformer.ast.getNode(first_item).data.extra, 0);
+    const id = transformer.getSymbolIdAt(first_binding).?;
+    transformer.current_scope = analyzer.symbols.items[id].scope_id;
+    try transformer.ensureSymbolDeclarationAtNode(id, transformer.current_scope, first_binding);
+    const visited = try transformer.visitNode(header);
+    try std.testing.expect(@backingInt(visited) >= transformer.parser_node_count);
+    const Generator = ES2015Generator(Transformer);
+    try std.testing.expect(Generator.isNativeSourceVar(&transformer, visited));
+    const visited_node = transformer.ast.getNode(visited);
+    const start = transformer.readU32(visited_node.data.extra, 1);
+    const first = transformer.ast.extra_data.items[start];
+    const second = transformer.ast.extra_data.items[start + 1];
+    transformer.ast.extra_data.items[start] = second;
+    try std.testing.expect(!Generator.isNativeSourceVar(&transformer, visited));
+    transformer.ast.extra_data.items[start] = first;
+    const second_node = transformer.ast.getNode(@fromBackingInt(second));
+    const second_binding = transformer.readNodeIdx(second_node.data.extra, 0);
+    const second_id = transformer.getSymbolIdAt(second_binding).?;
+    const old_id = transformer.semantic_editor.?.symbol_ids.items[@backingInt(second_binding)];
+    transformer.semantic_editor.?.symbol_ids.items[@backingInt(second_binding)] = id;
+    try std.testing.expect(!Generator.isNativeSourceVar(&transformer, visited));
+    transformer.semantic_editor.?.symbol_ids.items[@backingInt(second_binding)] = old_id;
+    var row_index: ?usize = null;
+    for (transformer.semantic_editor.?.references.items, 0..) |row, i| {
+        if (row.flags.declare and row.declaration_node_index == second_binding and @backingInt(row.symbol_id) == second_id) row_index = i;
+    }
+    const row = &transformer.semantic_editor.?.references.items[row_index.?];
+    const original = row.*;
+    row.declaration_node_index = .none;
+    try std.testing.expect(!Generator.isNativeSourceVar(&transformer, visited));
+    row.* = original;
+    row.scope_id = .none;
+    try std.testing.expect(!Generator.isNativeSourceVar(&transformer, visited));
+    row.* = original;
+    try std.testing.expect(Generator.isNativeSourceVar(&transformer, visited));
+}
+
+test "TLA multi-var source header normalizes to ordered writes with one storage per source SID" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "entry.mjs", .data = "const events=[];await 0;for(var i=(events.push('i'),0),j=(events.push('j'),1);i<2;i++){events.push(i+j);}function read(){return[i,j,events.join()];}console.log(JSON.stringify(read()));" });
+    const path = try @import("../bundler/test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = @import("../bundler/resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = @import("../bundler/graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.unsupported = @import("compat.zig").fromESTarget(.es5);
+    graph.transform_options_base.tla_module_awaited = true;
+    try graph.build(std.testing.io, &.{path});
+    const module = graph.modules.at(@backingInt(graph.path_to_module.get(path).?));
+    try std.testing.expect(module.transform_cache != null);
+    const ast = &module.ast.?;
+    const semantic = &module.semantic.?;
+    const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(std.testing.allocator, ast);
+    defer std.testing.allocator.free(reachable);
+    var writes: [2]?u32 = .{ null, null };
+    var loops: usize = 0;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag != .for_statement) continue;
+        loops += 1;
+        const init = ast.getNode(@fromBackingInt(ast.extra_data.items[node.data.extra]));
+        try std.testing.expectEqual(ast_mod.Node.Tag.sequence_expression, init.tag);
+        try std.testing.expectEqual(@as(u32, 2), init.data.list.len);
+        for (0..2) |i| {
+            const assign = ast.getNode(@fromBackingInt(ast.extra_data.items[init.data.list.start + i]));
+            try std.testing.expectEqual(ast_mod.Node.Tag.assignment_expression, assign.tag);
+            writes[i] = semantic.symbol_ids[@backingInt(assign.data.binary.left)];
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), loops);
+    try std.testing.expect(writes[0] != null and writes[1] != null and writes[0] != writes[1]);
+    for (writes) |maybe_id| {
+        const id = maybe_id.?;
+        var bindings: usize = 0;
+        for (reachable) |raw| {
+            if (ast.nodes.items[raw].tag == .binding_identifier and raw < semantic.symbol_ids.len and semantic.symbol_ids[raw] == id) bindings += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), bindings);
+        var declarations: usize = 0;
+        for (semantic.references) |row| {
+            if (@backingInt(row.symbol_id) == id and row.flags.declare) declarations += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), declarations);
+    }
 }
