@@ -14,6 +14,45 @@ fn isGeneratedTempName(name: []const u8) bool {
     return true;
 }
 
+fn expectCapturedTempMissingProducerPanic() !void {
+    const allocator = std.testing.allocator;
+    const executable = try std.process.executablePathAlloc(std.testing.io, allocator);
+    defer allocator.free(executable);
+    var environ = std.process.Environ.Map.init(allocator);
+    defer environ.deinit();
+    try environ.put("ZNTC_CAPTURED_TEMP_MISSING_PRODUCER_PANIC", "1");
+    const child_index: u32 = blk: {
+        for (@import("builtin").test_functions, 0..) |test_function, index| {
+            if (std.mem.endsWith(u8, test_function.name, "captured temp missing producer panic child"))
+                break :blk @intCast(index);
+        }
+        return error.MissingCapturedTempPanicChild;
+    };
+    const io = std.testing.io;
+    var child = try std.process.spawn(io, .{
+        .argv = &.{ executable, "--listen=-" },
+        .environ_map = &environ,
+        .stdin = .pipe,
+        .stdout = .ignore,
+        .stderr = .pipe,
+    });
+    defer child.kill(io);
+    var message_buffer: [64]u8 = undefined;
+    var writer = child.stdin.?.writer(io, &message_buffer);
+    const client: std.zig.Client = .{ .in = undefined, .out = &writer.interface };
+    try client.serveRunTest(child_index);
+    try client.serveBodylessMessage(.exit);
+    child.stdin.?.close(io);
+    child.stdin = null;
+    var stderr_buffer: [4096]u8 = undefined;
+    var reader = std.Io.File.Reader.initStreaming(child.stderr.?, io, &stderr_buffer);
+    const stderr = try reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
+    defer allocator.free(stderr);
+    const term = try child.wait(io);
+    try std.testing.expect(!term.success());
+    try std.testing.expect(std.mem.indexOf(u8, stderr, "captured temp reference has no stable producer identity") != null);
+}
+
 fn checkExactPrivateTemps(source: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -404,4 +443,52 @@ test "captured temp references use the retained producer handle when lookup data
     try std.testing.expectEqual(@as(?u32, deferred_id), transformer.getSymbolIdAt(deferred_write));
     try std.testing.expectEqual(@as(?u32, deferred_id), transformer.getSymbolIdAt(deferred_read));
     try std.testing.expectEqual(producer_pending_before, transformer.pending_temp_producer_refs.items.len);
+
+    try expectCapturedTempMissingProducerPanic();
+}
+
+test "captured temp missing producer panic child" {
+    if (!std.testing.environ.containsUnemptyConstant("ZNTC_CAPTURED_TEMP_MISSING_PRODUCER_PANIC")) return;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "function host() { return 1; }\n";
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var numeric_node: ?NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .numeric_literal) {
+            numeric_node = @fromBackingInt(@intCast(raw));
+            break;
+        }
+    }
+    const value = numeric_node orelse return error.MissingNumericInput;
+    const span = parser.ast.getNode(value).span;
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    transformer.current_scope = transformer.programScope();
+
+    var capture = try es_helpers.captureToTrackedTemp(&transformer, value, span);
+    capture.symbol_id = null;
+    capture.reference_scope = .none;
+    capture.temp_producer_id = null;
+    _ = try es_helpers.makeCapturedTempRef(&transformer, capture, span, .{ .read = true });
 }

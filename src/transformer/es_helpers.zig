@@ -2849,11 +2849,9 @@ pub fn captureToTrackedTemp(self: anytype, value: NodeIndex, span: Span) !TempCa
     const captured = try captureToTempWithIdentity(self, value, span);
     if (captured.symbol_id == null) {
         const assignment = self.ast.getNode(captured.paren_assign);
-        if (captured.temp_producer_id) |producer_id| {
-            try self.trackCapturedTempReference(producer_id, captured.span, assignment.data.binary.left, self.current_scope, .{ .write = true });
-        } else {
-            try self.trackSyntheticTempReference(captured.span, span, assignment.data.binary.left, .{ .write = true });
-        }
+        const producer_id = captured.temp_producer_id orelse
+            std.debug.panic("captured temp has no stable producer identity", .{});
+        try self.trackCapturedTempReference(producer_id, captured.span, assignment.data.binary.left, self.current_scope, .{ .write = true });
     }
     return captured;
 }
@@ -2887,8 +2885,8 @@ pub const OnceReceiver = struct {
 };
 
 /// Create another reference from the producer-owned temp handle. Known owners
-/// use the exact SymbolId captured at creation; only owners that are still
-/// deferred fall back to the pending name/span handoff.
+/// use the exact SymbolId captured at creation; deferred owners keep the
+/// producer ID until their binding scope becomes available.
 pub fn makeCapturedTempRef(
     self: anytype,
     capture: TempCapture,
@@ -2903,8 +2901,8 @@ pub fn makeCapturedTempRef(
     } else {
         if (capture.temp_producer_id) |producer_id| {
             try self.trackCapturedTempReference(producer_id, capture.span, ref, self.current_scope, flags);
-        } else {
-            try self.trackSyntheticTempReference(capture.span, node_span, ref, flags);
+        } else if (self.semantic_edit_enabled) {
+            std.debug.panic("captured temp reference has no stable producer identity", .{});
         }
     }
     return ref;
