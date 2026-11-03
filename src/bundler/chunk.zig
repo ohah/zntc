@@ -1667,8 +1667,16 @@ fn nsReExportTargetDepth(
         for (m.import_bindings) |ib| {
             if (ib.kind != .namespace or ib.local_role != .import_binding or ib.source_type_only == true) continue;
             if (m.semantic != null) {
-                if (eb.kind != .local or !ib.local_symbol.isValid() or !ib.local_symbol.eql(eb.symbol)) continue;
-                _ = m.checkedImportBindingLocalName(ib) catch return null;
+                if (eb.kind != .local) continue;
+                const identity = m.checkedImportBindingIdentity(ib) catch {
+                    // Preserve the strict failure for a cached ref that claims
+                    // this export but disagrees with its source anchor. A missing
+                    // cache ref can still be matched below only through that
+                    // exact scanner-owned anchor.
+                    if (ib.local_symbol.isValid() and ib.local_symbol.eql(eb.symbol)) return null;
+                    continue;
+                };
+                if (!identity.symbol.eql(eb.symbol)) continue;
             } else {
                 // Explicit graphless metadata API has no semantic identity.
                 if (!std.mem.eql(u8, ib.local_name, m.exportBindingLocalName(eb))) continue;
