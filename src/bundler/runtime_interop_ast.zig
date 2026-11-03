@@ -637,7 +637,7 @@ test "interop AST provider cache and owner corruption fail closed across ten inp
     for (0..13) |corruption| {
         var tmp = std.testing.tmpDir(.{});
         defer tmp.cleanup();
-        try helpers.writeFile(tmp.dir, "entry.js", "import * as value from './dep.cjs'; const unusedDecoy = 0; console.log(JSON.stringify(value));");
+        try helpers.writeFile(tmp.dir, "entry.js", "import * as value from './dep.cjs'; import * as unused from './dep.cjs'; const unusedDecoy = 0; console.log(JSON.stringify(value));");
         try helpers.writeFile(tmp.dir, "dep.cjs", "exports.answer = 42;");
         const entry = try helpers.absPath(&tmp, "entry.js");
         defer std.testing.allocator.free(entry);
@@ -657,8 +657,11 @@ test "interop AST provider cache and owner corruption fail closed across ten inp
         var linker = @import("linker.zig").Linker.init(std.testing.allocator, &graph, .esm);
         defer linker.deinit();
         const source_owner = graph.moduleAtMut(graph.path_to_module.get(entry).?).?;
+        try std.testing.expectEqual(@as(usize, 2), source_owner.import_bindings.len);
         const source_binding = source_owner.import_bindings[0];
+        const unused_binding = source_owner.import_bindings[1];
         try std.testing.expect(linker.isInteropImportLive(source_owner, source_binding));
+        try std.testing.expect(!linker.isInteropImportLive(source_owner, unused_binding));
         // A spelling lookup points at an unused decoy; the exact import stays live.
         const source_semantic = &source_owner.semantic.?;
         const source_map = @constCast(&source_semantic.scope_maps[0]);
@@ -668,6 +671,13 @@ test "interop AST provider cache and owner corruption fail closed across ten inp
         // A captured same-module SID can still belong to an unrelated local.
         // The runtime interop prelude must not drop a live import from that row.
         const SymbolRef = @import("symbol.zig").SymbolRef;
+        var missing_unused_binding = unused_binding;
+        missing_unused_binding.local_symbol = .invalid;
+        try std.testing.expect(!linker.isInteropImportLive(source_owner, missing_unused_binding));
+        try std.testing.expect(!missing_unused_binding.local_symbol.isValid());
+        var stale_unused_binding = unused_binding;
+        stale_unused_binding.local_symbol = SymbolRef.makeSemantic(source_owner.index, @as(u32, @intCast(decoy_id)));
+        try std.testing.expect(linker.isInteropImportLive(source_owner, stale_unused_binding));
         var stale_source_binding = source_binding;
         stale_source_binding.local_symbol = SymbolRef.makeSemantic(source_owner.index, @as(u32, @intCast(decoy_id)));
         try std.testing.expect(linker.isInteropImportLive(source_owner, stale_source_binding));
