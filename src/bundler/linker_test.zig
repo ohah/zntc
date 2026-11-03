@@ -5266,6 +5266,105 @@ test "metadata CJS named import rename uses exact source anchor when cached SID 
     binding.local_symbol_node = source_anchor;
 }
 
+test "CJS live-wrapper export getter metadata validates exact import identity" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "entry.mjs",
+        "import { value as selected, other as decoy } from './provider.mjs'; export { selected };",
+    );
+    try writeFile(tmp.dir, "provider.mjs", "export const value = 42; export const other = 9;");
+    try writeFile(tmp.dir, "root.cjs", "require('./entry.mjs');");
+
+    var r = try buildLinkAndRename(allocator, &tmp, "root.cjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingLiveGetterEntry;
+    const provider_index = findModuleIdx(r.graph, "provider.mjs") orelse return error.MissingLiveGetterProvider;
+    const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingLiveGetterEntry);
+    const provider = r.graph.getModule(provider_index) orelse return error.MissingLiveGetterProvider;
+    try std.testing.expectEqual(types.WrapKind.esm, entry.wrap_kind);
+    try std.testing.expectEqual(types.WrapKind.esm, provider.wrap_kind);
+
+    // Exercise the CJS output metadata path with the provider split away from
+    // the importer, which creates the live namespace expression and getter map.
+    r.linker.format = .cjs;
+    const module_to_chunk = try allocator.alloc(types.ChunkIndex, r.graph.moduleCount());
+    defer allocator.free(module_to_chunk);
+    @memset(module_to_chunk, .none);
+    module_to_chunk[entry_index.toU32()] = @fromBackingInt(@intCast(0));
+    module_to_chunk[provider_index.toU32()] = @fromBackingInt(@intCast(1));
+    r.linker.module_to_chunk = module_to_chunk;
+    defer r.linker.module_to_chunk = null;
+    try std.testing.expect(r.linker.usesCjsLiveWrapperNamespaces());
+    try std.testing.expect(r.linker.isCrossChunkConsumer(entry_index.toU32(), provider_index.toU32()));
+
+    const semantic = entry.semantic orelse return error.MissingLiveGetterSemantic;
+    const selected = for (entry.import_bindings) |*binding| {
+        if (std.mem.eql(u8, binding.local_name, "selected")) break binding;
+    } else return error.MissingLiveGetterImport;
+    const decoy = for (entry.import_bindings) |binding| {
+        if (std.mem.eql(u8, binding.local_name, "decoy")) break binding;
+    } else return error.MissingLiveGetterDecoyImport;
+    const source_ref = try entry.checkedSourceImportLocalSymbol(selected.*);
+    const source_sid = source_ref.semanticIndex() orelse return error.MissingLiveGetterSourceSID;
+    const decoy_ref = try entry.checkedSourceImportLocalSymbol(decoy);
+    const decoy_sid = decoy_ref.semanticIndex() orelse return error.MissingLiveGetterDecoySID;
+    const source_anchor = selected.local_symbol_node orelse return error.MissingLiveGetterAnchor;
+    const decoy_anchor = decoy.local_symbol_node orelse return error.MissingLiveGetterDecoyAnchor;
+    try std.testing.expect(source_sid != decoy_sid);
+
+    // A poisoned spelling map cannot override the exact scanner anchor. The
+    // missing derived SID stays absent while the getter uses the source name.
+    selected.local_symbol = .invalid;
+    try @constCast(semantic.scope_maps)[0].put(allocator, "selected", decoy_sid);
+    var anchored_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+    defer anchored_metadata.deinit();
+    const getter = anchored_metadata.export_getter_overrides.get("selected") orelse
+        return error.MissingAnchoredLiveGetterOverride;
+    try std.testing.expectEqualStrings(
+        getter,
+        anchored_metadata.renames.get(source_sid) orelse return error.MissingAnchoredLiveGetterRename,
+    );
+    try std.testing.expect(!std.mem.eql(
+        u8,
+        getter,
+        anchored_metadata.renames.get(@intCast(decoy_sid)) orelse return error.MissingLiveGetterDecoyRename,
+    ));
+    try std.testing.expect(!selected.local_symbol.isValid());
+
+    // A same-module, same-kind SID or another import's source node cannot be
+    // paired with this binding to create a getter override.
+    selected.local_symbol = decoy_ref;
+    try std.testing.expectError(
+        error.InvalidImportLocalSymbol,
+        buildMetadataForModule(&r, entry_index.toU32(), true),
+    );
+
+    selected.local_symbol = source_ref;
+    selected.local_symbol_node = decoy_anchor;
+    try std.testing.expectError(
+        error.InvalidImportLocalSymbol,
+        buildMetadataForModule(&r, entry_index.toU32(), true),
+    );
+
+    // A cached SID without its source anchor is not enough in an AST-backed
+    // module, even when the spelling map is restored to the expected SID.
+    selected.local_symbol_node = null;
+    try @constCast(semantic.scope_maps)[0].put(allocator, "selected", source_sid);
+    try std.testing.expectError(
+        error.InvalidImportLocalSymbol,
+        buildMetadataForModule(&r, entry_index.toU32(), true),
+    );
+
+    selected.local_symbol = source_ref;
+    selected.local_symbol_node = source_anchor;
+}
+
 test "metadata CJS default import preamble uses exact source anchor when cached SID is missing" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
