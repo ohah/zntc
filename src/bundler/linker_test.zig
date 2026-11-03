@@ -5486,8 +5486,8 @@ test "metadata CJS named import rename uses exact source anchor when cached SID 
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "entry.mjs", "import { value as selected } from './c';\nconst decoy = 7;\nconsole.log(selected, decoy);");
-    try writeFile(tmp.dir, "c.js", "module.exports = { value: 42 };");
+    try writeFile(tmp.dir, "entry.mjs", "import { value as selected, other as second } from './c';\nconst decoy = 7;\nconsole.log(selected, second, decoy);");
+    try writeFile(tmp.dir, "c.js", "module.exports = { value: 42, other: 13 };");
     try writeFile(tmp.dir, "root.cjs", "require('./entry.mjs');");
 
     var r = try buildLinkAndRename(allocator, &tmp, "root.cjs");
@@ -5506,8 +5506,14 @@ test "metadata CJS named import rename uses exact source anchor when cached SID 
     const source_anchor = binding.local_symbol_node orelse return error.MissingImportAnchor;
     const source_ref = try entry.checkedSourceImportLocalSymbol(binding.*);
     const source_sid = source_ref.semanticIndex() orelse return error.MissingSourceSID;
+    const sibling_binding = for (entry.import_bindings) |*candidate| {
+        if (std.mem.eql(u8, candidate.local_name, "second")) break candidate;
+    } else return error.MissingSiblingImport;
+    const sibling_ref = try entry.checkedSourceImportLocalSymbol(sibling_binding.*);
+    const sibling_sid = sibling_ref.semanticIndex() orelse return error.MissingSiblingSID;
     const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoy;
     try std.testing.expect(source_sid != decoy_sid);
+    try std.testing.expect(source_sid != sibling_sid);
 
     binding.local_symbol = .invalid;
     try @constCast(semantic.scope_maps)[0].put(allocator, "selected", decoy_sid);
@@ -5519,6 +5525,23 @@ test "metadata CJS named import rename uses exact source anchor when cached SID 
     try std.testing.expect(std.mem.indexOf(u8, direct_rename, "().value") != null);
     try std.testing.expect(direct_metadata.renames.get(@intCast(decoy_sid)) == null);
     try std.testing.expect(!binding.local_symbol.isValid());
+
+    var raw_missing_metadata = try r.linker.buildMetadata(entry_index.toU32(), true);
+    defer raw_missing_metadata.deinit();
+    try std.testing.expectEqualStrings("value", raw_missing_metadata.renames.get(source_sid) orelse return error.MissingAnchoredRawCjsRename);
+    try std.testing.expect(raw_missing_metadata.renames.get(@intCast(decoy_sid)) == null);
+    try std.testing.expect(!binding.local_symbol.isValid());
+
+    // A valid sibling import SID is stale for this declaration. The legacy
+    // metadata entry point must reject it and still process the sibling row.
+    binding.local_symbol = sibling_ref;
+    var raw_stale_metadata = try r.linker.buildMetadata(entry_index.toU32(), true);
+    defer raw_stale_metadata.deinit();
+    try std.testing.expect(raw_stale_metadata.renames.get(source_sid) == null);
+    try std.testing.expectEqualStrings("other", raw_stale_metadata.renames.get(sibling_sid) orelse return error.MissingSiblingRawCjsRename);
+    try std.testing.expect(raw_stale_metadata.renames.get(@intCast(decoy_sid)) == null);
+    try std.testing.expect(binding.local_symbol.eql(sibling_ref));
+    binding.local_symbol = .invalid;
 
     // Put the CJS provider in a different chunk. The cross-chunk fast path
     // must attach its global name to the same anchored importer SID.
@@ -5547,6 +5570,10 @@ test "metadata CJS named import rename uses exact source anchor when cached SID 
     defer anchorless_metadata.deinit();
     try std.testing.expect(anchorless_metadata.renames.get(source_sid) == null);
     try std.testing.expect(anchorless_metadata.renames.get(@intCast(decoy_sid)) == null);
+    var raw_anchorless_metadata = try r.linker.buildMetadata(entry_index.toU32(), true);
+    defer raw_anchorless_metadata.deinit();
+    try std.testing.expect(raw_anchorless_metadata.renames.get(source_sid) == null);
+    try std.testing.expect(raw_anchorless_metadata.renames.get(@intCast(decoy_sid)) == null);
     try std.testing.expect(!binding.local_symbol.isValid());
     binding.local_symbol_node = source_anchor;
 }
