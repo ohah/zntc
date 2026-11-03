@@ -4248,7 +4248,19 @@ pub const Linker = struct {
         const target = binding.callsite_target orelse return;
         const sem = if (module.semantic) |*value| value else return error.InvalidCallsiteBinding;
         const ast = if (module.ast) |*value| value else return error.InvalidCallsiteBinding;
-        const local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = module.index, .ast = ast, .symbol_ids = sem.symbol_ids, .symbols = sem.symbols.items });
+        // This pass mutates rename state, so it enforces the same exact local
+        // declaration and source ownership contract as callsite construction.
+        if (binding.local_role != .import_binding or
+            binding.local_declaration_node != target.declaration or
+            binding.import_record_index >= module.import_records.len)
+            return error.InvalidCallsiteBinding;
+        const record = module.import_records[binding.import_record_index];
+        if (record.kind != .static_import or record.resolved != target.symbol.module or
+            !binding.symbol.eql(target.symbol.toRef()) or !module.importBindingOwnsSource(binding, ast))
+            return error.InvalidCallsiteBinding;
+        const local = module.checkedSourceImportLocalSymbol(binding) catch return error.InvalidCallsiteBinding;
+        // The source anchor may stand in for a missing cache, but not a stale one.
+        if (binding.local_symbol.isValid() and !local.eql(binding.local_symbol)) return error.InvalidCallsiteBinding;
         const local_sid = local.semanticIndex() orelse return error.InvalidCallsiteBinding;
         const name = try self.callsiteTargetName(target);
         if (sem.scopes.len == 0 or sem.scopes[0].blocksMangling()) return;
@@ -8478,6 +8490,28 @@ test "callsite shadow resolver rejects a scope map redirected to another valid S
     try std.testing.expectEqual(@as(usize, 0), linker.rename_table.count());
 
     try @constCast(&semantic.scope_maps[0]).put(a, "value", value_shadow);
+    var missing_owner = binding;
+    missing_owner.local_declaration_node = null;
+    try std.testing.expectError(
+        error.InvalidCallsiteBinding,
+        linker.resolveCallsiteReadShadows(importer, missing_owner, &name_to_owners),
+    );
+    try std.testing.expectEqual(@as(usize, 0), linker.rename_table.count());
+
+    var stale_cache = binding;
+    stale_cache.local_symbol = bundler_symbol.SymbolRef.makeSemantic(importer.index, wrong_sid);
+    try std.testing.expectError(
+        error.InvalidCallsiteBinding,
+        linker.resolveCallsiteReadShadows(importer, stale_cache, &name_to_owners),
+    );
+    try std.testing.expectEqual(@as(usize, 0), linker.rename_table.count());
+
+    var missing_cache = binding;
+    missing_cache.local_symbol = bundler_symbol.SymbolRef.invalid;
+    try linker.resolveCallsiteReadShadows(importer, missing_cache, &name_to_owners);
+    try std.testing.expect(!missing_cache.local_symbol.isValid());
+    try std.testing.expect(linker.rename_table.get(bundler_symbol.SymbolID.make(importer.index, value_sid)) != null);
+
     try linker.resolveCallsiteReadShadows(importer, binding, &name_to_owners);
     try std.testing.expect(linker.rename_table.get(bundler_symbol.SymbolID.make(importer.index, value_sid)) != null);
     try std.testing.expect(linker.rename_table.get(bundler_symbol.SymbolID.make(importer.index, wrong_sid)) == null);
