@@ -63,7 +63,7 @@ const Module = @import("../module.zig").Module;
 const ImportBinding = @import("../binding_scanner.zig").ImportBinding;
 const emitChunkExternalImports = @import("external_imports.zig").emitChunkExternalImports;
 
-test "external exact import writer rejects missing and foreign helper identities" {
+test "external exact import writer accepts an anchored missing helper SID and rejects foreign identities" {
     const a = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
@@ -95,7 +95,7 @@ test "external exact import writer rejects missing and foreign helper identities
     defer output.deinit(a);
     try emitChunkExternalImports(&output, a, true, &.{&module}, null, false);
     try testing.expect(std.mem.indexOf(u8, output.items, "value as local") != null);
-    const attacks = enum { missing_ref, foreign_owner, other_import_sid, missing_anchor, other_anchor, none_anchor, out_of_bounds_anchor, missing_node_sid, empty_node_map, nonbinding_anchor, missing_declaration, wrong_imported_name, wrong_kind, wrong_source_node };
+    const attacks = enum { foreign_owner, other_import_sid, missing_anchor, other_anchor, none_anchor, out_of_bounds_anchor, missing_node_sid, empty_node_map, nonbinding_anchor, missing_declaration, wrong_imported_name, wrong_kind, wrong_source_node };
     inline for (std.meta.tags(attacks)) |attack| {
         selected[0] = exact;
         const raw = @backingInt(exact.local_symbol_node.?);
@@ -103,7 +103,6 @@ test "external exact import writer rejects missing and foreign helper identities
         const saved_ids = module.semantic.?.symbol_ids;
         const saved_source = records[0].source_node;
         switch (attack) {
-            .missing_ref => selected[0].local_symbol = .invalid,
             .foreign_owner => selected[0].local_symbol = @import("../symbol.zig").SymbolRef.makeSemantic(.fromUsize(4), exact.local_symbol.semanticIndex().?),
             .other_import_sid => selected[0].local_symbol = scanner_mod.resolveImportLocalSymbol(bindings[1], .{ .module_index = module.index, .ast = &module.ast.?, .symbol_ids = analyzer.symbol_ids.items, .symbols = analyzer.symbols.items }),
             .missing_anchor => selected[0].local_symbol_node = null,
@@ -125,6 +124,12 @@ test "external exact import writer rejects missing and foreign helper identities
         records[0].source_node = saved_source;
         try testing.expectError(error.InvalidImportLocalSymbol, result);
     }
+    selected[0] = exact;
+    selected[0].local_symbol = .invalid;
+    output.clearRetainingCapacity();
+    try emitChunkExternalImports(&output, a, true, &.{&module}, null, false);
+    try testing.expect(std.mem.indexOf(u8, output.items, "value as local") != null);
+    try testing.expect(!selected[0].local_symbol.isValid());
     selected[0] = exact;
     // The graph owns only its list shelves here; all Module payloads borrow
     // this test's arena, so do not individually deinit the borrowed modules.
@@ -168,6 +173,104 @@ test "external exact import writer rejects missing and foreign helper identities
     output.clearRetainingCapacity();
     try emitChunkExternalImports(&output, a, true, &.{&module}, null, false);
     try testing.expectEqual(@as(usize, 0), output.items.len);
+}
+
+test "external ESM import uses exact source anchor when cached SID is missing" {
+    const a = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const source = "import { basename as selected, dirname as second } from 'node:path'; console.log(selected('/a/7'));";
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(alloc, source);
+    scanner.is_module = true;
+    var parser = @import("../../parser/parser.zig").Parser.init(alloc, &scanner);
+    parser.is_module = true;
+    _ = try parser.parse();
+    var analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer.init(alloc, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    const records = try @import("../import_scanner.zig").extractImports(alloc, &parser.ast);
+    for (records) |*record| record.is_external = true;
+    const bindings = try @import("../binding_scanner.zig").extractImportBindings(alloc, &parser.ast, records, null);
+    try testing.expectEqual(@as(usize, 2), bindings.len);
+    const scanner_mod = @import("../binding_scanner.zig");
+    for (bindings) |*binding| {
+        binding.local_symbol = scanner_mod.resolveImportLocalSymbol(binding.*, .{
+            .module_index = .fromUsize(0),
+            .ast = &parser.ast,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .symbols = analyzer.symbols.items,
+        });
+    }
+
+    var module = Module.init(.fromUsize(0), "entry.mjs");
+    module.source = source;
+    module.ast = parser.ast;
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+    };
+    module.import_records = records;
+    module.import_bindings = bindings;
+    const selected_sid = bindings[0].local_symbol.semanticIndex() orelse return error.MissingSelectedSID;
+    const second_sid = bindings[1].local_symbol.semanticIndex() orelse return error.MissingSecondSID;
+    try testing.expect(selected_sid != second_sid);
+    try testing.expectEqualStrings("selected", bindings[0].local_name);
+    try testing.expectEqualStrings("second", bindings[1].local_name);
+
+    // A same-spelling root-map row is only a decoy. The source anchor remains
+    // the authority for the import local's identity.
+    try analyzer.scope_maps.items[0].put(alloc, "selected", second_sid);
+    bindings[0].local_symbol = .invalid;
+
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = @import("../graph.zig").ModuleGraph.init(a, &cache);
+    defer graph.modules.deinit(a);
+    try graph.modules.append(a, module);
+    var linker = @import("../linker.zig").Linker.init(a, &graph, .esm);
+    defer linker.deinit();
+    try linker.rename_table.put(a, @import("../symbol.zig").SymbolID.make(module.index, selected_sid), "chosen_local");
+
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(a);
+    try emitChunkExternalImports(&output, a, true, &.{graph.getModule(module.index).?}, &linker, false);
+    try testing.expect(std.mem.indexOf(u8, output.items, "basename as chosen_local") != null);
+    try testing.expect(std.mem.indexOf(u8, output.items, "basename as second") == null);
+    try testing.expect(!bindings[0].local_symbol.isValid());
+
+    // The emitted external binding and the canonical body reference must name
+    // the same local. Exercise the generated import with Node's built-in module.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try @import("../test_helpers.zig").writeFile(tmp.dir, "output.mjs", try std.fmt.allocPrint(alloc, "{s}console.log(chosen_local('/a/7'));\n", .{output.items}));
+    const path = try @import("../test_helpers.zig").absPath(&tmp, "output.mjs");
+    defer a.free(path);
+    const execution = try std.process.run(a, testing.io, .{ .argv = &.{ "node", path } });
+    defer a.free(execution.stdout);
+    defer a.free(execution.stderr);
+    try testing.expectEqual(std.process.Child.Term{ .exited = 0 }, execution.term);
+    try testing.expectEqualStrings("7\n", execution.stdout);
+
+    // A valid but wrong same-kind SID cannot override the exact source anchor.
+    bindings[0].local_symbol = @import("../symbol.zig").SymbolRef.makeSemantic(module.index, second_sid);
+    output.clearRetainingCapacity();
+    try testing.expectError(error.InvalidImportLocalSymbol, emitChunkExternalImports(&output, a, true, &.{graph.getModule(module.index).?}, &linker, false));
+
+    // A correct-looking scope-map row cannot recover identity once the exact
+    // scanner anchor is gone.
+    bindings[0].local_symbol = .invalid;
+    const selected_anchor = bindings[0].local_symbol_node.?;
+    bindings[0].local_symbol_node = null;
+    try analyzer.scope_maps.items[0].put(alloc, "selected", selected_sid);
+    output.clearRetainingCapacity();
+    try testing.expectError(error.InvalidImportLocalSymbol, emitChunkExternalImports(&output, a, true, &.{graph.getModule(module.index).?}, &linker, false));
+    bindings[0].local_symbol_node = selected_anchor;
 }
 
 fn checkExternalRuntime(imports: []const u8, body: []const u8) !void {
