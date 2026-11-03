@@ -4535,6 +4535,52 @@ test "namespace access analysis uses import identity anchors under hostile scope
     entry.import_bindings[binding_index].local_symbol_node = binding_anchor;
 }
 
+test "namespace access analysis rejects same-kind SID without source anchor" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "entry.ts",
+        "import * as selected from './provider.ts';\n" ++
+            "import * as decoy from './decoy.ts';\n" ++
+            "console.log(selected.answer, decoy.unrelated);\n",
+    );
+    try writeFile(tmp.dir, "provider.ts", "export const answer = 42;");
+    try writeFile(tmp.dir, "decoy.ts", "export const unrelated = 9;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.ts") orelse return error.MissingEntry;
+    const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingEntry);
+    const semantic = entry.semantic orelse return error.MissingEntrySemantic;
+    const selected = for (entry.import_bindings) |*binding| {
+        if (std.mem.eql(u8, binding.local_name, "selected")) break binding;
+    } else return error.MissingSelectedImport;
+    const decoy = for (entry.import_bindings) |binding| {
+        if (std.mem.eql(u8, binding.local_name, "decoy")) break binding;
+    } else return error.MissingDecoyImport;
+    const selected_ref = try entry.checkedSourceImportLocalSymbol(selected.*);
+    const decoy_ref = try entry.checkedSourceImportLocalSymbol(decoy);
+    try std.testing.expect(!selected_ref.eql(decoy_ref));
+    const decoy_sid = decoy_ref.semanticIndex() orelse return error.MissingDecoySID;
+    const selected_sid = selected_ref.semanticIndex() orelse return error.MissingSelectedSID;
+    try std.testing.expectEqual(.import_binding, semantic.symbols.items[selected_sid].kind);
+    try std.testing.expectEqual(.import_binding, semantic.symbols.items[decoy_sid].kind);
+
+    selected.local_symbol = decoy_ref;
+    selected.local_symbol_node = null;
+    r.linker.populateNamespaceAccesses();
+
+    // The decoy import's `.unrelated` access cannot define the selected
+    // provider's namespace usage when its exact source anchor is missing.
+    try std.testing.expect(selected.namespace_used_properties == null);
+    try std.testing.expect(selected.namespace_used_property_stmts == null);
+    try std.testing.expect(selected.local_symbol.eql(decoy_ref));
+}
+
 test "namespace re-export metadata uses the import binding SymbolId under a hostile scope map" {
     const allocator = std.testing.allocator;
     const barrel_sources = [_][]const u8{

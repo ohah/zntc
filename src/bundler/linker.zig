@@ -6521,34 +6521,17 @@ pub const Linker = struct {
     fn namespaceAccessSymbolIndex(
         module: *const Module,
         semantic: *const ModuleSemanticData,
-        ast: *const Ast,
         binding: ImportBinding,
     ) ?u32 {
-        const anchored = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{
-            .module_index = module.index,
-            .ast = ast,
-            .symbol_ids = semantic.symbol_ids,
-            .symbols = semantic.symbols.items,
-        });
-
-        if (binding.local_symbol.isValid()) {
-            if (binding.local_symbol.moduleIndex() != module.index) return null;
-            const raw = binding.local_symbol.semanticIndex() orelse return null;
-            if (raw >= semantic.symbols.items.len) return null;
-            if (binding.local_symbol_node != null and
-                (!anchored.isValid() or !binding.local_symbol.eql(anchored))) return null;
-            return raw;
-        }
-
-        // A retained scanner anchor remains authoritative when a low-level
-        // SymbolRef is absent. Never let a same-spelling map row override it.
-        if (binding.local_symbol_node != null) {
-            if (!anchored.isValid() or anchored.moduleIndex() != module.index) return null;
-            const raw = anchored.semanticIndex() orelse return null;
-            if (raw >= semantic.symbols.items.len) return null;
-            return raw;
-        }
-        return null;
+        // Namespace analysis only runs for source-backed modules. Require its
+        // exact scanner/declaration anchor even when a cached SID is present;
+        // a same-module SID alone can belong to a sibling import.
+        const anchored = module.checkedSourceImportLocalSymbol(binding) catch return null;
+        if (!anchored.isValid() or anchored.moduleIndex() != module.index) return null;
+        if (binding.local_symbol.isValid() and !binding.local_symbol.eql(anchored)) return null;
+        const raw = anchored.semanticIndex() orelse return null;
+        if (raw >= semantic.symbols.items.len) return null;
+        return raw;
     }
 
     pub fn populateNamespaceAccesses(self: *const Linker) void {
@@ -6650,7 +6633,7 @@ pub const Linker = struct {
                 // A missing SymbolRef can still use its retained scanner-owned
                 // anchor. With neither exact identity carrier, clear the result
                 // instead of reconstructing a SID from the source spelling.
-                const sym_idx = namespaceAccessSymbolIndex(importer, &sem, ast, ib.*) orelse {
+                const sym_idx = namespaceAccessSymbolIndex(importer, &sem, ib.*) orelse {
                     ib.namespace_used_properties = null;
                     ib.namespace_used_property_stmts = null;
                     continue;
