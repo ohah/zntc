@@ -17804,6 +17804,68 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), dev_source_void_primitive_count);
 }
 
+test "generic prepass rejects unsafe static eval without publishing a partial candidate" {
+    const sources = [_][]const u8{
+        "function run(eval){class Box{static read=()=>eval('this');}return Box;}run(globalThis.eval);",
+        "class Box{static read=()=>eval('010');}",
+        "class Box{static read=function(){return eval('this');};}",
+        "class Box{static read=function(){return eval('arguments');};}",
+        "class Box{static read=function(){return eval('var local=7');};}",
+        "class Box{static read=function(){return eval('Box');};}",
+        "class Box{static read=()=>eval(code);}",
+        "class Box{static read=()=>eval('value.member');}",
+        "class Box{static read=()=>eval('value()');}",
+        "class Box{static read=()=>eval('let value = 7');}",
+    };
+
+    for (sources, 0..) |source, source_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const parse_allocator = arena.allocator();
+        const fixture = try runtimeHelperReanalysisTestFixture(parse_allocator, source);
+        var module = Module.init(@fromBackingInt(@intCast(source_index)), "input.js");
+        module.source = source;
+        module.module_type = .js;
+        module.state = .ready;
+        module.parse_arena = &arena;
+        module.ast = fixture.ast;
+        module.semantic = fixture.semantic;
+
+        var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+        defer cache.deinit();
+        var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.transform_options_base.unsupported = @import("../../transformer/compat.zig").fromESTarget(.es2015);
+
+        var source_snapshot = try PreparedGenericPrepass.init(&module, parse_allocator);
+        defer source_snapshot.discard(std.testing.allocator);
+        profile.resetForTest();
+        defer profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+        graph.runTransformerPrePass(&module, parse_allocator);
+
+        const ast = &(module.ast orelse return error.MissingRejectedStaticEvalAst);
+        try std.testing.expect(module.semantic != null);
+        try std.testing.expect(module.transform_cache == null);
+        try std.testing.expect(ast.transformed_root == null);
+        try std.testing.expect(ast.transform_boundary == null);
+        try std.testing.expectEqualStrings(source, ast.source);
+        try std.testing.expect(try source_snapshot.isCurrent(parse_allocator));
+        try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+
+        var found_static_eval_error = false;
+        for (graph.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == .static_initializer_dynamic_scope and diagnostic.severity == .@"error") {
+                found_static_eval_error = true;
+                break;
+            }
+        }
+        if (!found_static_eval_error) std.debug.print("unsafe static eval did not reject source #{d}: {s}\n", .{ source_index, source });
+        try std.testing.expect(found_static_eval_error);
+    }
+}
+
 fn moduleHasRegisteredOutputRoles(module: *const Module) bool {
     if (module.codegen_output_domain != null or module.transform_cache != null or module.init_symbol != null or module.exports_symbol != null or module.require_symbol != null or
         module.cjs_wrapper_exports_parameter_symbol != null or module.cjs_wrapper_module_parameter_symbol != null or
