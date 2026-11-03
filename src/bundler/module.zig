@@ -570,6 +570,13 @@ pub fn isAwaitableInit(
 }
 
 pub const Module = struct {
+    /// Exact local import identity and its source spelling, resolved from the
+    /// scanner-owned source anchor without repairing ImportBinding.local_symbol.
+    pub const CheckedImportBindingIdentity = struct {
+        symbol: symbol_mod.SymbolRef,
+        name: []const u8,
+    };
+
     /// Exact identity for a TLA promise variable consumed by references that the
     /// bundler emits after AST code generation (`await <promise>` or
     /// `return <promise>`). Keep the binding node, SymbolId, and ScopeId together
@@ -1358,9 +1365,9 @@ pub const Module = struct {
         return matches == 1;
     }
 
-    /// Validate the scanner-owned local node against the stored current-module
-    /// reference before any canonical/output-name consumer may use it. A null
-    /// canonical rename means no rename; it never relaxes identity validation.
+    /// Require the derived current-module reference to be present and equal to
+    /// the scanner-owned local node. Strict consumers use this when an absent
+    /// cached field must remain an error.
     pub fn checkedImportBindingLocalName(self: *const Module, ib: ImportBinding) error{InvalidImportLocalSymbol}![]const u8 {
         if (self.semantic != null) {
             const actual = try self.checkedSourceImportLocalSymbol(ib);
@@ -1370,6 +1377,25 @@ pub const Module = struct {
         // Explicit graphless helper compatibility has no analyzer identity.
         if (ib.is_helper) return ib.local_name;
         return error.InvalidImportLocalSymbol;
+    }
+
+    /// Resolve output identity from the scanner anchor. A missing derived ref
+    /// is acceptable when the source node proves it; a present mismatched ref
+    /// and an anchorless analyzed import are rejected. Graphless helpers keep
+    /// the explicit low-level name fallback.
+    pub fn checkedImportBindingIdentity(self: *const Module, ib: ImportBinding) error{InvalidImportLocalSymbol}!CheckedImportBindingIdentity {
+        if (self.semantic == null) {
+            return .{
+                .symbol = ib.local_symbol,
+                .name = self.checkedImportBindingLocalName(ib) catch return error.InvalidImportLocalSymbol,
+            };
+        }
+
+        const actual = try self.checkedSourceImportLocalSymbol(ib);
+        if (!actual.isValid() or (ib.local_symbol.isValid() and !actual.eql(ib.local_symbol))) {
+            return error.InvalidImportLocalSymbol;
+        }
+        return .{ .symbol = actual, .name = self.refName(actual) orelse return error.InvalidImportLocalSymbol };
     }
 
     /// Scanner-owned source identity is available before Linker publishes the
@@ -1382,8 +1408,9 @@ pub const Module = struct {
         return actual;
     }
 
-    /// Existing infallible consumers retain a fail-closed contract. Output
-    /// writers with an error channel use checkedImportBindingLocalName.
+    /// Existing infallible consumers retain a strict fail-closed contract.
+    /// Output writers that allow exact source-anchor identity use
+    /// checkedImportBindingIdentity instead.
     pub fn importBindingLocalName(self: *const Module, ib: ImportBinding) []const u8 {
         return self.checkedImportBindingLocalName(ib) catch std.debug.panic(
             "import binding '{s}' in module '{s}' has invalid exact local identity",

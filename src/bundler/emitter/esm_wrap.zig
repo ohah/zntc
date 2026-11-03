@@ -181,6 +181,18 @@ fn sameImportedSourceLocal(module: *const Module, exported: ExportBinding, impor
     return @import("../canonical_export.zig").sameImportedSourceLocal(module, exported, imported);
 }
 
+/// Output names may use a scanner-owned source anchor when the cached local
+/// SymbolRef is absent. A present mismatched ref and anchorless analyzed import
+/// still fail closed; the ImportBinding itself is never repaired.
+fn checkedImportBindingOutputName(
+    module: *const Module,
+    binding: @import("../binding_scanner.zig").ImportBinding,
+    linker: ?*const Linker,
+) error{InvalidImportLocalSymbol}![]const u8 {
+    const identity = try module.checkedImportBindingIdentity(binding);
+    return if (linker) |l| l.getCanonicalByRef(identity.symbol) orelse identity.name else identity.name;
+}
+
 /// Keep the graph's explicit self-cycle diagnostic as the build result. Such
 /// an export has no runtime local name and must not fabricate a getter value.
 fn rejectedSelfReExport(l: *const Linker, module: *const Module, exported: ExportBinding) bool {
@@ -304,7 +316,7 @@ pub fn emitEsmWrappedModule(
                 if (tgt.isNone()) continue;
                 const tm = l.graph.getModule(tgt) orelse continue;
                 if (!helper_modules.isVirtualId(tm.path)) continue;
-                const local = l.getCanonicalByRef(ib.local_symbol) orelse module.importBindingLocalName(ib);
+                const local = try checkedImportBindingOutputName(module, ib, l);
                 try helper_import_locals.put(allocator, local, {});
             }
         }
@@ -579,10 +591,7 @@ pub fn emitEsmWrappedModule(
     // 선언하고 init 안에서 `_jsxDEV = ...` (할당만) 으로 처리.
     for (module.import_bindings) |ib| {
         if (ib.is_helper) {
-            const hoist_name = if (linker) |l|
-                l.getCanonicalByRef(ib.local_symbol) orelse module.importBindingLocalName(ib)
-            else
-                module.importBindingLocalName(ib);
+            const hoist_name = try checkedImportBindingOutputName(module, ib, linker);
             try hoisted_var_names.append(allocator, try arena_alloc.dupe(u8, hoist_name));
         }
     }
@@ -871,7 +880,7 @@ pub fn emitEsmWrappedModule(
                                             try star_owned.append(allocator, getter_val);
                                             break :blk getter_val;
                                         }
-                                        break :blk l.getCanonicalByRef(ib.local_symbol) orelse module.importBindingLocalName(ib);
+                                        break :blk try checkedImportBindingOutputName(module, ib, l);
                                     }
                                 }
 
@@ -1138,7 +1147,7 @@ pub fn emitEsmWrappedModule(
                         var found_preamble_var: ?[]const u8 = null;
                         for (module.import_bindings) |ib| {
                             if (ib.import_record_index == rec_idx and ib.importsDefault()) {
-                                found_preamble_var = l.getCanonicalByRef(ib.local_symbol) orelse module.importBindingLocalName(ib);
+                                found_preamble_var = try checkedImportBindingOutputName(module, ib, l);
                                 break;
                             }
                         }
@@ -1853,4 +1862,71 @@ fn collectNestedVarDecls(
         var children = ast_walk.children(esm_ast, node);
         while (children.next()) |child| try stack.append(allocator, child);
     }
+}
+
+test "ESM wrapper import-name resolver uses exact source anchor when cached SID is missing" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const source = "import { jsx as selected, jsxs as second } from 'react/jsx-runtime'; export const element = selected('div', {});";
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(alloc, source);
+    scanner.is_module = true;
+    var parser = @import("../../parser/parser.zig").Parser.init(alloc, &scanner);
+    parser.is_module = true;
+    _ = try parser.parse();
+    var analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer.init(alloc, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    const records = try @import("../import_scanner.zig").extractImports(alloc, &parser.ast);
+    const bindings = try @import("../binding_scanner.zig").extractImportBindings(alloc, &parser.ast, records, null);
+    try std.testing.expectEqual(@as(usize, 2), bindings.len);
+    const scanner_mod = @import("../binding_scanner.zig");
+    for (bindings) |*binding| {
+        binding.local_symbol = scanner_mod.resolveImportLocalSymbol(binding.*, .{
+            .module_index = .fromUsize(0),
+            .ast = &parser.ast,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .symbols = analyzer.symbols.items,
+        });
+    }
+    bindings[0].is_helper = true;
+
+    var module = Module.init(.fromUsize(0), "entry.mjs");
+    module.source = source;
+    module.ast = parser.ast;
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+    };
+    module.import_records = records;
+    module.import_bindings = bindings;
+    const selected_sid = bindings[0].local_symbol.semanticIndex() orelse return error.MissingSelectedSID;
+    const second_sid = bindings[1].local_symbol.semanticIndex() orelse return error.MissingSecondSID;
+    try std.testing.expect(selected_sid != second_sid);
+
+    // The source anchor, not the poisoned map row, selects the helper's source
+    // name. The stored cache field remains absent.
+    try analyzer.scope_maps.items[0].put(alloc, "selected", second_sid);
+    bindings[0].local_symbol = .invalid;
+    try std.testing.expectEqualStrings("selected", try checkedImportBindingOutputName(&module, bindings[0], null));
+    try std.testing.expect(!bindings[0].local_symbol.isValid());
+
+    // A valid same-kind SID for the other import is not accepted.
+    bindings[0].local_symbol = SymbolRef.makeSemantic(module.index, second_sid);
+    try std.testing.expectError(error.InvalidImportLocalSymbol, checkedImportBindingOutputName(&module, bindings[0], null));
+
+    // An anchorless import remains invalid even if its root spelling map is
+    // restored to the original SID.
+    bindings[0].local_symbol = .invalid;
+    const selected_anchor = bindings[0].local_symbol_node.?;
+    bindings[0].local_symbol_node = null;
+    try analyzer.scope_maps.items[0].put(alloc, "selected", selected_sid);
+    try std.testing.expectError(error.InvalidImportLocalSymbol, checkedImportBindingOutputName(&module, bindings[0], null));
+    bindings[0].local_symbol_node = selected_anchor;
 }
