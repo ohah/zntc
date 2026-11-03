@@ -109,29 +109,32 @@ const EXACT_MATRIX_REPORT_PREFIX_BY_KIND = {
   post: 'zntc: symbol-identity-post-minify ',
 } as const;
 const EXACT_MATRIX_OBSERVATION_FINGERPRINT =
-  '40836a5bcbeb770295c7b593dd452e45bb68f5182f79ef124b4eac299d013fab';
+  '1f9a7d55e74f3ce98d0aba7386f7e22d4762fd3f549863dc690e0df813356f82';
 const EXACT_MATRIX_OBSERVATION_TOTALS = {
-  'exact.generated_bindings': 15156,
-  'exact.generated_references': 47070,
-  'exact.generated_scope_owners_checked': 13344,
-  'exact.external': 14280,
-  'exact.declaration_anchors_checked': 48291,
+  'exact.generated_bindings': 15270,
+  'exact.generated_references': 47478,
+  'exact.generated_scope_owners_checked': 13413,
+  'exact.external': 14436,
+  'exact.declaration_anchors_checked': 48798,
   'exact.namespace_iife_params': 270,
   'exact.enum_iife_params': 36,
-  'coverage.new_user_idents': 7914,
-  'strict.bound': 60102,
-  'strict.external': 1956,
-  'strict.marked_synthetic': 52410,
-  'post.bindings': 49743,
-  'post.references': 108432,
-  'post.external': 14280,
-  'post.helpers': 8028,
+  'coverage.new_user_idents': 8037,
+  'strict.bound': 60594,
+  'strict.external': 1986,
+  'strict.marked_synthetic': 52779,
+  'post.bindings': 50310,
+  'post.references': 109491,
+  'post.external': 14436,
+  'post.helpers': 8109,
   'post.preserved_transform_refs': 204,
 } as const;
 // These module entries intentionally contain top-level await. The identity
 // reports remain useful at every matrix target, while ES5–ES2017 correctly
 // reject that source feature before producing a successful transform.
 const EXACT_MATRIX_EXPECTED_TARGET_DIAGNOSTICS = new Map<string, readonly string[]>([
+  ['4746-async-parameter-var-cells/main.mjs|es5', ['ZNTC0001']],
+  ['4746-async-parameter-var-cells/main.mjs|es2015', ['ZNTC0001']],
+  ['4746-async-parameter-var-cells/main.mjs|es2017', ['ZNTC0001']],
   ['4746-tla-multi-var-native-for/main.mjs|es5', ['ZNTC0001']],
   ['4746-tla-multi-var-native-for/main.mjs|es2015', ['ZNTC0001']],
   ['4746-tla-multi-var-native-for/main.mjs|es2017', ['ZNTC0001']],
@@ -288,6 +291,8 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
 const LENIENT_UNKNOWN_PARSE_DIAGNOSTICS = new Map<string, readonly string[]>([
   ['4730-using-module/lib.mjs', ['ZNTC0305']],
   ['4730-using-module/main.mjs', ['ZNTC0300']],
+  ['4746-async-parameter-var-cells/main.mjs', ['ZNTC0300', 'ZNTC0600']],
+  ['4746-async-parameter-var-cells/sync.mjs', ['ZNTC0305']],
   ['4746-nested-forof-declaration-owner/main.mjs', ['ZNTC0300']],
   ['4746-nested-forof-declaration-owner/sync.mjs', ['ZNTC0305']],
   ['4746-tla-multi-var-native-for/main.mjs', ['ZNTC0300']],
@@ -2218,12 +2223,12 @@ describe('symbol identity coverage gate (#4819)', () => {
     const fixtureInventory = createHash('sha256')
       .update(fixtureNames.join('\n') + '\n')
       .digest('hex');
-    expect(fixtureNames).toHaveLength(317);
+    expect(fixtureNames).toHaveLength(319);
     expect(fixtureInventory).toBe(
-      '94035c9096d38fec2eabc7dc2fb3d7f6846c0c286c3318deaf4996d56487cd3b',
+      '78ad140ff192bccf190157ed5274cb8c8c7bcb8133193251b9b787a2d867301a',
     );
     expect(fixtureContentFingerprint(fixtures, FIXTURE_DIR)).toBe(
-      'e1727e7568ef2bdff5e75793ba240169e6237d6835c3e3f771ed6ad40021fa1a',
+      '1ab1cd8054c31e5e3b5c6688aeae50742e5a641d59a2195f94bc039eda03698b',
     );
     expect(TARGETS).toEqual([
       { name: 'es5', arg: '--target=es5' },
