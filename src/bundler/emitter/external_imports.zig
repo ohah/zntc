@@ -17,7 +17,6 @@ const types = @import("../types.zig");
 const Module = @import("../module.zig").Module;
 const ImportBinding = @import("../binding_scanner.zig").ImportBinding;
 const Linker = @import("../linker.zig").Linker;
-const SymbolRef = @import("../symbol.zig").SymbolRef;
 const isImportBindingTypeOnly = @import("../linker/metadata.zig").isImportBindingTypeOnly;
 
 const NamedBinding = struct {
@@ -48,31 +47,6 @@ const SpecifierGroup = struct {
         self.aliases.deinit(allocator);
     }
 };
-
-const ImportLocalIdentity = struct {
-    symbol: SymbolRef,
-    name: []const u8,
-};
-
-/// Resolve the output local from the scanner-owned source anchor. A missing
-/// linker-derived ref is allowed only when that exact anchor still proves the
-/// identity; a present but mismatched ref remains an error. The stored binding
-/// is never repaired. Graphless helper compatibility keeps its explicit name
-/// fallback because no semantic source anchor exists there.
-fn checkedImportLocalIdentity(module: *const Module, binding: ImportBinding) error{InvalidImportLocalSymbol}!ImportLocalIdentity {
-    if (module.semantic == null) {
-        return .{
-            .symbol = binding.local_symbol,
-            .name = module.checkedImportBindingLocalName(binding) catch return error.InvalidImportLocalSymbol,
-        };
-    }
-
-    const source_ref = module.checkedSourceImportLocalSymbol(binding) catch return error.InvalidImportLocalSymbol;
-    if (binding.local_symbol.isValid() and !binding.local_symbol.eql(source_ref)) return error.InvalidImportLocalSymbol;
-    const symbol_index = source_ref.semanticIndex() orelse return error.InvalidImportLocalSymbol;
-    const local_name = module.symbolName(@fromBackingInt(@intCast(symbol_index))) orelse return error.InvalidImportLocalSymbol;
-    return .{ .symbol = source_ref, .name = local_name };
-}
 
 /// chunk 단위 ESM external import 구문 emit. **`is_esm` 아니면 no-op
 /// (함수가 자체 강제)** — iife/umd/amd 는 external 이 metadata IIFE-mapped
@@ -129,7 +103,7 @@ pub fn emitChunkExternalImports(
                     if (l.getModule(m.index.toU32()) != m) return error.InvalidExternalImportOwner;
                 }
             }
-            const local_identity = try checkedImportLocalIdentity(m, ib);
+            const local_identity = try m.checkedImportBindingIdentity(ib);
             const local_name = if (linker) |l|
                 (l.getCanonicalByRef(local_identity.symbol) orelse local_identity.name)
             else
