@@ -34,6 +34,8 @@ const srcRoot = join(root, "src");
 // "<relpath>::<fn>" → { class, note }. class ∈ {iterative_safe, one_level, recursive_tracked}.
 // 파일 경로로 스코프해 동명 walker 가 분류를 상속하는 false-negative 를 차단.
 const ALLOWLIST = {
+  "src/transformer/async_parameter_var_cells.zig::moveBodyReferences": { class: "iterative_safe", note: "explicit Work stack under the actual generated function edge; nested function/class boundaries are excluded" },
+  "src/transformer/async_parameter_var_cells.zig::normalize": { class: "iterative_safe", note: "explicit Work stack carrying lexical scope; nested function/class boundaries are excluded" },
   // --- sanctioned 헬퍼 / 명시 스택·큐·collector (깊이 무관 안전) ---
   "src/parser/ast_walk.zig::walkPreorderIterative": { class: "iterative_safe", note: "the sanctioned iterative helper" },
   "src/parser/ast_walk.zig::collectChildrenInto": { class: "iterative_safe", note: "sanctioned child-collection entry point for iterative worklists (#4123 PR-2c)" },

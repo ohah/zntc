@@ -26,6 +26,37 @@ const Span = token_mod.Span;
 
 pub fn ES2017(comptime Transformer: type) type {
     return struct {
+        fn captureStrictDirective(self: *Transformer, body: NodeIndex) Transformer.Error!?NodeIndex {
+            if (body.isNone()) return null;
+            const node = self.ast.getNode(body);
+            if (node.tag != .block_statement and node.tag != .function_body) return null;
+            for (0..node.data.list.len) |i| {
+                const index: NodeIndex = @fromBackingInt(self.ast.extra_data.items[node.data.list.start + i]);
+                const text = @import("transformer/worklet.zig").directiveText(self.ast, index) orelse break;
+                if (!std.mem.eql(u8, text, "use strict")) continue;
+                const statement = self.ast.getNode(index);
+                const literal_span = if (statement.tag == .directive) statement.span else self.ast.getNode(statement.data.unary.operand).span;
+                // The source directive remains in its original lowered body.
+                // The wrapper owns a separate leaf with the same literal bytes.
+                return try self.ast.addNode(.{ .tag = .directive, .span = literal_span, .data = .{ .none = 0 } });
+            }
+            return null;
+        }
+
+        fn applyStrictDirective(self: *Transformer, directive: ?NodeIndex, body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const strict = directive orelse return body;
+            const node = self.ast.getNode(body);
+            var statements: std.ArrayList(NodeIndex) = .empty;
+            defer statements.deinit(self.allocator);
+            try statements.append(self.allocator, strict);
+            if (node.tag == .block_statement or node.tag == .function_body) {
+                for (0..node.data.list.len) |i| try statements.append(self.allocator, @fromBackingInt(self.ast.extra_data.items[node.data.list.start + i]));
+                self.ast.nodes.items[@backingInt(body)].data.list = try self.ast.addNodeList(statements.items);
+                return body;
+            }
+            try statements.append(self.allocator, try self.ast.addNode(.{ .tag = .return_statement, .span = span, .data = .{ .unary = .{ .operand = body, .flags = 0 } } }));
+            return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(statements.items) } });
+        }
         fn appendBodyExtraList(self: *Transformer, stack: *std.ArrayList(NodeIndex), base: u32, start_offset: u32, len_offset: u32) Transformer.Error!void {
             const extra = self.ast.extra_data.items;
             if (base >= extra.len or start_offset >= extra.len - base or len_offset >= extra.len - base) return;
@@ -548,10 +579,14 @@ pub fn ES2017(comptime Transformer: type) type {
             const params_start = params_list.start;
             const params_len = params_list.len;
             const body_idx: NodeIndex = self.readNodeIdx(e, 2);
+            const strict_directive = try captureStrictDirective(self, body_idx);
             const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
             const saved_temp_counter = self.temp_var_counter;
 
             const new_name = try self.visitNode(name_idx);
+            // Capture the actual formal cell before visiting a merged body var
+            // can reanchor that SID to the body declaration.
+            try @import("async_parameter_var_cells.zig").normalize(self, source_owner, body_idx);
             // body 가 `__async(function*(){…})` 안쪽으로 옮겨진다 → `arguments` 캡처 필요.
             const saved_extracted = self.in_extracted_fn_body;
             self.in_extracted_fn_body = true;
@@ -574,6 +609,7 @@ pub fn ES2017(comptime Transformer: type) type {
             self.ast.extra_data.items[self.ast.getNode(gen_func).data.extra + 2] = @backingInt(gen_body);
             try self.bindGeneratedFunctionTemps(source_scope, gen_scope, gen_body, body_temps.items, node.span);
             try self.moveGeneratedFunctionBodyBindings(source_scope, gen_scope, gen_body);
+            try @import("async_parameter_var_cells.zig").moveBodyReferences(self, source_owner, gen_func, gen_body);
 
             const parameter_temp_start = self.temp_var_counter;
             const param_capture_use_start = self.lexical_capture_uses.items.len;
@@ -613,7 +649,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const new_extra = try self.ast.addExtras(&.{
                 @backingInt(new_name),
                 @backingInt(new_params_node),
-                @backingInt(wrapper_body),
+                @backingInt(try applyStrictDirective(self, strict_directive, wrapper_body, node.span)),
                 new_flags,
                 @backingInt(NodeIndex.none),
             });
@@ -631,6 +667,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const e = node.data.extra;
             const params_idx: NodeIndex = self.readNodeIdx(e, 0);
             const body_idx: NodeIndex = self.readNodeIdx(e, 1);
+            const strict_directive = try captureStrictDirective(self, body_idx);
             const flags = self.readU32(e, ast_mod.ArrowExtra.flags);
 
             // A nested async arrow inside an already extracted body must share
@@ -643,6 +680,9 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const saved_extracted_body = self.in_extracted_fn_body;
             self.in_extracted_fn_body = nested_in_extracted_body;
+            // Async arrows retain the same formal/body-var cell contract.
+            // Normalize while the original formal declaration still owns it.
+            try @import("async_parameter_var_cells.zig").normalize(self, source_owner, body_idx);
             const new_params = try self.visitNode(params_idx);
             const saved_temp_counter = self.temp_var_counter;
             self.in_extracted_fn_body = true;
@@ -693,6 +733,7 @@ pub fn ES2017(comptime Transformer: type) type {
             self.ast.extra_data.items[self.ast.getNode(gen_func).data.extra + 2] = @backingInt(hoisted_body);
             try self.bindGeneratedFunctionTemps(source_scope, gen_scope, hoisted_body, body_temps.items, node.span);
             try self.moveGeneratedFunctionBodyBindings(source_scope, gen_scope, hoisted_body);
+            try @import("async_parameter_var_cells.zig").moveBodyReferences(self, source_owner, gen_func, hoisted_body);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_func, node.span);
 
             const arrow_body = blk: {
@@ -722,7 +763,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const new_flags = flags & ~@as(u32, ast_mod.ArrowFlags.is_async);
             const new_extra = try self.ast.addExtras(&.{
                 @backingInt(new_params),
-                @backingInt(arrow_body),
+                @backingInt(try applyStrictDirective(self, strict_directive, arrow_body, node.span)),
                 new_flags,
             });
             return self.ast.addNode(.{
@@ -749,6 +790,8 @@ pub fn ES2017(comptime Transformer: type) type {
             const params_len = params_list.len;
             const params_idx: NodeIndex = self.readNodeIdx(e, ast_mod.FunctionExtra.params);
             const body_idx: NodeIndex = self.readNodeIdx(e, 2);
+            const strict_directive = try captureStrictDirective(self, body_idx);
+            try @import("async_parameter_var_cells.zig").normalize(self, source_owner, body_idx);
             const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
             const saved_native_parameter_list_retained = self.native_parameter_list_retained_for_dynamic_lookup;
             defer self.native_parameter_list_retained_for_dynamic_lookup = saved_native_parameter_list_retained;
@@ -868,10 +911,14 @@ pub fn ES2017(comptime Transformer: type) type {
             // 일반 function으로 변환 (async + generator 플래그 모두 제거)
             const new_flags = flags & ~(ast_mod.FunctionFlags.is_async | @as(u32, ast_mod.FunctionFlags.is_generator));
             const new_params_node = try self.ast.addFormalParameters(new_params, span);
+            // Pass 2 may retain the exact parameter-engine carrier even after
+            // its syntax becomes simple. Transfer that actual formal owner to
+            // this output list, just as the function owner follows its copy.
+            try self.remapCopiedScopeOwner(params_idx, new_params_node);
             const new_extra = try self.ast.addExtras(&.{
                 @backingInt(new_name),
                 @backingInt(new_params_node),
-                @backingInt(wrapper_body),
+                @backingInt(try applyStrictDirective(self, strict_directive, wrapper_body, span)),
                 new_flags,
                 @backingInt(NodeIndex.none),
             });
@@ -897,6 +944,8 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const params_idx: NodeIndex = self.readNodeIdx(e, 0);
             const body_idx: NodeIndex = self.readNodeIdx(e, 1);
+            const strict_directive = try captureStrictDirective(self, body_idx);
+            try @import("async_parameter_var_cells.zig").normalize(self, source_owner, body_idx);
 
             const parameter_temp_start = self.temp_var_counter;
             const saved_native_parameter_list_retained = self.native_parameter_list_retained_for_dynamic_lookup;
@@ -1009,7 +1058,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const func_extra = try self.ast.addExtras(&.{
                 none, // anonymous
                 @backingInt(params_node),
-                @backingInt(func_body),
+                @backingInt(try applyStrictDirective(self, strict_directive, func_body, span)),
                 0, // flags (not async, not generator)
                 none, // return_type
             });
@@ -1385,5 +1434,185 @@ test "async generator kept parameter engines survive private initializer clones"
             try std.testing.expectEqualStrings(native.stdout, actual.stdout);
         }
         try checkKeptParameterEngineBirth(a, source, target, false, 2, false);
+    }
+}
+
+fn checkAsyncMergedParameterVarCell(input: []const u8) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "entry.mjs", .data = input });
+    const path = try @import("../bundler/test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = @import("../bundler/resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = @import("../bundler/graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.unsupported = @import("compat.zig").fromESTarget(.es2015);
+    graph.transform_options_base.tla_module_awaited = true;
+    try graph.build(std.testing.io, &.{path});
+    const module = graph.modules.at(@backingInt(graph.path_to_module.get(path).?));
+    try std.testing.expect(module.transform_cache != null);
+    const semantic = &module.semantic.?;
+    var source_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer source_arena.deinit();
+    const source_allocator = source_arena.allocator();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(source_allocator, input);
+    var parser = @import("../parser/parser.zig").Parser.init(source_allocator, &scanner);
+    parser.is_module = true;
+    _ = try parser.parse();
+    var original_formals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (parser.ast.nodes.items) |node| {
+        const params = parser.ast.functionParamsList(node);
+        for (0..params.len) |i| {
+            var bindings = try ast_walk.bindingIdentifiers(source_allocator, &parser.ast, @fromBackingInt(parser.ast.extra_data.items[params.start + i]), .{});
+            defer bindings.deinit();
+            while (try bindings.next()) |binding| {
+                const raw = @backingInt(binding);
+                try std.testing.expect(raw < semantic.symbol_ids.len);
+                const id = semantic.symbol_ids[raw] orelse return error.MissingSourceFormalIdentity;
+                try original_formals.put(source_allocator, id, {});
+            }
+        }
+    }
+    var parameters: usize = 0;
+    var source_ids = original_formals.keyIterator();
+    while (source_ids.next()) |source_id| {
+        const raw_id = source_id.*;
+        try std.testing.expect(raw_id < semantic.symbols.items.len);
+        const symbol = semantic.symbols.items[raw_id];
+        try std.testing.expect(symbol.kind == .parameter);
+        var declared: usize = 0;
+        for (semantic.references) |row| {
+            if (!row.flags.declare or @backingInt(row.symbol_id) != raw_id) continue;
+            try std.testing.expect(!row.declaration_node_index.isNone());
+            try std.testing.expectEqual(@as(?u32, @intCast(raw_id)), semantic.symbol_ids[@backingInt(row.declaration_node_index)]);
+            declared += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), declared);
+        parameters += 1;
+    }
+    try std.testing.expect(parameters > 0);
+    var runtime_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer runtime_arena.deinit();
+    const runtime_allocator = runtime_arena.allocator();
+    const native = try std.process.run(runtime_allocator, std.testing.io, .{ .argv = &.{ "node", path } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    for ([_]@import("compat.zig").ESTarget{ .es5, .es2015, .es2017 }) |target| {
+        for ([_]bool{ false, true }) |minify_identifiers| {
+            var bundler = @import("../bundler/bundler.zig").Bundler.init(std.testing.allocator, .{
+                .entry_points = &.{path},
+                .platform = .node,
+                .format = .esm,
+                .unsupported = @import("compat.zig").fromESTarget(target),
+                .minify_identifiers = minify_identifiers,
+            });
+            defer bundler.deinit();
+            const result = try bundler.bundle(std.testing.io);
+            defer result.deinit(std.testing.allocator);
+            try std.testing.expect(!result.hasErrors());
+            try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "output.mjs", .data = result.output });
+            const output_path = try @import("../bundler/test_helpers.zig").absPath(&tmp, "output.mjs");
+            defer std.testing.allocator.free(output_path);
+            const actual = try std.process.run(runtime_allocator, std.testing.io, .{ .argv = &.{ "node", output_path } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                std.debug.print("async parameter cell target={s} minify={any} input={s}\nnative={s}actual={s}stderr={s}\n{s}\n", .{ @tagName(target), minify_identifiers, input, native.stdout, actual.stdout, actual.stderr, result.output });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+}
+
+test "async merged parameter var source closure cell" {
+    try checkAsyncMergedParameterVarCell("const shadow='module';async function run(shadow){const closures=[];await 0;for(var position=0,limit=2;position<limit;position++){var shadow='loop'+position;closures.push(function(){return[shadow,position];});await 0;}function local(shadow){return shadow+':local';}return[closures.map(function(read){return read();}),shadow,position,limit,local('inner')];}console.log(JSON.stringify([shadow,await run('parameter')]));");
+}
+
+test "async merged parameter var mixed native for header" {
+    try checkAsyncMergedParameterVarCell("async function run(value){await 0;for(var value=1,other=2;value<3;value++){await 0;}return[value,other];}console.log(JSON.stringify(await run(0)));");
+}
+
+test "async merged parameter var non-simple separate cell" {
+    try checkAsyncMergedParameterVarCell("async function run(value=1,read=()=>value){await 0;var value=2;return[value,read()];}console.log(JSON.stringify(await run()));");
+    try checkAsyncMergedParameterVarCell("const events=[];function mark(value){events.push('init');return value;}async function run(value=1,read=()=>value){await 0;var value=mark(2);return[value,read(),events];}console.log(JSON.stringify(await run()));");
+}
+
+test "async merged parameter var iteration parameter cell" {
+    try checkAsyncMergedParameterVarCell("async function run(value){await 0;for(var value of [1,2]){}return value;}console.log(await run(0));");
+}
+
+test "async merged parameter var arrow formal cell" {
+    try checkAsyncMergedParameterVarCell("const run=async(value)=>{await 0;var value=2;return value;};console.log(await run(1));");
+}
+
+test "async merged parameter var object destructuring formal" {
+    try checkAsyncMergedParameterVarCell("async function run(value){await 0;var {value}= {value:2};return [value,arguments[0]]}console.log(JSON.stringify(await run(1)));");
+}
+
+test "async merged parameter var array destructuring formal" {
+    try checkAsyncMergedParameterVarCell("async function run(value){await 0;var [value]=[2];return [value,arguments[0]]}console.log(JSON.stringify(await run(1)));");
+}
+
+test "async merged parameter var mixed simple destructuring" {
+    try checkAsyncMergedParameterVarCell("async function run(value){await 0;var first=3,{value}={value:2},last=4;return [value,first,last,arguments[0]]}console.log(JSON.stringify(await run(1)));");
+}
+
+test "async merged parameter var nested block destructuring" {
+    try checkAsyncMergedParameterVarCell("async function run(value){await 0;{var {value}={value:2};}function read(){return value}return [value,read(),arguments[0]]}console.log(JSON.stringify(await run(1)));");
+}
+
+test "async merged parameter var default formal destructuring" {
+    try checkAsyncMergedParameterVarCell("async function run(value=1,read=()=>value){await 0;var {value}={value:2};return [value,read()]}console.log(JSON.stringify(await run()));");
+}
+
+test "async merged parameter var multiple vars after await" {
+    try checkAsyncMergedParameterVarCell("var events=[];function mark(name,value){events.push(name);return value}async function run(value){await 0;var first=mark('first',3);var {value}={value:mark('value',2)};var last=mark('last',4);return [value,first,last,events,arguments[0]]}console.log(JSON.stringify(await run(1)));");
+}
+
+test "async merged parameter var no initializer formal" {
+    try checkAsyncMergedParameterVarCell("async function run(value){await 0;var value;return [value,arguments[0]]}console.log(JSON.stringify(await run(1)));");
+}
+
+test "async merged parameter var explicit strict wrapper keeps CJS arguments unmapped" {
+    const source = "async function run(value){'use strict';await 0;{var {value}={value:2};}function read(){return value;}return[value,read(),arguments[0]];}const arrow=async(value)=>{'use strict';await 0;var value=3;return[value,(function(){return this===undefined;})()];};Promise.all([run(1),arrow(1)]).then(function(result){console.log(JSON.stringify(result));});";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "entry.cjs", .data = source });
+    const entry = try @import("../bundler/test_helpers.zig").absPath(&tmp, "entry.cjs");
+    defer std.testing.allocator.free(entry);
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", entry } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("[[2,2,1],[3,true]]\n", native.stdout);
+    const compat = @import("compat.zig");
+    const targets = [_]struct { name: []const u8, unsupported: compat.UnsupportedFeatures }{
+        .{ .name = "es5", .unsupported = compat.fromESTarget(.es5) },
+        .{ .name = "es2015", .unsupported = compat.fromESTarget(.es2015) },
+        .{ .name = "hermes", .unsupported = compat.fromHermesPreset() },
+    };
+    for (targets) |target| {
+        for ([_]bool{ false, true }) |minify| {
+            var bundler = @import("../bundler/bundler.zig").Bundler.init(std.testing.allocator, .{
+                .entry_points = &.{entry},
+                .platform = .node,
+                .format = .cjs,
+                .unsupported = target.unsupported,
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+                .minify_whitespace = minify,
+            });
+            defer bundler.deinit();
+            const result = try bundler.bundle(std.testing.io);
+            defer result.deinit(std.testing.allocator);
+            try std.testing.expect(!result.hasErrors());
+            try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "output.cjs", .data = result.output });
+            const output = try @import("../bundler/test_helpers.zig").absPath(&tmp, "output.cjs");
+            defer std.testing.allocator.free(output);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                std.debug.print("strict async CJS target={s} minify={any} native={s} actual={s} stderr={s}\n{s}\n", .{ target.name, minify, native.stdout, actual.stdout, actual.stderr, result.output });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
     }
 }
