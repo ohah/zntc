@@ -1073,7 +1073,7 @@ pub fn validate(graph: *const Graph, module: *const Module) !void {
         provider_snapshot.validate(graph, target) catch return error.InvalidSelfNamespaceHolder;
         const witness = @import("namespace_export_witness.zig").resolveName(provider, callsite_binding.imported_name) orelse return error.InvalidSelfNamespaceHolder;
         if (callsite_binding.kind != .named or !std.mem.eql(u8, callsite_binding.imported_name, witness.exported_name) or
-            !callsite_binding.symbol.eql(target.symbol.toRef()) or callsite_binding.local_symbol.semanticIndex() == null)
+            !callsite_binding.symbol.eql(target.symbol.toRef()))
             return error.InvalidSelfNamespaceHolder;
         const declaration = ast.getNode(target.declaration);
         if (!ast.hasExtra(declaration.data.extra, 5)) return error.InvalidSelfNamespaceHolder;
@@ -1307,8 +1307,12 @@ fn validatePayload(plan: Completed, ast: *const Ast, sem: *const Semantic, bindi
             )) return error.InvalidSelfNamespaceHolder;
         }
         const callsite = bindings[namespace_count];
+        const callsite_local = @import("binding_scanner.zig").resolveImportLocalSymbol(callsite, local_context);
         if (callsite.callsite_target == null or !std.meta.eql(callsite.callsite_target.?, target) or
             callsite.kind != .named or callsite.import_record_index != namespace_count or
-            callsite.local_symbol.semanticIndex() != @as(?u32, plan.getters[0].exported)) return error.InvalidSelfNamespaceHolder;
+            !callsite_local.isValid() or
+            (callsite.local_symbol.isValid() and !callsite.local_symbol.eql(callsite_local)) or
+            callsite_local.moduleIndex() != plan.module.index or
+            callsite_local.semanticIndex() != @as(?u32, plan.getters[0].exported)) return error.InvalidSelfNamespaceHolder;
     } else if (bindings.len != 1) return error.InvalidSelfNamespaceHolder;
 }

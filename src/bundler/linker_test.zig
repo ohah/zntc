@@ -8589,6 +8589,25 @@ test "foreign namespace AST holder preserves the importer binding for a provider
     try std.testing.expect(importer.import_records[1].callsite_lowered);
     try @import("runtime_callsite_targets.zig").validateTargetRole(&graph, callsite);
     try @import("self_namespace_ast.zig").validate(&graph, importer);
+    const exact_callsite_local = importer.import_bindings[1].local_symbol;
+    const importer_ast = if (importer.ast) |*value| value else return error.MissingForeignImporterAst;
+    const importer_semantic = importer.semantic orelse return error.MissingForeignImporterSemantic;
+    const stale_namespace_local = @import("binding_scanner.zig").resolveImportLocalSymbol(importer.import_bindings[0], .{
+        .module_index = importer.index,
+        .ast = importer_ast,
+        .symbol_ids = importer_semantic.symbol_ids,
+        .symbols = importer_semantic.symbols.items,
+    });
+    try std.testing.expect(stale_namespace_local.isValid());
+    try std.testing.expect(!exact_callsite_local.eql(stale_namespace_local));
+    importer.import_bindings[1].local_symbol = .invalid;
+    try @import("self_namespace_ast.zig").validate(&graph, importer);
+    try std.testing.expect(!importer.import_bindings[1].local_symbol.isValid());
+    importer.import_bindings[1].local_symbol = stale_namespace_local;
+    try std.testing.expectError(error.InvalidSelfNamespaceHolder, @import("self_namespace_ast.zig").validate(&graph, importer));
+    try std.testing.expect(importer.import_bindings[1].local_symbol.eql(stale_namespace_local));
+    importer.import_bindings[1].local_symbol = exact_callsite_local;
+    try @import("self_namespace_ast.zig").validate(&graph, importer);
     const completed_ast_nodes = importer.ast.?.nodes.items.ptr;
     const completed_sem_ids = importer.semantic.?.symbol_ids.ptr;
     try @import("self_namespace_ast.zig").lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
