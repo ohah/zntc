@@ -1109,6 +1109,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const node = self.ast.getNode(index);
             if (node.tag != .variable_declaration or self.ast.variableDeclarationKind(node) != .@"var") return false;
             if (@backingInt(index) < self.parser_node_count) return true;
+            if (@import("loop_declaration_handoff.zig").matches(self, index)) return true;
             // TLA visits this source header before the generator revisits it.
             // Match every declarator, in source order, to its original parser
             // binding and exact declaration row; a new header alone is no proof.
@@ -6053,4 +6054,114 @@ test "TLA multi-var source header normalizes to ordered writes with one storage 
         }
         try std.testing.expectEqual(@as(usize, 1), declarations);
     }
+}
+
+test "nested for-of declaration handoff requires actual producer SID owner and anchor" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, "for(var value of [1,2]){}");
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.is_module = true;
+    _ = try parser.parse();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_stmt_info = true;
+    try analyzer.analyze();
+    const Transformer = @import("transformer.zig").Transformer;
+    var transformer = try Transformer.init(a, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    var source: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .for_of_statement) source = @fromBackingInt(@intCast(raw));
+    }
+    try std.testing.expect(!source.isNone());
+    transformer.current_scope = @fromBackingInt(0);
+    _ = try @import("es2015_for_of.zig").ES2015ForOf(Transformer).rewriteForOf(&transformer, source, transformer.ast.getNode(source), .none, false);
+    const handoff = @import("loop_declaration_handoff.zig");
+    try std.testing.expectEqual(@as(usize, 6), transformer.loop_declaration_births.count());
+    var entries = transformer.loop_declaration_births.iterator();
+    while (entries.next()) |entry| {
+        const original = entry.value_ptr.*;
+        try std.testing.expect(handoff.matches(&transformer, original.declaration));
+        entry.value_ptr.symbol_id = std.math.maxInt(u32);
+        try std.testing.expect(!handoff.matches(&transformer, original.declaration));
+        entry.value_ptr.* = original;
+        entry.value_ptr.source_scope = .none;
+        try std.testing.expect(!handoff.matches(&transformer, original.declaration));
+        entry.value_ptr.* = original;
+        entry.value_ptr.role = if (original.count == 1) .iterator else .error_value;
+        try std.testing.expect(!handoff.matches(&transformer, original.declaration));
+        entry.value_ptr.* = original;
+        const binding: NodeIndex = @fromBackingInt(entry.key_ptr.*);
+        const old_id = transformer.semantic_editor.?.symbol_ids.items[entry.key_ptr.*];
+        transformer.semantic_editor.?.symbol_ids.items[entry.key_ptr.*] = null;
+        try std.testing.expect(!handoff.matches(&transformer, original.declaration));
+        transformer.semantic_editor.?.symbol_ids.items[entry.key_ptr.*] = old_id;
+        var found = false;
+        for (transformer.semantic_editor.?.references.items) |*row| {
+            if (!row.flags.declare or row.declaration_node_index != binding) continue;
+            const saved = row.*;
+            row.declaration_node_index = .none;
+            try std.testing.expect(!handoff.matches(&transformer, original.declaration));
+            row.* = saved;
+            found = true;
+            break;
+        }
+        try std.testing.expect(found);
+        try std.testing.expect(handoff.matches(&transformer, original.declaration));
+    }
+}
+
+test "nested for-of declaration handoff leaves one physical storage per generated SID" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "entry.mjs", .data = "await 0;var events=[];for(var value of [1,2]){for(var inner of [3]){events.push(value+inner);}}function read(){return[value,inner,events.join()];}console.log(JSON.stringify(read()));" });
+    const path = try @import("../bundler/test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = @import("../bundler/resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = @import("../bundler/graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.unsupported = @import("compat.zig").fromESTarget(.es5);
+    graph.transform_options_base.tla_module_awaited = true;
+    try graph.build(std.testing.io, &.{path});
+    const module = graph.modules.at(@backingInt(graph.path_to_module.get(path).?));
+    try std.testing.expect(module.transform_cache != null);
+    const ast = &module.ast.?;
+    const semantic = &module.semantic.?;
+    const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(std.testing.allocator, ast);
+    defer std.testing.allocator.free(reachable);
+    var generated: usize = 0;
+    for (semantic.symbols.items, 0..) |symbol, sid| {
+        if (symbol.kind != .variable_var) continue;
+        var bindings: usize = 0;
+        for (reachable) |raw| {
+            if (ast.nodes.items[raw].tag == .binding_identifier and raw < semantic.symbol_ids.len and semantic.symbol_ids[raw] == @as(?u32, @intCast(sid))) bindings += 1;
+        }
+        if (bindings == 0) continue;
+        try std.testing.expectEqual(@as(usize, 1), bindings);
+        var declarations: usize = 0;
+        for (semantic.references) |row| {
+            if (!row.flags.declare or @backingInt(row.symbol_id) != sid) continue;
+            try std.testing.expect(!row.declaration_node_index.isNone());
+            const raw = @backingInt(row.declaration_node_index);
+            try std.testing.expect(raw < semantic.symbol_ids.len);
+            try std.testing.expectEqual(@as(?u32, @intCast(sid)), semantic.symbol_ids[raw]);
+            try std.testing.expectEqual(ast_mod.Node.Tag.binding_identifier, ast.nodes.items[raw].tag);
+            declarations += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), declarations);
+        generated += 1;
+    }
+    try std.testing.expect(generated >= 10);
 }

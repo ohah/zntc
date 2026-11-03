@@ -192,6 +192,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.bound_temp_symbols.deinit(self.allocator);
     self.stage3_metadata_binding_ids.deinit(self.allocator);
     self.generator_state_bindings.deinit(self.allocator);
+    self.loop_declaration_births.deinit(self.allocator);
     self.generator_collected_function_roots.deinit(self.allocator);
     self.generator_collected_function_declarations.deinit(self.allocator);
     self.generator_annex_b_var_bindings.deinit(self.allocator);
