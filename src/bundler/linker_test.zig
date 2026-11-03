@@ -5179,6 +5179,76 @@ test "CJS import metadata names use exact source anchors when cached SIDs are mi
     selected.local_symbol_node = selected_anchor;
 }
 
+test "unresolved helper import metadata uses exact anchor when cached SID is missing or stale" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "root.cjs", "require('./entry.mjs');");
+    try writeFile(
+        tmp.dir,
+        "entry.mjs",
+        "import { value as selected } from './provider.mjs';\n" ++
+            "import { other as decoy } from './provider.mjs';\n" ++
+            "console.log(selected, decoy);\n",
+    );
+    try writeFile(tmp.dir, "provider.mjs", "export const value = 42; export const other = 9;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "root.cjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingEntry;
+    const entry = r.graph.moduleAtMut(entry_index) orelse return error.MissingEntry;
+    const selected = for (entry.import_bindings) |*binding| {
+        if (std.mem.eql(u8, binding.local_name, "selected")) break binding;
+    } else return error.MissingSelectedImport;
+    const decoy = for (entry.import_bindings) |binding| {
+        if (std.mem.eql(u8, binding.local_name, "decoy")) break binding;
+    } else return error.MissingDecoyImport;
+    const source_ref = try entry.checkedSourceImportLocalSymbol(selected.*);
+    const decoy_ref = try entry.checkedSourceImportLocalSymbol(decoy);
+    try std.testing.expect(!source_ref.eql(decoy_ref));
+    const selected_anchor = selected.local_symbol_node;
+    const record = &entry.import_records[selected.import_record_index];
+    selected.is_helper = true;
+    record.resolved = .none;
+    record.is_external = true;
+    r.linker.resolved_bindings.clearRetainingCapacity();
+    r.linker.rename_table.clear();
+
+    selected.local_symbol = decoy_ref;
+    {
+        var metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+        defer metadata.deinit();
+        const preamble = metadata.cjs_import_preamble orelse return error.MissingHelperPreamble;
+        try std.testing.expect(std.mem.indexOf(u8, preamble, "selected = require") != null);
+        try std.testing.expect(std.mem.indexOf(u8, preamble, "decoy = require") == null);
+    }
+    try std.testing.expect(selected.local_symbol.eql(decoy_ref));
+
+    selected.local_symbol = .invalid;
+    {
+        var metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+        defer metadata.deinit();
+        const preamble = metadata.cjs_import_preamble orelse return error.MissingHelperPreamble;
+        try std.testing.expect(std.mem.indexOf(u8, preamble, "selected = require") != null);
+        try std.testing.expect(std.mem.indexOf(u8, preamble, "decoy = require") == null);
+    }
+    try std.testing.expect(!selected.local_symbol.isValid());
+
+    selected.local_symbol = decoy_ref;
+    selected.local_symbol_node = decoy.local_symbol_node;
+    {
+        var metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+        defer metadata.deinit();
+        const preamble = metadata.cjs_import_preamble orelse return error.MissingHelperPreamble;
+        try std.testing.expect(std.mem.indexOf(u8, preamble, "selected = require") != null);
+        try std.testing.expect(std.mem.indexOf(u8, preamble, "decoy = require") == null);
+    }
+    try std.testing.expect(selected.local_symbol.eql(decoy_ref));
+    selected.local_symbol_node = selected_anchor;
+}
+
 test "re-exported CJS metadata names use the consumer's exact source anchor" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
