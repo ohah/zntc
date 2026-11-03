@@ -5839,7 +5839,7 @@ pub const Linker = struct {
                         if (local.semanticIndex()) |sym_idx| {
                             var exact_binding = ib;
                             exact_binding.local_symbol = local;
-                            type_only = metadata_mod.isImportBindingTypeOnly(sem, exact_binding);
+                            type_only = metadata_mod.isImportBindingTypeOnly(m, sem, exact_binding);
                             value_used = false;
                             for (sem.references) |r| {
                                 if (@backingInt(r.symbol_id) == sym_idx and r.isValueUse()) {

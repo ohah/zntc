@@ -135,20 +135,41 @@ inline fn mappedExternalParam(
 /// evaluates its module even when the binding is unused or was inlined
 /// (`import { v } from './dep'` keeps dep's effects, #5571 — esbuild and
 /// rolldown do the same). The type-only judgement is the source's.
-pub fn isImportElided(m: *const @import("../module.zig").Module, sem: *const @import("../module.zig").ModuleSemanticData, ib: ImportBinding) bool {
+pub fn isImportElided(m: *const Module, sem: *const ModuleSemanticData, ib: ImportBinding) bool {
     if (!m.module_type.isTypeScript()) return false;
     if (ib.source_type_only) |type_only| return type_only;
-    return isImportBindingTypeOnly(sem, ib);
+    return isImportBindingTypeOnly(m, sem, ib);
 }
 
-pub fn isImportBindingTypeOnly(sem: *const @import("../module.zig").ModuleSemanticData, ib: ImportBinding) bool {
+pub fn isImportBindingTypeOnly(
+    module: *const Module,
+    sem: *const ModuleSemanticData,
+    ib: ImportBinding,
+) bool {
     // helper binding (JSX runtime / runtime helper) 은 런타임 호출이라 type-only 가 아니다.
     if (ib.is_helper) return false;
+    // Parse-time source classification is already tied to the import's exact
+    // scanner node, so it remains authoritative if the derived SID is absent.
+    if (ib.source_type_only) |type_only| return type_only;
     // named 한정 — default / namespace 는 JSX pragma 등 implicit value use 위험이
     // 큼 (#1793 revert 원인). transformer 와 동일 제한.
     if (ib.kind != .named) return false;
-    const sym_idx = ib.local_symbol.semanticIndex() orelse return false;
-    if (sym_idx >= sem.symbols.items.len) return false;
+    const sym_idx = if (ib.local_symbol.isValid()) blk: {
+        if (ib.local_symbol.moduleIndex() != module.index) return false;
+        const sid = ib.local_symbol.semanticIndex() orelse return false;
+        if (ib.local_symbol_node != null) {
+            const anchored = module.checkedSourceImportLocalSymbol(ib) catch return false;
+            if (!ib.local_symbol.eql(anchored)) return false;
+        }
+        break :blk sid;
+    } else blk: {
+        // A missing derived ref may use the source anchor, but never a
+        // spelling-map row. Anchorless analyzed modules stay conservative.
+        const anchored = module.checkedSourceImportLocalSymbol(ib) catch return false;
+        if (anchored.moduleIndex() != module.index) return false;
+        break :blk anchored.semanticIndex() orelse return false;
+    };
+    if (!importBindingHasExpectedKind(ib, sem, sym_idx)) return false;
     // 판정 로직은 `Reference.isValueUse` 에 집약 — transformer 의
     // `isImportSpecifierUnused` 와 동일 기준. TODO #1791: `references` 를 매번 linear
     // scan 하는 대신 모듈별 `symbol_id → Reference indices` 맵 사전 구축 고려 (실측 후).
