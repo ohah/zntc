@@ -973,28 +973,15 @@ pub const TreeShaker = struct {
             if (binding.local_symbol.moduleIndex() != module.index) return null;
             const index = binding.local_symbol.semanticIndex() orelse return null;
             if (index >= semantic.symbols.items.len or semantic.symbols.items[index].kind != expected_kind) return null;
-            // The cached SymbolRef is not enough by itself: a stale or poisoned
-            // ImportBinding must not make a different same-kind import appear
-            // unused. Require its current declaration anchor to resolve to the
-            // same exact semantic identity before using it for liveness.
-            const ast = if (module.ast) |*value| value else return null;
-            const anchored = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{
-                .module_index = module.index,
-                .ast = ast,
-                .symbol_ids = semantic.symbol_ids,
-                .symbols = semantic.symbols.items,
-            });
+            // The cached ref and current carrier are both mutable metadata.
+            // Tie them back to the parser-owned import local so a same-named,
+            // same-kind nested materialized declaration cannot own liveness.
+            const anchored = module.checkedSourceImportLocalSymbol(binding) catch return null;
             if (!binding.local_symbol.eql(anchored)) return null;
             return index;
         }
         if (binding.local_symbol_node != null) {
-            const ast = if (module.ast) |*value| value else return null;
-            const anchored = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{
-                .module_index = module.index,
-                .ast = ast,
-                .symbol_ids = semantic.symbol_ids,
-                .symbols = semantic.symbols.items,
-            });
+            const anchored = module.checkedSourceImportLocalSymbol(binding) catch return null;
             if (!anchored.isValid() or anchored.moduleIndex() != module.index) return null;
             const index = anchored.semanticIndex() orelse return null;
             if (index >= semantic.symbols.items.len or semantic.symbols.items[index].kind != expected_kind) return null;
