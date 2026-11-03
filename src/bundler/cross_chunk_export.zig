@@ -493,8 +493,8 @@ pub fn checkedSymbol(a: std.mem.Allocator, owner: *const Module, binding: *const
     if (sem.symbols.items[sid].kind == .import_binding) {
         var matches: usize = 0;
         for (owner.import_bindings) |imported| {
-            const actual = owner.checkedSourceImportLocalSymbol(imported) catch continue;
-            if (!actual.eql(binding.symbol)) continue;
+            const actual = owner.checkedImportBindingIdentity(imported) catch continue;
+            if (!actual.symbol.eql(binding.symbol)) continue;
             matches += 1;
         }
         if (matches != 1) return error.InvalidCrossChunkExport;
@@ -563,7 +563,7 @@ pub fn checkedSymbol(a: std.mem.Allocator, owner: *const Module, binding: *const
             var imports: usize = 0;
             for (owner.import_bindings) |imported| {
                 if (imported.import_record_index != record_index) continue;
-                const actual = owner.checkedSourceImportLocalSymbol(imported) catch continue;
+                const actual = owner.checkedImportBindingSourceSymbol(imported) catch continue;
                 if (actual.semanticIndex() == @as(?u32, source_sid)) imports += 1;
             }
             if (imports != 1) return error.InvalidCrossChunkExport;

@@ -20,7 +20,7 @@ fn purityImportLocalSemanticIndex(module: *const Module, sem: *const ModuleSeman
         return sid;
     }
 
-    const anchored = module.checkedSourceImportLocalSymbol(ib) catch return null;
+    const anchored = module.checkedImportBindingSourceSymbol(ib) catch return null;
     if (!anchored.isValid() or anchored.moduleIndex() != module.index) return null;
     const sid = anchored.semanticIndex() orelse return null;
     if (sid >= sem.symbols.items.len or sem.symbols.items[sid].kind != .import_binding) return null;

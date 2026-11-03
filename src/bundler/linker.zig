@@ -5850,12 +5850,7 @@ pub const Linker = struct {
                     // binding from its spelling or from a stale local_symbol.
                     var value_used = true;
                     if (m.semantic) |*sem| {
-                        const local = @import("binding_scanner.zig").resolveImportLocalSymbol(ib, .{
-                            .module_index = m.index,
-                            .ast = if (m.ast) |*ast| ast else null,
-                            .symbol_ids = sem.symbol_ids,
-                            .symbols = sem.symbols.items,
-                        });
+                        const local = m.checkedSourceImportLocalSymbol(ib) catch bundler_symbol.SymbolRef.invalid;
                         if (local.semanticIndex()) |sym_idx| {
                             var exact_binding = ib;
                             exact_binding.local_symbol = local;
@@ -6462,20 +6457,13 @@ pub const Linker = struct {
         for (0..count) |i| {
             if (recompute) |r| if (!r.contains(@intCast(i))) continue;
             const importer = self.moduleAtMut(@intCast(i)) orelse continue;
-            const sem_opt = importer.semantic;
-            const mod_idx: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(i));
 
             for (importer.import_bindings) |*ib| {
                 // Clear stale IDs before resolving this graph's exact anchor.
                 // Helper/user spelling collisions do not affect the node map.
                 ib.local_symbol = bundler_symbol.SymbolRef.invalid;
-                if (sem_opt) |sem| {
-                    ib.local_symbol = @import("binding_scanner.zig").resolveImportLocalSymbol(ib.*, .{
-                        .module_index = mod_idx,
-                        .ast = if (importer.ast) |*ast| ast else null,
-                        .symbol_ids = sem.symbol_ids,
-                        .symbols = sem.symbols.items,
-                    });
+                if (importer.semantic != null) {
+                    ib.local_symbol = importer.checkedSourceImportLocalSymbol(ib.*) catch bundler_symbol.SymbolRef.invalid;
                 }
 
                 // source-side: import_record 따라 source 모듈의 export 심볼 복사
@@ -6539,7 +6527,7 @@ pub const Linker = struct {
         // Namespace analysis only runs for source-backed modules. Require its
         // exact scanner/declaration anchor even when a cached SID is present;
         // a same-module SID alone can belong to a sibling import.
-        const anchored = module.checkedSourceImportLocalSymbol(binding) catch return null;
+        const anchored = module.checkedImportBindingSourceSymbol(binding) catch return null;
         if (!anchored.isValid() or anchored.moduleIndex() != module.index) return null;
         if (binding.local_symbol.isValid() and !binding.local_symbol.eql(anchored)) return null;
         const raw = anchored.semanticIndex() orelse return null;
