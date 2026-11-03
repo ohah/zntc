@@ -939,8 +939,10 @@ pub fn buildMetadataForAstWithHolderReservations(
             if (rec.resolved.isNone()) {
                 if (rec.is_lazy_resolved) continue;
                 if (rec.kind.isEagerEvalDependency()) {
-                    if (!ib.is_helper and !ib.local_symbol.isValid()) continue;
-                    const preamble_name = importBindingName(self, module_index, ib, m.importBindingLocalName(ib));
+                    const preamble_name = if (ib.is_helper)
+                        importBindingName(self, module_index, ib, m.importBindingLocalName(ib))
+                    else
+                        importBindingNameFromMetadataIdentity(self, module_index, ib, &m, &sem, &module_scope) catch continue;
                     // helper binding (JSX runtime 등) + ESM-wrapped 모듈 조합에서는 top-level
                     // 에 이미 `var _jsxDEV, _Fragment;` 선언이 호이스팅됨 (esm_wrap). init 함수
                     // 본문에서 `var` 로 재선언하면 outer scope 를 shadow → #1209.
