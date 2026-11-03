@@ -4608,6 +4608,48 @@ test "namespace hostile metadata rejects foreign and alias SymbolRefs, and uses 
     }
 }
 
+test "namespace member rewrite uses exact source anchor when cached import SID is missing" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import * as ns from './provider.ts';\nconst decoy = 7;\nconsole.log(ns.answer, decoy);");
+    try writeFile(tmp.dir, "provider.ts", "export const answer = 42;");
+
+    var r = try buildLinkAndRename(allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.ts") orelse return error.MissingEntry;
+    const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingEntry);
+    const semantic = entry.semantic orelse return error.MissingEntrySemantic;
+    const binding = &entry.import_bindings[0];
+    const source_anchor = binding.local_symbol_node orelse return error.MissingImportAnchor;
+    const source_ref = try entry.checkedSourceImportLocalSymbol(binding.*);
+    const source_sid = source_ref.semanticIndex() orelse return error.MissingSourceSID;
+    const decoy_sid = semantic.scope_maps[0].get("decoy") orelse return error.MissingDecoy;
+    try std.testing.expect(source_sid != decoy_sid);
+
+    binding.local_symbol = .invalid;
+    try @constCast(semantic.scope_maps)[0].put(allocator, "ns", decoy_sid);
+    var anchored_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+    defer anchored_metadata.deinit();
+    try std.testing.expect(anchored_metadata.ns_member_rewrites.get(source_sid) != null);
+    try std.testing.expect(anchored_metadata.ns_member_rewrites.get(@intCast(decoy_sid)) == null);
+    try std.testing.expect(!binding.local_symbol.isValid());
+
+    // An in-range, correct-looking root map cannot replace both absent exact
+    // carriers on an AST-backed module.
+    binding.local_symbol_node = null;
+    try @constCast(semantic.scope_maps)[0].put(allocator, "ns", source_sid);
+    var anchorless_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+    defer anchorless_metadata.deinit();
+    try std.testing.expect(anchorless_metadata.ns_member_rewrites.get(source_sid) == null);
+    try std.testing.expect(anchorless_metadata.ns_member_rewrites.get(@intCast(decoy_sid)) == null);
+    try std.testing.expect(!binding.local_symbol.isValid());
+    binding.local_symbol_node = source_anchor;
+}
+
 // ============================================================
 // semantic analyzer: property key symbol_id 미할당
 // ============================================================

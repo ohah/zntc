@@ -1304,8 +1304,11 @@ pub fn buildMetadataForAstWithHolderReservations(
             // __esm 타겟도 동일: rolldown 방식으로 변수가 래퍼 밖에 호이스팅되므로
             // canonical name으로 직접 치환 가능. exports_xxx rename은 변수 덮어쓰기 버그 유발.
             if (ib.kind == .namespace) {
-                const ns_sym_id = ib.local_symbol.semanticIndex() orelse continue;
-                const local_name = m.importBindingLocalName(ib);
+                const ns_sym_id = importBindingLocalSemanticIndex(self, ib, &m, &sem, &module_scope, module_index) orelse continue;
+                const local_name = if (ib.local_symbol.isValid())
+                    m.importBindingLocalName(ib)
+                else
+                    m.symbolName(@fromBackingInt(ns_sym_id)) orelse continue;
                 if (try @import("../binding_scanner.zig").eagerNamespaceSymbol(self.graph, &m, ib)) |namespace| {
                     const owner = self.graph.getModule(namespace.module) orelse return error.MissingWrapperSymbol;
                     const value = owner.getExportsName(null) orelse return error.MissingWrapperSymbol;
