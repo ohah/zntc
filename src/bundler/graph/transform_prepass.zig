@@ -3197,17 +3197,18 @@ fn retainableJsxLiteralUnaryOperand(
     const tilde_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.tilde)));
     const typeof_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.kw_typeof)));
     const delete_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.kw_delete)));
+    const void_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.kw_void)));
     if ((operator_raw != bang_raw and operator_raw != tilde_raw and operator_raw != typeof_raw and
-        operator_raw != delete_raw) or
+        operator_raw != delete_raw and operator_raw != void_raw) or
         operator_flags != operator_raw) return null;
 
     return @fromBackingInt(@intCast(extras[extra]));
 }
 
-/// Up to two unary `!`, `~`, `typeof`, or `delete` operators over primitive
-/// literal values cannot call user code or add semantic edges. Parentheses may
-/// separate the operators; object, reference, call, and deeper unary operands
-/// remain outside this retained-graph subset.
+/// Up to two unary `!`, `~`, `typeof`, `delete`, or `void` operators over
+/// primitive literal values cannot call user code or add semantic edges.
+/// Parentheses may separate the operators; object, reference, call, and deeper
+/// unary operands remain outside this retained-graph subset.
 fn isRetainableJsxLiteralUnaryValue(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
     var operand_idx = retainableJsxLiteralUnaryOperand(ast, node_idx) orelse return false;
     var unary_depth: usize = 1;
@@ -17668,7 +17669,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), classic_member_key_read_count);
     try std.testing.expectEqual(@as(usize, 2), classic_undefined_read_count);
 
-    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" }, \"undefined\": \"U\", true: \"truthy\", \"-2\": \"minus-two\", number: \"N\", string: \"S\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...props} {...{ staticTemplateValue: `static`, id: label, count: count, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], signedNegativeZero: -0, signedPositiveOne: +1, signedNegativeParen: -(2), signedPositiveHex: +(0x10), signedNegativeExponent: -1e2, signedNegativeZeroKey: member[-0], signedPositiveOneKey: member[+1], signedNegativeParenKey: member[-(2)], signedPositiveHexKey: member[+(0x10)], signedNegativeExponentKey: member[-1e2], logicalNotZero: !0, logicalNotBigInt: !0n, logicalNotFalse: !false, logicalNotTemplate: !`static`, bitwiseNotZero: ~(0), bitwiseNotBigInt: ~1n, bitwiseNotString: ~`2`, logicalNotKey: member[!false], bitwiseNotKey: member[~1], bitwiseNotBigIntKey: member[~1n], voidLogicalNotValue: void (!0), voidBitwiseNotValue: void (~1n), voidSignedNegativeValue: void (-0), voidLogicalNotKey: member[void (!false)], voidBitwiseNotKey: member[void (~1)], voidSignedPositiveKey: member[void (+2)], typeofNumber: typeof 0, typeofNull: typeof null, typeofTemplate: typeof `static`, typeofNumberKey: member[typeof 0], typeofStringKey: member[typeof `static`], deletePrimitive: delete 0, deleteKey: member[delete 0], voidDeletePrimitive: void (delete 0), voidDeleteKey: member[void (delete 0)], typeofDelete: typeof delete 0, deleteNot: delete (!0), voidDoubleNot: void (!!0), typeofDeleteKey: member[typeof delete 0], voidDoubleNotKey: member[void (!!0)], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;";
+    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" }, \"undefined\": \"U\", true: \"truthy\", \"-2\": \"minus-two\", number: \"N\", string: \"S\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...props} {...{ staticTemplateValue: `static`, id: label, count: count, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], signedNegativeZero: -0, signedPositiveOne: +1, signedNegativeParen: -(2), signedPositiveHex: +(0x10), signedNegativeExponent: -1e2, signedNegativeZeroKey: member[-0], signedPositiveOneKey: member[+1], signedNegativeParenKey: member[-(2)], signedPositiveHexKey: member[+(0x10)], signedNegativeExponentKey: member[-1e2], logicalNotZero: !0, logicalNotBigInt: !0n, logicalNotFalse: !false, logicalNotTemplate: !`static`, bitwiseNotZero: ~(0), bitwiseNotBigInt: ~1n, bitwiseNotString: ~`2`, logicalNotKey: member[!false], bitwiseNotKey: member[~1], bitwiseNotBigIntKey: member[~1n], voidLogicalNotValue: void (!0), voidBitwiseNotValue: void (~1n), voidSignedNegativeValue: void (-0), voidLogicalNotKey: member[void (!false)], voidBitwiseNotKey: member[void (~1)], voidSignedPositiveKey: member[void (+2)], typeofNumber: typeof 0, typeofNull: typeof null, typeofTemplate: typeof `static`, typeofNumberKey: member[typeof 0], typeofStringKey: member[typeof `static`], deletePrimitive: delete 0, deleteKey: member[delete 0], voidDeletePrimitive: void (delete 0), voidDeleteKey: member[void (delete 0)], typeofDelete: typeof delete 0, deleteNot: delete (!0), voidDoubleNot: void (!!0), typeofDeleteKey: member[typeof delete 0], voidDoubleNotKey: member[void (!!0)], typeofVoidKey: member[typeof void 0], deleteVoidKey: member[delete (void 0)], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;";
     var key_fallback_fixture = try jsxSpreadChildTestFixture(allocator, key_fallback_source);
     const key_fallback_owner = key_fallback_fixture.semantic.captureOwnerToken();
     var key_fallback_item_symbol: ?u32 = null;
@@ -17777,7 +17778,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), key_fallback_props_read_count);
     try std.testing.expectEqual(@as(usize, 1), key_fallback_label_read_count);
     try std.testing.expectEqual(@as(usize, 1), key_fallback_count_read_count);
-    try std.testing.expectEqual(@as(usize, 23), key_fallback_member_read_count);
+    try std.testing.expectEqual(@as(usize, 25), key_fallback_member_read_count);
     try std.testing.expectEqual(@as(usize, 1), key_fallback_member_key_read_count);
     try std.testing.expectEqual(@as(usize, 2), key_fallback_undefined_read_count);
 
@@ -26000,6 +26001,9 @@ test "#6193 JSX spread retains at most two pure nested unary operators" {
         "const member = { undefined: \"u\" }; const items = [1]; const result = <Comp {...{ value: member[void (typeof delete 0)] }} key=\"k\">{...items}</Comp>;",
         "const member = { true: \"truthy\" }; const items = [1]; const result = <Comp {...{ value: member[delete (typeof false)] }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ value: typeof (~0) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: typeof void 0 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete (void 0) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: void (void 0) }} key=\"k\">{...items}</Comp>;",
     };
     for (safe_sources) |source| {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -26022,7 +26026,7 @@ test "#6193 JSX spread retains at most two pure nested unary operators" {
         "const items = [1]; const result = <Comp {...{ value: delete (~({ value: 1 })) }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ value: void (!!({ value: 1 })) }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ value: delete +0 }} key=\"k\">{...items}</Comp>;",
-        "const items = [1]; const result = <Comp {...{ value: typeof void 0 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: typeof void !0 }} key=\"k\">{...items}</Comp>;",
         "function getKey() { return \"x\"; } const items = [1]; const result = <Comp {...{ value: typeof `${getKey()}` }} key=\"k\">{...items}</Comp>;",
         "const key = 0; const member = {}; const items = [1]; const result = <Comp {...{ value: member[typeof delete (key + \"\")] }} key=\"k\">{...items}</Comp>;",
         "function getKey() { return \"x\"; } const member = {}; const items = [1]; const result = <Comp {...{ value: member[void (!!getKey())] }} key=\"k\">{...items}</Comp>;",
@@ -26093,7 +26097,94 @@ test "#6193 JSX spread retains at most two pure nested unary operators" {
     malformed.ast.nodes.items[paren_raw].data.unary.flags = saved_paren_flags;
 }
 
-test "#6193 JSX spread admits void over one pure unary literal" {
+test "#6193 JSX spread admits void as a nested pure unary operator" {
+    const allocator = std.testing.allocator;
+    const safe_sources = [_][]const u8{
+        "const items = [1]; const result = <Comp {...{ value: typeof void 0 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete (void 0) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: !void 0 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: ~void 0 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: void (void 0) }} key=\"k\">{...items}</Comp>;",
+        "const member = { undefined: \"u\" }; const items = [1]; const result = <Comp {...{ value: member[typeof void 0] }} key=\"k\">{...items}</Comp>;",
+        "const member = { true: \"t\" }; const items = [1]; const result = <Comp {...{ value: member[delete (void 0)] }} key=\"k\">{...items}</Comp>;",
+        "const member = { undefined: \"u\" }; const items = [1]; const result = <Comp {...{ value: member[void (void 0)] }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: typeof (void false) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete (void null) }} key=\"k\">{...items}</Comp>;",
+        "const member = { true: \"t\" }; const items = [1]; const result = <Comp {...{ value: member[!void 0] }} key=\"k\">{...items}</Comp>;",
+        "const member = { \"-1\": \"minus-one\" }; const items = [1]; const result = <Comp {...{ value: member[~void 0] }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: void (typeof void 0) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: typeof (void (0)) }} key=\"k\">{...items}</Comp>;",
+    };
+    for (safe_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(auditedJsxSpreadPropsOperandForTest(&fixture));
+    }
+
+    const hostile_sources = [_][]const u8{
+        "const key = 0; const items = [1]; const result = <Comp {...{ value: typeof void key }} key=\"k\">{...items}</Comp>;",
+        "const key = 0; const items = [1]; const result = <Comp {...{ value: delete (void key) }} key=\"k\">{...items}</Comp>;",
+        "const key = 0; const items = [1]; const result = <Comp {...{ value: void (void key) }} key=\"k\">{...items}</Comp>;",
+        "function getValue() { return 0; } const items = [1]; const result = <Comp {...{ value: typeof void getValue() }} key=\"k\">{...items}</Comp>;",
+        "function getValue() { return 0; } const items = [1]; const result = <Comp {...{ value: delete (void getValue()) }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ value: typeof void member.value }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ value: delete (void member.value) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: typeof void ({}) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete (void []) }} key=\"k\">{...items}</Comp>;",
+        "function getKey() { return \"x\"; } const items = [1]; const result = <Comp {...{ value: typeof void `${getKey()}` }} key=\"k\">{...items}</Comp>;",
+        "function getKey() { return \"x\"; } const items = [1]; const result = <Comp {...{ value: delete (void `${getKey()}`) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: typeof void !0 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: typeof void delete 0 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: typeof void (void 0) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete (void (!0)) }} key=\"k\">{...items}</Comp>;",
+        "const key = 0; const member = {}; const items = [1]; const result = <Comp {...{ value: member[typeof void key] }} key=\"k\">{...items}</Comp>;",
+        "function getValue() { return 0; } const member = {}; const items = [1]; const result = <Comp {...{ value: member[delete (void getValue())] }} key=\"k\">{...items}</Comp>;",
+    };
+    for (hostile_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(!auditedJsxSpreadPropsOperandForTest(&fixture));
+    }
+
+    var malformed_arena = std.heap.ArenaAllocator.init(allocator);
+    defer malformed_arena.deinit();
+    var malformed = try jsxSpreadChildTestFixture(
+        malformed_arena.allocator(),
+        "const items = [1]; const result = <Comp {...{ value: typeof (void ((0))) }} key=\"k\">{...items}</Comp>;",
+    );
+    var outer_typeof: ?ast_mod.NodeIndex = null;
+    var inner_void: ?ast_mod.NodeIndex = null;
+    const typeof_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.kw_typeof)));
+    const void_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.kw_void)));
+    for (malformed.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .unary_expression) continue;
+        const extra = node.data.extra;
+        if (extra > malformed.ast.extra_data.items.len or malformed.ast.extra_data.items.len - extra < 2) continue;
+        const operator_raw = malformed.ast.extra_data.items[extra + 1] & 0xff;
+        if (operator_raw == typeof_raw) outer_typeof = @fromBackingInt(@intCast(raw));
+        if (operator_raw == void_raw) inner_void = @fromBackingInt(@intCast(raw));
+    }
+    const outer_idx = outer_typeof orelse return error.MissingNestedVoidTypeof;
+    const void_idx = inner_void orelse return error.MissingNestedVoidOperator;
+    try std.testing.expect(isRetainableJsxLiteralUnaryValue(&malformed.ast, outer_idx));
+
+    const void_node_raw: usize = @intCast(@backingInt(void_idx));
+    const void_extra = malformed.ast.nodes.items[void_node_raw].data.extra;
+    const saved_flags = malformed.ast.extra_data.items[void_extra + 1];
+    malformed.ast.extra_data.items[void_extra + 1] = saved_flags | 0x100;
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, outer_idx));
+    malformed.ast.extra_data.items[void_extra + 1] = saved_flags;
+    const saved_operand = malformed.ast.extra_data.items[void_extra];
+    malformed.ast.extra_data.items[void_extra] = @intCast(malformed.ast.nodes.items.len);
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, outer_idx));
+    malformed.ast.extra_data.items[void_extra] = saved_operand;
+    malformed.ast.nodes.items[void_node_raw].data.extra = @intCast(malformed.ast.extra_data.items.len);
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, outer_idx));
+}
+
+test "#6193 JSX spread admits void over a pure unary chain" {
     const allocator = std.testing.allocator;
     const safe_sources = [_][]const u8{
         "const items = [1]; const result = <Comp {...{ value: void (!0) }} key=\"k\">{...items}</Comp>;",
