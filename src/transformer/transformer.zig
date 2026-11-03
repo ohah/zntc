@@ -592,6 +592,7 @@ pub const Transformer = struct {
     /// can be attached with their final output ScopeIds.
     stage3_metadata_binding_ids: std.AutoHashMapUnmanaged(u32, @import("../semantic/symbol.zig").SymbolId) = .empty,
     generator_state_bindings: std.ArrayListUnmanaged(GeneratedTempBinding) = .empty,
+    loop_declaration_births: @import("loop_declaration_handoff.zig").Registry = .empty,
     generator_collected_function_roots: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty,
     generator_collected_function_declarations: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     generator_annex_b_var_bindings: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty,

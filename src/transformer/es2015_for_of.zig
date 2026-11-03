@@ -282,6 +282,14 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 try es_helpers.makeDeclarator(self, step_binding, .none, span),
             }, .@"var", span);
 
+            if (stable_scope) {
+                const handoff = @import("loop_declaration_handoff.zig");
+                try handoff.record(self, source_idx, loop_scope, norm_decl, &.{.normal_completion});
+                try handoff.record(self, source_idx, loop_scope, did_decl, &.{.did_error});
+                try handoff.record(self, source_idx, loop_scope, err_decl, &.{.error_value});
+                try handoff.record(self, source_idx, loop_scope, for_init, &.{ .iterator, .step });
+            }
+
             // test: !(_a = (_e = _d.next()).done)
             const next_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeIteratorRef(self, iter, iter_symbol, loop_scope), try es_helpers.makePropertyName(self, "next"), span), &.{}, span);
             const step_assign = try makeAssign(self, try makeForOfRef(self, step, step_symbol, loop_scope, .{ .write = true }), next_call, span);
@@ -295,7 +303,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const for_body = try createLoopBody(self, loop_scope, span);
             const body_scope = self.outputOwnedScope(for_body) orelse loop_scope;
             const value = try es_helpers.makeStaticMember(self, try makeForOfRef(self, step, step_symbol, body_scope, .{ .read = true }), try es_helpers.makePropertyName(self, "value"), span);
-            _ = try buildLoopBody(self, left, value, body, span, loop_scope, for_body);
+            _ = try buildLoopBodyWithSource(self, source_idx, left, value, body, span, loop_scope, for_body);
 
             const for_stmt = try self.addExtraNode(.for_statement, span, &.{
                 @backingInt(for_init), @backingInt(for_test), @backingInt(for_update), @backingInt(for_body),
@@ -478,7 +486,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const body_scope = self.outputOwnedScope(for_body) orelse loop_scope;
             const value = try es_helpers.makeComputedMember(self, try makeLoopBodyTempRead(self, keys_binding, body_scope), try makeLoopBodyTempRead(self, idx_binding, body_scope), span);
             const for_stmt = try self.addExtraNode(.for_statement, span, &.{
-                @backingInt(init), @backingInt(test_expr), @backingInt(update), @backingInt(try buildLoopBody(self, left, value, body, span, loop_scope, for_body)),
+                @backingInt(init), @backingInt(test_expr), @backingInt(update), @backingInt(try buildLoopBodyWithSource(self, source_idx, left, value, body, span, loop_scope, for_body)),
             });
             try self.remapCopiedScopeOwner(source_idx, for_stmt);
             try loop_scopes.fillBlock(self, wrapper.node, &.{ decl, collect, for_stmt });
@@ -515,6 +523,10 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         }
 
         pub fn buildLoopBody(self: *Transformer, left: NodeIndex, value: NodeIndex, body: NodeIndex, span: Span, loop_scope: @import("../semantic/scope.zig").ScopeId, result: NodeIndex) Transformer.Error!NodeIndex {
+            return buildLoopBodyWithSource(self, .none, left, value, body, span, loop_scope, result);
+        }
+
+        fn buildLoopBodyWithSource(self: *Transformer, source_owner: NodeIndex, left: NodeIndex, value: NodeIndex, body: NodeIndex, span: Span, loop_scope: @import("../semantic/scope.zig").ScopeId, result: NodeIndex) Transformer.Error!NodeIndex {
             const body_scope = if (self.semantic_edit_enabled)
                 self.outputOwnedScope(result) orelse std.debug.panic("loop body lost its planned scope", .{})
             else
@@ -528,6 +540,18 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                     try es_helpers.makeDeclarator(self, binding, value, span),
                 }, self.ast.variableDeclarationKind(left_node), span);
             } else try es_helpers.makeExprStmt(self, try makeAssign(self, left, value, span), span);
+            // This declaration reuses the source var binding, unlike a fresh
+            // helper. Its birth records the actual loop header edge so a later
+            // generator visit can replace only this declaration with its write.
+            if (self.semantic_edit_enabled and !source_owner.isNone() and self.ast.getNode(source_owner).tag == .for_of_statement and
+                left_node.tag == .variable_declaration and self.ast.variableDeclarationKind(left_node) == .@"var")
+            {
+                const head = self.ast.getNode(head_stmt);
+                const item = self.ast.getNode(@fromBackingInt(self.ast.extra_data.items[self.ast.extra_data.items[head.data.extra + 1]]));
+                const binding = self.readNodeIdx(item.data.extra, 0);
+                if (self.ast.getNode(binding).tag == .binding_identifier)
+                    try @import("loop_declaration_handoff.zig").record(self, source_owner, loop_scope, head_stmt, &.{.loop_value});
+            }
             // Keep the original block as an actual child: flattening its statements
             // discards the node which owns the source lexical environment.
             self.ast.nodes.items[@backingInt(result)].data.list = try self.ast.addNodeList(if (body.isNone()) &.{head_stmt} else &.{ head_stmt, body });
