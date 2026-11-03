@@ -4906,6 +4906,77 @@ fn buildMetadataForModule(
     return r.linker.buildMetadataForAst(ast, module_index, is_entry, null, r.linker.format, true);
 }
 
+test "unified mangler import reservations tolerate stale and missing cached identities" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "entry.mjs",
+        "import { value as selected, other as decoy } from './provider.mjs'; console.log(selected);",
+    );
+    try writeFile(tmp.dir, "provider.mjs", "export const value = 42; export const other = 9;");
+
+    var r = try buildAndLink(allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingEntryModule;
+    const entry = r.graph.moduleAtMut(entry_index) orelse return error.MissingEntryModule;
+    const selected = for (entry.import_bindings) |*binding| {
+        if (std.mem.eql(u8, binding.local_name, "selected")) break binding;
+    } else return error.MissingSelectedImport;
+    const decoy = for (entry.import_bindings) |binding| {
+        if (std.mem.eql(u8, binding.local_name, "decoy")) break binding;
+    } else return error.MissingDecoyImport;
+    const source_ref = try entry.checkedSourceImportLocalSymbol(selected.*);
+    const decoy_ref = try entry.checkedSourceImportLocalSymbol(decoy);
+    try std.testing.expect(!source_ref.eql(decoy_ref));
+
+    const expect_reserved_names = struct {
+        fn run(names: []const []const u8) !void {
+            var selected_reserved = false;
+            var decoy_reserved = false;
+            for (names) |name| {
+                if (std.mem.eql(u8, name, "selected")) selected_reserved = true;
+                if (std.mem.eql(u8, name, "decoy")) decoy_reserved = true;
+            }
+            try std.testing.expect(selected_reserved);
+            try std.testing.expect(decoy_reserved);
+        }
+    }.run;
+
+    var valid = try r.linker.collectUnifiedInput(null, &.{});
+    defer valid.deinit();
+    try expect_reserved_names(valid.reserved_names);
+
+    // A same-module, same-kind SID from another import must not panic or
+    // replace the scanner-owned local spelling used by the reservation set.
+    selected.local_symbol = decoy_ref;
+    var mismatched = try r.linker.collectUnifiedInput(null, &.{});
+    defer mismatched.deinit();
+    try expect_reserved_names(mismatched.reserved_names);
+    try std.testing.expect(selected.local_symbol.eql(decoy_ref));
+
+    // A missing cached SID can still use the exact retained source anchor,
+    // and collection must not publish a repaired SymbolRef.
+    selected.local_symbol = .invalid;
+    var anchored = try r.linker.collectUnifiedInput(null, &.{});
+    defer anchored.deinit();
+    try expect_reserved_names(anchored.reserved_names);
+    try std.testing.expect(!selected.local_symbol.isValid());
+
+    // If the anchor is unavailable, reservation remains based on scanner text
+    // and still does not trust the stale cached SID.
+    selected.local_symbol = decoy_ref;
+    selected.local_symbol_node = null;
+    var anchorless = try r.linker.collectUnifiedInput(null, &.{});
+    defer anchorless.deinit();
+    try expect_reserved_names(anchorless.reserved_names);
+    try std.testing.expect(selected.local_symbol.eql(decoy_ref));
+}
+
 test "inline requires strict-order metadata does not defer with mismatched import identity" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

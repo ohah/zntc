@@ -4502,7 +4502,14 @@ pub const Linker = struct {
                 // External import bindings may not have a semantic local symbol when the
                 // import is only preserved for output syntax. In that case the scanner
                 // local name is the external contract we must not mangle.
-                const local_name = if (ib.local_symbol.isValid()) m.importBindingLocalName(ib) else ib.local_name;
+                // Reservation consumes a spelling, not a SID. Use the exact
+                // scanner-backed identity when available; stale/missing identity
+                // falls back to the scanner spelling instead of entering the
+                // strict accessor's panic path or trusting a different SID.
+                const local_name = if (m.checkedImportBindingIdentity(ib)) |identity|
+                    identity.name
+                else |_|
+                    ib.local_name;
                 try reserved.put(self.allocator, local_name, {});
                 if (m.import_records[ib.import_record_index].is_external) {
                     try exported.put(self.allocator, local_name, {});
