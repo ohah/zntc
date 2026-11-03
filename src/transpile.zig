@@ -4840,6 +4840,33 @@ fn standaloneOutputNormalForm(
     });
 }
 
+fn requireStandaloneOutputNormalForm(
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    transformer: *const Transformer,
+    analyzer: *const SemanticAnalyzer,
+    root: ast_mod.NodeIndex,
+    pre_transform_scope_count: usize,
+) error{ OutOfMemory, TransformError }!void {
+    const cov = @import("transformer/symbol_coverage.zig");
+    var normal = try standaloneOutputNormalForm(
+        allocator,
+        transformer,
+        analyzer,
+        root,
+        pre_transform_scope_count,
+    );
+    defer normal.deinit(allocator);
+    if (normal.hasCompleteOutputIdentityBeforeNames()) return;
+    if (@import("builtin").is_test) {
+        std.debug.print("R1_OUTPUT_INVALID file={s}\n", .{file_path});
+        cov.printStrict(file_path, &normal.strict);
+        cov.printExact(file_path, normal.exact);
+        std.debug.print("R1_RETIREMENT_STATE_INVALID count={d}\n", .{normal.retirement_state_mismatch});
+    }
+    return error.TransformError;
+}
+
 fn transpileWithCallbackInternal(
     allocator: std.mem.Allocator,
     source: []const u8,
@@ -5438,25 +5465,17 @@ fn transpileWithCallbackInternal(
     }
 
     // Every full-semantic producer finishes one edited output graph. Verify
-    // its reachable source and generated identities before consumers allocate
-    // names; syntax categories never select a replacement identity space.
-    if (options.minify_identifiers) {
-        if (analyzer_storage) |*a| {
-            const cov = @import("transformer/symbol_coverage.zig");
-            var normal = try standaloneOutputNormalForm(arena_alloc, &transformer, a, root, pre_transform_scope_count);
-            defer normal.deinit(arena_alloc);
-            const exact = normal.exact;
-            if (!normal.hasCompleteOutputIdentityBeforeNames()) {
-                if (@import("builtin").is_test) std.debug.print("R1_OUTPUT_INVALID file={s}\n", .{file_path});
-                if (@import("builtin").is_test) {
-                    cov.printStrict(file_path, &normal.strict);
-                    cov.printExact(file_path, exact);
-                    std.debug.print("R1_RETIREMENT_STATE_INVALID count={d}\n", .{normal.retirement_state_mismatch});
-                }
-                return error.TransformError;
-            }
-        }
-    }
+    // its reachable source and generated identities before any output-name
+    // consumer runs, whether or not identifier minification was requested.
+    // Syntax categories never select a replacement identity space.
+    if (analyzer_storage) |*a| try requireStandaloneOutputNormalForm(
+        arena_alloc,
+        file_path,
+        &transformer,
+        a,
+        root,
+        pre_transform_scope_count,
+    );
     const explicit_global_ref_nodes = try transformer.ownedExplicitGlobalRefNodes(arena_alloc);
     if (options.minify_identifiers and analyzer_storage != null) {
         if (symbol_coverage_env.enabled()) {
@@ -16322,4 +16341,110 @@ test "Flow match single-use binding publishes actual inline output without rollb
         if (declarations != 0) std.debug.print("FLOW_INLINE published declarations={d} identifiers={} code={s}\n", .{ declarations, identifiers, result.code });
         try std.testing.expectEqual(@as(usize, 0), declarations);
     }
+}
+
+test "standalone full-semantic output identity gate runs before name allocation and rejects missing SymbolIds" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "class Box { value = 2; read() { return this.value; } } console.log(new Box().read());";
+    const unsupported = TransformOptions.compat.fromESTarget(.es5);
+
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.unsupported = unsupported;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
+    try analyzer.analyze();
+    const pre_transform_scope_count = analyzer.scopes.items.len;
+
+    var transformer = try Transformer.initFromOwnedAst(a, &parser.ast, .{ .unsupported = unsupported });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.source_owned_retirements = analyzer.source_owned_retirements;
+    transformer.scope_history = analyzer.scope_history;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
+    transformer.record_explicit_global_references = true;
+    transformer.semantic_edit_enabled = true;
+
+    const root = try transformer.transform();
+    if (try transformer.finishSemanticEdit()) |edited| {
+        analyzer.applyEdit(edited);
+        transformer.symbol_ids = analyzer.symbol_ids;
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
+        transformer.source_owned_retirements = analyzer.source_owned_retirements;
+        transformer.scope_history = analyzer.scope_history;
+        transformer.helper_scope_map = analyzer.helper_scope_map;
+    }
+    try requireStandaloneOutputNormalForm(
+        a,
+        "standalone-identity-gate.js",
+        &transformer,
+        &analyzer,
+        root,
+        pre_transform_scope_count,
+    );
+
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(a, transformer.ast, root);
+    var corrupted_node: ?u32 = null;
+    for (reachable) |raw| {
+        if (raw >= transformer.symbol_ids.items.len) continue;
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or transformer.symbol_ids.items[raw] == null) continue;
+        corrupted_node = raw;
+        break;
+    }
+    const raw = corrupted_node orelse return error.MissingOutputBindingForHostileMutation;
+    const original_symbol = transformer.symbol_ids.items[raw];
+    transformer.symbol_ids.items[raw] = null;
+    try std.testing.expectError(
+        error.TransformError,
+        requireStandaloneOutputNormalForm(
+            a,
+            "standalone-identity-gate.js",
+            &transformer,
+            &analyzer,
+            root,
+            pre_transform_scope_count,
+        ),
+    );
+    transformer.symbol_ids.items[raw] = original_symbol;
+    try requireStandaloneOutputNormalForm(
+        a,
+        "standalone-identity-gate.js",
+        &transformer,
+        &analyzer,
+        root,
+        pre_transform_scope_count,
+    );
+
+    const transformed = try transpile(a, source, "standalone-identity-gate.js", .{ .unsupported = unsupported });
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+    const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", transformed.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    try std.testing.expectEqualStrings(native.stdout, actual.stdout);
 }

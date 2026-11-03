@@ -22,8 +22,8 @@ pub const ReferenceContext = struct {
 /// Structural context only. This never selects a SymbolId or performs lookup.
 /// Owners, including method keys and named-function frames, use the existing
 /// exact scope walk rather than a second approximation of analyzer scopes.
-pub fn captureReferenceContexts(a: std.mem.Allocator, ast: *const ast_mod.Ast, root: NodeIndex, scopes: []const scope_mod.Scope, owners: *const std.AutoHashMapUnmanaged(u32, u32)) !?[]ReferenceContext {
-    var traces = try coverage.collectScopeTraces(a, ast, root, scopes, owners);
+pub fn captureReferenceContexts(a: std.mem.Allocator, ast: *const ast_mod.Ast, root: NodeIndex, ids: []const ?u32, symbols: []const symbol_mod.Symbol, scopes: []const scope_mod.Scope, owners: *const std.AutoHashMapUnmanaged(u32, u32)) !?[]ReferenceContext {
+    var traces = try coverage.collectScopeTraces(a, ast, root, ids, symbols, scopes, owners);
     defer traces.deinit(a);
     var parents = try coverage.collectParentTraces(a, ast, root);
     defer parents.deinit(a);

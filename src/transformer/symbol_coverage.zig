@@ -730,6 +730,7 @@ fn isFunctionExpressionNameScope(
 }
 
 fn ownerParentMatchesAst(
+    allocator: std.mem.Allocator,
     ast: *const Ast,
     parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
     reachable_nodes: *const std.AutoHashMapUnmanaged(u32, void),
@@ -738,12 +739,13 @@ fn ownerParentMatchesAst(
     scopes: []const Scope,
     scope_maps: []const std.StringHashMapUnmanaged(usize),
     scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
     owner_node: u32,
     owner_scope: u32,
     expected_parent_scope: u32,
     pre_transform_scope_count: ?usize,
     lowered_classes: ?*const @import("../semantic/lowered_worklet_class.zig").Proof,
-) bool {
+) std.mem.Allocator.Error!bool {
     var parent = scopes[owner_scope].parent;
     var hops: usize = 0;
     while (!parent.isNone() and hops < scopes.len) : (hops += 1) {
@@ -799,6 +801,21 @@ fn ownerParentMatchesAst(
         }
         if (functionParameterNode(ast, owner_node)) |params_node| {
             if (scope_owner_map.get(params_node) == @as(?u32, parent_id)) {
+                parent = scopes[parent_id].parent;
+                continue;
+            }
+            if (try retainedLoweredParameterScopeOwner(
+                allocator,
+                ast,
+                reachable_nodes,
+                symbol_ids,
+                symbols,
+                scopes,
+                scope_maps,
+                scope_owner_map,
+                references,
+                parent_id,
+            )) {
                 parent = scopes[parent_id].parent;
                 continue;
             }
@@ -1577,6 +1594,80 @@ fn functionExpressionNameScopeFromNameBinding(
         @backingInt(scopes[function_parent.toIndex()].parent) == name_scope)
         return name_scope;
     return null;
+}
+
+/// A lowered named function can retain its source parameter environment as
+/// the parent of the emitted body scope after all parameter expressions have
+/// moved into the body. In that case the replacement simple formal list is
+/// intentionally ownerless, while the old formal carrier is unreachable.
+/// Accept that ScopeId only when the old carrier proves a non-simple list,
+/// the live function proves the exact self-name/parameter/body ancestry, and
+/// the retained parameter scope has no remaining bindings or reference rows.
+fn retainedLoweredParameterScopeOwner(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    reachable_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
+    parameter_scope_raw: u32,
+) std.mem.Allocator.Error!bool {
+    if (parameter_scope_raw >= scopes.len or parameter_scope_raw >= scope_maps.len or
+        scopes[parameter_scope_raw].kind != .function or scopes[parameter_scope_raw].parent.isNone()) return false;
+
+    var source_owner: ?u32 = null;
+    var source_owner_count: usize = 0;
+    var owners = scope_owner_map.iterator();
+    while (owners.next()) |entry| if (entry.value_ptr.* == parameter_scope_raw) {
+        source_owner = entry.key_ptr.*;
+        source_owner_count += 1;
+    };
+    if (source_owner_count != 1) return false;
+    const old_params_raw = source_owner.?;
+    if (old_params_raw >= ast.nodes.items.len or reachable_nodes.contains(old_params_raw) or
+        ast.nodes.items[old_params_raw].tag != .formal_parameters or
+        !try ast_walk.parameterListHasExpressions(allocator, ast, ast.nodes.items[old_params_raw].data.list) or
+        scope_maps[parameter_scope_raw].count() != 0) return false;
+    for (symbols) |symbol| if (@backingInt(symbol.scope_id) == parameter_scope_raw) return false;
+    for (references) |reference| if (@backingInt(reference.scope_id) == parameter_scope_raw) return false;
+
+    var candidate_count: usize = 0;
+    var live_nodes = reachable_nodes.keyIterator();
+    while (live_nodes.next()) |raw_ptr| {
+        const function_raw = raw_ptr.*;
+        if (function_raw >= ast.nodes.items.len or ast.nodes.items[function_raw].tag != .function_expression) continue;
+        const body_scope_raw = scope_owner_map.get(function_raw) orelse continue;
+        if (body_scope_raw >= scopes.len or scopes[body_scope_raw].kind != .function or
+            @backingInt(scopes[body_scope_raw].parent) != parameter_scope_raw) continue;
+        const params_raw = functionParameterNode(ast, function_raw) orelse continue;
+        if (!reachable_nodes.contains(params_raw) or ast.nodes.items[params_raw].tag != .formal_parameters or
+            scope_owner_map.contains(params_raw) or
+            try ast_walk.parameterListHasExpressions(allocator, ast, ast.nodes.items[params_raw].data.list)) continue;
+        const name_scope_raw = functionExpressionNameScopeFromNameBinding(
+            ast,
+            scope_owner_map,
+            scopes,
+            symbol_ids,
+            symbols,
+            function_raw,
+        ) orelse continue;
+        if (name_scope_raw != @backingInt(scopes[parameter_scope_raw].parent) or name_scope_raw >= scope_maps.len or
+            !isFunctionExpressionNameScope(
+                ast,
+                function_raw,
+                @fromBackingInt(name_scope_raw),
+                scopes[name_scope_raw].parent,
+                symbol_ids,
+                symbols,
+                scopes,
+                scope_maps,
+            )) continue;
+        candidate_count += 1;
+    }
+    return candidate_count == 1;
 }
 
 const ExpectedScopeOwner = struct { node: u32, scope: u32 };
@@ -4115,7 +4206,19 @@ fn checkExactImpl(
                 // semantically live transform scope and its ancestor chain.
                 if (!live_scope_ids.contains(scope_id)) continue;
                 const has_lowered_class_owner = if (lowered_classes) |proof| proof.bridge(@fromBackingInt(scope_id)) != null else false;
-                if (reachable_scope_owners.contains(scope_id) or has_lowered_class_owner) {
+                const has_retained_lowered_parameter_owner = try retainedLoweredParameterScopeOwner(
+                    allocator,
+                    ast,
+                    &reachable_nodes,
+                    symbol_ids,
+                    symbols,
+                    scopes,
+                    scope_maps,
+                    scope_owner_map,
+                    references,
+                    scope_id,
+                );
+                if (reachable_scope_owners.contains(scope_id) or has_lowered_class_owner or has_retained_lowered_parameter_owner) {
                     report.generated_scope_owners_checked += 1;
                     continue;
                 }
@@ -4405,7 +4508,8 @@ fn checkExactImpl(
                 );
                 continue;
             };
-            if (ownerParentMatchesAst(
+            if (try ownerParentMatchesAst(
+                allocator,
                 ast,
                 &parent_by_node,
                 &reachable_nodes,
@@ -4414,6 +4518,7 @@ fn checkExactImpl(
                 scopes,
                 scope_maps,
                 scope_owner_map,
+                references,
                 function_raw,
                 scope_raw,
                 expected_parent.scope,
@@ -4441,7 +4546,8 @@ fn checkExactImpl(
             );
             continue;
         };
-        if (ownerParentMatchesAst(
+        if (try ownerParentMatchesAst(
+            allocator,
             ast,
             &parent_by_node,
             &reachable_nodes,
@@ -4450,6 +4556,7 @@ fn checkExactImpl(
             scopes,
             scope_maps,
             scope_owner_map,
+            references,
             raw,
             scope_raw,
             expected_parent.scope,
@@ -6549,6 +6656,8 @@ pub fn collectScopeTraces(
     allocator: std.mem.Allocator,
     ast: *const Ast,
     root: NodeIndex,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
     scopes: []const Scope,
     scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
 ) std.mem.Allocator.Error!std.AutoHashMapUnmanaged(u32, ScopeTrace) {
@@ -6602,7 +6711,22 @@ pub fn collectScopeTraces(
             // selected children: switch discriminants, method keys and
             // decorators, and declaration names all belong to the enclosing
             // scope. Keep strict traces aligned with the analyzer's order.
-            const child_scope = if (functionExpressionNameScope(
+            const exact_function_name_scope = if (raw < ast.nodes.items.len and ast.nodes.items[raw].tag == .function_expression and
+                ast.nodes.items[raw].data.extra < ast.extra_data.items.len and
+                ast.extra_data.items[ast.nodes.items[raw].data.extra] == @backingInt(child))
+                functionExpressionNameScopeFromNameBinding(
+                    ast,
+                    scope_owner_map,
+                    scopes,
+                    symbol_ids,
+                    symbols,
+                    raw,
+                )
+            else
+                null;
+            const child_scope = if (exact_function_name_scope) |name_scope|
+                ScopePath{ .scope_id = name_scope, .valid = true }
+            else if (functionExpressionNameScope(
                 ast,
                 scope_owner_map,
                 scopes,
@@ -6670,7 +6794,17 @@ fn nativeArgumentsFrameScope(
         .function_declaration, .function_expression, .function, .method_definition => {
             if (!ast.hasExtra(node.data.extra, 1)) return null;
             const params = ast.readExtraNode(node.data.extra, 1);
-            return if (!params.isNone()) owners.get(@backingInt(params)) orelse body_scope else body_scope;
+            if (!params.isNone()) if (owners.get(@backingInt(params))) |parameter_scope| {
+                // Lowered parameters can consume the source parameter engine
+                // into the emitted body while retaining parameter-scope
+                // provenance. The output carrier is native only when its
+                // exact implicit-arguments identity still lives there.
+                for (symbols) |symbol| {
+                    if (symbol.synthetic_kind == .implicit_arguments and
+                        @backingInt(symbol.scope_id) == parameter_scope) return parameter_scope;
+                }
+            };
+            return body_scope;
         },
         .ts_enum_declaration, .ts_module_declaration => {
             const required: SyntheticKind = if (node.tag == .ts_enum_declaration) .enum_iife_parameter else .namespace_iife_parameter;
@@ -6871,7 +7005,7 @@ fn checkStrictImpl(
     var report: StrictReport = .{};
     errdefer report.deinit(allocator);
     report.cyclic_ast_edges = try countCyclicAstEdges(allocator, ast, root);
-    var node_scopes = try collectScopeTraces(allocator, ast, root, scopes, scope_owner_map);
+    var node_scopes = try collectScopeTraces(allocator, ast, root, symbol_ids, symbols, scopes, scope_owner_map);
     defer node_scopes.deinit(allocator);
     var parent_traces = try collectParentTraces(allocator, ast, root);
     defer parent_traces.deinit(allocator);
