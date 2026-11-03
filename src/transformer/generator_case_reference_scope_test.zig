@@ -47,6 +47,13 @@ fn checkModeWithImports(source: []const u8, native_lexical: bool, full_driver: b
     for (analyzer.references.items) |ref| if (!ref.node_index.isNone() and !ref.flags.declare) {
         try original.put(a, @backingInt(ref.node_index), .{ .sid = @backingInt(ref.symbol_id), .read = ref.flags.read, .write = ref.flags.write, .stmt = ref.stmt_idx, .scope_stmt = ref.scope_stmt_idx });
     };
+    // Snapshot actual compound LHS slots before the planner rewrites the AST.
+    var compound_targets: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (parser.ast.nodes.items) |source_node| {
+        if (source_node.tag != .assignment_expression) continue;
+        if (@import("es2015_class/assign_ops.zig").compoundAssignBaseOp(source_node.data.binary.flags) == null) continue;
+        try compound_targets.put(a, @backingInt(source_node.data.binary.left), {});
+    }
     var source_function_scopes: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty;
     for (parser.ast.nodes.items, 0..) |node, raw| {
         if (node.tag == .function_declaration) {
@@ -178,8 +185,30 @@ fn checkModeWithImports(source: []const u8, native_lexical: bool, full_driver: b
                     try std.testing.expectEqual(sid, @backingInt(ref.symbol_id));
                     if (original.get(raw)) |before| {
                         try std.testing.expectEqual(before.sid, sid);
-                        try std.testing.expectEqual(before.read, ref.flags.read);
-                        try std.testing.expectEqual(before.write, ref.flags.write);
+                        if (compound_targets.contains(raw) and before.read and before.write and !ref.flags.read) {
+                            // A compound target becomes one write plus an exact
+                            // cloned value read; neither role may disappear.
+                            try std.testing.expect(ref.flags.write and !ref.flags.declare);
+                            var split_reads: usize = 0;
+                            for (t.semantic_editor.?.references.items) |split| {
+                                if (split.node_index == work.node or split.node_index.isNone() or
+                                    @backingInt(split.symbol_id) != sid) continue;
+                                const clone = t.ast.getNode(split.node_index);
+                                if (clone.span.start != node.span.start or clone.span.end != node.span.end) continue;
+                                try std.testing.expect(actual.contains(@backingInt(split.node_index)));
+                                try std.testing.expect(split.flags.read and !split.flags.write and !split.flags.declare);
+                                try std.testing.expectEqual(scope, split.scope_id);
+                                if (!full_driver) {
+                                    try std.testing.expectEqual(before.stmt, split.stmt_idx);
+                                    try std.testing.expectEqual(before.scope_stmt, split.scope_stmt_idx);
+                                }
+                                split_reads += 1;
+                            }
+                            try std.testing.expectEqual(@as(usize, 1), split_reads);
+                        } else {
+                            try std.testing.expectEqual(before.read, ref.flags.read);
+                            try std.testing.expectEqual(before.write, ref.flags.write);
+                        }
                         if (before.stmt != @import("../semantic/symbol.zig").Reference.NO_STMT and before.scope_stmt != @import("../semantic/symbol.zig").Reference.NO_STMT) known_coordinates += 1;
                         if (!full_driver) {
                             try std.testing.expectEqual(before.stmt, ref.stmt_idx);

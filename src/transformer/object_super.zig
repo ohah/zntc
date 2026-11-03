@@ -534,6 +534,14 @@ fn collectHomeArgumentsAliasReferences(
 
 /// 객체 리터럴 방문 결과를 home 에 담는다 — `Home.Wrap` 참고.
 pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+    return wrapWithHomeAndPrefixRoots(self, home, obj, span, &.{});
+}
+
+/// Suspension extraction moves evaluated property values out of the final
+/// object subtree. Keep those actual roots in the home producer's scope walk.
+pub fn wrapWithHomeAndPrefixRoots(self: *Transformer, home: Home, obj: NodeIndex, span: Span, prefix_roots: []const NodeIndex) Transformer.Error!NodeIndex {
+    if (prefix_roots.len != 0 and home.wrap != .assign)
+        std.debug.panic("detached object home prefix requires its exact hoisted binding", .{});
     const assign = try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
         .left = try es_helpers.makeTempVarRef(self, home.identity.span, home.identity.span),
         .right = obj,
@@ -588,6 +596,7 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
             try trackHoistedHomeReferences(
                 self,
                 obj,
+                prefix_roots,
                 self.ast.getNode(assign).data.binary.left,
                 home.identity,
                 home.identity.span,
@@ -777,6 +786,7 @@ fn findHomeObjectParentScope(
 fn trackHoistedHomeReferences(
     self: *Transformer,
     root: NodeIndex,
+    prefix_roots: []const NodeIndex,
     write_ref: NodeIndex,
     identity: ObjectSuperHomeIdentity,
     name_span: Span,
@@ -801,6 +811,8 @@ fn trackHoistedHomeReferences(
     var queue: std.ArrayList(Work) = .empty;
     defer queue.deinit(self.allocator);
     try queue.append(self.allocator, .{ .node = root, .scope = root_scope });
+    for (prefix_roots) |prefix_root|
+        try queue.append(self.allocator, .{ .node = prefix_root, .scope = root_scope });
     var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer seen.deinit(self.allocator);
     var cursor: usize = 0;

@@ -1838,7 +1838,49 @@ test "Hermes: async arrow expression body extracts nested await" {
 
     try expectAsyncStateMachine(r.output);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "yield new Request") == null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "new Uint8Array(_") != null);
+    // The constructor GetValue must precede the awaited operand. Inspect the
+    // actual frozen assignment/new edge instead of requiring a late global read.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var scanner = try helpers.Scanner.init(arena.allocator(), r.output);
+    var parser = helpers.Parser.init(arena.allocator(), &scanner);
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var frozen_name: ?[]const u8 = null;
+    var capture_start: u32 = 0;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .assignment_expression) continue;
+        const rhs = parser.ast.getNode(node.data.binary.right);
+        if (rhs.tag != .identifier_reference or
+            !std.mem.eql(u8, parser.ast.identifierNameText(rhs), "Uint8Array")) continue;
+        const lhs = parser.ast.getNode(node.data.binary.left);
+        // Reparse converts a scalar assignment LHS to its binding/target role;
+        // it is not an identifier-reference read of the captured constructor.
+        try std.testing.expect(lhs.tag == .binding_identifier or lhs.tag == .assignment_target_identifier);
+        try std.testing.expect(frozen_name == null);
+        frozen_name = parser.ast.identifierNameText(lhs);
+        capture_start = node.span.start;
+    }
+    const constructor = frozen_name orelse return error.MissingFrozenConstructor;
+    var frozen_news: usize = 0;
+    var requests: usize = 0;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .new_expression) continue;
+        const callee = parser.ast.getNode(parser.ast.readExtraNode(node.data.extra, 0));
+        if (callee.tag != .identifier_reference) continue;
+        const name = parser.ast.identifierNameText(callee);
+        if (std.mem.eql(u8, name, constructor)) {
+            try std.testing.expect(node.span.start > capture_start);
+            frozen_news += 1;
+        }
+        if (std.mem.eql(u8, name, "Request")) {
+            try std.testing.expect(node.span.start > capture_start);
+            requests += 1;
+        }
+        try std.testing.expect(!std.mem.eql(u8, name, "Uint8Array"));
+    }
+    try std.testing.expectEqual(@as(usize, 1), frozen_news);
+    try std.testing.expectEqual(@as(usize, 1), requests);
 }
 
 test "ES2015: object generator method → state machine wrapped in function" {

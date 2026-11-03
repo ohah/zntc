@@ -831,6 +831,28 @@ test "#4819 generator object super home temp reuses its exact callback binding" 
     const exact_producer_binding = producer_binding orelse return error.MissingObjectHomeProducerBinding;
     try std.testing.expect(producer_refs >= 2);
     try std.testing.expect(found_home_reference);
+    // Ordered object construction no longer needs a duplicate home read. Every
+    // live use must still have this exact producer, including getPrototypeOf.
+    var live_home_refs: usize = 0;
+    var live_pending_refs: usize = 0;
+    for (reachable) |raw| {
+        const output_node = transformer.ast.nodes.items[raw];
+        if (output_node.tag != .identifier_reference or
+            !std.mem.eql(u8, transformer.ast.identifierNameText(output_node), home_name)) continue;
+        live_home_refs += 1;
+        var matches: usize = 0;
+        for (transformer.generator_state_temp_refs.items) |pending| {
+            if (@backingInt(pending.reference) != raw) continue;
+            try std.testing.expectEqual(exact_producer_binding, pending.binding);
+            matches += 1;
+        }
+        // Prefix capture references can already be committed to the editor;
+        // only deferred callback references remain in this pending ledger.
+        try std.testing.expect(matches <= 1);
+        live_pending_refs += matches;
+    }
+    try std.testing.expectEqual(live_pending_refs, producer_refs);
+    try std.testing.expect(live_home_refs > 0);
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
 
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -841,6 +863,37 @@ test "#4819 generator object super home temp reuses its exact callback binding" 
 
     var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
     defer output_parents.deinit(allocator);
+    // Pending and immediately committed paths must converge on the same exact
+    // binding and one actual reference row per live leaf after publication.
+    var found_actual_home_reference = false;
+    for (reachable) |raw| {
+        const output_node = transformer.ast.nodes.items[raw];
+        if (output_node.tag != .identifier_reference or
+            !std.mem.eql(u8, transformer.ast.identifierNameText(output_node), home_name)) continue;
+        try std.testing.expectEqual(@as(?u32, home_id), edited.symbol_ids[raw]);
+        var rows: usize = 0;
+        for (edited.references) |reference| {
+            if (reference.node_index.isNone() or @backingInt(reference.node_index) != raw) continue;
+            try std.testing.expectEqual(home_id, @backingInt(reference.symbol_id));
+            try std.testing.expect(!reference.flags.declare);
+            try std.testing.expect(reference.flags.read or reference.flags.write);
+            if (reference.node_index == exact_home_ref) {
+                try std.testing.expect(reference.flags.read and !reference.flags.write);
+                found_actual_home_reference = true;
+            }
+            const expected_scope = output_scope.expectedScope(
+                transformer.ast,
+                root,
+                &output_parents,
+                &edited.scope_owner_map,
+                raw,
+            ) orelse return error.MissingActualHomeReferenceOwner;
+            try std.testing.expectEqual(expected_scope, reference.scope_id);
+            rows += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), rows);
+    }
+    try std.testing.expect(found_actual_home_reference);
     const symbol = edited.symbols.items[home_id];
     var binding_count: usize = 0;
     var reference_count: u32 = 0;
