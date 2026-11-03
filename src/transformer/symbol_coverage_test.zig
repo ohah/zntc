@@ -2138,6 +2138,62 @@ test "exact scope audit rejects owner scopes detached from their AST parent scop
     try std.testing.expectEqual(@as(?u32, @backingInt(global_scope)), corrupted.first_scope_owner_mismatch.?.expected_parent_scope_id);
     try std.testing.expectEqual(@as(?u32, @backingInt(detached_scope)), corrupted.first_scope_owner_mismatch.?.actual_parent_scope_id);
     try std.testing.expect(!corrupted.isClean());
+
+    // A fresh reanalysis uses boundary 0, which must still audit every live
+    // scope's AST owner and lexical parent rather than treating source scopes
+    // as an unchecked prefix.
+    scopes[@backingInt(block_scope)].parent = global_scope;
+    const reanalyzed_clean = try coverage.checkExactWithNamespaceMetadataAndDeclarationAnchors(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &owners,
+        &.{},
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+        &.{},
+        &.{},
+        0,
+        null,
+    );
+    try std.testing.expect(reanalyzed_clean.isClean());
+
+    scopes[@backingInt(block_scope)].parent = detached_scope;
+    const reanalyzed_corrupted = try coverage.checkExactWithNamespaceMetadataAndDeclarationAnchors(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &owners,
+        &.{},
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+        &.{},
+        &.{},
+        0,
+        null,
+    );
+    try std.testing.expectEqual(@as(usize, 1), reanalyzed_corrupted.scope_owner_parent_mismatch);
+    try std.testing.expectEqualStrings(
+        "owner-parent-scope",
+        reanalyzed_corrupted.first_scope_owner_mismatch.?.issue,
+    );
+    try std.testing.expect(!reanalyzed_corrupted.isClean());
 }
 
 test "source scope-owner audit finds a wrong owner kind with a valid parent" {
