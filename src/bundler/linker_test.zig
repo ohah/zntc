@@ -7353,6 +7353,57 @@ test "generated runtime helper imports keep exact anchors under poisoned helper 
     }
 }
 
+test "runtime helper metadata preserves provider name when cached import SID is missing or stale" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "const __generator = 17; function* values() { yield 3; } console.log(values().next().value, __generator);");
+    var result = try buildAndLinkWithTransformOptions(std.testing.allocator, &tmp, "entry.mjs", .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+        .emit_runtime_helper_imports = true,
+    }, true);
+    defer result.cache.deinit();
+    defer result.destroyGraph();
+    defer result.linker.deinit();
+
+    try result.linker.computeRenames();
+    const entry_index = findModuleIdx(result.graph, "entry.mjs") orelse return error.MissingRuntimeHelperEntry;
+    const entry = result.graph.moduleAtMut(entry_index) orelse return error.MissingRuntimeHelperEntry;
+    const binding = for (entry.import_bindings) |*candidate| {
+        if (candidate.is_helper) break candidate;
+    } else return error.MissingGeneratedRuntimeHelper;
+    const source_ref = try entry.checkedSourceImportLocalSymbol(binding.*);
+    const local_sid = source_ref.semanticIndex() orelse return error.MissingRuntimeHelperLocalSID;
+    // Model the producer row restored by the runtime-helper output sidecar
+    // after semantic reanalysis.
+    const helper_symbol = &entry.semantic.?.symbols.items[local_sid];
+    helper_symbol.synthetic_kind = .runtime_helper_import;
+    helper_symbol.synthetic_name = binding.local_name;
+    helper_symbol.output_name_hint = binding.local_name;
+    const resolved = result.linker.getResolvedBinding(entry_index.toU32(), binding.local_span) orelse
+        return error.MissingResolvedRuntimeHelper;
+    const provider = result.graph.getModule(resolved.canonical.module_index) orelse return error.MissingRuntimeHelperModule;
+    const expected = result.linker.resolveToLocalName(resolved.canonical) orelse return error.MissingCanonicalRuntimeHelperName;
+    try std.testing.expect(!provider.is_external);
+
+    const local_id = bundler_symbol.SymbolID.make(entry_index, local_sid);
+    try result.linker.rename_table.put(std.testing.allocator, local_id, "poisoned_importer_helper_local");
+    binding.local_symbol = .invalid;
+
+    var metadata = try buildMetadataForModule(&result, entry_index.toU32(), true);
+    defer metadata.deinit();
+    const actual = metadata.renames.get(local_sid) orelse return error.MissingRuntimeHelperMetadataRename;
+    try std.testing.expectEqualStrings(expected, actual);
+    try std.testing.expect(!binding.local_symbol.isValid());
+
+    const decoy_sid = entry.semantic.?.scope_maps[0].get("__generator") orelse return error.MissingRuntimeHelperDecoy;
+    try std.testing.expect(decoy_sid != local_sid);
+    const stale_ref = bundler_symbol.SymbolRef.makeSemantic(entry_index, decoy_sid);
+    binding.local_symbol = stale_ref;
+    try std.testing.expectError(error.InvalidImportLocalSymbol, buildMetadataForModule(&result, entry_index.toU32(), true));
+    try std.testing.expect(binding.local_symbol.eql(stale_ref));
+}
+
 test "foreign import identity clears previous source refs across ten invalidation transitions" {
     const Transition = enum { bad_record, unresolved, missing_module, no_exports, namespace, missing_name, missing_export_target, export_invalid, unchanged, alternate };
     const Case = struct { name: []const u8, transition: Transition, default_import: bool = false };

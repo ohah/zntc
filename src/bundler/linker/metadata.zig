@@ -1893,8 +1893,17 @@ pub fn buildMetadataForAstWithHolderReservations(
         // short name even though scope-hoisting removes the import declaration.
         var linked_helper_import = false;
         for (m.import_bindings) |ib| {
-            if (!ib.is_helper or ib.local_symbol.semanticIndex() != @as(?u32, @intCast(raw_symbol_id)) or
-                ib.import_record_index >= m.import_records.len) continue;
+            if (!ib.is_helper) continue;
+            // This output pass classifies a producer-owned helper import;
+            // use its scanner node as identity when the derived SID is absent.
+            const source_ref = m.checkedSourceImportLocalSymbol(ib) catch continue;
+            if (source_ref.moduleIndex() != m.index or
+                source_ref.semanticIndex() != @as(?u32, @intCast(raw_symbol_id))) continue;
+            // Missing derived identity can use the exact anchor; a present
+            // ref that contradicts it is stale graph state and must fail closed.
+            if (ib.local_symbol.isValid() and !ib.local_symbol.eql(source_ref))
+                return error.InvalidImportLocalSymbol;
+            if (ib.import_record_index >= m.import_records.len) continue;
             if (self.getResolvedBinding(module_index, ib.local_span) == null) continue;
             const rec = m.import_records[ib.import_record_index];
             if (rec.is_external or rec.resolved.isNone()) continue;
