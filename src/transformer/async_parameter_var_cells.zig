@@ -7,6 +7,43 @@ const helpers = @import("es_helpers.zig");
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const NodeIndex = ast.NodeIndex;
 
+fn hasBodyCellDeclaration(self: anytype, body: NodeIndex, source_scope: ScopeId, parameters: *const std.AutoHashMapUnmanaged(u32, void)) !bool {
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    try stack.append(self.allocator, body);
+    while (stack.pop()) |index| {
+        if (index.isNone()) continue;
+        const node = self.ast.getNode(index);
+        switch (node.tag) {
+            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .class_declaration, .class_expression => continue,
+            .variable_declaration => {
+                if (self.ast.variableDeclarationKind(node) != .@"var") continue;
+                const start = self.ast.extra_data.items[node.data.extra + 1];
+                const count = self.ast.extra_data.items[node.data.extra + 2];
+                for (0..count) |i| {
+                    const item = self.ast.getNode(@fromBackingInt(self.ast.extra_data.items[start + i]));
+                    var bindings = try walk.bindingIdentifiers(self.allocator, self.ast, self.ast.readExtraNode(item.data.extra, 0), .{});
+                    defer bindings.deinit();
+                    while (try bindings.next()) |binding| {
+                        const id = self.getSymbolIdAt(binding) orelse continue;
+                        const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+                        if (id >= symbols.len) @panic("async body declaration has invalid SID");
+                        if (symbols[id].scope_id != source_scope) continue;
+                        if (parameters.contains(id)) return true;
+                        const role = (@import("../semantic/parameter_body_var.zig").forSymbol(symbols, @fromBackingInt(id)) catch @panic("async body declaration has invalid FDI role")) orelse continue;
+                        if (parameters.contains(@backingInt(role.parameter))) return true;
+                    }
+                }
+                continue;
+            },
+            else => {},
+        }
+        var children = walk.children(self.ast, node);
+        while (children.next()) |child| try stack.append(self.allocator, child);
+    }
+    return false;
+}
+
 pub fn normalize(self: anytype, owner: NodeIndex, body: NodeIndex) !void {
     if (!self.semantic_edit_enabled or body.isNone()) return;
     const source_scope = self.originalFunctionScope(owner);
@@ -32,6 +69,14 @@ pub fn normalize(self: anytype, owner: NodeIndex, body: NodeIndex) !void {
         }
     }
     if (actual_formals.count() == 0) return;
+    // This producer only owns body declarations which share an actual formal
+    // cell or carry its exact FDI copy role. Unrelated async bodies retain
+    // their existing later binding/anchor producers without opening an Editor.
+    var parameters: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer parameters.deinit(self.allocator);
+    var candidates = actual_formals.valueIterator();
+    while (candidates.next()) |formal| try parameters.put(self.allocator, formal.id, {});
+    if (!try hasBodyCellDeclaration(self, body, source_scope, &parameters)) return;
     // Check all physical formal anchors in one pass, before opening or editing
     // a body. The selected node/SID/scope tuple remains the authority.
     const references = if (self.semantic_editor) |*editor| editor.references.items else self.references;
@@ -43,8 +88,6 @@ pub fn normalize(self: anytype, owner: NodeIndex, body: NodeIndex) !void {
     }
     var formals: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty;
     defer formals.deinit(self.allocator);
-    var parameters: std.AutoHashMapUnmanaged(u32, void) = .empty;
-    defer parameters.deinit(self.allocator);
     var entries = actual_formals.iterator();
     while (entries.next()) |entry| {
         const formal = entry.value_ptr.*;
@@ -53,7 +96,6 @@ pub fn normalize(self: anytype, owner: NodeIndex, body: NodeIndex) !void {
         // One existing, independently checked source row opens the Editor.
         // Later formals are already present in the imported reference array.
         if (self.semantic_editor == null) try self.ensureSymbolDeclarationAtNode(formal.id, formal.scope, binding);
-        try parameters.put(self.allocator, formal.id, {});
         if (formal.scope == source_scope) try formals.put(self.allocator, formal.id, binding);
     }
     var copies: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -69,7 +111,7 @@ pub fn normalize(self: anytype, owner: NodeIndex, body: NodeIndex) !void {
         const node = self.ast.getNode(work.node);
         const scope = self.outputOwnedScope(work.node) orelse work.scope;
         switch (node.tag) {
-            .function_declaration, .function_expression, .arrow_function_expression, .class_declaration, .class_expression => continue,
+            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .class_declaration, .class_expression => continue,
             .variable_declaration => {
                 if (self.ast.variableDeclarationKind(node) != .@"var") continue;
                 const start = self.ast.extra_data.items[node.data.extra + 1];
