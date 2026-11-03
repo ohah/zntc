@@ -62,8 +62,8 @@ fn canDeferStaticImportForInlineRequires(
 
         if (ib.is_helper) return false;
         if (ib.kind != .named or ib.importsDefault()) return false;
-        const local_name = if (ib.local_symbol.isValid()) m.importBindingLocalName(ib) else ib.local_name;
-        if (exported_locals.contains(local_name)) return false;
+        const identity = m.checkedImportBindingIdentity(ib) catch return false;
+        if (exported_locals.contains(identity.name)) return false;
     }
 
     return saw_binding;
