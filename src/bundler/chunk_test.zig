@@ -1614,3 +1614,93 @@ test "ESM initializer cross-chunk edges retain graph owner and equal-number Symb
         try std.testing.expectEqual(@as(usize, 0), chunk.esm_wrapper_cross_imports.count());
     }
 }
+
+test "namespace re-export target uses only an exact import source anchor when cached SID is missing" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try test_helpers.writeFile(tmp.dir, "dep.mjs", "export const value = 1;");
+    try test_helpers.writeFile(tmp.dir, "other.mjs", "export const other = 2;");
+    try test_helpers.writeFile(
+        tmp.dir,
+        "barrel.mjs",
+        "import * as ns from './dep.mjs';\nimport * as other from './other.mjs';\nexport { ns };",
+    );
+
+    const barrel_path = try test_helpers.absPath(&tmp, "barrel.mjs");
+    defer alloc.free(barrel_path);
+    const dep_path = try test_helpers.absPath(&tmp, "dep.mjs");
+    defer alloc.free(dep_path);
+    var cache = resolve_cache_mod.ResolveCache.init(alloc, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(alloc, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{barrel_path});
+    var linker = Linker.init(alloc, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+
+    const barrel_index = (graph.findModuleByPath(barrel_path) orelse return error.MissingBarrelModule).index;
+    const dep_index = (graph.findModuleByPath(dep_path) orelse return error.MissingDependencyModule).index;
+    const barrel = graph.moduleAtMut(barrel_index).?;
+    var namespace_binding_index: ?usize = null;
+    var other_binding_index: ?usize = null;
+    for (barrel.import_bindings, 0..) |binding, i| {
+        if (std.mem.eql(u8, binding.local_name, "ns")) namespace_binding_index = i;
+        if (std.mem.eql(u8, binding.local_name, "other")) other_binding_index = i;
+    }
+    const ns_index = namespace_binding_index orelse return error.MissingNamespaceImport;
+    const other_index = other_binding_index orelse return error.MissingDecoyNamespaceImport;
+    const ns_binding = &barrel.import_bindings[ns_index];
+    const other_ref = try barrel.checkedSourceImportLocalSymbol(barrel.import_bindings[other_index]);
+    const source_ref = try barrel.checkedSourceImportLocalSymbol(ns_binding.*);
+    const source_sid = source_ref.semanticIndex() orelse return error.MissingNamespaceSID;
+    const decoy_sid = other_ref.semanticIndex() orelse return error.MissingDecoySID;
+    const source_anchor = ns_binding.local_symbol_node orelse return error.MissingNamespaceSourceAnchor;
+    const other_anchor = barrel.import_bindings[other_index].local_symbol_node orelse return error.MissingDecoySourceAnchor;
+
+    try std.testing.expectEqual(dep_index, chunk_mod.nsReExportTarget(&graph, barrel_index, "ns") orelse return error.MissingNamespaceReexportTarget);
+
+    // A poisoned spelling map cannot override the exact scanner anchor when
+    // the cached derived SID is absent.
+    try @constCast(barrel.semantic.?.scope_maps)[0].put(barrel.parse_arena.?.allocator(), "ns", decoy_sid);
+    ns_binding.local_symbol = .invalid;
+    try std.testing.expectEqual(dep_index, chunk_mod.nsReExportTarget(&graph, barrel_index, "ns") orelse return error.MissingAnchoredNamespaceReexportTarget);
+    try std.testing.expect(!ns_binding.local_symbol.isValid());
+
+    // The production consumer must use the same anchor-backed target to add
+    // the shared namespace object edge across an actual manual chunk split.
+    try @constCast(barrel.semantic.?.scope_maps)[0].put(barrel.parse_arena.?.allocator(), "ns", source_sid);
+    const manual_chunks = [_]types.ManualChunkEntry{.{ .name = "dep", .patterns = &.{"dep.mjs"} }};
+    var chunks = try chunk_mod.generateChunks(alloc, &graph, &.{barrel_path}, .{ .manual_chunks = &manual_chunks });
+    defer chunks.deinit();
+    try chunk_mod.computeCrossChunkLinks(&chunks, &graph, alloc, &linker);
+    const barrel_chunk = chunks.getModuleChunk(barrel_index);
+    const dep_chunk = chunks.getModuleChunk(dep_index);
+    try std.testing.expect(!barrel_chunk.isNone() and !dep_chunk.isNone() and barrel_chunk != dep_chunk);
+    const imports = chunks.getChunk(barrel_chunk).imports_from.get(@backingInt(dep_chunk)) orelse return error.MissingNamespaceChunkImports;
+    var found_shared_namespace = false;
+    for (imports.items) |symbol| {
+        if (symbol.canonical_module == dep_index.toU32() and symbol.namespace_output != null) found_shared_namespace = true;
+    }
+    try std.testing.expect(found_shared_namespace);
+
+    // A valid same-module SID for another namespace import is not a substitute.
+    ns_binding.local_symbol = other_ref;
+    try std.testing.expectEqual(@as(?ModuleIndex, null), chunk_mod.nsReExportTarget(&graph, barrel_index, "ns"));
+
+    // Even the export's cached SID is rejected when the binding's source node
+    // is stolen from another import declaration.
+    ns_binding.local_symbol = source_ref;
+    ns_binding.local_symbol_node = other_anchor;
+    try std.testing.expectEqual(@as(?ModuleIndex, null), chunk_mod.nsReExportTarget(&graph, barrel_index, "ns"));
+    ns_binding.local_symbol_node = source_anchor;
+
+    // Restoring the name map still cannot recover an import after its source
+    // anchor is removed.
+    try @constCast(barrel.semantic.?.scope_maps)[0].put(barrel.parse_arena.?.allocator(), "ns", source_sid);
+    ns_binding.local_symbol = .invalid;
+    ns_binding.local_symbol_node = null;
+    try std.testing.expectEqual(@as(?ModuleIndex, null), chunk_mod.nsReExportTarget(&graph, barrel_index, "ns"));
+    ns_binding.local_symbol_node = source_anchor;
+}
