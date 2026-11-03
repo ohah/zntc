@@ -55,6 +55,10 @@ const result = (
       typeofTemplate: typeof `static`,
       keyTypeofNumber: member[typeof 0],
       keyTypeofString: member[typeof `x`],
+      valueDeleteZero: delete 0,
+      keyDeleteZero: member[delete 0],
+      valueVoidDeleteZero: void delete 0,
+      keyVoidDeleteZero: member[void delete 0],
     }}
     key='k'
   >
@@ -99,5 +103,9 @@ console.log(
   result.props.typeofTemplate,
   result.props.keyTypeofNumber,
   result.props.keyTypeofString,
+  result.props.valueDeleteZero,
+  result.props.keyDeleteZero,
+  result.props.valueVoidDeleteZero,
+  result.props.keyVoidDeleteZero,
   JSON.stringify(result.children),
 );
