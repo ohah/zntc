@@ -11,7 +11,15 @@
 import { describe, test, expect } from 'bun:test';
 import { spawnSync as spawnSyncRaw } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import ts from 'typescript';
@@ -2381,7 +2389,7 @@ describe('symbol identity coverage gate (#4819)', () => {
   });
 
   test('exact matrix accepts only pinned unsupported-target diagnostics', () => {
-    expect(EXACT_MATRIX_EXPECTED_TARGET_DIAGNOSTICS.size).toBe(6);
+    expect(EXACT_MATRIX_EXPECTED_TARGET_DIAGNOSTICS.size).toBe(9);
     const fixture = '4746-tla-multi-var-native-for/main.mjs';
     expect(
       exactMatrixTargetDiagnosticProblems(fixture, 'es5', 1, 'Top-level await [ZNTC0001]'),
@@ -44535,6 +44543,84 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       rmSync(dir, { recursive: true, force: true });
     }
   }, 120_000);
+
+  test('실행 가능한 전체 MJS oracle은 ESNext 심볼 minify 뒤에도 런타임이 같다', () => {
+    const mjsFixtures = fixtures.filter((file) => file.endsWith('.mjs'));
+    const runtimeFixtures = mjsFixtures.filter((file) => !file.endsWith('.flow.mjs'));
+    expect(mjsFixtures).toHaveLength(303);
+    expect(mjsFixtures.filter((file) => file.endsWith('.flow.mjs'))).toHaveLength(1);
+    expect(runtimeFixtures).toHaveLength(302);
+
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-esnext-runtime-oracle-'));
+    const referenceDir = join(dir, 'reference');
+    const transformedDir = join(dir, 'transformed');
+    try {
+      cpSync(FIXTURE_DIR, referenceDir, { recursive: true });
+      cpSync(FIXTURE_DIR, transformedDir, { recursive: true });
+      for (const file of runtimeFixtures) {
+        const fixture = relative(FIXTURE_DIR, file);
+        const referenceFile = join(referenceDir, fixture);
+        const transformedFile = join(transformedDir, fixture);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [referenceFile, '--target=esnext', '--minify-identifiers', '-o', transformedFile],
+          {
+            cwd: referenceDir,
+            env: {
+              ...process.env,
+              ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+              ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+              PATH: process.env.PATH ?? '/usr/bin:/bin',
+            },
+            encoding: 'utf8',
+            timeout: 30_000,
+          },
+        );
+        const label = `${fixture} [esnext; --minify-identifiers]`;
+        expect(proc.status, `${label}: ${proc.stderr}`).toBe(0);
+        expect(
+          transformIdentityAuditProblems(proc.stderr ?? ''),
+          `${label}: ${proc.stderr}`,
+        ).toEqual([]);
+        expect(
+          transpileGraphModeProblems(proc.stderr ?? '', true, undefined, referenceFile),
+          `${label}: graph mode report`,
+        ).toEqual([]);
+        expect(
+          exactMatrixReportProvenanceProblems(proc.stderr ?? '', referenceFile),
+          `${label}: report provenance`,
+        ).toEqual([]);
+        const exact = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity '));
+        expect(exactIdentityObservationProblems(exact ?? ''), `${label}: ${exact}`).toEqual([]);
+        expect(postMinifyAuditProblems(proc.stderr ?? ''), `${label}: ${proc.stderr}`).toEqual([]);
+      }
+
+      for (const file of runtimeFixtures) {
+        const fixture = relative(FIXTURE_DIR, file);
+        const reference = spawnSync('node', [join(referenceDir, fixture)], {
+          encoding: 'utf8',
+          timeout: 5_000,
+        });
+        const actual = spawnSync('node', [join(transformedDir, fixture)], {
+          encoding: 'utf8',
+          timeout: 5_000,
+        });
+        const label = `${fixture} runtime`;
+        expect(reference.error, `${label}: source runtime timeout/error`).toBeUndefined();
+        expect(actual.error, `${label}: transformed runtime timeout/error`).toBeUndefined();
+        expect(reference.status, `${label}: source stderr=${reference.stderr}`).toBe(0);
+        expect(actual.status, `${label}: transformed stderr=${actual.stderr}`).toBe(
+          reference.status,
+        );
+        expect(actual.stdout, `${label}: stdout`).toBe(reference.stdout);
+        expect(actual.stderr, `${label}: stderr`).toBe(reference.stderr);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 300_000);
 
   test('모든 target의 minify 출력에서 전체 oracle 심볼 연결이 정확하다', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-post-minify-matrix-'));
