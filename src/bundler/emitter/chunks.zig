@@ -6717,12 +6717,21 @@ test "shared namespace output consumer selects final alias by known output refer
     try std.testing.expectError(error.MissingCrossChunkProvider, crossChunkBindingName(&linker, missing));
 }
 
-fn checkAliasedPurity(source: []const u8, expected_pure: bool, missing_import_sid: bool) !void {
+const PurityRedirect = enum { none, imported_name, resolved_source };
+
+fn checkAliasedPurity(source: []const u8, expected_pure: bool, missing_import_sid: bool, redirect: PurityRedirect) !void {
     const helpers = @import("../test_helpers.zig");
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try helpers.writeFile(tmp.dir, "entry.mjs", "import{visible}from'./provider.mjs';const decoy=0;visible();");
+    const entry_source = if (redirect == .resolved_source)
+        "import{visible}from'./provider.mjs';import'./safe.mjs';const decoy=0;visible();"
+    else
+        "import{visible}from'./provider.mjs';const decoy=0;visible();";
+    try helpers.writeFile(tmp.dir, "entry.mjs", entry_source);
     try helpers.writeFile(tmp.dir, "provider.mjs", source);
+    if (redirect == .resolved_source) {
+        try helpers.writeFile(tmp.dir, "safe.mjs", "/* @__NO_SIDE_EFFECTS__ */ function visible(){return 7}export{visible};");
+    }
     const path = try helpers.absPath(&tmp, "entry.mjs");
     defer std.testing.allocator.free(path);
     var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
@@ -6756,6 +6765,30 @@ fn checkAliasedPurity(source: []const u8, expected_pure: bool, missing_import_si
         binding.local_symbol = .invalid;
         try @constCast(sem.scope_maps)[0].put(std.testing.allocator, "visible", decoy_sid);
     }
+    if (redirect == .imported_name) {
+        const binding = for (m.import_bindings) |*candidate| {
+            if (std.mem.eql(u8, candidate.local_name, "visible")) break candidate;
+        } else return error.MissingPurityImportBinding;
+        if (binding.import_record_index >= m.import_records.len) return error.MissingPurityImportRecord;
+        const source_module = linker.graph.getModule(m.import_records[binding.import_record_index].resolved) orelse return error.MissingPuritySource;
+        const sibling = source_module.findExportBinding("safeSibling") orelse return error.MissingPuritySiblingExport;
+        binding.imported_name = "safeSibling";
+        binding.symbol = sibling.symbol;
+    }
+    if (redirect == .resolved_source) {
+        const binding = for (m.import_bindings) |*candidate| {
+            if (std.mem.eql(u8, candidate.local_name, "visible")) break candidate;
+        } else return error.MissingPurityImportBinding;
+        const safe_path = try helpers.absPath(&tmp, "safe.mjs");
+        defer std.testing.allocator.free(safe_path);
+        var modules = graph.modulesIterator();
+        const safe = while (modules.next()) |candidate| {
+            if (std.mem.eql(u8, candidate.path, safe_path)) break candidate;
+        } else return error.MissingPuritySafeSource;
+        if (binding.import_record_index >= m.import_records.len) return error.MissingPurityImportRecord;
+        if (!binding.symbol.isValid()) return error.MissingPuritySourceSymbol;
+        m.import_records[binding.import_record_index].resolved = safe.index;
+    }
     var call_count: usize = 0;
     for (ast.nodes.items) |node| if (node.tag == .call_expression) {
         try std.testing.expect(ast.extra_data.items[node.data.extra + 3] & @import("../../parser/ast.zig").CallFlags.is_pure == 0);
@@ -6776,15 +6809,23 @@ fn checkAliasedPurity(source: []const u8, expected_pure: bool, missing_import_si
 }
 
 test "cross module purity cannot borrow a sibling binding through an export key" {
-    try checkAliasedPurity("/* @__NO_SIDE_EFFECTS__ */ function visible(){}function actual(){console.log('side')}export{actual as visible};", false, false);
+    try checkAliasedPurity("/* @__NO_SIDE_EFFECTS__ */ function visible(){}function actual(){console.log('side')}export{actual as visible};", false, false, .none);
 }
 
 test "cross module purity follows the actual aliased export binding" {
-    try checkAliasedPurity("function visible(){console.log('side')}/* @__NO_SIDE_EFFECTS__ */ function actual(){return 7}export{actual as visible};", true, false);
+    try checkAliasedPurity("function visible(){console.log('side')}/* @__NO_SIDE_EFFECTS__ */ function actual(){return 7}export{actual as visible};", true, false, .none);
 }
 
 test "cross module purity uses the exact source anchor when the cached import SID is missing" {
-    try checkAliasedPurity("function visible(){console.log('side')}/* @__NO_SIDE_EFFECTS__ */ function actual(){return 7}export{actual as visible};", true, true);
+    try checkAliasedPurity("function visible(){console.log('side')}/* @__NO_SIDE_EFFECTS__ */ function actual(){return 7}export{actual as visible};", true, true, .none);
+}
+
+test "cross module purity rejects a source-property redirect even when its cached foreign SID is poisoned" {
+    try checkAliasedPurity("function visible(){console.log('side')}/* @__NO_SIDE_EFFECTS__ */ function safeSibling(){return 7}export{visible,safeSibling};", false, false, .imported_name);
+}
+
+test "cross module purity rejects a resolved-source redirect to a pure sibling module" {
+    try checkAliasedPurity("function visible(){console.log('side')}export{visible};", false, false, .resolved_source);
 }
 
 test "PM ordinary import target rejects a replaced source export carrier" {
