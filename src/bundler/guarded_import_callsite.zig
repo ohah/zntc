@@ -115,7 +115,9 @@ fn targetsForPolicy(graph: anytype, linker: anytype, module: *const Module, bind
         if (value_sid >= value_semantic.symbols.items.len or value_semantic.symbols.items[value_sid].synthetic_kind != null) return null;
         // Exporting a namespace binding has eager initialization semantics.
         for (value.import_bindings) |other| {
-            if (other.kind == .namespace and other.local_symbol.semanticIndex() == value_sid) return null;
+            if (other.kind != .namespace) continue;
+            const identity = value.checkedImportBindingIdentity(other) catch return error.InvalidGuardedImportBinding;
+            if (identity.symbol.semanticIndex() == value_sid) return null;
         }
     }
     // A live source export must initialize eagerly. Its identifier-only
@@ -1208,6 +1210,61 @@ test "mixed record planning rejects foreign dangling and unsupported alias prove
         try std.testing.expectEqual(module_count, graph.moduleCount());
         for (module.import_bindings) |original| try std.testing.expect(!original.guarded_eager_init_lowered and !original.guarded_lazy_calls_lowered and original.callsite_target == null);
     }
+}
+
+test "guarded lazy import recognizes namespace exports from exact source identity" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const helpers = @import("test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.mjs", "import{ns}from'./provider.mjs';export default()=>ns;");
+    try helpers.writeFile(tmp.dir, "provider.mjs", "import * as ns from './dep.mjs';import{answer}from'./dep.mjs';export{ns};export const decoy=answer;");
+    try helpers.writeFile(tmp.dir, "dep.mjs", "export const answer=42;");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .cjs, .code_splitting = true, .preserve_modules = true, .entry_error_guard = true };
+    var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+    defer cache.deinit();
+    var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.code_splitting = true;
+    graph.preserve_modules = true;
+    try graph.build(std.testing.io, &.{entry});
+    try std.testing.expectEqual(@as(usize, 0), graph.diagnostics.items.len);
+    var linker = @import("linker.zig").Linker.init(std.testing.allocator, &graph, .cjs);
+    defer linker.deinit();
+    linker.setEmitFormat(.cjs, .{ .inline_requires = true, .entry_error_guard = true });
+    try linker.link();
+    linker.populateImportSymbols();
+
+    const entry_module = graph.getModule(graph.path_to_module.get(entry).?).?;
+    const import_binding = entry_module.import_bindings[0];
+    try std.testing.expect(import_binding.kind == .named);
+    try std.testing.expect(import_binding.symbol != .alias);
+    const local_sid = import_binding.local_symbol.semanticIndex() orelse return error.MissingEntryImportSymbol;
+
+    const provider_index = entry_module.import_records[import_binding.import_record_index].resolved;
+    const provider = graph.getModule(provider_index).?;
+    var namespace_index: ?usize = null;
+    var decoy_index: ?usize = null;
+    for (provider.import_bindings, 0..) |binding, index| {
+        if (binding.kind == .namespace) namespace_index = index else decoy_index = index;
+    }
+    const namespace_binding = &provider.import_bindings[namespace_index orelse return error.MissingNamespaceImportBinding];
+    const decoy_binding = provider.import_bindings[decoy_index orelse return error.MissingDecoyImportBinding];
+    const exact = try provider.checkedImportBindingIdentity(namespace_binding.*);
+    try std.testing.expect(namespace_binding.local_symbol.eql(exact.symbol));
+    try std.testing.expectEqual(import_binding.symbol.semanticIndex(), exact.symbol.semanticIndex());
+    try std.testing.expect(decoy_binding.local_symbol.semanticIndex() != exact.symbol.semanticIndex());
+    try std.testing.expect((try targetsFor(&graph, &linker, entry_module, import_binding, local_sid)) == null);
+
+    namespace_binding.local_symbol = .invalid;
+    try std.testing.expect((try targetsFor(&graph, &linker, entry_module, import_binding, local_sid)) == null);
+    try std.testing.expect(!namespace_binding.local_symbol.isValid());
+
+    namespace_binding.local_symbol = decoy_binding.local_symbol;
+    try std.testing.expectError(error.InvalidGuardedImportBinding, targetsFor(&graph, &linker, entry_module, import_binding, local_sid));
+    try std.testing.expect(namespace_binding.local_symbol.eql(decoy_binding.local_symbol));
 }
 
 test "guarded namespace enum calls project actual IIFE parameter and engine coordinates" {
