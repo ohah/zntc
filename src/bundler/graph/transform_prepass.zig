@@ -16446,9 +16446,11 @@ fn exactPrepassReport(
         &transformer.reference_origin_map,
         &sem.namespace_member_owners,
         &sem.namespace_declaration_owners,
-        // The source/output index boundary is meaningful only when this graph
-        // retained source ScopeIds. A reanalyzed graph assigns scopes afresh.
-        if (retained_graph) pre_transform_scope_count else null,
+        // A retained graph has a source ScopeId prefix; a reanalyzed graph has
+        // a fresh index space, so every live scope belongs to its current AST.
+        // Passing null would skip completeness checks for live scopes with no
+        // reachable owner node.
+        if (retained_graph) pre_transform_scope_count else 0,
         &transformer.erased_const_enum_external_reference_origins,
     );
 }

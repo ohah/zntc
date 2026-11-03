@@ -3321,7 +3321,8 @@ pub fn checkExactWithNamespaceMetadata(
 }
 
 /// Exact post-transform audit used by the strict coverage gate. Callers must
-/// enable analyzer declaration-anchor collection before transformation.
+/// enable analyzer declaration-anchor collection before transformation and
+/// supply the source scope boundary (`0` for a freshly reanalyzed graph).
 pub fn checkExactWithNamespaceMetadataAndDeclarationAnchors(
     allocator: std.mem.Allocator,
     ast: *const Ast,
@@ -3340,7 +3341,10 @@ pub fn checkExactWithNamespaceMetadataAndDeclarationAnchors(
     origins: *const std.AutoHashMapUnmanaged(u32, u32),
     namespace_member_owners: *const std.AutoHashMapUnmanaged(u32, u32),
     namespace_declaration_owners: *const std.AutoHashMapUnmanaged(u32, u32),
-    pre_transform_scope_count: ?usize,
+    // Use the captured source scope count for a retained graph, or `0` when
+    // the graph was freshly reanalyzed. A missing boundary would skip the
+    // completeness audit for semantically live ScopeIds.
+    pre_transform_scope_count: usize,
     erased_const_enum_external_origins: ?*const std.AutoHashMapUnmanaged(u32, u32),
 ) std.mem.Allocator.Error!ExactReport {
     return checkExactImpl(
