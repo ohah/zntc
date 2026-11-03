@@ -207,6 +207,34 @@ test "source scope audit rejects a live ScopeId with no reachable AST owner" {
     );
     try std.testing.expect(!complete.isClean());
 
+    const reanalyzed = try coverage.checkExactWithNamespaceMetadataAndDeclarationAnchors(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        &.{},
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &owners,
+        &.{},
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+        &.{},
+        &.{},
+        0,
+        null,
+    );
+    try std.testing.expectEqual(@as(usize, 1), reanalyzed.scope_owner_mismatch);
+    try std.testing.expectEqualStrings(
+        "generated-scope-owner-unreachable",
+        reanalyzed.first_scope_owner_mismatch.?.issue,
+    );
+    try std.testing.expect(!reanalyzed.isClean());
+
     // The source audit must include ScopeId 0 too: a missing program owner is
     // not covered by a boundary that starts at the first child scope.
     _ = owners.remove(@backingInt(root));
