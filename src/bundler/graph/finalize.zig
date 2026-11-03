@@ -1350,7 +1350,7 @@ const PreparedCjsReferences = struct {
     fn init(a: std.mem.Allocator, ast: *const Ast, sem: *const ModuleSemanticData) !?PreparedCjsReferences {
         if (ast.nodes.items.len == 0) return null;
         const root = ast.transformed_root orelse @as(@import("../../parser/ast.zig").NodeIndex, @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
-        const contexts = (try @import("../../semantic/output_runtime_witness.zig").captureReferenceContexts(a, ast, root, sem.scopes, &sem.scope_owner_map)) orelse return null;
+        const contexts = (try @import("../../semantic/output_runtime_witness.zig").captureReferenceContexts(a, ast, root, sem.symbol_ids, sem.symbols.items, sem.scopes, &sem.scope_owner_map)) orelse return null;
         const changed = try a.alloc(bool, sem.symbol_ids.len);
         @memset(changed, false);
         return .{

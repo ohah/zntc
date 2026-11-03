@@ -1481,7 +1481,7 @@ test "Buffer CJS actual initial external origins become same leaf callback refer
         .scope_history = analyzer.scope_history,
     };
     const before = module.semantic.?;
-    const contexts = (try @import("../../semantic/output_runtime_witness.zig").captureReferenceContexts(a, &module.ast.?, @fromBackingInt(@as(u32, @intCast(module.ast.?.nodes.items.len - 1))), before.scopes, &before.scope_owner_map)) orelse return error.MissingReferenceContexts;
+    const contexts = (try @import("../../semantic/output_runtime_witness.zig").captureReferenceContexts(a, &module.ast.?, @fromBackingInt(@as(u32, @intCast(module.ast.?.nodes.items.len - 1))), before.symbol_ids, before.symbols.items, before.scopes, &before.scope_owner_map)) orelse return error.MissingReferenceContexts;
     var count: usize = 0;
     var origins = before.node_scope_provenance.iterator();
     while (origins.next()) |item| {

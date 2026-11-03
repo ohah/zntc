@@ -495,7 +495,7 @@ fn checkObjectAccessorDescriptorProvider() !void {
     const root = tree.transformed_root orelse return error.MissingRoot;
     const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, tree, root);
     defer a.free(reachable);
-    var traces = try @import("symbol_coverage.zig").collectScopeTraces(a, tree, root, sem.scopes, &sem.scope_owner_map);
+    var traces = try @import("symbol_coverage.zig").collectScopeTraces(a, tree, root, sem.symbol_ids, sem.symbols.items, sem.scopes, &sem.scope_owner_map);
     defer traces.deinit(a);
     var calls: usize = 0;
     for (reachable) |raw| {
