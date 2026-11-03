@@ -3166,6 +3166,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const home_mark = self.object_super_homes.items.len;
                 defer object_super.release(self, home_mark);
                 const home = if (node.tag == .object_expression) try object_super.prepareHome(self, expr_idx, false) else null;
+                var home_prefix_roots: std.ArrayList(NodeIndex) = .empty;
+                defer home_prefix_roots.deinit(self.allocator);
 
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -3207,6 +3209,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             const original_element = self.ast.getNode(elem_idx);
                             if (original_element.tag == .object_property and !original_element.data.binary.right.isNone())
                                 value = try @import("parameter_environment.zig").nameLoweredProperty(self, value, element.data.binary.left, original_element.data.binary.right, element.span);
+                            if (home != null) try home_prefix_roots.append(self.allocator, value);
                             value = try freezeValue(self, value, element.span, ops);
                             new_elem = try self.ast.addNode(.{ .tag = .object_property, .span = element.span, .data = .{ .binary = .{ .left = key, .right = value, .flags = element.data.binary.flags } } });
                         } else if (element.tag == .spread_element) {
@@ -3237,7 +3240,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 } else if (node.tag == .object_expression and self.options.unsupported.object_spread) {
                     lowered = try es_helpers.lowerObjectSpreadProps(self, self.scratch.items[scratch_top..], node.span);
                 }
-                if (home) |h| return object_super.wrapWithHome(self, h, lowered, node.span);
+                if (home) |h| return object_super.wrapWithHomeAndPrefixRoots(self, h, lowered, node.span, home_prefix_roots.items);
                 return lowered;
             }
 
