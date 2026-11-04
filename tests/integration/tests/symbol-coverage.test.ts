@@ -32109,6 +32109,134 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   }, 120_000);
 
+  test('JSX computed global undefined keys retain the graph on ES5', () => {
+    const modes = [
+      { name: 'classic', args: ['--jsx=classic', '--jsx-factory=h'] },
+      { name: 'automatic', args: ['--jsx=automatic', '--jsx-import-source=./runtime'] },
+      { name: 'automatic-dev', args: ['--jsx=automatic-dev', '--jsx-import-source=./runtime'] },
+    ] as const;
+
+    for (const mode of modes) {
+      const dir = mkdtempSync(join(tmpdir(), `zntc-jsx-global-undefined-key-${mode.name}-`));
+      const output = join(dir, 'out.cjs');
+      mkdirSync(join(dir, 'runtime'), { recursive: true });
+      writeFileSync(
+        join(dir, 'runtime', 'jsx-runtime.js'),
+        [
+          "export const Fragment = 'fragment';",
+          'export function jsx(type, props) { return { type, props }; }',
+          'export function jsxs(type, props) { return { type, props }; }',
+        ].join('\n'),
+      );
+      writeFileSync(
+        join(dir, 'runtime', 'jsx-dev-runtime.js'),
+        [
+          "export const Fragment = 'fragment';",
+          'export function jsxDEV(type, props) { return { type, props }; }',
+        ].join('\n'),
+      );
+      writeFileSync(
+        join(dir, 'runtime', 'index.js'),
+        'export function createElement(type, props) { return { type, props }; }',
+      );
+      writeFileSync(
+        join(dir, 'entry.tsx'),
+        [
+          'function h(type, props) { return { type, props }; }',
+          "const Comp = 'Comp';",
+          "const result = <Comp {...{ [undefined]: 'global-key-value' }} />;",
+          "console.log(JSON.stringify([result.props.undefined, Object.prototype.hasOwnProperty.call(result.props, 'undefined'), Object.getPrototypeOf(result.props) === Object.prototype, Object.keys(result.props)]));",
+        ].join('\n'),
+      );
+      writeFileSync(
+        join(dir, 'baseline.js'),
+        [
+          "const props = { [undefined]: 'global-key-value' };",
+          "console.log(JSON.stringify([props.undefined, Object.prototype.hasOwnProperty.call(props, 'undefined'), Object.getPrototypeOf(props) === Object.prototype, Object.keys(props)]));",
+        ].join('\n'),
+      );
+
+      try {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'entry.tsx',
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            ...mode.args,
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${mode.name}: ${proc.stderr}`).toBe(0);
+
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.tsx'),
+          );
+        expect(graphMode, `${mode.name}: ${proc.stderr}`).toContain('semantic_graph=retained');
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.tsx'),
+          );
+        expect(report, `${mode.name}: ${proc.stderr}`).toBeDefined();
+        expect(exactSchemaProblems(report ?? ''), report).toEqual([]);
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${mode.name}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report).toMatch(/clean=1(?:\s|$)/);
+
+        const baseline = spawnSync('node', [join(dir, 'baseline.js')], { encoding: 'utf8' });
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(baseline.status, `${mode.name} baseline: ${baseline.stderr}`).toBe(0);
+        expect(actual.status, `${mode.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, mode.name).toBe(baseline.stdout);
+        expect(actual.stdout, `${mode.name} expected output`).toBe(
+          '["global-key-value",true,true,["undefined"]]\n',
+        );
+
+        if (mode.name === 'classic') {
+          const emitted = readFileSync(output, 'utf8');
+          const expression = emitted.match(/__toPropertyKey\(\s*(undefined)\s*\)/)?.[1];
+          expect(expression, emitted).toBeDefined();
+          for (let mutation = 0; mutation < 10; mutation++) {
+            const mutatedOutput = join(dir, `mutant-${mutation}.cjs`);
+            const mutated = emitted.replace(
+              expression ?? '',
+              `__zntc_missing_global_undefined_${mutation}`,
+            );
+            writeFileSync(mutatedOutput, mutated);
+            const mutantRun = spawnSync('node', [mutatedOutput], { encoding: 'utf8' });
+            expect(mutantRun.status, `compileable mutation ${mutation}`).not.toBe(0);
+            expect(mutantRun.stderr, `compileable mutation ${mutation}`).toContain(
+              'ReferenceError',
+            );
+            expect(mutantRun.stderr, `compileable mutation ${mutation}`).not.toContain(
+              'SyntaxError',
+            );
+          }
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  }, 120_000);
+
   test('classic JSX with a local factory preserves its semantic graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-classic-jsx-retained-'));
     const output = join(dir, 'out.cjs');
