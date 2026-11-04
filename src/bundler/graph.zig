@@ -1358,6 +1358,72 @@ fn expectAutomaticJsxGraphModule(
     try std.testing.expect(found_required_runtime_helper);
 }
 
+fn expectClassicJsxGraphModule(graph: *const ModuleGraph, entry: []const u8) !void {
+    const module = graph.findModuleByPath(entry) orelse return error.MissingClassicJsxGraphModule;
+    try std.testing.expectEqual(Module.State.ready, module.state);
+    const ast = &(module.ast orelse return error.MissingClassicJsxGraphAst);
+    const semantic = &(module.semantic orelse return error.MissingClassicJsxGraphSemantic);
+    const transform_cache = module.transform_cache orelse return error.MissingClassicJsxGraphTransform;
+    const root = ast.transformed_root orelse return error.MissingClassicJsxGraphRoot;
+    try std.testing.expectEqual(ast.nodes.items.len, semantic.symbol_ids.len);
+    try std.testing.expectEqual(@as(usize, 0), transform_cache.runtime_helper_import_output_bindings.len);
+
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
+    defer std.testing.allocator.free(reachable);
+
+    var react_symbol: ?u32 = null;
+    var props_symbol: ?u32 = null;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        const name = switch (node.tag) {
+            .binding_identifier, .import_default_specifier, .identifier_reference => ast.getText(node.data.string_ref),
+            else => continue,
+        };
+        if (node.tag == .import_default_specifier and std.mem.eql(u8, name, "React")) {
+            react_symbol = semantic.symbol_ids[raw];
+        } else if (node.tag == .binding_identifier and std.mem.eql(u8, name, "props")) {
+            props_symbol = semantic.symbol_ids[raw];
+        }
+    }
+    const expected_react_symbol = react_symbol orelse return error.MissingClassicJsxFactoryImportSymbol;
+    const expected_props_symbol = props_symbol orelse return error.MissingClassicJsxPropsBinding;
+    try std.testing.expect(expected_react_symbol < semantic.symbols.items.len);
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, semantic.symbols.items[expected_react_symbol].kind);
+
+    var jsx_nodes: usize = 0;
+    var call_expressions: usize = 0;
+    var react_references: usize = 0;
+    var props_references: usize = 0;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        switch (node.tag) {
+            .jsx_element, .jsx_opening_element, .jsx_closing_element, .jsx_fragment, .jsx_opening_fragment, .jsx_closing_fragment => jsx_nodes += 1,
+            .call_expression => call_expressions += 1,
+            .identifier_reference => {
+                const name = ast.getText(node.data.string_ref);
+                if (std.mem.eql(u8, name, "React")) {
+                    try std.testing.expectEqual(expected_react_symbol, semantic.symbol_ids[raw] orelse return error.MissingClassicJsxFactoryReference);
+                    react_references += 1;
+                } else if (std.mem.eql(u8, name, "props")) {
+                    try std.testing.expectEqual(expected_props_symbol, semantic.symbol_ids[raw] orelse return error.MissingClassicJsxPropsReference);
+                    props_references += 1;
+                }
+            },
+            else => {},
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), jsx_nodes);
+    try std.testing.expect(call_expressions > 0);
+    try std.testing.expect(react_references > 0);
+    try std.testing.expect(props_references > 0);
+
+    var found_external_factory_import = false;
+    for (module.import_records) |record| {
+        if (record.kind == .static_import and std.mem.eql(u8, record.specifier, "react")) found_external_factory_import = true;
+    }
+    try std.testing.expect(found_external_factory_import);
+}
+
 fn expectAutomaticJsxModuleGraph(
     entries: []const []const u8,
     jsx_entries: []const []const u8,
@@ -1404,6 +1470,47 @@ fn expectAutomaticJsxModuleGraph(
     for (jsx_entries) |entry| try expectAutomaticJsxGraphModule(&graph, entry, required_runtime_helper_hint);
 
     const no_jsx = graph.findModuleByPath(no_jsx_entry) orelse return error.MissingNoJsxGraphModule;
+    try std.testing.expectEqual(Module.State.ready, no_jsx.state);
+    try std.testing.expect(no_jsx.semantic != null);
+    try std.testing.expect(no_jsx.ast != null);
+    try std.testing.expect(no_jsx.transform_cache == null);
+    for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+}
+
+fn expectClassicJsxModuleGraph(
+    entries: []const []const u8,
+    jsx_entries: []const []const u8,
+    no_jsx_entry: []const u8,
+    disk: *@import("disk_module_store.zig").DiskModuleStore,
+    expected_load_hits: usize,
+) !void {
+    const profile = @import("../profile.zig");
+    profile.resetForTest();
+    defer profile.resetForTest();
+    profile.setIoForTest(std.testing.io);
+    profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+
+    const external_patterns = [_][]const u8{"react"};
+    var cache = ResolveCache.init(std.testing.allocator, .{ .external_patterns = &external_patterns });
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.disk_cache = disk;
+    graph.disk_load_enabled = true;
+    graph.disk_options_hash = 0x6193_4819;
+    graph.disk_compiler_build_id = 0x4819;
+    graph.max_threads = 1;
+    graph.jsx_runtime = .classic;
+    graph.transform_options_base.jsx_runtime = .classic;
+
+    try graph.build(std.testing.io, entries);
+
+    try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+    try std.testing.expect(graph.moduleCount() >= entries.len);
+    try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+    for (jsx_entries) |entry| try expectClassicJsxGraphModule(&graph, entry);
+
+    const no_jsx = graph.findModuleByPath(no_jsx_entry) orelse return error.MissingNoClassicJsxModule;
     try std.testing.expectEqual(Module.State.ready, no_jsx.state);
     try std.testing.expect(no_jsx.semantic != null);
     try std.testing.expect(no_jsx.ast != null);
@@ -1808,6 +1915,47 @@ test "graph JSX caller: automatic-dev runtime keeps jsxDEV identity on cold/cach
 
     try expectAutomaticJsxModuleGraph(&entries, &jsx_entries, entries[sources.len], .automatic_dev, "_jsxDEV", &disk, 0);
     try expectAutomaticJsxModuleGraph(&entries, &jsx_entries, entries[sources.len], .automatic_dev, "_jsxDEV", &disk, entries.len);
+}
+
+test "graph JSX caller: classic runtime binds factory references to source import on cold/cache" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const sources = [_][]const u8{
+        "import React from 'react'; export function App(props) { return <div>{props.value}</div>; }",
+        "import React from 'react'; export function App(props) { return <div><span>{props.value}</span><b /></div>; }",
+        "import React from 'react'; export function App(props) { return <>{props.value}<span /></>; }",
+        "import React from 'react'; export function App(props) { return <Card title={props.title} />; }",
+        "import React from 'react'; export function App(props) { return <UI.Card value={props.value} />; }",
+        "import React from 'react'; export function App(props) { return <div {...props} />; }",
+        "import React from 'react'; export function App(props) { return <div>{...props.children}</div>; }",
+        "import React from 'react'; export function App(props) { return <Card {...props} key={props.id} />; }",
+        "import React from 'react'; export function App(props) { function Label() { return <span>{props.label}</span>; } return <div><Label /></div>; }",
+        "import React from 'react'; export function App(props) { return <section title={props.title}><span>{props.value}</span><span>{props.other}</span></section>; }",
+    };
+    var jsx_entries: [sources.len][]const u8 = undefined;
+    var entries: [sources.len + 1][]const u8 = undefined;
+    for (sources, 0..) |source, index| {
+        const basename = try std.fmt.allocPrint(std.testing.allocator, "classic-entry-{d}.tsx", .{index});
+        defer std.testing.allocator.free(basename);
+        try writeFile(tmp.dir, basename, source);
+        entries[index] = try absPath(&tmp, basename);
+    }
+    try writeFile(tmp.dir, "classic-plain.tsx", "import React from 'react'; export function App(props) { return props.value; }");
+    entries[sources.len] = try absPath(&tmp, "classic-plain.tsx");
+    defer {
+        for (entries) |entry| std.testing.allocator.free(entry);
+    }
+    @memcpy(jsx_entries[0..], entries[0..sources.len]);
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    try expectClassicJsxModuleGraph(&entries, &jsx_entries, entries[sources.len], &disk, 0);
+    try expectClassicJsxModuleGraph(&entries, &jsx_entries, entries[sources.len], &disk, entries.len);
 }
 
 test "graph visitor caller: cold parse runs every hook and retains its semantic graph" {
