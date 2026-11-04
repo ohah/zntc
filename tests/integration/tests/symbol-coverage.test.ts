@@ -314,6 +314,7 @@ const LENIENT_UNKNOWN_PARSE_DIAGNOSTICS = new Map<string, readonly string[]>([
   ['4819-import-equals-transform-graph.ts', ['ZNTC0300']],
   ['4819-import-export-identities/main.mjs', ['ZNTC0300', 'ZNTC0305']],
   ['4819-import-export-identities/source.mjs', ['ZNTC0305']],
+  ['4819-jsx-signed-numeric-spread.tsx', ['ZNTC0600']],
   ['4819-sourced-reexports/barrel.mjs', ['ZNTC0305']],
   ['4819-sourced-reexports/main.mjs', ['ZNTC0300']],
   ['4819-sourced-reexports/upstream.mjs', ['ZNTC0305']],
@@ -2231,12 +2232,12 @@ describe('symbol identity coverage gate (#4819)', () => {
     const fixtureInventory = createHash('sha256')
       .update(fixtureNames.join('\n') + '\n')
       .digest('hex');
-    expect(fixtureNames).toHaveLength(319);
+    expect(fixtureNames).toHaveLength(321);
     expect(fixtureInventory).toBe(
-      '78ad140ff192bccf190157ed5274cb8c8c7bcb8133193251b9b787a2d867301a',
+      '5eb0c79014556a16c3a4f779488b1692745645af61bcea045fface5b82f2ea03',
     );
     expect(fixtureContentFingerprint(fixtures, FIXTURE_DIR)).toBe(
-      '1ab1cd8054c31e5e3b5c6688aeae50742e5a641d59a2195f94bc039eda03698b',
+      'e952da1b7c6425520f2d11b03e0949ab8e9d2781e06f5b5dc11666ef8ee4572e',
     );
     expect(TARGETS).toEqual([
       { name: 'es5', arg: '--target=es5' },
@@ -4023,9 +4024,9 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(successful + observedParseFailures.size).toBe(fixtures.length);
       expect([...observedParseFailures].sort()).toEqual([...expectedParseFailures].sort());
       const expectedSuccessful = fixtures.length - expectedParseFailures.size;
-      expect(expectedSuccessful).toBe(299);
+      expect(expectedSuccessful).toBe(300);
       expect(successful).toBe(expectedSuccessful);
-      expect(retained).toBe(299);
+      expect(retained).toBe(300);
       expect(retained).toBe(expectedSuccessful - LENIENT_UNKNOWN_REANALYZED_FIXTURES.length);
       expect(reanalyzedFixtures.sort()).toEqual([...LENIENT_UNKNOWN_REANALYZED_FIXTURES].sort());
 
