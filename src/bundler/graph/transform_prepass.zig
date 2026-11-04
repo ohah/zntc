@@ -2451,7 +2451,7 @@ fn isRetainableJsxSpreadPropsOperand(
         if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return false;
         switch (ast.nodes.items[@backingInt(key_idx)].tag) {
             .identifier_reference, .string_literal, .numeric_literal, .bigint_literal => {},
-            .computed_property_key => if (!isRetainableJsxStaticComputedPropertyKey(ast, key_idx)) return false,
+            .computed_property_key => if (!isRetainableJsxComputedPropertyKey(ast, semantic, key_idx)) return false,
             else => return false,
         }
 
@@ -3148,14 +3148,19 @@ fn isExactJsxNoSubstitutionTemplateLiteral(ast: *const ast_mod.Ast, node_idx: as
 }
 
 /// A computed inline JSX spread key stays on the retained graph when its
-/// expression is a primitive literal, a no-substitution template, or a pure
-/// unary literal chain without signed composition (or one signed Number
-/// literal), optionally wrapped in plain parentheses. Keep computed `__proto__` strings out because
-/// downstream lowering currently changes their data-property behavior; escaped
-/// strings stay out so alternate spellings cannot bypass that guard. Calls,
-/// reads, coercive operators, and malformed wrapper/list metadata remain on
-/// reanalysis.
-fn isRetainableJsxStaticComputedPropertyKey(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
+/// expression is an exact bound identifier, a primitive literal, a
+/// no-substitution template, or a pure unary literal chain without signed
+/// composition (or one signed Number literal), optionally wrapped in plain
+/// parentheses. Keep computed `__proto__` strings out because downstream
+/// lowering currently changes their data-property behavior; escaped strings
+/// stay out so alternate spellings cannot bypass that guard. Calls, member
+/// reads, coercive operators, unresolved identifiers, and malformed
+/// wrapper/list metadata remain on reanalysis.
+fn isRetainableJsxComputedPropertyKey(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+) bool {
     if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
     const key = ast.nodes.items[@backingInt(node_idx)];
     if (key.tag != .computed_property_key or key.data.unary.flags != 0) return false;
@@ -3171,6 +3176,7 @@ fn isRetainableJsxStaticComputedPropertyKey(ast: *const ast_mod.Ast, node_idx: a
             continue;
         }
         return switch (operand.tag) {
+            .identifier_reference => isBoundSourceIdentifierReference(ast, semantic, operand_idx),
             .string_literal => isSafeJsxComputedStringLiteralKey(ast, operand_idx),
             .numeric_literal, .bigint_literal, .boolean_literal, .null_literal => true,
             .template_literal => isExactJsxNoSubstitutionTemplateLiteral(ast, operand_idx),
@@ -17935,10 +17941,10 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     }
     try std.testing.expectEqual(@as(usize, 5), deep_member_key_read_count);
 
-    const computed_prop_key_source = "const label = \"L\"; const count = 7; const items = [1]; const result = <Comp {...{ [\"named\"]: label, [1]: count, [true]: label, [null]: count, [`static`]: label, [!0]: label, [typeof delete 0]: count, [void (typeof delete !0)]: label, [+1]: count, [-(2)]: count, [~~0]: label, [!!!!!!!!!!!!0]: label }} key=\"k\">{...items}</Comp>;";
+    const computed_prop_key_source = "const label = \"L\"; const count = 7; const items = [1]; const computedKey = \"dynamic\"; const result = <Comp {...{ [\"named\"]: label, [1]: count, [true]: label, [null]: count, [`static`]: label, [!0]: label, [typeof delete 0]: count, [void (typeof delete !0)]: label, [+1]: count, [-(2)]: count, [~~0]: label, [!!!!!!!!!!!!0]: label, [computedKey]: label }} key=\"k\">{...items}</Comp>;";
     var computed_prop_key_fixture = try jsxSpreadChildTestFixture(allocator, computed_prop_key_source);
     const computed_prop_key_owner = computed_prop_key_fixture.semantic.captureOwnerToken();
-    var computed_prop_key_symbols: [3]?u32 = .{ null, null, null };
+    var computed_prop_key_symbols: [4]?u32 = .{ null, null, null, null };
     var computed_prop_key_symbol_count: usize = 0;
     for (computed_prop_key_fixture.ast.nodes.items, 0..) |node, raw| {
         if (node.tag != .binding_identifier) continue;
@@ -17952,15 +17958,32 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
         } else if (std.mem.eql(u8, name, "items")) {
             computed_prop_key_symbols[2] = computed_prop_key_fixture.semantic.symbol_ids[raw];
             computed_prop_key_symbol_count += 1;
+        } else if (std.mem.eql(u8, name, "computedKey")) {
+            computed_prop_key_symbols[3] = computed_prop_key_fixture.semantic.symbol_ids[raw];
+            computed_prop_key_symbol_count += 1;
         }
     }
-    try std.testing.expectEqual(@as(usize, 3), computed_prop_key_symbol_count);
+    try std.testing.expectEqual(@as(usize, 4), computed_prop_key_symbol_count);
     const expected_computed_prop_key_symbols = [_]u32{
         computed_prop_key_symbols[0] orelse return error.MissingComputedPropLabelSymbol,
         computed_prop_key_symbols[1] orelse return error.MissingComputedPropCountSymbol,
         computed_prop_key_symbols[2] orelse return error.MissingComputedPropItemsSymbol,
+        computed_prop_key_symbols[3] orelse return error.MissingComputedPropKeySymbol,
     };
-    var computed_prop_key_module = Module.init(@fromBackingInt(0), "jsx-static-computed-prop-keys.tsx");
+    var expected_computed_prop_key_reference: ?SemanticReference = null;
+    for (computed_prop_key_fixture.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .identifier_reference or
+            !std.mem.eql(u8, computed_prop_key_fixture.ast.getText(node.data.string_ref), "computedKey")) continue;
+        const node_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+        for (computed_prop_key_fixture.semantic.references) |reference| {
+            if (reference.node_index != node_idx) continue;
+            expected_computed_prop_key_reference = reference;
+            break;
+        }
+    }
+    const expected_computed_key_reference = expected_computed_prop_key_reference orelse
+        return error.MissingComputedPropKeyReference;
+    var computed_prop_key_module = Module.init(@fromBackingInt(0), "jsx-computed-prop-keys.tsx");
     computed_prop_key_module.source = computed_prop_key_source;
     computed_prop_key_module.module_type = .ts;
     computed_prop_key_module.state = .ready;
@@ -17977,23 +18000,37 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     const computed_prop_key_root = computed_prop_key_module.ast.?.transformed_root.?;
     const computed_prop_key_reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, &computed_prop_key_module.ast.?, computed_prop_key_root);
     defer allocator.free(computed_prop_key_reachable);
-    var computed_prop_key_reads: [3]usize = .{ 0, 0, 0 };
+    var computed_prop_key_reads: [4]usize = .{ 0, 0, 0, 0 };
     var computed_prop_key_nodes: usize = 0;
     for (computed_prop_key_reachable) |raw| {
         const node = computed_prop_key_module.ast.?.nodes.items[raw];
         if (node.tag == .computed_property_key) computed_prop_key_nodes += 1;
         if (node.tag != .identifier_reference) continue;
         const name = computed_prop_key_module.ast.?.getText(node.data.string_ref);
-        const symbol_slot: ?usize = if (std.mem.eql(u8, name, "label")) 0 else if (std.mem.eql(u8, name, "count")) 1 else if (std.mem.eql(u8, name, "items")) 2 else null;
+        const symbol_slot: ?usize = if (std.mem.eql(u8, name, "label")) 0 else if (std.mem.eql(u8, name, "count")) 1 else if (std.mem.eql(u8, name, "items")) 2 else if (std.mem.eql(u8, name, "computedKey")) 3 else null;
         const slot = symbol_slot orelse continue;
         try std.testing.expectEqual(
             expected_computed_prop_key_symbols[slot],
             computed_prop_key_module.semantic.?.symbol_ids[raw] orelse return error.MissingComputedPropReferenceSymbol,
         );
+        if (slot == 3) {
+            const node_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+            var actual_reference: ?SemanticReference = null;
+            for (computed_prop_key_module.semantic.?.references) |reference| {
+                if (reference.node_index == node_idx) {
+                    actual_reference = reference;
+                    break;
+                }
+            }
+            const reference = actual_reference orelse return error.MissingRetainedComputedPropKeyReference;
+            try std.testing.expectEqual(expected_computed_key_reference.symbol_id, reference.symbol_id);
+            try std.testing.expectEqual(expected_computed_key_reference.scope_id, reference.scope_id);
+            try std.testing.expectEqual(expected_computed_key_reference.flags, reference.flags);
+        }
         computed_prop_key_reads[slot] += 1;
     }
     try std.testing.expectEqual(@as(usize, 0), computed_prop_key_nodes);
-    try std.testing.expectEqual([_]usize{ 7, 5, 1 }, computed_prop_key_reads);
+    try std.testing.expectEqual([_]usize{ 8, 5, 1, 1 }, computed_prop_key_reads);
 
     const dev_source = "const member = { deep: { value: \"D\" }, \"undefined\": \"U\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...{ staticTemplateValue: `static`, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}</Comp>;";
     var dev_fixture = try jsxSpreadChildTestFixture(allocator, dev_source);
@@ -25756,7 +25793,7 @@ test "#6193 automatic key fallback props accepts only exact no-substitution temp
     try std.testing.expect(!auditedJsxSpreadPropsOperandForTest(&fixture));
 }
 
-test "#6193 JSX spread retains only static computed object keys" {
+test "#6193 JSX spread retains exact bound and static computed object keys" {
     const allocator = std.testing.allocator;
     const safe_sources = [_][]const u8{
         "const items = [1]; const result = <Comp {...{ [\"name\"]: 1 }} key=\"k\">{...items}</Comp>;",
@@ -25773,6 +25810,8 @@ test "#6193 JSX spread retains only static computed object keys" {
         "const items = [1]; const result = <Comp {...{ [-(2)]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [~~0]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [!!!!!!!!!!!!0]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const key = \"name\"; const items = [1]; const result = <Comp {...{ [key]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const key = \"name\"; const items = [1]; const result = <Comp {...{ [(((key)))]: 1 }} key=\"k\">{...items}</Comp>;",
     };
     for (safe_sources) |source| {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -25782,7 +25821,9 @@ test "#6193 JSX spread retains only static computed object keys" {
     }
 
     const hostile_sources = [_][]const u8{
-        "const key = \"name\"; const items = [1]; const result = <Comp {...{ [key]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [missingKey]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const key = {}; const items = [1]; const result = <Comp {...{ [key.value]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [1 + 1]: 1 }} key=\"k\">{...items}</Comp>;",
         "function getKey() { return \"name\"; } const items = [1]; const result = <Comp {...{ [getKey()]: 1 }} key=\"k\">{...items}</Comp>;",
         "let key = 1; const items = [1]; const result = <Comp {...{ [key++]: 1 }} key=\"k\">{...items}</Comp>;",
         "let key = 1; const items = [1]; const result = <Comp {...{ [key = 2]: 1 }} key=\"k\">{...items}</Comp>;",
@@ -25835,28 +25876,28 @@ test "#6193 JSX spread retains only static computed object keys" {
     }
     const key_idx = computed_key orelse return error.MissingJsxComputedPropertyKey;
     const key_raw: usize = @intCast(@backingInt(key_idx));
-    try std.testing.expect(isRetainableJsxStaticComputedPropertyKey(&malformed.ast, key_idx));
+    try std.testing.expect(isRetainableJsxComputedPropertyKey(&malformed.ast, &malformed.semantic, key_idx));
 
     const saved_key_flags = malformed.ast.nodes.items[key_raw].data.unary.flags;
     malformed.ast.nodes.items[key_raw].data.unary.flags = 1;
-    try std.testing.expect(!isRetainableJsxStaticComputedPropertyKey(&malformed.ast, key_idx));
+    try std.testing.expect(!isRetainableJsxComputedPropertyKey(&malformed.ast, &malformed.semantic, key_idx));
     malformed.ast.nodes.items[key_raw].data.unary.flags = saved_key_flags;
 
     const saved_key_operand = malformed.ast.nodes.items[key_raw].data.unary.operand;
     malformed.ast.nodes.items[key_raw].data.unary.operand = @fromBackingInt(@intCast(malformed.ast.nodes.items.len));
-    try std.testing.expect(!isRetainableJsxStaticComputedPropertyKey(&malformed.ast, key_idx));
+    try std.testing.expect(!isRetainableJsxComputedPropertyKey(&malformed.ast, &malformed.semantic, key_idx));
     malformed.ast.nodes.items[key_raw].data.unary.operand = saved_key_operand;
 
     const paren_idx = paren orelse return error.MissingJsxComputedPropertyParentheses;
     const paren_raw: usize = @intCast(@backingInt(paren_idx));
     const saved_paren_flags = malformed.ast.nodes.items[paren_raw].data.unary.flags;
     malformed.ast.nodes.items[paren_raw].data.unary.flags = 1;
-    try std.testing.expect(!isRetainableJsxStaticComputedPropertyKey(&malformed.ast, key_idx));
+    try std.testing.expect(!isRetainableJsxComputedPropertyKey(&malformed.ast, &malformed.semantic, key_idx));
     malformed.ast.nodes.items[paren_raw].data.unary.flags = saved_paren_flags;
 
     const saved_paren_operand = malformed.ast.nodes.items[paren_raw].data.unary.operand;
     malformed.ast.nodes.items[paren_raw].data.unary.operand = paren_idx;
-    try std.testing.expect(!isRetainableJsxStaticComputedPropertyKey(&malformed.ast, key_idx));
+    try std.testing.expect(!isRetainableJsxComputedPropertyKey(&malformed.ast, &malformed.semantic, key_idx));
     malformed.ast.nodes.items[paren_raw].data.unary.operand = saved_paren_operand;
 
     var malformed_unary_arena = std.heap.ArenaAllocator.init(allocator);
@@ -25872,14 +25913,14 @@ test "#6193 JSX spread retains only static computed object keys" {
         break;
     }
     const unary_key_idx = unary_key orelse return error.MissingJsxUnaryComputedPropertyKey;
-    try std.testing.expect(isRetainableJsxStaticComputedPropertyKey(&malformed_unary.ast, unary_key_idx));
+    try std.testing.expect(isRetainableJsxComputedPropertyKey(&malformed_unary.ast, &malformed_unary.semantic, unary_key_idx));
     const unary_key_node = malformed_unary.ast.nodes.items[@backingInt(unary_key_idx)];
     const unary_node_idx = unary_key_node.data.unary.operand;
     const unary_raw: usize = @intCast(@backingInt(unary_node_idx));
     const unary_extra = malformed_unary.ast.nodes.items[unary_raw].data.extra;
     const saved_unary_operand = malformed_unary.ast.extra_data.items[unary_extra];
     malformed_unary.ast.extra_data.items[unary_extra] = @intCast(unary_raw);
-    try std.testing.expect(!isRetainableJsxStaticComputedPropertyKey(&malformed_unary.ast, unary_key_idx));
+    try std.testing.expect(!isRetainableJsxComputedPropertyKey(&malformed_unary.ast, &malformed_unary.semantic, unary_key_idx));
     malformed_unary.ast.extra_data.items[unary_extra] = saved_unary_operand;
 }
 
@@ -26762,6 +26803,7 @@ test "#6193 automatic key fallback props spread admits static data and bound val
         "const items = [1]; const result = <Comp {...{ id: \"x\", count: 2, enabled: true, empty: null }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ id: `x`, label: `y` }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ \"data-id\": \"x\", 2: false }} key=\"k\">{...items}</Comp>;",
+        "const key = \"id\"; const items = [1]; const result = <Comp {...{ [key]: \"x\" }} key=\"k\">{...items}</Comp>;",
         "const label = \"x\"; const count = 2; const items = [1]; const result = <Comp {...{ id: label, count: count }} key=\"k\">{...items}</Comp>;",
         "const id = \"x\"; const items = [1]; const result = <Comp {...{ id: id }} key=\"k\">{...items}</Comp>;",
         "const member = { id: \"x\" }; const items = [1]; const result = <Comp {...{ id: member.id }} key=\"k\">{...items}</Comp>;",
@@ -26875,7 +26917,6 @@ test "#6193 automatic key fallback props spread admits static data and bound val
         "function getProps() { return {}; } const items = [1]; const result = <Comp {...{ id: getProps().id.nested }} key=\"k\">{...items}</Comp>;",
         "function getProps() { return {}; } const items = [1]; const result = <Comp {...{ id: getProps().nested.id }} key=\"k\">{...items}</Comp>;",
         "const id = \"x\"; const items = [1]; const result = <Comp {...{ id }} key=\"k\">{...items}</Comp>;",
-        "const key = \"id\"; const items = [1]; const result = <Comp {...{ [key]: \"x\" }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ get id() { return \"x\"; } }} key=\"k\">{...items}</Comp>;",
         "const source = {}; const items = [1]; const result = <Comp {...{ ...source }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ nested: { value: 1 } }} key=\"k\">{...items}</Comp>;",
@@ -26910,6 +26951,7 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         "function render(items) { return <div>{items.length}{...items}</div>; }",
         "const props = {}; const items = [1, 2]; const result = <Comp {...props} key=\"k\">{...items}</Comp>;",
         "const items = [1, 2]; const result = <Comp {...{ id: \"literal\", count: 2, enabled: true, empty: null }} key=\"k\">{...items}</Comp>;",
+        "const key = \"id\"; const items = [1]; const result = <Comp {...{ [key]: \"x\" }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{}} key=\"k\">{...items}</Comp>;",
         "const props = {}; const items = [1, 2]; const result = <Comp key=\"k\" {...props}>{...items}</Comp>;",
         "const props = {}; const items = [1]; const one = <Comp {...props} key=\"k\" />; const two = <div>{...items}</div>;",
@@ -26980,7 +27022,6 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         "const props = {}; const items = [1]; const result = <Comp {...props} {...missingProps} key=\"k\">{...items}</Comp>;",
         "const goodProps = {}; const goodItems = [1]; const badItems = [2]; const good = <Good {...goodProps} key=\"g\">{...goodItems}</Good>; const bad = <Bad {...missingProps} key=\"b\">{...badItems}</Bad>;",
         "const id = \"x\"; const items = [1]; const result = <Comp {...{ id }} key=\"k\">{...items}</Comp>;",
-        "const key = \"id\"; const items = [1]; const result = <Comp {...{ [key]: \"x\" }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ get id() { return \"x\"; } }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ method() { return \"x\"; } }} key=\"k\">{...items}</Comp>;",
         "const source = {}; const items = [1]; const result = <Comp {...{ ...source }} key=\"k\">{...items}</Comp>;",
@@ -27033,6 +27074,7 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         "const member = { nested: { id: 'x' } }; const items = [1]; const result = <div {...{ id: member['nested'].id }}>{...items}</div>;",
         "const member = { nested: { id: 'x' } }; const items = [1]; const result = <div {...{ id: member.nested['id'] }}>{...items}</div>;",
         "const member = { nested: { id: 'x' } }; const memberKey = 'nested'; const items = [1]; const result = <div {...{ id: member[memberKey].id }}>{...items}</div>;",
+        "const key = 'id'; const items = [1]; const result = <div {...{ [key]: 'x' }}>{...items}</div>;",
         "const member = { undefined: 'x' }; const items = [1]; const result = <div {...{ id: member[void 0] }}>{...items}</div>;",
         "const member = { undefined: 'x' }; const items = [1]; const result = <div {...{ id: member[void 'unused'] }}>{...items}</div>;",
         "const member = { undefined: 'x' }; const items = [1]; const result = <div {...{ id: member[void true] }}>{...items}</div>;",
@@ -27092,7 +27134,6 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         "function getValue() { return 0; } const items = [1]; const result = <div {...{ optional: void getValue() }}>{...items}</div>;",
         "const items = [1]; const result = <div {...{ optional: \\u0075ndefined }}>{...items}</div>;",
         "const id = 'x'; const items = [1]; const result = <div {...{ id }}>{...items}</div>;",
-        "const key = 'id'; const items = [1]; const result = <div {...{ [key]: 'x' }}>{...items}</div>;",
         "const items = [1]; const result = <div {...{ get id() { return 'x'; } }}>{...items}</div>;",
         "const items = [1]; const result = <div {...{ method() { return 'x'; } }}>{...items}</div>;",
         "const source = {}; const items = [1]; const result = <div {...{ ...source }}>{...items}</div>;",
