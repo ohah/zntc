@@ -434,18 +434,28 @@ pub fn ES2025Using(comptime Transformer: type) type {
         }
 
         fn classExpressionOf(self: *Transformer, source_idx: NodeIndex, decl: Node) Transformer.Error!NodeIndex {
-            const expression = try self.ast.addNode(.{ .tag = .class_expression, .span = decl.span, .data = decl.data });
-            try self.remapCopiedScopeOwner(source_idx, expression);
-            // A declaration has two identities for a named class: its outer
-            // binding and its immutable self binding. The copied expression
-            // must retain the class-owner mapping so ES5 lowering moves the
-            // self binding, rather than the outer declaration, into its IIFE.
-            if (self.class_self_symbol_map.get(@backingInt(source_idx))) |self_symbol| {
-                const class_name = self.readNodeIdx(decl.data.extra, ast_mod.ClassExtra.name);
-                if (!class_name.isNone() and self.getSymbolIdAt(class_name) != self_symbol)
-                    try self.rebindOutputBinding(class_name, self_symbol);
-                try self.class_self_symbol_map.put(self.allocator, @backingInt(expression), self_symbol);
+            // The declaration name owns the outer source SID. Its expression
+            // copy needs a distinct physical name leaf for the existing self
+            // SID, plus independent extra slots so later class visits cannot
+            // rewrite the source declaration's name edge.
+            var slots: [8]u32 = undefined;
+            for (0..slots.len) |i| slots[i] = self.ast.extra_data.items[decl.data.extra + i];
+            const class_name = self.readNodeIdx(decl.data.extra, ast_mod.ClassExtra.name);
+            const self_symbol = self.class_self_symbol_map.get(@backingInt(source_idx));
+            if (!class_name.isNone()) {
+                const name = try self.ast.addNode(self.ast.getNode(class_name));
+                slots[ast_mod.ClassExtra.name] = @backingInt(name);
+                if (self_symbol) |sid| {
+                    if (self.semantic_edit_enabled) {
+                        const owner = self.outputOwnedScope(source_idx) orelse std.debug.panic("using class expression lost its actual self owner", .{});
+                        if (!try self.bindClassSelfStorage(source_idx, name, owner))
+                            std.debug.panic("using class expression lost its existing self identity", .{});
+                    } else try self.rebindOutputBinding(name, sid);
+                }
             }
+            const expression = try self.ast.addNode(.{ .tag = .class_expression, .span = decl.span, .data = .{ .extra = try self.ast.addExtras(&slots) } });
+            try self.remapCopiedScopeOwner(source_idx, expression);
+            if (self_symbol) |sid| try self.class_self_symbol_map.put(self.allocator, @backingInt(expression), sid);
             return expression;
         }
 
@@ -962,5 +972,100 @@ fn moveUsingRegionToScope(self: anytype, root: NodeIndex, source: ScopeId, targe
         }
         var children = @import("../parser/ast_walk.zig").children(self.ast, n);
         while (children.next()) |child| try stack.append(self.allocator, child);
+    }
+}
+
+test "using class expression handoff preserves distinct source outer and actual self storage" {
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const Transformer = @import("transformer.zig").Transformer;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "export class Item { static value = 2; }");
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    var source: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_declaration) source = @fromBackingInt(@as(u32, @intCast(raw)));
+    }
+    try std.testing.expect(!source.isNone());
+    const original = parser.ast.getNode(source);
+    const name = parser.ast.readExtraNode(original.data.extra, ast_mod.ClassExtra.name);
+    const outer = analyzer.symbol_ids.items[@backingInt(name)].?;
+    const inner = analyzer.class_self_symbol_map.get(@backingInt(source)).?;
+    const scope = analyzer.scope_owner_map.get(@backingInt(source)).?;
+    try std.testing.expect(outer != inner);
+    var transformer = try Transformer.init(a, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.scope_history = analyzer.scope_history;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const output = try ES2025Using(Transformer).classExpressionOf(&transformer, source, original);
+    const expression = transformer.ast.getNode(output);
+    const self_name = transformer.ast.readExtraNode(expression.data.extra, ast_mod.ClassExtra.name);
+    try std.testing.expectEqual(ast_mod.Node.Tag.class_expression, expression.tag);
+    try std.testing.expect(expression.data.extra != original.data.extra);
+    try std.testing.expect(self_name != name);
+    try std.testing.expectEqual(name, transformer.ast.readExtraNode(original.data.extra, ast_mod.ClassExtra.name));
+    try std.testing.expectEqual(@as(?u32, outer), transformer.getSymbolIdAt(name));
+    try std.testing.expectEqual(@as(?u32, outer), transformer.semantic_editor.?.symbol_ids.items[@backingInt(name)]);
+    try std.testing.expectEqual(@as(?u32, inner), transformer.getSymbolIdAt(self_name));
+    try std.testing.expectEqual(@as(?u32, inner), transformer.semantic_editor.?.symbol_ids.items[@backingInt(self_name)]);
+    try std.testing.expectEqual(@as(?u32, inner), transformer.class_self_symbol_map.get(@backingInt(output)));
+    try std.testing.expectEqual(@as(?u32, scope), if (transformer.outputOwnedScope(output)) |owner| @backingInt(owner) else null);
+}
+
+test "using class expression handoff preserves module disposal exports and runtime self reads" {
+    const compat = @import("compat.zig");
+    const helpers = @import("../bundler/test_helpers.zig");
+    for ([_]compat.ESTarget{ .es2015, .es2017 }) |target| {
+        for ([_]bool{ false, true }) |minify| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try helpers.writeFile(tmp.dir, "entry.mjs", "import value,{read,number,Item} from './lib.mjs';console.log(read(),number,Item.value,Item.self()===Item,value,globalThis.LOG.join());");
+            try helpers.writeFile(tmp.dir, "lib.mjs", "const log=(globalThis.LOG=[]);const resource=(value)=>({[Symbol.dispose](){log.push('d'+value);}});export function read(){return 'g'+number;}using active=resource(1);export const number=1;export class Item{static value=2;static self(){return Item;}}export default 7;");
+            const entry = try helpers.absPath(&tmp, "entry.mjs");
+            defer std.testing.allocator.free(entry);
+            var bundler = @import("../bundler/bundler.zig").Bundler.init(std.testing.allocator, .{
+                .entry_points = &.{entry},
+                .format = .iife,
+                .platform = .node,
+                .unsupported = compat.fromESTarget(target),
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+                .minify_whitespace = minify,
+            });
+            defer bundler.deinit();
+            const result = try bundler.bundle(std.testing.io);
+            defer result.deinit(std.testing.allocator);
+            try std.testing.expect(!result.hasErrors());
+            try helpers.writeFile(tmp.dir, "output.cjs", result.output);
+            const output = try helpers.absPath(&tmp, "output.cjs");
+            defer std.testing.allocator.free(output);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, actual.stdout, "g1 1 2 true 7 d1\n"))
+                std.debug.print("using class target={s} minify={any} stdout={s} stderr={s}\n{s}\n", .{ @tagName(target), minify, actual.stdout, actual.stderr, result.output });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings("g1 1 2 true 7 d1\n", actual.stdout);
+        }
     }
 }
