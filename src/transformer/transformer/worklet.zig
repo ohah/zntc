@@ -325,34 +325,42 @@ fn collectBindingNames(self: *Transformer, idx: NodeIndex, locals: *std.StringHa
     }
 }
 
-/// 별도 스코프로 body를 순회하고, free variable만 outer refs에 병합한다.
-/// function/arrow/method의 공통 "scoped traversal + merge" 패턴.
-/// param_nodes: 파라미터로 처리할 NodeIndex raw 값들 (collectAllIdentifiers로 수집).
-fn walkScopedBody(
+/// Each nested function owns heap-backed locals/references and a node stack.
+/// Finishing a frame merges its free references into its parent, preserving
+/// the former recursive traversal order without consuming the native stack.
+const ClosureScopeFrame = struct {
+    nodes: std.ArrayList(NodeIndex) = .empty,
+    owned_locals: std.StringHashMapUnmanaged(void) = .empty,
+    owned_refs: std.StringHashMapUnmanaged(NodeIndex) = .empty,
+    external_locals: ?*std.StringHashMapUnmanaged(void) = null,
+    external_refs: ?*std.StringHashMapUnmanaged(NodeIndex) = null,
+
+    fn bindings(frame: *@This()) *std.StringHashMapUnmanaged(void) {
+        return frame.external_locals orelse &frame.owned_locals;
+    }
+    fn references(frame: *@This()) *std.StringHashMapUnmanaged(NodeIndex) {
+        return frame.external_refs orelse &frame.owned_refs;
+    }
+    fn deinit(frame: *@This(), allocator: std.mem.Allocator) void {
+        frame.nodes.deinit(allocator);
+        frame.owned_locals.deinit(allocator);
+        frame.owned_refs.deinit(allocator);
+    }
+};
+
+fn pushClosureScope(
     self: *Transformer,
-    body_idx: NodeIndex,
-    param_nodes: []const u32,
-    outer_locals: *std.StringHashMapUnmanaged(void),
-    outer_refs: *std.StringHashMapUnmanaged(NodeIndex),
-    function_owner: NodeIndex,
+    frames: *std.ArrayList(ClosureScopeFrame),
+    body: NodeIndex,
+    name: NodeIndex,
+    params: []const u32,
 ) Error!void {
-    var inner_locals: std.StringHashMapUnmanaged(void) = .empty;
-    defer inner_locals.deinit(self.allocator);
-
-    for (param_nodes) |raw| {
-        try collectAllIdentifiers(self, @fromBackingInt(@intCast(raw)), &inner_locals);
-    }
-
-    var inner_refs: std.StringHashMapUnmanaged(NodeIndex) = .empty;
-    defer inner_refs.deinit(self.allocator);
-    try walkBodyForClosureAnalysis(self, body_idx, &inner_locals, &inner_refs, function_owner);
-
-    var iter = inner_refs.iterator();
-    while (iter.next()) |entry| {
-        if (!inner_locals.contains(entry.key_ptr.*) and !outer_locals.contains(entry.key_ptr.*)) {
-            outer_refs.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
-        }
-    }
+    var frame: ClosureScopeFrame = .{};
+    errdefer frame.deinit(self.allocator);
+    try collectAllIdentifiers(self, name, &frame.owned_locals);
+    for (params) |raw| try collectAllIdentifiers(self, @fromBackingInt(raw), &frame.owned_locals);
+    try frame.nodes.append(self.allocator, body);
+    try frames.append(self.allocator, frame);
 }
 
 /// 노드 트리에서 모든 identifier (identifier_reference, binding_identifier 등)를 수집.
@@ -445,24 +453,43 @@ fn collectNewExpressionCallees(
 }
 
 /// 같은 스코프 내 generic descent 는 명시 stack 으로 처리해 표현 깊이 한도를 없앤다 (#2484).
-/// nested function/arrow/method 처럼 별도 스코프 진입은 그대로 자체 재귀 — 호출 깊이는
-/// 사용자 코드의 nested function 깊이만큼이라 stack overflow 위험 없음.
+/// Nested function/arrow/method scopes also use explicit frames: input nesting
+/// does not increase the native call-stack depth or discard deep captures.
 fn walkBodyForClosureAnalysis(
     self: *Transformer,
     idx: NodeIndex,
-    locals: *std.StringHashMapUnmanaged(void),
-    refs: *std.StringHashMapUnmanaged(NodeIndex),
+    root_locals: *std.StringHashMapUnmanaged(void),
+    root_refs: *std.StringHashMapUnmanaged(NodeIndex),
     function_owner: NodeIndex,
 ) Error!void {
-    var stack: std.ArrayList(NodeIndex) = .empty;
-    defer stack.deinit(self.allocator);
-    if (!idx.isNone() and @backingInt(idx) < self.ast.nodes.items.len) {
-        try stack.append(self.allocator, idx);
+    var frames: std.ArrayList(ClosureScopeFrame) = .empty;
+    defer {
+        for (frames.items) |*frame| frame.deinit(self.allocator);
+        frames.deinit(self.allocator);
     }
+    try frames.append(self.allocator, .{ .external_locals = root_locals, .external_refs = root_refs });
+    if (!idx.isNone() and @backingInt(idx) < self.ast.nodes.items.len)
+        try frames.items[0].nodes.append(self.allocator, idx);
 
-    while (stack.pop()) |cur| {
-        if (cur.isNone()) continue;
-        if (@backingInt(cur) >= self.ast.nodes.items.len) continue;
+    while (frames.items.len != 0) {
+        const frame = &frames.items[frames.items.len - 1];
+        const cur = frame.nodes.pop() orelse {
+            if (frames.items.len > 1) {
+                const parent = &frames.items[frames.items.len - 2];
+                var entries = frame.references().iterator();
+                while (entries.next()) |entry| {
+                    if (!frame.bindings().contains(entry.key_ptr.*) and !parent.bindings().contains(entry.key_ptr.*))
+                        try parent.references().put(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
+                }
+            }
+            var finished = frames.pop().?;
+            finished.deinit(self.allocator);
+            continue;
+        };
+        if (cur.isNone() or @backingInt(cur) >= self.ast.nodes.items.len) continue;
+        const locals = frame.bindings();
+        const refs = frame.references();
+        const stack = &frame.nodes;
         const node = self.ast.getNode(cur);
         const tag = node.tag;
 
@@ -491,24 +518,11 @@ fn walkBodyForClosureAnalysis(
                 const plist = self.ast.functionParamsList(node);
                 const p_start = plist.start;
                 const p_len = plist.len;
-                var fn_locals: std.StringHashMapUnmanaged(void) = .empty;
-                defer fn_locals.deinit(self.allocator);
-                // name + params → param_nodes (extra_data 슬라이스 + name 앞에 추가)
-                try collectAllIdentifiers(self, @fromBackingInt(@intCast(self.ast.extra_data.items[e])), &fn_locals);
-                var fpi: u32 = 0;
-                while (fpi < p_len) : (fpi += 1) {
-                    if (p_start + fpi < self.ast.extra_data.items.len)
-                        try collectAllIdentifiers(self, @fromBackingInt(@intCast(self.ast.extra_data.items[p_start + fpi])), &fn_locals);
-                }
-                var fn_refs: std.StringHashMapUnmanaged(NodeIndex) = .empty;
-                defer fn_refs.deinit(self.allocator);
-                try walkBodyForClosureAnalysis(self, body_idx, &fn_locals, &fn_refs, function_owner);
-                var fr_iter = fn_refs.iterator();
-                while (fr_iter.next()) |entry| {
-                    if (!fn_locals.contains(entry.key_ptr.*) and !locals.contains(entry.key_ptr.*)) {
-                        refs.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
-                    }
-                }
+                const params = if (p_start <= self.ast.extra_data.items.len)
+                    self.ast.extra_data.items[p_start .. p_start + @min(p_len, self.ast.extra_data.items.len - p_start)]
+                else
+                    &.{};
+                try pushClosureScope(self, &frames, body_idx, @fromBackingInt(self.ast.extra_data.items[e]), params);
                 continue;
             },
             .arrow_function_expression => {
@@ -516,7 +530,7 @@ fn walkBodyForClosureAnalysis(
                 if (!self.ast.hasExtra(e, 2)) continue;
                 const body_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 1]));
                 if (body_idx.isNone()) continue;
-                try walkScopedBody(self, body_idx, &.{self.ast.extra_data.items[e]}, locals, refs, function_owner);
+                try pushClosureScope(self, &frames, body_idx, .none, &.{self.ast.extra_data.items[e]});
                 continue;
             },
             .method_definition => {
@@ -528,7 +542,7 @@ fn walkBodyForClosureAnalysis(
                 const p_start = plist.start;
                 const p_len = plist.len;
                 if (p_start + p_len <= self.ast.extra_data.items.len) {
-                    try walkScopedBody(self, body_idx, self.ast.extra_data.items[p_start .. p_start + p_len], locals, refs, function_owner);
+                    try pushClosureScope(self, &frames, body_idx, .none, self.ast.extra_data.items[p_start .. p_start + p_len]);
                 }
                 continue;
             },
