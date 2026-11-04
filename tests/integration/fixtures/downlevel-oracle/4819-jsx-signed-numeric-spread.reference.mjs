@@ -19,6 +19,12 @@ const member = {
 };
 const items = [1, 2];
 const dynamicKey = 'bound-computed';
+const computedKeyProperty = 'dynamicKey';
+const computedKeyOwner = {
+  directKey: 'member-direct',
+  dynamicKey: 'member-dynamic',
+  nested: { key: 'member-nested' },
+};
 const result = React.createElement(
   'div',
   {
@@ -97,6 +103,9 @@ const result = React.createElement(
     [~~0]: 'computed-tilde',
     [!!!!!!!!!!!!0]: 'computed-long-not',
     [dynamicKey]: 'computed-bound',
+    [computedKeyOwner.directKey]: 'computed-member-direct',
+    [computedKeyOwner[computedKeyProperty]]: 'computed-member-dynamic',
+    [computedKeyOwner.nested.key]: 'computed-member-nested',
     valueDeleteZero: delete 0,
     keyDeleteZero: member[delete 0],
     valueVoidDeleteZero: void delete 0,
@@ -184,6 +193,9 @@ console.log(
   result.props[0],
   result.props.false,
   result.props['bound-computed'],
+  result.props['member-direct'],
+  result.props['member-dynamic'],
+  result.props['member-nested'],
   result.props.valueDeleteZero,
   result.props.keyDeleteZero,
   result.props.valueVoidDeleteZero,
