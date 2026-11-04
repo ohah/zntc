@@ -32223,6 +32223,13 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         emitted: /__toPropertyKey\(\s*["']__proto__["']\s*\+\s*undefined\s*\)/,
       },
       {
+        name: 'comparison-binary-equality',
+        expression: '[undefined === undefined]',
+        value: 'comparison-binary-equality-value',
+        property: 'true',
+        emitted: /__toPropertyKey\(\s*undefined\s*===\s*undefined\s*\)/,
+      },
+      {
         name: 'numeric-binary-shift',
         expression: '[undefined << 1]',
         value: 'numeric-binary-shift-value',
@@ -32423,10 +32430,23 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                 'undefined ^ 2',
                 'undefined + "x"',
               ];
+              const booleanBinaryAlternatives = [
+                'undefined === null',
+                'undefined !== undefined',
+                'undefined != null',
+                'undefined < 1',
+                'undefined <= 1',
+                'undefined > 1',
+                'undefined >= 1',
+                'undefined == 0',
+                '1 < 0',
+                'false === true',
+              ];
               const isNumericUndefinedKey = ['plus', 'minus', 'tilde'].includes(keyCase.name);
               const isUndefinedUnaryChain = keyCase.name.startsWith('chain-');
               const isUndefinedAddition = keyCase.name.startsWith('addition-');
               const isUndefinedNumericBinary = keyCase.name.startsWith('numeric-binary-');
+              const isUndefinedBooleanBinary = keyCase.name.startsWith('comparison-binary-');
               const replacement = keyCase.name.startsWith('typeof')
                 ? `__toPropertyKey(${typeofAlternatives[mutation]})`
                 : keyCase.name === 'not'
@@ -32439,7 +32459,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                         ? `__toPropertyKey(${additionAlternatives[mutation]})`
                         : isUndefinedNumericBinary
                           ? `__toPropertyKey(${numericBinaryAlternatives[mutation]})`
-                          : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
+                          : isUndefinedBooleanBinary
+                            ? `__toPropertyKey(${booleanBinaryAlternatives[mutation]})`
+                            : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
               const mutated = emitted.replace(expression ?? '', replacement);
               writeFileSync(mutatedOutput, mutated);
               const mutantRun = spawnSync('node', [mutatedOutput], { encoding: 'utf8' });
@@ -32450,7 +32472,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                 isNumericUndefinedKey ||
                 isUndefinedUnaryChain ||
                 isUndefinedAddition ||
-                isUndefinedNumericBinary
+                isUndefinedNumericBinary ||
+                isUndefinedBooleanBinary
               ) {
                 expect(mutantRun.status, `${label} compileable mutation ${mutation}`).toBe(0);
                 expect(mutantRun.stdout, `${label} compileable mutation ${mutation}`).not.toBe(
@@ -32473,6 +32496,70 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       }
     }
   }, 120_000);
+
+  test('JSX ES5 comparison key retains the Object.assign spread-child graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-jsx-comparison-spread-child-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.tsx'),
+      [
+        'const items = [1];',
+        'function h(type, props, child) { return { type, props, child }; }',
+        "const Comp = 'Comp';",
+        "const result = <Comp {...{ [undefined < 1]: 'value' }} key='k'>{...items}</Comp>;",
+        "console.log(JSON.stringify([result.props.false, Object.prototype.hasOwnProperty.call(result.props, 'false'), Object.getPrototypeOf(result.props) === Object.prototype, Object.keys(result.props), result.child]));",
+      ].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.tsx',
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--jsx=classic',
+          '--jsx-factory=h',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.tsx'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.tsx'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      expect(exactSchemaProblems(report ?? ''), report).toEqual([]);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(counter + '=(\\d+)'))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+      const emitted = readFileSync(output, 'utf8');
+      expect(emitted).toContain('Object.assign(');
+      expect(emitted).toMatch(/__toPropertyKey\(\s*undefined\s*<\s*1\s*\)/);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(JSON.stringify(['value', true, true, ['false', 'key'], 1]) + '\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   test('JSX ES5 exponentiation key preserves generated Math identity under a source shadow', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-jsx-exponentiation-shadowed-math-'));
