@@ -1282,7 +1282,11 @@ fn expectVisitorGraphSkipped(graph: *const ModuleGraph, entry: []const u8) !void
     }
 }
 
-fn expectAutomaticJsxGraphModule(graph: *const ModuleGraph, entry: []const u8) !void {
+fn expectAutomaticJsxGraphModule(
+    graph: *const ModuleGraph,
+    entry: []const u8,
+    required_runtime_helper_hint: ?[]const u8,
+) !void {
     const module = graph.findModuleByPath(entry) orelse return error.MissingAutomaticJsxGraphModule;
     try std.testing.expectEqual(Module.State.ready, module.state);
     const ast = &(module.ast orelse return error.MissingAutomaticJsxGraphAst);
@@ -1324,6 +1328,7 @@ fn expectAutomaticJsxGraphModule(graph: *const ModuleGraph, entry: []const u8) !
 
     const helper_bindings = transform_cache.runtime_helper_import_output_bindings;
     try std.testing.expect(helper_bindings.len > 0);
+    var found_required_runtime_helper = required_runtime_helper_hint == null;
     for (helper_bindings) |binding| {
         const raw: usize = binding.node_index;
         try std.testing.expect(std.mem.indexOfScalar(u32, reachable, binding.node_index) != null);
@@ -1336,6 +1341,9 @@ fn expectAutomaticJsxGraphModule(graph: *const ModuleGraph, entry: []const u8) !
         const symbol = semantic.symbols.items[symbol_id];
         try std.testing.expectEqual(@as(?@import("../semantic/symbol.zig").SyntheticKind, .runtime_helper_import), symbol.synthetic_kind);
         try std.testing.expectEqualStrings(binding.output_name_hint, symbol.output_name_hint);
+        if (required_runtime_helper_hint) |required| {
+            if (std.mem.eql(u8, binding.output_name_hint, required)) found_required_runtime_helper = true;
+        }
 
         var exact_reference_nodes: usize = 0;
         for (reachable) |reference_raw| {
@@ -1347,12 +1355,15 @@ fn expectAutomaticJsxGraphModule(graph: *const ModuleGraph, entry: []const u8) !
         // the JSX-generated call site, both owned by this module's graph.
         try std.testing.expect(exact_reference_nodes >= 2);
     }
+    try std.testing.expect(found_required_runtime_helper);
 }
 
 fn expectAutomaticJsxModuleGraph(
     entries: []const []const u8,
     jsx_entries: []const []const u8,
     no_jsx_entry: []const u8,
+    runtime: @import("../codegen/codegen.zig").JsxRuntime,
+    required_runtime_helper_hint: ?[]const u8,
     disk: *@import("disk_module_store.zig").DiskModuleStore,
     expected_load_hits: usize,
 ) !void {
@@ -1367,6 +1378,7 @@ fn expectAutomaticJsxModuleGraph(
         "react/jsx-runtime",
         "react/jsx-dev-runtime",
         "preact/jsx-runtime",
+        "preact/jsx-dev-runtime",
     };
     var cache = ResolveCache.init(std.testing.allocator, .{ .external_patterns = &external_patterns });
     defer cache.deinit();
@@ -1377,9 +1389,9 @@ fn expectAutomaticJsxModuleGraph(
     graph.disk_options_hash = 0x6193_4819;
     graph.disk_compiler_build_id = 0x4819;
     graph.max_threads = 1;
-    graph.jsx_runtime = .automatic;
+    graph.jsx_runtime = runtime;
     graph.jsx_import_source = "react";
-    graph.transform_options_base.jsx_runtime = .automatic;
+    graph.transform_options_base.jsx_runtime = runtime;
     graph.transform_options_base.jsx_import_source = "react";
 
     try graph.build(std.testing.io, entries);
@@ -1389,7 +1401,7 @@ fn expectAutomaticJsxModuleGraph(
     // import edges introduced by JSX lowering.
     try std.testing.expect(graph.moduleCount() >= entries.len);
     try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
-    for (jsx_entries) |entry| try expectAutomaticJsxGraphModule(&graph, entry);
+    for (jsx_entries) |entry| try expectAutomaticJsxGraphModule(&graph, entry, required_runtime_helper_hint);
 
     const no_jsx = graph.findModuleByPath(no_jsx_entry) orelse return error.MissingNoJsxGraphModule;
     try std.testing.expectEqual(Module.State.ready, no_jsx.state);
@@ -1753,8 +1765,49 @@ test "graph JSX caller: automatic runtime keeps source and generated identities 
     var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
     defer disk.deinit();
 
-    try expectAutomaticJsxModuleGraph(&entries, &jsx_entries, entries[sources.len], &disk, 0);
-    try expectAutomaticJsxModuleGraph(&entries, &jsx_entries, entries[sources.len], &disk, entries.len);
+    try expectAutomaticJsxModuleGraph(&entries, &jsx_entries, entries[sources.len], .automatic, null, &disk, 0);
+    try expectAutomaticJsxModuleGraph(&entries, &jsx_entries, entries[sources.len], .automatic, null, &disk, entries.len);
+}
+
+test "graph JSX caller: automatic-dev runtime keeps jsxDEV identity on cold/cache" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const sources = [_][]const u8{
+        "export function App(props) { return <div title={props.title} />; }",
+        "export function App(props) { return <div>{props.child}</div>; }",
+        "export function App(props) { return <div><span>{props.value}</span><b /></div>; }",
+        "export function App(props) { return <>{props.value}<span /></>; }",
+        "export function App(props) { return <UI.Card value={props.value} />; }",
+        "export function App(props) { return <Card {...props} />; }",
+        "export function App(props) { return <Card key={props.id} {...props} />; }",
+        "export function App(props) { return <Card key={props.id} title={props.title} />; }",
+        "/** @jsxImportSource preact */ export function App(props) { return <div>{props.value}</div>; }",
+        "export function App(props) { return <div>{...props.items}</div>; }",
+    };
+    var jsx_entries: [sources.len][]const u8 = undefined;
+    var entries: [sources.len + 1][]const u8 = undefined;
+    for (sources, 0..) |source, index| {
+        const basename = try std.fmt.allocPrint(std.testing.allocator, "dev-entry-{d}.tsx", .{index});
+        defer std.testing.allocator.free(basename);
+        try writeFile(tmp.dir, basename, source);
+        entries[index] = try absPath(&tmp, basename);
+    }
+    try writeFile(tmp.dir, "dev-plain.tsx", "export function App(props) { return props.value; }");
+    entries[sources.len] = try absPath(&tmp, "dev-plain.tsx");
+    defer {
+        for (entries) |entry| std.testing.allocator.free(entry);
+    }
+    @memcpy(jsx_entries[0..], entries[0..sources.len]);
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    try expectAutomaticJsxModuleGraph(&entries, &jsx_entries, entries[sources.len], .automatic_dev, "_jsxDEV", &disk, 0);
+    try expectAutomaticJsxModuleGraph(&entries, &jsx_entries, entries[sources.len], .automatic_dev, "_jsxDEV", &disk, entries.len);
 }
 
 test "graph visitor caller: cold parse runs every hook and retains its semantic graph" {
