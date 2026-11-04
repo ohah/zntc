@@ -19251,6 +19251,41 @@ test "generic prepass run publishes transformed output and preserves parser AST"
         allocator,
     ));
 
+    // An untracked hook can make an existing lexical reference resolve through
+    // a newly inserted object environment. It has no graph contract, so its
+    // output must not reuse the source scope facts either.
+    const untracked_with_source = "function read(){const secret=1;return secret;\"secret\";2;}";
+    const untracked_with_fixture = try runtimeHelperReanalysisTestFixtureForSource(allocator, untracked_with_source, false);
+    const untracked_with_owner = untracked_with_fixture.semantic.owner_token;
+    var untracked_with_snapshot = try ast_mod.Ast.cloneForTransformer(&untracked_with_fixture.ast, allocator);
+    untracked_with_snapshot.type_only_binding_names = try untracked_with_fixture.ast.type_only_binding_names.clone(allocator);
+    var untracked_with_mutation: TrackedWithMutation = .{};
+    const untracked_with_plugins = [_]plugin_mod.Plugin{.{
+        .name = "untracked-with-scope-injection",
+        .context = @ptrCast(&untracked_with_mutation),
+        .onFunction = trackedWithFunctionTestHook,
+    }};
+    context.plugins = &untracked_with_plugins;
+    var untracked_with_module = Module.init(@fromBackingInt(@as(u32, 22)), "untracked-with.js");
+    untracked_with_module.source = untracked_with_source;
+    untracked_with_module.module_type = .js;
+    untracked_with_module.state = .ready;
+    untracked_with_module.ast = untracked_with_fixture.ast;
+    untracked_with_module.semantic = untracked_with_fixture.semantic;
+    run(&context, &untracked_with_module, allocator);
+    defer if (untracked_with_module.alias_table) |*table| table.deinit();
+    defer if (untracked_with_module.export_index_by_name) |*index| index.deinit(graph_allocator);
+    try std.testing.expect(untracked_with_mutation.did_mutate);
+    try std.testing.expectEqual(@as(usize, 13), context.diag_count);
+    try std.testing.expect(untracked_with_module.ast.?.transformed_root == null);
+    try std.testing.expect(untracked_with_module.transform_cache == null);
+    try std.testing.expectEqual(untracked_with_owner, untracked_with_module.semantic.?.owner_token);
+    try std.testing.expect(try sameGenericPrepassAstContents(
+        &untracked_with_snapshot,
+        &untracked_with_module.ast.?,
+        allocator,
+    ));
+
     context.plugins = &.{};
     var module_without_semantic = Module.init(@fromBackingInt(@as(u32, 1)), "input-without-semantic.js");
     module_without_semantic.source = source;
@@ -19260,7 +19295,7 @@ test "generic prepass run publishes transformed output and preserves parser AST"
     run(&context, &module_without_semantic, allocator);
     // Installed generic output requires the initial parser's semantic graph.
     // A missing graph is rejected before candidate publication, never repaired.
-    try std.testing.expectEqual(@as(usize, 13), context.diag_count);
+    try std.testing.expectEqual(@as(usize, 14), context.diag_count);
     try std.testing.expect(module_without_semantic.semantic == null);
     try std.testing.expect(module_without_semantic.ast.?.transformed_root == null);
     try std.testing.expect(module_without_semantic.transform_cache == null);
@@ -19934,12 +19969,19 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     }
 
     const root = transformer.transform() catch return;
-    if (tracked_ast_plugin_graph and hasReachableWithStatement(arena_alloc, transformer.ast, root)) {
+    // The exact identity gate below can validate existing SymbolIds, but it
+    // cannot infer that an AST plugin moved references under a new dynamic
+    // object environment. This applies even when the plugin has no graph
+    // contract and would otherwise take the generic output-validation path.
+    const has_ast_plugin_hooks = hasAstTransformHooks(self.plugins) or
+        hasAstTransformHooks(merged_plugins) or
+        hasAstTransformHooks(opts.plugins);
+    if (has_ast_plugin_hooks and hasReachableWithStatement(arena_alloc, transformer.ast, root)) {
         candidate_diagnosed.* = true;
         failRetainedGraphRefresh(
             self,
             module,
-            "A tracked AST plugin introduced a with-statement environment that cannot be represented on the retained semantic graph.",
+            "An AST plugin produced output with a dynamic with-statement environment that cannot be proven on the retained semantic graph.",
         );
         return;
     }
