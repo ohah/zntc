@@ -13308,6 +13308,71 @@ const IdentityPreservingVisitorMutation = struct {
     did_mutate: bool = false,
 };
 
+const TrackedWithMutation = struct {
+    did_mutate: bool = false,
+};
+
+fn trackedWithFunctionTestHook(
+    context: ?*anyopaque,
+    api: *plugin_mod.AstTransformCtx,
+    info: @import("../../transformer/ast_plugin.zig").FunctionInfo,
+) plugin_mod.PluginError!void {
+    const mutation = @as(*TrackedWithMutation, @ptrCast(@alignCast(context orelse return)));
+    if (!std.mem.eql(u8, info.name orelse "", "read")) return;
+
+    const ast = api.transformer.ast;
+    const body = ast.getNode(info.body_idx);
+    if (body.tag != .block_statement) return;
+    const body_items = ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len];
+    var declaration: ?ast_mod.NodeIndex = null;
+    var returned: ?ast_mod.NodeIndex = null;
+    var key_span: ?Span = null;
+    var value_span: ?Span = null;
+    var trailing: [2]ast_mod.NodeIndex = undefined;
+    var trailing_count: usize = 0;
+    for (body_items) |raw| {
+        const statement: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+        const node = ast.getNode(statement);
+        switch (node.tag) {
+            .variable_declaration => declaration = statement,
+            .return_statement => returned = statement,
+            .expression_statement => {
+                if (trailing_count < trailing.len) trailing[trailing_count] = statement;
+                trailing_count += 1;
+                const expression = ast.getNode(node.data.unary.operand);
+                if (expression.tag == .string_literal and std.mem.eql(u8, ast.getText(expression.span), "\"secret\""))
+                    key_span = expression.span;
+                if (expression.tag == .numeric_literal and std.mem.eql(u8, ast.getText(expression.span), "2"))
+                    value_span = expression.span;
+            },
+            else => {},
+        }
+    }
+    const declaration_node = declaration orelse return;
+    const return_node = returned orelse return;
+    const property_key_span = key_span orelse return;
+    const property_value_span = value_span orelse return;
+    if (trailing_count != trailing.len) return;
+
+    const property_key = try ast.addNode(.{
+        .tag = .string_literal,
+        .span = property_key_span,
+        .data = .{ .string_ref = property_key_span },
+    });
+    const property_value = try ast.addNode(.{
+        .tag = .numeric_literal,
+        .span = property_value_span,
+        .data = .{ .none = 0 },
+    });
+    const property = try ast.addBinaryNode(.object_property, property_key_span, property_key, property_value, 0);
+    const properties = try ast.addNodeList(&.{property});
+    const object = try ast.addListNode(.object_expression, property_key_span, properties);
+    const with_statement = try ast.addBinaryNode(.with_statement, property_key_span, object, return_node, 0);
+    const replacement = try ast.addNodeList(&.{ declaration_node, with_statement, trailing[0], trailing[1] });
+    ast.nodes.items[@backingInt(info.body_idx)].data.list = replacement;
+    mutation.did_mutate = true;
+}
+
 fn identityPreservingVisitorTestHook(
     context: ?*anyopaque,
     api: *plugin_mod.AstTransformCtx,
@@ -13428,8 +13493,22 @@ fn canRetainContractedAstPluginGraph(
 }
 
 /// A tracked function plugin can add syntax that changes name lookup after the
-/// source preflight. Keep generated direct eval and `with` on the analyzer path
-/// so their dynamic environment reaches identifier minification.
+/// source preflight. `with` introduces an object environment that the semantic
+/// editor cannot register, so the caller must reject such output before publish.
+fn hasReachableWithStatement(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    root: ast_mod.NodeIndex,
+) bool {
+    const reachable = ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root) catch return true;
+    defer allocator.free(reachable);
+    for (reachable) |raw| {
+        if (raw >= ast.nodes.items.len) return true;
+        if (ast.nodes.items[raw].tag == .with_statement) return true;
+    }
+    return false;
+}
+
 fn hasReachableDynamicNameLookup(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -13447,7 +13526,7 @@ fn hasReachableDynamicNameLookup(
     return false;
 }
 
-test "tracked function plugin output keeps generated dynamic name lookup on analyzer path" {
+test "tracked function plugin output detects generated dynamic name lookup" {
     const Parser = @import("../../parser/parser.zig").Parser;
     const cases = [_][]const u8{
         "function marker(){eval('shared')}",
@@ -13470,6 +13549,34 @@ test "tracked function plugin output keeps generated dynamic name lookup on anal
             has_dynamic_lookup,
             hasReachableDynamicNameLookup(arena.allocator(), &parser.ast, root),
         );
+    }
+}
+
+test "reachable with detection covers ten nested statement placements" {
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const cases = [_][]const u8{
+        "with (object) { value; }",
+        "function read(){with (object) { value; }}",
+        "const read = () => { with (object) { value; } };",
+        "if (flag) with (object) { value; }",
+        "while (flag) with (object) { value; }",
+        "do with (object) { value; } while (flag);",
+        "try { with (object) { value; } } catch (error) {}",
+        "switch (flag) { case 0: with (object) { value; } }",
+        "label: with (object) { value; }",
+        "function outer(){function inner(){with (object) { value; }}}",
+    };
+    for (cases) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var scanner = try Scanner.init(arena.allocator(), source);
+        defer scanner.deinit();
+        scanner.is_module = false;
+        var parser = Parser.init(arena.allocator(), &scanner);
+        defer parser.deinit();
+        parser.is_module = false;
+        const root = try parser.parse();
+        try std.testing.expect(hasReachableWithStatement(arena.allocator(), &parser.ast, root));
     }
 }
 
@@ -18926,6 +19033,57 @@ test "generic prepass run publishes transformed output and preserves parser AST"
         allocator,
     ));
 
+    const dynamic_with_sources = [_][]const u8{
+        "function read(){const secret=1;return secret;\"secret\";2;}",
+        "function read(){let secret=1;return secret;\"secret\";2;}",
+        "function read(){var secret=1;return secret;\"secret\";2;}",
+        "function read(){const secret=3;return secret;\"secret\";2;}",
+        "function read(){const secret=0;return secret;\"secret\";2;}",
+        "function read(){const secret=11;return secret;\"secret\";2;}",
+        "function read(){const secret=true;return secret;\"secret\";2;}",
+        "function read(){const secret=false;return secret;\"secret\";2;}",
+        "function read(){const secret=null;return secret;\"secret\";2;}",
+        "function read(){const secret=\"old\";return secret;\"secret\";2;}",
+    };
+    for (dynamic_with_sources, 0..) |dynamic_with_source, case_index| {
+        const dynamic_with_fixture = try runtimeHelperReanalysisTestFixtureForSource(allocator, dynamic_with_source, false);
+        const dynamic_with_owner = dynamic_with_fixture.semantic.owner_token;
+        var dynamic_with_snapshot = try ast_mod.Ast.cloneForTransformer(&dynamic_with_fixture.ast, allocator);
+        dynamic_with_snapshot.type_only_binding_names = try dynamic_with_fixture.ast.type_only_binding_names.clone(allocator);
+        var dynamic_with_mutation: TrackedWithMutation = .{};
+        const tracked_with_plugins = [_]plugin_mod.Plugin{.{
+            .name = "tracked-with-scope-injection",
+            .context = @ptrCast(&dynamic_with_mutation),
+            .onFunction = trackedWithFunctionTestHook,
+            .ast_graph_contract = .tracked_function_edits,
+        }};
+        context.plugins = &tracked_with_plugins;
+        var dynamic_with_module = Module.init(@fromBackingInt(@intCast(3 + case_index)), "tracked-with.js");
+        dynamic_with_module.source = dynamic_with_source;
+        dynamic_with_module.module_type = .js;
+        dynamic_with_module.state = .ready;
+        dynamic_with_module.ast = dynamic_with_fixture.ast;
+        dynamic_with_module.semantic = dynamic_with_fixture.semantic;
+        run(&context, &dynamic_with_module, allocator);
+        defer if (dynamic_with_module.alias_table) |*table| table.deinit();
+        defer if (dynamic_with_module.export_index_by_name) |*index| index.deinit(graph_allocator);
+        try std.testing.expect(dynamic_with_mutation.did_mutate);
+        try std.testing.expectEqual(@as(usize, 2 + case_index), context.diag_count);
+        try std.testing.expect(dynamic_with_module.ast.?.transformed_root == null);
+        try std.testing.expect(dynamic_with_module.transform_cache == null);
+        try std.testing.expectEqual(dynamic_with_owner, dynamic_with_module.semantic.?.owner_token);
+        try std.testing.expect(try sameGenericPrepassAstContents(
+            &dynamic_with_snapshot,
+            &dynamic_with_module.ast.?,
+            allocator,
+        ));
+        try std.testing.expect(try sameGenericPrepassAstContents(
+            &dynamic_with_snapshot,
+            &dynamic_with_fixture.ast,
+            allocator,
+        ));
+    }
+
     context.plugins = &.{};
     var module_without_semantic = Module.init(@fromBackingInt(@as(u32, 1)), "input-without-semantic.js");
     module_without_semantic.source = source;
@@ -18935,7 +19093,7 @@ test "generic prepass run publishes transformed output and preserves parser AST"
     run(&context, &module_without_semantic, allocator);
     // Installed generic output requires the initial parser's semantic graph.
     // A missing graph is rejected before candidate publication, never repaired.
-    try std.testing.expectEqual(@as(usize, 2), context.diag_count);
+    try std.testing.expectEqual(@as(usize, 12), context.diag_count);
     try std.testing.expect(module_without_semantic.semantic == null);
     try std.testing.expect(module_without_semantic.ast.?.transformed_root == null);
     try std.testing.expect(module_without_semantic.transform_cache == null);
@@ -19609,12 +19767,20 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     }
 
     const root = transformer.transform() catch return;
+    if (tracked_ast_plugin_graph and hasReachableWithStatement(arena_alloc, transformer.ast, root)) {
+        candidate_diagnosed.* = true;
+        failRetainedGraphRefresh(
+            self,
+            module,
+            "A tracked AST plugin introduced a with-statement environment that cannot be represented on the retained semantic graph.",
+        );
+        return;
+    }
     if (can_keep_semantic_graph and tracked_ast_plugin_graph and
         hasReachableDynamicNameLookup(arena_alloc, transformer.ast, root))
     {
-        // Plugin-generated eval/with can observe unminified source names. The
-        // source-only admission check cannot see those edits, so discard this
-        // retained-graph candidate instead of publishing stale dynamic facts.
+        // Plugin-generated direct eval invalidates the source-only admission
+        // proof. Leave this shortcut and require the common output validation.
         can_keep_semantic_graph = false;
     }
     if (can_keep_semantic_graph and hasAttributedInlineTypeRuntimeImport(ast_ptr, opts)) {
