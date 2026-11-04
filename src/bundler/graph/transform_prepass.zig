@@ -30811,3 +30811,47 @@ test "generic prepass source current binds actual class key history backing and 
     actual[0] = before;
     try std.testing.expect(try prepared.isCurrent(a));
 }
+
+test "Hermes block pattern rename publishes exact declaration anchors before first reference" {
+    const helpers = @import("../test_helpers.zig");
+    const sources = [_][]const u8{
+        "function f(a,obj){{let {a,b:[c]}=obj;g(a,c)}return a}const got=[];function g(...v){got.push(v.join('/'))}console.log(f('outer',{a:'inner',b:['C']}),got.join());",
+        "const out=[];{const {alphaLong,...restLong}={alphaLong:1,b:2};out.push(alphaLong,Object.keys(restLong).join())}{let {alphaLong,...restLong}={alphaLong:3,c:4};out.push(alphaLong,Object.keys(restLong).join())}function probe(){if(true){const {xLong,...yLong}={xLong:5};out.push(xLong,Object.keys(yLong).length)}return typeof xLong}out.push(probe());let alphaLong='outer',restLong='outer';out.push(alphaLong,restLong);console.log(out.join(','));",
+    };
+    for (sources) |source| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", source);
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+        defer cache.deinit();
+        var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.minify_identifiers = true;
+        graph.transform_options_base.minify_syntax = true;
+        graph.transform_options_base.unsupported = @import("../../transformer/compat.zig").fromHermesPreset();
+        try graph.build(std.testing.io, &.{entry});
+        for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+        const module = graph.findModuleByPath(entry) orelse return error.MissingBlockPatternModule;
+        try std.testing.expect(module.transform_cache != null);
+        const tree = if (module.ast) |*value| value else return error.MissingBlockPatternAst;
+        const semantic = module.semantic orelse return error.MissingBlockPatternSemantic;
+        const root = tree.transformed_root orelse return error.MissingTransformedBlockPattern;
+        const allocator = module.parse_arena.?.allocator();
+        const reachable = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(allocator, tree, root);
+        var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        for (reachable) |raw| try live.put(allocator, raw, {});
+        const declarations = try @import("../../transformer/symbol_coverage.zig").collectDeclarationNodes(allocator, tree, &live);
+        var checked: usize = 0;
+        for (semantic.references) |row| {
+            if (!row.flags.declare) continue;
+            try std.testing.expect(!row.declaration_node_index.isNone());
+            const anchor = @backingInt(row.declaration_node_index);
+            try std.testing.expect(declarations.contains(anchor));
+            try std.testing.expectEqual(@as(?u32, @backingInt(row.symbol_id)), semantic.symbol_ids[anchor]);
+            checked += 1;
+        }
+        try std.testing.expect(checked > 0);
+    }
+}

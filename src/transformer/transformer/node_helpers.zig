@@ -55,6 +55,8 @@ pub fn tryRenameIdentifierLike(
         .data = .{ .string_ref = new_span },
     });
     try self.propagateSymbolId(idx, new_idx);
+    if (tag == .binding_identifier and self.getSymbolIdAt(idx) != null)
+        try self.reanchorRenamedSourceBinding(idx, new_idx);
     if (tag == .identifier_reference or tag == .assignment_target_identifier) {
         _ = self.replaceUserReferenceWithCopy(idx, new_idx) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
