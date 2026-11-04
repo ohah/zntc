@@ -31,6 +31,8 @@ const ResolveCache = resolve_cache_mod.ResolveCache;
 const fs = @import("fs.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
+const ast_mod = @import("../parser/ast.zig");
+const ast_walk = @import("../parser/ast_walk.zig");
 const plugin_mod = @import("plugin.zig");
 const transformer_mod = @import("../transformer/transformer.zig");
 const TransformOptions = transformer_mod.TransformOptions;
@@ -617,6 +619,162 @@ const ColdParseVisitorState = struct {
     observed_tag: ?@import("../parser/ast.zig").Node.Tag = null,
 };
 
+const IdentityRetainingVisitorMutationState = struct {
+    calls: usize = 0,
+    observed_tag: ?ast_mod.Node.Tag = null,
+    did_mutate: bool = false,
+};
+
+fn identityRetainingVisitorMutationHook(
+    ctx: ?*anyopaque,
+    api: *plugin_mod.AstTransformCtx,
+    node_idx: ast_mod.NodeIndex,
+) plugin_mod.PluginError!?ast_mod.NodeIndex {
+    const state_ptr = ctx orelse return error.PluginFailed;
+    const state: *IdentityRetainingVisitorMutationState = @ptrCast(@alignCast(state_ptr));
+    state.calls += 1;
+    state.observed_tag = api.transformer.ast.getNode(node_idx).tag;
+    if (state.did_mutate) return null;
+
+    const ast = api.transformer.ast;
+    const owner_span = ast.getNode(node_idx).span;
+    var first_numeric: ?usize = null;
+    var replacement_span: ?@import("../lexer/token.zig").Span = null;
+    for (ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .numeric_literal or !owner_span.contains(node.span)) continue;
+        if (first_numeric == null) {
+            first_numeric = raw;
+        } else {
+            replacement_span = node.span;
+            break;
+        }
+    }
+    const first = first_numeric orelse return error.PluginFailed;
+    const replacement = replacement_span orelse return error.PluginFailed;
+    ast.nodes.items[first].span = replacement;
+    state.did_mutate = true;
+    return null;
+}
+
+fn identityRetainingVisitorFor(kind: ColdParseVisitorKind) plugin_mod.Visitor {
+    return switch (kind) {
+        .program => .{ .on_program = identityRetainingVisitorMutationHook },
+        .object_expression => .{ .on_object_expression = identityRetainingVisitorMutationHook },
+        .call_expression => .{ .on_call_expression = identityRetainingVisitorMutationHook },
+        .class_declaration => .{ .on_class_declaration = identityRetainingVisitorMutationHook },
+        .class_expression => .{ .on_class_expression = identityRetainingVisitorMutationHook },
+    };
+}
+
+const TransformedNumericLiteralCount = struct {
+    ast: *const ast_mod.Ast,
+    text: []const u8,
+    count: usize = 0,
+
+    fn visit(self: *@This(), _: ast_mod.NodeIndex, node: ast_mod.Node) ast_walk.WalkAction {
+        if (node.tag == .numeric_literal and std.mem.eql(u8, self.ast.getText(node.span), self.text))
+            self.count += 1;
+        return .descend;
+    }
+};
+
+fn expectMutatedVisitorGraph(
+    graph: *const ModuleGraph,
+    entry: []const u8,
+    kind: ColdParseVisitorKind,
+    state: IdentityRetainingVisitorMutationState,
+) !void {
+    try std.testing.expectEqual(@as(usize, 1), state.calls);
+    try std.testing.expectEqual(coldParseVisitorNodeTag(kind), state.observed_tag.?);
+    try std.testing.expect(state.did_mutate);
+    try expectVisitorGraphReady(graph, entry);
+
+    const module = graph.findModuleByPath(entry).?;
+    const ast = &module.ast.?;
+    const root = ast.transformed_root.?;
+    var original_value_count = TransformedNumericLiteralCount{ .ast = ast, .text = "1" };
+    try ast_walk.walkPreorderIterative(
+        std.testing.allocator,
+        ast,
+        root,
+        &original_value_count,
+        TransformedNumericLiteralCount.visit,
+    );
+    var rewritten_value_count = TransformedNumericLiteralCount{ .ast = ast, .text = "2" };
+    try ast_walk.walkPreorderIterative(
+        std.testing.allocator,
+        ast,
+        root,
+        &rewritten_value_count,
+        TransformedNumericLiteralCount.visit,
+    );
+    try std.testing.expectEqual(@as(usize, 0), original_value_count.count);
+    try std.testing.expectEqual(@as(usize, 2), rewritten_value_count.count);
+}
+
+fn expectColdAndCachedVisitorMutationRetainsGraph(kind: ColdParseVisitorKind, source: []const u8) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", source);
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.js" });
+    defer std.testing.allocator.free(entry);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    var cold_state: IdentityRetainingVisitorMutationState = .{};
+    const cold_plugins = [_]plugin_mod.Plugin{.{
+        .name = "identity-retaining-visitor-edit",
+        .context = @ptrCast(&cold_state),
+        .visitor = identityRetainingVisitorFor(kind),
+        .ast_graph_contract = .identity_preserving_visitor_edits,
+    }};
+    {
+        var cache = ResolveCache.init(std.testing.allocator, .{});
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.disk_cache = &disk;
+        graph.disk_load_enabled = true;
+        graph.disk_options_hash = 0x5678;
+        graph.disk_compiler_build_id = 0xEF01;
+        graph.max_threads = 1;
+        graph.plugins = &cold_plugins;
+
+        try graph.build(std.testing.io, &.{entry});
+
+        try std.testing.expectEqual(@as(usize, 0), graph.disk_load_hits.load(.monotonic));
+        try expectMutatedVisitorGraph(&graph, entry, kind, cold_state);
+    }
+
+    var warm_state: IdentityRetainingVisitorMutationState = .{};
+    const warm_plugins = [_]plugin_mod.Plugin{.{
+        .name = "identity-retaining-visitor-edit",
+        .context = @ptrCast(&warm_state),
+        .visitor = identityRetainingVisitorFor(kind),
+        .ast_graph_contract = .identity_preserving_visitor_edits,
+    }};
+    var warm_cache = ResolveCache.init(std.testing.allocator, .{});
+    defer warm_cache.deinit();
+    var warm_graph = ModuleGraph.init(std.testing.allocator, &warm_cache);
+    defer warm_graph.deinit();
+    warm_graph.disk_cache = &disk;
+    warm_graph.disk_load_enabled = true;
+    warm_graph.disk_options_hash = 0x5678;
+    warm_graph.disk_compiler_build_id = 0xEF01;
+    warm_graph.max_threads = 1;
+    warm_graph.plugins = &warm_plugins;
+
+    try warm_graph.build(std.testing.io, &.{entry});
+
+    try std.testing.expectEqual(@as(usize, 1), warm_graph.disk_load_hits.load(.monotonic));
+    try expectMutatedVisitorGraph(&warm_graph, entry, kind, warm_state);
+}
+
 fn coldParseVisitorHook(
     ctx: ?*anyopaque,
     api: *plugin_mod.AstTransformCtx,
@@ -793,6 +951,21 @@ test "graph visitor caller: cold parse runs every hook and retains its semantic 
     };
 
     for (cases) |case| try expectColdParseVisitorRetainsGraph(case.kind, case.source);
+}
+
+test "graph visitor caller: identity-retaining edits keep the graph on cold and cached ASTs" {
+    const cases = [_]struct {
+        kind: ColdParseVisitorKind,
+        source: []const u8,
+    }{
+        .{ .kind = .program, .source = "export const value = 1 + 2;" },
+        .{ .kind = .object_expression, .source = "export const value = { amount: 1 + 2 };" },
+        .{ .kind = .call_expression, .source = "function read(value) { return value; } export const result = read(1 + 2);" },
+        .{ .kind = .class_declaration, .source = "export class Value { method() { return 1 + 2; } }" },
+        .{ .kind = .class_expression, .source = "export const Value = class { method() { return 1 + 2; } };" },
+    };
+
+    for (cases) |case| try expectColdAndCachedVisitorMutationRetainsGraph(case.kind, case.source);
 }
 
 test "graph visitor caller: cached AST load reruns every hook on the restored graph" {
