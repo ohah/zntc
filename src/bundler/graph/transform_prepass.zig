@@ -2374,13 +2374,13 @@ fn isRetainableJsxSpreadChild(
 /// exact bound reads, member chains rooted in a bound identifier, the
 /// unresolved global undefined, or void over those pure literals or the exact
 /// unresolved global undefined.
-/// Member chains allow dot names, primitive literal bracket keys, signed
-/// numeric literals, unary `!`/`~`/`typeof` over primitive literals, void over
-/// primitive literals, one supported pure unary literal, or the exact
-/// unresolved global undefined, exact bound identifier keys, or the unresolved
-/// global undefined.
-/// A bound bracket key keeps its own source binding; other computed-key effects,
-/// new scopes, and nested spreads are not admitted.
+/// Member chains allow dot names, primitive literal bracket keys, one signed
+/// Number literal, pure unary chains without signed operators, and `void` over
+/// those values or the exact unresolved global undefined. Composite `+`/`-`
+/// chains are retained for direct prop values; their computed-key form remains
+/// fallback because its receiver SymbolId is not preserved by JSX lowering.
+/// Exact bound identifier keys remain valid; other computed-key effects, new
+/// scopes, and nested spreads are not admitted.
 fn isRetainableJsxMemberChain(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -2410,8 +2410,8 @@ fn isRetainableJsxMemberChain(
                 .identifier_reference => isBoundSourceIdentifierReference(ast, semantic, property_idx) or
                     isUnresolvedGlobalUndefinedReference(ast, semantic, property_idx),
                 .unary_expression => isRetainableJsxSignedNumericValue(ast, property_idx) or
-                    isRetainableJsxLiteralUnaryValue(ast, property_idx) or
-                    isRetainableJsxVoidValue(ast, semantic, property_idx),
+                    isRetainableJsxLiteralUnaryMemberKey(ast, property_idx) or
+                    isRetainableJsxVoidMemberKey(ast, semantic, property_idx),
                 else => false,
             },
             else => false,
@@ -3178,12 +3178,18 @@ fn isRetainableJsxSignedNumericValue(ast: *const ast_mod.Ast, node_idx: ast_mod.
     return false;
 }
 
-/// Returns the operand only for a unary operator in the literal-safe allowlist
-/// with exact AST flags. The caller decides how many nested operators to admit.
+const RetainableJsxLiteralUnary = struct {
+    operator_raw: u32,
+    operand_idx: ast_mod.NodeIndex,
+};
+
+/// Returns operator and operand only for a unary operator in the literal-safe
+/// allowlist with exact AST flags. The caller decides how many operators to
+/// admit and what literal type is required by the whole chain.
 fn retainableJsxLiteralUnaryOperand(
     ast: *const ast_mod.Ast,
     node_idx: ast_mod.NodeIndex,
-) ?ast_mod.NodeIndex {
+) ?RetainableJsxLiteralUnary {
     if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return null;
     const node = ast.nodes.items[@backingInt(node_idx)];
     if (node.tag != .unary_expression) return null;
@@ -3198,19 +3204,47 @@ fn retainableJsxLiteralUnaryOperand(
     const typeof_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.kw_typeof)));
     const delete_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.kw_delete)));
     const void_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.kw_void)));
+    const plus_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.plus)));
+    const minus_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.minus)));
     if ((operator_raw != bang_raw and operator_raw != tilde_raw and operator_raw != typeof_raw and
-        operator_raw != delete_raw and operator_raw != void_raw) or
+        operator_raw != delete_raw and operator_raw != void_raw and operator_raw != plus_raw and
+        operator_raw != minus_raw) or
         operator_flags != operator_raw) return null;
 
-    return @fromBackingInt(@intCast(extras[extra]));
+    return .{
+        .operator_raw = operator_raw,
+        .operand_idx = @fromBackingInt(@intCast(extras[extra])),
+    };
 }
 
-/// Up to two unary `!`, `~`, `typeof`, `delete`, or `void` operators over
-/// primitive literal values cannot call user code or add semantic edges.
-/// Parentheses may separate the operators; object, reference, call, and deeper
-/// unary operands remain outside this retained-graph subset.
+/// Up to two unary `!`, `~`, `typeof`, `delete`, `void`, `+`, or `-` operators
+/// over primitive literal values cannot call user code or add semantic edges.
+/// If `+` or `-` occurs, the final operand must be a Number literal. Plain
+/// parentheses may separate operators; object, reference, call, BigInt-sign,
+/// and deeper unary operands remain outside this retained-graph subset.
 fn isRetainableJsxLiteralUnaryValue(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
-    var operand_idx = retainableJsxLiteralUnaryOperand(ast, node_idx) orelse return false;
+    return isRetainableJsxLiteralUnaryValueWithSignedNumbers(ast, node_idx, true);
+}
+
+/// Composite signed unary keys currently fail the exact retained-graph
+/// identity check after JSX lowering. Single signed-number keys use their own
+/// proven path; keep the composition out of this member-chain gate.
+fn isRetainableJsxLiteralUnaryMemberKey(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
+    return isRetainableJsxLiteralUnaryValueWithSignedNumbers(ast, node_idx, false);
+}
+
+fn isRetainableJsxLiteralUnaryValueWithSignedNumbers(
+    ast: *const ast_mod.Ast,
+    node_idx: ast_mod.NodeIndex,
+    allow_signed_numbers: bool,
+) bool {
+    const outer_unary = retainableJsxLiteralUnaryOperand(ast, node_idx) orelse return false;
+    var operand_idx = outer_unary.operand_idx;
+    const plus_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.plus)));
+    const minus_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.minus)));
+    const outer_is_signed = outer_unary.operator_raw == plus_raw or outer_unary.operator_raw == minus_raw;
+    if (outer_is_signed and !allow_signed_numbers) return false;
+    var requires_number_literal = outer_is_signed;
     var unary_depth: usize = 1;
 
     var remaining_nodes = ast.nodes.items.len;
@@ -3224,10 +3258,16 @@ fn isRetainableJsxLiteralUnaryValue(ast: *const ast_mod.Ast, node_idx: ast_mod.N
         }
         if (operand.tag == .unary_expression) {
             if (unary_depth >= 2) return false;
-            operand_idx = retainableJsxLiteralUnaryOperand(ast, operand_idx) orelse return false;
+            const nested_unary = retainableJsxLiteralUnaryOperand(ast, operand_idx) orelse return false;
+            const nested_is_signed = nested_unary.operator_raw == plus_raw or nested_unary.operator_raw == minus_raw;
+            if (nested_is_signed and !allow_signed_numbers) return false;
+            if (nested_is_signed)
+                requires_number_literal = true;
+            operand_idx = nested_unary.operand_idx;
             unary_depth += 1;
             continue;
         }
+        if (requires_number_literal) return operand.tag == .numeric_literal;
         return switch (operand.tag) {
             .string_literal, .numeric_literal, .bigint_literal, .boolean_literal, .null_literal => true,
             .template_literal => isExactJsxNoSubstitutionTemplateLiteral(ast, operand_idx),
@@ -3247,6 +3287,23 @@ fn isRetainableJsxVoidValue(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     node_idx: ast_mod.NodeIndex,
+) bool {
+    return isRetainableJsxVoidValueWithSignedNumbers(ast, semantic, node_idx, true);
+}
+
+fn isRetainableJsxVoidMemberKey(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+) bool {
+    return isRetainableJsxVoidValueWithSignedNumbers(ast, semantic, node_idx, false);
+}
+
+fn isRetainableJsxVoidValueWithSignedNumbers(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+    allow_signed_numbers: bool,
 ) bool {
     if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
     const node = ast.nodes.items[@backingInt(node_idx)];
@@ -3271,8 +3328,12 @@ fn isRetainableJsxVoidValue(
         return switch (operand.tag) {
             .string_literal, .numeric_literal, .bigint_literal, .boolean_literal, .null_literal => true,
             .template_literal => isExactJsxNoSubstitutionTemplateLiteral(ast, operand_idx),
-            .unary_expression => isRetainableJsxSignedNumericValue(ast, operand_idx) or
-                isRetainableJsxLiteralUnaryValue(ast, operand_idx),
+            .unary_expression => if (allow_signed_numbers)
+                isRetainableJsxSignedNumericValue(ast, operand_idx) or
+                    isRetainableJsxLiteralUnaryValue(ast, operand_idx)
+            else
+                isRetainableJsxSignedNumericValue(ast, operand_idx) or
+                    isRetainableJsxLiteralUnaryMemberKey(ast, operand_idx),
             .identifier_reference => isUnresolvedGlobalUndefinedReference(ast, semantic, operand_idx),
             else => false,
         };
@@ -17669,7 +17730,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), classic_member_key_read_count);
     try std.testing.expectEqual(@as(usize, 2), classic_undefined_read_count);
 
-    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" }, \"undefined\": \"U\", true: \"truthy\", \"-2\": \"minus-two\", number: \"N\", string: \"S\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...props} {...{ staticTemplateValue: `static`, id: label, count: count, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], signedNegativeZero: -0, signedPositiveOne: +1, signedNegativeParen: -(2), signedPositiveHex: +(0x10), signedNegativeExponent: -1e2, signedNegativeZeroKey: member[-0], signedPositiveOneKey: member[+1], signedNegativeParenKey: member[-(2)], signedPositiveHexKey: member[+(0x10)], signedNegativeExponentKey: member[-1e2], logicalNotZero: !0, logicalNotBigInt: !0n, logicalNotFalse: !false, logicalNotTemplate: !`static`, bitwiseNotZero: ~(0), bitwiseNotBigInt: ~1n, bitwiseNotString: ~`2`, logicalNotKey: member[!false], bitwiseNotKey: member[~1], bitwiseNotBigIntKey: member[~1n], voidLogicalNotValue: void (!0), voidBitwiseNotValue: void (~1n), voidSignedNegativeValue: void (-0), voidLogicalNotKey: member[void (!false)], voidBitwiseNotKey: member[void (~1)], voidSignedPositiveKey: member[void (+2)], typeofNumber: typeof 0, typeofNull: typeof null, typeofTemplate: typeof `static`, typeofNumberKey: member[typeof 0], typeofStringKey: member[typeof `static`], deletePrimitive: delete 0, deleteKey: member[delete 0], voidDeletePrimitive: void (delete 0), voidDeleteKey: member[void (delete 0)], typeofDelete: typeof delete 0, deleteNot: delete (!0), voidDoubleNot: void (!!0), typeofDeleteKey: member[typeof delete 0], voidDoubleNotKey: member[void (!!0)], typeofVoidKey: member[typeof void 0], deleteVoidKey: member[delete (void 0)], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;";
+    const key_fallback_source = "const props = {}; const label = \"literal\"; const count = 2; const member = { deep: { value: \"M\" }, \"undefined\": \"U\", true: \"truthy\", \"-2\": \"minus-two\", number: \"N\", string: \"S\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...props} {...{ staticTemplateValue: `static`, id: label, count: count, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], signedNegativeZero: -0, signedPositiveOne: +1, signedNegativeParen: -(2), signedPositiveHex: +(0x10), signedNegativeExponent: -1e2, signedNegativeZeroKey: member[-0], signedPositiveOneKey: member[+1], signedNegativeParenKey: member[-(2)], signedPositiveHexKey: member[+(0x10)], signedNegativeExponentKey: member[-1e2], logicalNotZero: !0, logicalNotBigInt: !0n, logicalNotFalse: !false, logicalNotTemplate: !`static`, bitwiseNotZero: ~(0), bitwiseNotBigInt: ~1n, bitwiseNotString: ~`2`, logicalNotKey: member[!false], bitwiseNotKey: member[~1], bitwiseNotBigIntKey: member[~1n], voidLogicalNotValue: void (!0), voidBitwiseNotValue: void (~1n), voidSignedNegativeValue: void (-0), voidLogicalNotKey: member[void (!false)], voidBitwiseNotKey: member[void (~1)], voidSignedPositiveKey: member[void (+2)], typeofNumber: typeof 0, typeofNull: typeof null, typeofTemplate: typeof `static`, typeofNumberKey: member[typeof 0], typeofStringKey: member[typeof `static`], deletePrimitive: delete 0, deleteKey: member[delete 0], voidDeletePrimitive: void (delete 0), voidDeleteKey: member[void (delete 0)], typeofDelete: typeof delete 0, deleteNot: delete (!0), voidDoubleNot: void (!!0), typeofDeleteKey: member[typeof delete 0], voidDoubleNotKey: member[void (!!0)], typeofVoidKey: member[typeof void 0], deleteVoidKey: member[delete (void 0)], typeofSignedValue: typeof -0, deleteSignedValue: delete (+2), signedChainValue: -(-0), voidSignedTypeofValue: void (typeof -0), optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}<i /></Comp>;";
     var key_fallback_fixture = try jsxSpreadChildTestFixture(allocator, key_fallback_source);
     const key_fallback_owner = key_fallback_fixture.semantic.captureOwnerToken();
     var key_fallback_item_symbol: ?u32 = null;
@@ -26001,6 +26062,7 @@ test "#6193 JSX spread retains at most two pure nested unary operators" {
         "const member = { undefined: \"u\" }; const items = [1]; const result = <Comp {...{ value: member[void (typeof delete 0)] }} key=\"k\">{...items}</Comp>;",
         "const member = { true: \"truthy\" }; const items = [1]; const result = <Comp {...{ value: member[delete (typeof false)] }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ value: typeof (~0) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete +0 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ value: typeof void 0 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ value: delete (void 0) }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ value: void (void 0) }} key=\"k\">{...items}</Comp>;",
@@ -26025,7 +26087,6 @@ test "#6193 JSX spread retains at most two pure nested unary operators" {
         "const member = {}; const items = [1]; const result = <Comp {...{ value: typeof delete member.value }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ value: delete (~({ value: 1 })) }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ value: void (!!({ value: 1 })) }} key=\"k\">{...items}</Comp>;",
-        "const items = [1]; const result = <Comp {...{ value: delete +0 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ value: typeof void !0 }} key=\"k\">{...items}</Comp>;",
         "function getKey() { return \"x\"; } const items = [1]; const result = <Comp {...{ value: typeof `${getKey()}` }} key=\"k\">{...items}</Comp>;",
         "const key = 0; const member = {}; const items = [1]; const result = <Comp {...{ value: member[typeof delete (key + \"\")] }} key=\"k\">{...items}</Comp>;",
@@ -26095,6 +26156,104 @@ test "#6193 JSX spread retains at most two pure nested unary operators" {
     malformed.ast.nodes.items[paren_raw].data.unary.flags = 1;
     try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, outer_idx));
     malformed.ast.nodes.items[paren_raw].data.unary.flags = saved_paren_flags;
+}
+
+test "#6193 JSX spread composes numeric signs with pure unary operators" {
+    const allocator = std.testing.allocator;
+    const safe_sources = [_][]const u8{
+        "const items = [1]; const result = <Comp {...{ value: typeof -0 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete (+2) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: !(-0) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: ~(+1) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: +delete 0 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: -(-0) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: void (typeof -0) }} key=\"k\">{...items}</Comp>;",
+    };
+    for (safe_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(auditedJsxSpreadPropsOperandForTest(&fixture));
+    }
+
+    const hostile_sources = [_][]const u8{
+        "const key = 0; const items = [1]; const result = <Comp {...{ value: typeof -key }} key=\"k\">{...items}</Comp>;",
+        "function getValue() { return 0; } const items = [1]; const result = <Comp {...{ value: delete (+getValue()) }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ value: !(-member.value) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: ~(+({})) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: typeof +1n }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: delete (-1n) }} key=\"k\">{...items}</Comp>;",
+        "const key = 1; const member = {}; const items = [1]; const result = <Comp {...{ value: member[typeof -key] }} key=\"k\">{...items}</Comp>;",
+        "function getKey() { return 1; } const member = {}; const items = [1]; const result = <Comp {...{ value: member[delete (+getKey())] }} key=\"k\">{...items}</Comp>;",
+        "const member = { number: \"N\" }; const items = [1]; const result = <Comp {...{ value: member[typeof -0] }} key=\"k\">{...items}</Comp>;",
+        "const member = { true: \"truthy\" }; const items = [1]; const result = <Comp {...{ value: member[delete (+2)] }} key=\"k\">{...items}</Comp>;",
+        "const member = { \"-2\": \"minus-two\" }; const items = [1]; const result = <Comp {...{ value: member[~(+1)] }} key=\"k\">{...items}</Comp>;",
+        "const member = { \"undefined\": \"u\" }; const items = [1]; const result = <Comp {...{ value: member[void (typeof -0)] }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: typeof (+(-0)) }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: typeof (void (+1)) }} key=\"k\">{...items}</Comp>;",
+        "const key = 0; const items = [1]; const result = <Comp {...{ value: typeof ++key }} key=\"k\">{...items}</Comp>;",
+    };
+    for (hostile_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(!auditedJsxSpreadPropsOperandForTest(&fixture));
+    }
+
+    var malformed_arena = std.heap.ArenaAllocator.init(allocator);
+    defer malformed_arena.deinit();
+    var malformed = try jsxSpreadChildTestFixture(
+        malformed_arena.allocator(),
+        "const items = [1]; const result = <Comp {...{ value: typeof (-0) }} key=\"k\">{...items}</Comp>;",
+    );
+    var outer_typeof: ?ast_mod.NodeIndex = null;
+    var inner_minus: ?ast_mod.NodeIndex = null;
+    const typeof_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.kw_typeof)));
+    const minus_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.minus)));
+    for (malformed.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .unary_expression) continue;
+        const extra = node.data.extra;
+        if (extra > malformed.ast.extra_data.items.len or malformed.ast.extra_data.items.len - extra < 2) continue;
+        const operator_raw = malformed.ast.extra_data.items[extra + 1] & 0xff;
+        if (operator_raw == typeof_raw) outer_typeof = @fromBackingInt(@intCast(raw));
+        if (operator_raw == minus_raw) inner_minus = @fromBackingInt(@intCast(raw));
+    }
+    const outer_idx = outer_typeof orelse return error.MissingSignedNestedTypeof;
+    const minus_idx = inner_minus orelse return error.MissingNestedMinus;
+    try std.testing.expect(isRetainableJsxLiteralUnaryValue(&malformed.ast, outer_idx));
+
+    const minus_node_raw: usize = @intCast(@backingInt(minus_idx));
+    const minus_extra = malformed.ast.nodes.items[minus_node_raw].data.extra;
+    const saved_flags = malformed.ast.extra_data.items[minus_extra + 1];
+    malformed.ast.extra_data.items[minus_extra + 1] = saved_flags | 0x100;
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, outer_idx));
+    malformed.ast.extra_data.items[minus_extra + 1] = saved_flags;
+
+    const saved_operand = malformed.ast.extra_data.items[minus_extra];
+    malformed.ast.extra_data.items[minus_extra] = @intCast(malformed.ast.nodes.items.len);
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, outer_idx));
+    malformed.ast.extra_data.items[minus_extra] = saved_operand;
+
+    const saved_minus_extra = malformed.ast.nodes.items[minus_node_raw].data.extra;
+    malformed.ast.nodes.items[minus_node_raw].data.extra = @intCast(malformed.ast.extra_data.items.len);
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, outer_idx));
+    malformed.ast.nodes.items[minus_node_raw].data.extra = saved_minus_extra;
+
+    const outer_extra = malformed.ast.nodes.items[@intCast(@backingInt(outer_idx))].data.extra;
+    const paren_raw = malformed.ast.extra_data.items[outer_extra];
+    try std.testing.expect(paren_raw < malformed.ast.nodes.items.len);
+    const saved_paren_flags = malformed.ast.nodes.items[paren_raw].data.unary.flags;
+    malformed.ast.nodes.items[paren_raw].data.unary.flags = 1;
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, outer_idx));
+    malformed.ast.nodes.items[paren_raw].data.unary.flags = saved_paren_flags;
+
+    const numeric_raw = malformed.ast.extra_data.items[minus_extra];
+    try std.testing.expect(numeric_raw < malformed.ast.nodes.items.len);
+    const numeric_idx = @as(usize, @intCast(numeric_raw));
+    const saved_numeric = malformed.ast.nodes.items[numeric_idx];
+    malformed.ast.nodes.items[numeric_idx].tag = .bigint_literal;
+    try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, outer_idx));
+    malformed.ast.nodes.items[numeric_idx] = saved_numeric;
 }
 
 test "#6193 JSX spread admits void as a nested pure unary operator" {
