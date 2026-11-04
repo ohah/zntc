@@ -33,6 +33,7 @@ const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const ast_mod = @import("../parser/ast.zig");
 const ast_walk = @import("../parser/ast_walk.zig");
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const plugin_mod = @import("plugin.zig");
 const transformer_mod = @import("../transformer/transformer.zig");
 const TransformOptions = transformer_mod.TransformOptions;
@@ -775,6 +776,232 @@ fn expectColdAndCachedVisitorMutationRetainsGraph(kind: ColdParseVisitorKind, so
     try expectMutatedVisitorGraph(&warm_graph, entry, kind, warm_state);
 }
 
+const TrackedDirectEvalGraphHookState = struct {
+    calls: usize = 0,
+    did_inject: bool = false,
+    insertion_scope: ScopeId = .none,
+    initial_scope_has_direct_eval: ?bool = null,
+    edited_scope_has_direct_eval: ?bool = null,
+};
+
+fn trackedDirectEvalGraphHook(
+    ctx: ?*anyopaque,
+    api: *plugin_mod.AstTransformCtx,
+    info: @import("../transformer/ast_plugin.zig").FunctionInfo,
+) plugin_mod.PluginError!void {
+    const state_ptr = ctx orelse return error.PluginFailed;
+    const state: *TrackedDirectEvalGraphHookState = @ptrCast(@alignCast(state_ptr));
+    state.calls += 1;
+    if (info.node_tag != .function_declaration) return;
+
+    const scope = api.insertion_scope;
+    if (scope.isNone()) return error.PluginFailed;
+    const scope_index = scope.toIndex();
+    state.insertion_scope = scope;
+    if (scope_index >= api.transformer.scopes.len) return error.PluginFailed;
+    state.initial_scope_has_direct_eval = api.transformer.scopes[scope_index].subtree_has_direct_eval;
+
+    const injected = try api.parseAndInjectStatements("eval('secret');");
+    defer api.getAllocator().free(injected);
+    for (injected) |statement| try api.addTrailingStatement(statement);
+    if (api.transformer.semantic_editor) |*editor| {
+        if (scope_index >= editor.scopes.items.len) return error.PluginFailed;
+        state.edited_scope_has_direct_eval = editor.scopes.items[scope_index].subtree_has_direct_eval;
+    } else {
+        return error.PluginFailed;
+    }
+    state.did_inject = true;
+}
+
+const TransformedDirectEvalCallCount = struct {
+    ast: *const ast_mod.Ast,
+    count: usize = 0,
+
+    fn visit(self: *@This(), _: ast_mod.NodeIndex, node: ast_mod.Node) ast_walk.WalkAction {
+        if (node.tag != .call_expression) return .descend;
+        const callee = self.ast.readExtraNode(node.data.extra, 0);
+        if (callee.isNone()) return .descend;
+        const callee_node = self.ast.getNode(callee);
+        if (callee_node.tag == .identifier_reference and
+            Scanner.identifierNamesEqual(self.ast.identifierNameText(callee_node), "eval"))
+        {
+            self.count += 1;
+        }
+        return .descend;
+    }
+};
+
+fn expectTrackedDirectEvalGraph(
+    graph: *const ModuleGraph,
+    entry: []const u8,
+    state: TrackedDirectEvalGraphHookState,
+) !void {
+    try std.testing.expectEqual(@as(usize, 1), state.calls);
+    try std.testing.expect(state.did_inject);
+    try std.testing.expect(!state.insertion_scope.isNone());
+    try std.testing.expectEqual(false, state.initial_scope_has_direct_eval.?);
+    try std.testing.expectEqual(true, state.edited_scope_has_direct_eval.?);
+    try expectVisitorGraphReady(graph, entry);
+
+    const module = graph.findModuleByPath(entry).?;
+    const semantic = &module.semantic.?;
+    const scope_index = state.insertion_scope.toIndex();
+    try std.testing.expect(scope_index < semantic.scopes.len);
+    try std.testing.expect(semantic.scopes[scope_index].subtree_has_direct_eval);
+
+    const ast = &module.ast.?;
+    var eval_calls = TransformedDirectEvalCallCount{ .ast = ast };
+    try ast_walk.walkPreorderIterative(
+        std.testing.allocator,
+        ast,
+        ast.transformed_root.?,
+        &eval_calls,
+        TransformedDirectEvalCallCount.visit,
+    );
+    try std.testing.expectEqual(@as(usize, 1), eval_calls.count);
+}
+
+fn expectColdAndCachedTrackedDirectEvalGraph() !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const source = "function read() { let secret = 1; }";
+    try writeFile(tmp.dir, "entry.js", source);
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.js" });
+    defer std.testing.allocator.free(entry);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    var cold_state: TrackedDirectEvalGraphHookState = .{};
+    const cold_plugins = [_]plugin_mod.Plugin{.{
+        .name = "tracked-direct-eval-function-hook",
+        .context = @ptrCast(&cold_state),
+        .onFunction = trackedDirectEvalGraphHook,
+        .ast_graph_contract = .tracked_function_edits,
+    }};
+    {
+        var cache = ResolveCache.init(std.testing.allocator, .{});
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.disk_cache = &disk;
+        graph.disk_load_enabled = true;
+        graph.disk_options_hash = 0x9234;
+        graph.disk_compiler_build_id = 0xABFE;
+        graph.max_threads = 1;
+        graph.plugins = &cold_plugins;
+
+        try graph.build(std.testing.io, &.{entry});
+
+        try std.testing.expectEqual(@as(usize, 0), graph.disk_load_hits.load(.monotonic));
+        try expectTrackedDirectEvalGraph(&graph, entry, cold_state);
+    }
+
+    var warm_state: TrackedDirectEvalGraphHookState = .{};
+    const warm_plugins = [_]plugin_mod.Plugin{.{
+        .name = "tracked-direct-eval-function-hook",
+        .context = @ptrCast(&warm_state),
+        .onFunction = trackedDirectEvalGraphHook,
+        .ast_graph_contract = .tracked_function_edits,
+    }};
+    var warm_cache = ResolveCache.init(std.testing.allocator, .{});
+    defer warm_cache.deinit();
+    var warm_graph = ModuleGraph.init(std.testing.allocator, &warm_cache);
+    defer warm_graph.deinit();
+    warm_graph.disk_cache = &disk;
+    warm_graph.disk_load_enabled = true;
+    warm_graph.disk_options_hash = 0x9234;
+    warm_graph.disk_compiler_build_id = 0xABFE;
+    warm_graph.max_threads = 1;
+    warm_graph.plugins = &warm_plugins;
+
+    try warm_graph.build(std.testing.io, &.{entry});
+
+    try std.testing.expectEqual(@as(usize, 1), warm_graph.disk_load_hits.load(.monotonic));
+    try expectTrackedDirectEvalGraph(&warm_graph, entry, warm_state);
+}
+
+const UntrackedEvalGraphMutationState = struct {
+    mutations: usize = 0,
+};
+
+fn untrackedEvalGraphMutationHook(
+    ctx: ?*anyopaque,
+    api: *plugin_mod.AstTransformCtx,
+    info: @import("../transformer/ast_plugin.zig").FunctionInfo,
+) plugin_mod.PluginError!void {
+    const state_ptr = ctx orelse return error.PluginFailed;
+    const state: *UntrackedEvalGraphMutationState = @ptrCast(@alignCast(state_ptr));
+    const ast = api.transformer.ast;
+    const body = ast.getNode(info.body_idx);
+    if (body.tag != .block_statement) return;
+    const body_items = ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len];
+    for (body_items) |raw| {
+        const statement: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+        const statement_node = ast.getNode(statement);
+        if (statement_node.tag != .expression_statement) continue;
+        const expression_idx = statement_node.data.unary.operand;
+        const expression = ast.getNode(expression_idx);
+        if (expression.tag != .identifier_reference or
+            !Scanner.identifierNamesEqual(ast.identifierNameText(expression), "eval")) continue;
+
+        const arguments = try ast.addNodeList(&.{});
+        const extra = try ast.addExtras(&.{ @backingInt(expression_idx), arguments.start, arguments.len, 0 });
+        const call = try ast.addExtraNode(.call_expression, expression.span, extra);
+        ast.nodes.items[@backingInt(statement)].data.unary.operand = call;
+        state.mutations += 1;
+        return;
+    }
+}
+
+fn expectUntrackedEvalGraphMutationRejected(source: []const u8) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", source);
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.js" });
+    defer std.testing.allocator.free(entry);
+
+    var mutation: UntrackedEvalGraphMutationState = .{};
+    const plugins = [_]plugin_mod.Plugin{.{
+        .name = "tracked-contract-bypass-eval-function-hook",
+        .context = @ptrCast(&mutation),
+        .onFunction = untrackedEvalGraphMutationHook,
+        .ast_graph_contract = .tracked_function_edits,
+    }};
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.max_threads = 1;
+    graph.plugins = &plugins;
+
+    try graph.build(std.testing.io, &.{entry});
+
+    try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+    try std.testing.expectEqual(@as(usize, 1), mutation.mutations);
+    const module = graph.findModuleByPath(entry).?;
+    try std.testing.expectEqual(Module.State.ready, module.state);
+    try std.testing.expect(module.semantic != null);
+    try std.testing.expect(module.semantic.?.owner_token != .unassigned);
+    try std.testing.expect(module.ast != null);
+    try std.testing.expectEqualStrings(source, module.ast.?.source);
+    try std.testing.expect(module.ast.?.transformed_root == null);
+    try std.testing.expect(module.transform_cache == null);
+
+    var error_diagnostics: usize = 0;
+    for (graph.diagnostics.items) |diagnostic| {
+        if (diagnostic.severity == .@"error") error_diagnostics += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), error_diagnostics);
+}
+
 fn coldParseVisitorHook(
     ctx: ?*anyopaque,
     api: *plugin_mod.AstTransformCtx,
@@ -966,6 +1193,27 @@ test "graph visitor caller: identity-retaining edits keep the graph on cold and 
     };
 
     for (cases) |case| try expectColdAndCachedVisitorMutationRetainsGraph(case.kind, case.source);
+}
+
+test "graph function-hook caller: tracked direct eval injection retains its exact graph on cold and cached ASTs" {
+    try expectColdAndCachedTrackedDirectEvalGraph();
+}
+
+test "graph function-hook caller: ten untracked direct eval edits fail closed" {
+    const sources = [_][]const u8{
+        "function sibling(){eval('retained');}function read(){let secret=1;eval;} ",
+        "function sibling(){eval('retained');}async function read(){let secret=1;eval;} ",
+        "function sibling(){eval('retained');}function* read(){let secret=1;eval;} ",
+        "function sibling(){eval('retained');}const read=function read(){let secret=1;eval;};",
+        "function sibling(){eval('retained');}const read=()=>{let secret=1;eval;};",
+        "function sibling(){eval('retained');}const holder={read(){let secret=1;eval;}};",
+        "function sibling(){eval('retained');}class Holder{read(){let secret=1;eval;}}",
+        "function sibling(){eval('retained');}class Holder{static read(){let secret=1;eval;}}",
+        "function sibling(){eval('retained');}function outer(){function read(){let secret=1;eval;}}",
+        "function sibling(){eval('retained');}{function read(){let secret=1;eval;}}",
+    };
+
+    for (sources) |source| try expectUntrackedEvalGraphMutationRejected(source);
 }
 
 test "graph visitor caller: cached AST load reruns every hook on the restored graph" {
