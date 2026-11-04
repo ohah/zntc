@@ -3214,7 +3214,8 @@ fn isRetainableJsxComputedPropertyKey(
             .template_literal => isExactJsxNoSubstitutionTemplateLiteral(ast, operand_idx),
             .binary_expression => isRetainableJsxGlobalUndefinedAdditionMemberKey(ast, semantic, operand_idx) or
                 isRetainableJsxGlobalUndefinedNumericBinaryMemberKey(ast, semantic, operand_idx) or
-                isRetainableJsxGlobalUndefinedBooleanBinaryMemberKey(ast, semantic, operand_idx),
+                isRetainableJsxGlobalUndefinedBooleanBinaryMemberKey(ast, semantic, operand_idx) or
+                isRetainableJsxGlobalUndefinedExponentiationMemberKey(ast, semantic, operand_idx),
             .logical_expression => isRetainableJsxGlobalUndefinedLogicalAndMemberKey(ast, semantic, operand_idx) or
                 isRetainableJsxGlobalUndefinedFallbackLogicalMemberKey(ast, semantic, operand_idx),
             .unary_expression => isRetainableJsxGlobalUndefinedUnaryMemberKey(ast, semantic, operand_idx) or
@@ -3360,6 +3361,31 @@ fn isRetainableJsxGlobalUndefinedNumericBinaryMemberKey(
         }
     }
     if (!operator_is_number) return false;
+
+    const left_idx = unwrapRetainableJsxParentheses(ast, node.data.binary.left) orelse return false;
+    const right_idx = unwrapRetainableJsxParentheses(ast, node.data.binary.right) orelse return false;
+    const left_is_undefined = isUnresolvedGlobalUndefinedReference(ast, semantic, left_idx);
+    const right_is_undefined = isUnresolvedGlobalUndefinedReference(ast, semantic, right_idx);
+    if (left_is_undefined and right_is_undefined) return true;
+    if (left_is_undefined) return isRetainableJsxNonBigIntPrimitiveBinaryOperand(ast, right_idx);
+    if (right_is_undefined) return isRetainableJsxNonBigIntPrimitiveBinaryOperand(ast, left_idx);
+    return false;
+}
+
+/// Exponentiation with exact unresolved global `undefined` and a direct
+/// non-BigInt primitive always produces a Number, so its computed key cannot
+/// be the Object.assign `__proto__` setter. ES5 lowering creates `Math.pow`;
+/// the enclosing syntax gate separately records that exact global reference
+/// and lets the linker rename a source `Math` binding that would capture it.
+fn isRetainableJsxGlobalUndefinedExponentiationMemberKey(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+) bool {
+    if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[@backingInt(node_idx)];
+    if (node.tag != .binary_expression or
+        node.data.binary.flags != @as(u16, @intCast(@backingInt(token_mod.Kind.star2)))) return false;
 
     const left_idx = unwrapRetainableJsxParentheses(ast, node.data.binary.left) orelse return false;
     const right_idx = unwrapRetainableJsxParentheses(ast, node.data.binary.right) orelse return false;
@@ -26288,6 +26314,12 @@ test "#6193 JSX spread retains native bound/member-chain and static computed obj
         "const items = [1]; const result = <Comp {...{ [undefined & 1]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [undefined | 1]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [undefined ^ 1]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [undefined ** 0]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [(((undefined))) ** (0)]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [0 ** undefined]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [\"2\" ** undefined]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [undefined ** undefined]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const Math = { pow(left, right) { return left + right; } }; const items = [1]; const result = <Comp {...{ [undefined ** 0]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [1 - (undefined)]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [undefined - \"__proto__\"]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [undefined - undefined]: 1 }} key=\"k\">{...items}</Comp>;",
@@ -26421,6 +26453,33 @@ test "#6193 JSX spread retains native bound/member-chain and static computed obj
     ));
     malformed_addition.ast.nodes.items[addition_raw].data.binary.flags = minus_flags;
     try std.testing.expect(!isRetainableJsxGlobalUndefinedBooleanBinaryMemberKey(
+        &malformed_addition.ast,
+        &malformed_addition.semantic,
+        addition_node_idx,
+    ));
+    const exponentiation_flags = @as(u16, @intCast(@backingInt(token_mod.Kind.star2)));
+    malformed_addition.ast.nodes.items[addition_raw].data.binary.flags = exponentiation_flags;
+    try std.testing.expect(isRetainableJsxGlobalUndefinedExponentiationMemberKey(
+        &malformed_addition.ast,
+        &malformed_addition.semantic,
+        addition_node_idx,
+    ));
+    malformed_addition.ast.nodes.items[addition_raw].data.binary.flags = exponentiation_flags | @as(u16, 0x100);
+    try std.testing.expect(!isRetainableJsxGlobalUndefinedExponentiationMemberKey(
+        &malformed_addition.ast,
+        &malformed_addition.semantic,
+        addition_node_idx,
+    ));
+    malformed_addition.ast.nodes.items[addition_raw].data.binary.flags =
+        @intCast(@backingInt(token_mod.Kind.star2_eq));
+    try std.testing.expect(!isRetainableJsxGlobalUndefinedExponentiationMemberKey(
+        &malformed_addition.ast,
+        &malformed_addition.semantic,
+        addition_node_idx,
+    ));
+    malformed_addition.ast.nodes.items[addition_raw].data.binary.flags = exponentiation_flags;
+    malformed_addition.ast.nodes.items[addition_raw].data.binary.right = invalid_node_idx;
+    try std.testing.expect(!isRetainableJsxGlobalUndefinedExponentiationMemberKey(
         &malformed_addition.ast,
         &malformed_addition.semantic,
         addition_node_idx,
@@ -26608,8 +26667,17 @@ test "#6193 JSX spread retains native bound/member-chain and static computed obj
     try std.testing.expect(!fullPrepassAuditedJsxGraphAdmissionForTest(&shadowed_unary_chain_undefined, .automatic));
 
     const hostile_sources = [_][]const u8{
-        "const items = [1]; const result = <Comp {...{ [undefined ** 0]: 1 }} key=\"k\">{...items}</Comp>;",
-        "const Math = { pow(left, right) { return left + right; } }; const items = [1]; const result = <Comp {...{ [undefined ** 0]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [undefined ** 1n]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [1n ** undefined]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [undefined ** missingKey]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [missingKey ** undefined]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [undefined ** {}]: 1 }} key=\"k\">{...items}</Comp>;",
+        "function getKey() { return 1; } const items = [1]; const result = <Comp {...{ [undefined ** getKey()]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [undefined ** (2 ** 1)]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const undefined = 2; const items = [1]; const result = <Comp {...{ [undefined ** 0]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [undefined ** 0 ** 1]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [2 ** 3]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [undefined ** Symbol()]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [undefined === missingKey]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [missingKey < undefined]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [undefined == 1n]: 1 }} key=\"k\">{...items}</Comp>;",
