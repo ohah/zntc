@@ -411,7 +411,7 @@ test "static block external handoff preserves actual owners and rejects foreign 
     };
     const Check = struct {
         fn run(alloc: std.mem.Allocator, tree: *const ast.Ast, output_root: ast.NodeIndex, parser_count: u32, sem: *const Data, unresolved: *const std.AutoHashMapUnmanaged(u32, void), producer: *const Transformer) !bool {
-            var report = try @import("../transformer/symbol_coverage.zig").checkOutputNormalFormQuiet(alloc, tree, output_root, parser_count, sem.symbol_ids, sem.symbols.items, sem.scopes, sem.scope_maps, &sem.scope_owner_map, sem.references, producer.helper_ref_nodes.items, &sem.helper_scope_map, unresolved, &producer.explicit_global_reference_nodes, &producer.reference_origin_map, .{ .pre_transform_scope_count = sem.scope_history.source_scopes.len }, &sem.source_owned_retirements, .{
+            var report = try @import("../transformer/symbol_coverage.zig").checkOutputNormalFormQuiet(alloc, tree, output_root, parser_count, sem.symbol_ids, sem.symbols.items, sem.scopes, sem.scope_maps, &sem.scope_owner_map, sem.references, producer.helper_ref_nodes.items, &sem.helper_scope_map, unresolved, &producer.explicit_global_reference_nodes, &producer.reference_origin_map, .{ .pre_transform_scope_count = sem.scope_history.source_scopes.len, .pre_transform_scope_history_event_count = 0 }, &sem.source_owned_retirements, .{
                 .node_scope_provenance = &sem.node_scope_provenance,
                 .scope_history = &sem.scope_history,
                 .runtime_helper_symbols = &producer.runtime_helper_symbol_ids,
@@ -674,7 +674,7 @@ test "generator and heritage source witnesses preserve immutable edges and rejec
     };
     const Check = struct {
         fn run(alloc: std.mem.Allocator, tree: *const ast.Ast, output_root: ast.NodeIndex, parser_count: u32, sem: *const Data, unresolved: *const std.AutoHashMapUnmanaged(u32, void), producer: *const Transformer) !bool {
-            var report = try @import("../transformer/symbol_coverage.zig").checkOutputNormalFormQuiet(alloc, tree, output_root, parser_count, sem.symbol_ids, sem.symbols.items, sem.scopes, sem.scope_maps, &sem.scope_owner_map, sem.references, producer.helper_ref_nodes.items, &sem.helper_scope_map, unresolved, &producer.explicit_global_reference_nodes, &producer.reference_origin_map, .{ .pre_transform_scope_count = sem.scope_history.source_scopes.len }, &sem.source_owned_retirements, .{
+            var report = try @import("../transformer/symbol_coverage.zig").checkOutputNormalFormQuiet(alloc, tree, output_root, parser_count, sem.symbol_ids, sem.symbols.items, sem.scopes, sem.scope_maps, &sem.scope_owner_map, sem.references, producer.helper_ref_nodes.items, &sem.helper_scope_map, unresolved, &producer.explicit_global_reference_nodes, &producer.reference_origin_map, .{ .pre_transform_scope_count = sem.scope_history.source_scopes.len, .pre_transform_scope_history_event_count = 0 }, &sem.source_owned_retirements, .{
                 .node_scope_provenance = &sem.node_scope_provenance,
                 .scope_history = &sem.scope_history,
                 .runtime_helper_symbols = &producer.runtime_helper_symbol_ids,
@@ -892,7 +892,7 @@ test "static initializer factory authenticates source carriers and rejects paire
         };
         const Check = struct {
             fn run(alloc: std.mem.Allocator, tree: *const ast.Ast, output_root: ast.NodeIndex, parser_count: u32, sem: *const Data, unresolved: *const std.AutoHashMapUnmanaged(u32, void), producer: *const Transformer) !bool {
-                var report = try @import("../transformer/symbol_coverage.zig").checkOutputNormalFormQuiet(alloc, tree, output_root, parser_count, sem.symbol_ids, sem.symbols.items, sem.scopes, sem.scope_maps, &sem.scope_owner_map, sem.references, producer.helper_ref_nodes.items, &sem.helper_scope_map, unresolved, &producer.explicit_global_reference_nodes, &producer.reference_origin_map, .{ .pre_transform_scope_count = sem.scope_history.source_scopes.len }, &sem.source_owned_retirements, .{
+                var report = try @import("../transformer/symbol_coverage.zig").checkOutputNormalFormQuiet(alloc, tree, output_root, parser_count, sem.symbol_ids, sem.symbols.items, sem.scopes, sem.scope_maps, &sem.scope_owner_map, sem.references, producer.helper_ref_nodes.items, &sem.helper_scope_map, unresolved, &producer.explicit_global_reference_nodes, &producer.reference_origin_map, .{ .pre_transform_scope_count = sem.scope_history.source_scopes.len, .pre_transform_scope_history_event_count = 0 }, &sem.source_owned_retirements, .{
                     .node_scope_provenance = &sem.node_scope_provenance,
                     .scope_history = &sem.scope_history,
                     .runtime_helper_symbols = &producer.runtime_helper_symbol_ids,
@@ -1053,7 +1053,7 @@ test "generator loop handoffs authenticate actual source bodies births and compu
     };
     const Check = struct {
         fn run(alloc: std.mem.Allocator, tree: *const ast.Ast, output_root: ast.NodeIndex, parser_count: u32, sem: *const Data, unresolved: *const std.AutoHashMapUnmanaged(u32, void), producer: *const Transformer) !bool {
-            var report = try @import("../transformer/symbol_coverage.zig").checkOutputNormalFormQuiet(alloc, tree, output_root, parser_count, sem.symbol_ids, sem.symbols.items, sem.scopes, sem.scope_maps, &sem.scope_owner_map, sem.references, producer.helper_ref_nodes.items, &sem.helper_scope_map, unresolved, &producer.explicit_global_reference_nodes, &producer.reference_origin_map, .{ .pre_transform_scope_count = sem.scope_history.source_scopes.len }, &sem.source_owned_retirements, .{
+            var report = try @import("../transformer/symbol_coverage.zig").checkOutputNormalFormQuiet(alloc, tree, output_root, parser_count, sem.symbol_ids, sem.symbols.items, sem.scopes, sem.scope_maps, &sem.scope_owner_map, sem.references, producer.helper_ref_nodes.items, &sem.helper_scope_map, unresolved, &producer.explicit_global_reference_nodes, &producer.reference_origin_map, .{ .pre_transform_scope_count = sem.scope_history.source_scopes.len, .pre_transform_scope_history_event_count = 0 }, &sem.source_owned_retirements, .{
                 .node_scope_provenance = &sem.node_scope_provenance,
                 .scope_history = &sem.scope_history,
                 .runtime_helper_symbols = &producer.runtime_helper_symbol_ids,

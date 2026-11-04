@@ -19696,6 +19696,7 @@ fn genericPreparedOutputHasNormalForm(
     root: ast_mod.NodeIndex,
     parser_node_count: u32,
     pre_transform_scope_count: usize,
+    pre_transform_scope_history_event_count: usize,
     source_unresolved: *const std.AutoHashMapUnmanaged(u32, void),
     published_exact: *?@import("../../transformer/symbol_coverage.zig").ExactReport,
 ) !bool {
@@ -19758,6 +19759,7 @@ fn genericPreparedOutputHasNormalForm(
             .known_output_names = if (transformer.block_rename_map) |*names| names else null,
             .erased_const_enum_external_origins = &transformer.erased_const_enum_external_reference_origins,
             .pre_transform_scope_count = pre_transform_scope_count,
+            .pre_transform_scope_history_event_count = pre_transform_scope_history_event_count,
             .namespace_member_owners = &semantic.namespace_member_owners,
             .namespace_declaration_owners = &semantic.namespace_declaration_owners,
         },
@@ -19778,7 +19780,7 @@ fn genericPreparedOutputHasNormalForm(
     if (@import("builtin").is_test and !valid) {
         report_mod.printExactRejectedOutput(module.path, report.exact);
         report_mod.printStrict(module.path, &report.strict);
-        std.debug.print("GENERIC_NORMAL_FORM_REJECT file={s} retirement_state_mismatch={d} scope_boundary_missing={d}\n", .{ module.path, report.retirement_state_mismatch, report.scope_boundary_missing });
+        std.debug.print("GENERIC_NORMAL_FORM_REJECT file={s} retirement_state_mismatch={d} scope_boundary_missing={d} scope_boundary_mismatch={d}\n", .{ module.path, report.retirement_state_mismatch, report.scope_boundary_missing, report.scope_boundary_mismatch });
     }
     return valid;
 }
@@ -19858,6 +19860,7 @@ fn completeGenericPrepassCandidate(
     root: ast_mod.NodeIndex,
     parser_node_count: u32,
     pre_transform_scope_count: usize,
+    pre_transform_scope_history_event_count: usize,
     arena_alloc: std.mem.Allocator,
     candidate_completed: *bool,
     source_unresolved: *const std.AutoHashMapUnmanaged(u32, void),
@@ -19870,6 +19873,7 @@ fn completeGenericPrepassCandidate(
         root,
         parser_node_count,
         pre_transform_scope_count,
+        pre_transform_scope_history_event_count,
         source_unresolved,
         published_exact,
     ) catch |err| {
@@ -20221,7 +20225,12 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     const has_lowered_exponentiation = exponentiation_scan orelse false;
     const lowered_exponentiation_global = can_keep_semantic_graph and has_lowered_exponentiation;
     const debug_symbol_coverage = symbol_coverage_env.enabled();
-    const pre_transform_scope_count = if (module.semantic) |*sem| sem.scopes.len else 0;
+    const pre_transform_has_scope_history = if (module.semantic) |*sem| sem.scope_history.source_scopes.len != 0 else false;
+    // Without a sealed source/history snapshot, treat every current scope as
+    // generated and require a reachable owner instead of trusting a positive
+    // prefix from an unproven graph.
+    const pre_transform_scope_count = if (pre_transform_has_scope_history) module.semantic.?.scopes.len else 0;
+    const pre_transform_scope_history_event_count = if (pre_transform_has_scope_history) module.semantic.?.scope_history.events.len else 0;
 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
     if (can_keep_semantic_graph) {
@@ -20996,6 +21005,7 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
             root,
             parser_node_count,
             pre_transform_scope_count,
+            pre_transform_scope_history_event_count,
             arena_alloc,
             candidate_completed,
             &unresolved_nodes,
@@ -24787,6 +24797,7 @@ fn bufferPreparedOutputHasNormalForm(
     module: *const Module,
     runtime_target: @import("../../semantic/output_runtime_witness.zig").Target,
     pre_transform_scope_count: usize,
+    pre_transform_scope_history_event_count: usize,
 ) !bool {
     const runtime_proof = @import("../../semantic/output_runtime_coverage.zig").forTarget(runtime_target) orelse return false;
     const ast = if (module.ast) |*value| value else return false;
@@ -24833,6 +24844,7 @@ fn bufferPreparedOutputHasNormalForm(
         &origins,
         .{
             .pre_transform_scope_count = pre_transform_scope_count,
+            .pre_transform_scope_history_event_count = pre_transform_scope_history_event_count,
             .namespace_member_owners = &sem.namespace_member_owners,
             .namespace_declaration_owners = &sem.namespace_declaration_owners,
         },
@@ -24862,6 +24874,7 @@ pub fn prepareNodeBufferCapabilityFold(
     const source_ast = if (module.ast) |*value| value else return null;
     const source_semantic = if (module.semantic) |*value| value else return null;
     const scope_boundary_count = source_semantic.scopes.len;
+    const scope_boundary_history_event_count = source_semantic.scope_history.events.len;
     var external_reads: std.AutoHashMapUnmanaged(u32, void) = .empty;
     for (plan.removed_nodes) |node| {
         const entry = source_semantic.node_scope_provenance.get(node) orelse continue;
@@ -24877,13 +24890,13 @@ pub fn prepareNodeBufferCapabilityFold(
     // lookup. Validate its complete source/history/runtime context before the
     // immutable plan changes any AST edge; the staged copy is not authority.
     if (external_reads.count() != 0 and (!plan.isCurrent(module) or
-        !try bufferPreparedOutputHasNormalForm(arena_alloc, module, .{ .source = &runtime_source, .module = module }, scope_boundary_count))) return null;
+        !try bufferPreparedOutputHasNormalForm(arena_alloc, module, .{ .source = &runtime_source, .module = module }, scope_boundary_count, scope_boundary_history_event_count))) return null;
     var replaced_conditions: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
     for (plan.branches) |branch| try replaced_conditions.append(arena_alloc, source_ast.getNode(branch.if_index).data.ternary.a);
     const candidate_ast = (try plan.cloneForPublication(module, arena_alloc)) orelse return null;
     var prepared = (try prepareBufferGraphForAst(self, module, arena_alloc, candidate_ast, plan.removed_nodes, plan.retirements, &external_reads, replaced_conditions.items, plan.setup_statements)) orelse return null;
     errdefer prepared.discard();
-    if (!try bufferPreparedOutputHasNormalForm(arena_alloc, &prepared.candidate, .{ .source = &runtime_source, .module = &prepared.candidate }, scope_boundary_count)) {
+    if (!try bufferPreparedOutputHasNormalForm(arena_alloc, &prepared.candidate, .{ .source = &runtime_source, .module = &prepared.candidate }, scope_boundary_count, scope_boundary_history_event_count)) {
         prepared.discard();
         return null;
     }

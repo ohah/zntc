@@ -4822,6 +4822,7 @@ fn standaloneOutputNormalForm(
     analyzer: *const SemanticAnalyzer,
     root: ast_mod.NodeIndex,
     pre_transform_scope_count: usize,
+    pre_transform_scope_history_event_count: usize,
 ) std.mem.Allocator.Error!@import("transformer/symbol_coverage.zig").OutputNormalFormReport {
     const cov = @import("transformer/symbol_coverage.zig");
     return cov.checkOutputNormalFormQuiet(allocator, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, &analyzer.scope_owner_map, analyzer.references.items, transformer.helper_ref_nodes.items, &analyzer.helper_scope_map, &analyzer.unresolved_reference_nodes, &transformer.explicit_global_reference_nodes, &transformer.reference_origin_map, .{
@@ -4829,6 +4830,7 @@ fn standaloneOutputNormalForm(
         .namespace_member_owners = &analyzer.namespace_member_owners,
         .namespace_declaration_owners = &analyzer.namespace_declaration_owners,
         .pre_transform_scope_count = pre_transform_scope_count,
+        .pre_transform_scope_history_event_count = pre_transform_scope_history_event_count,
         .erased_const_enum_external_origins = &transformer.erased_const_enum_external_reference_origins,
     }, &analyzer.source_owned_retirements, .{
         .node_scope_provenance = &analyzer.node_scope_provenance,
@@ -4847,6 +4849,7 @@ fn requireStandaloneOutputNormalForm(
     analyzer: *const SemanticAnalyzer,
     root: ast_mod.NodeIndex,
     pre_transform_scope_count: usize,
+    pre_transform_scope_history_event_count: usize,
 ) error{ OutOfMemory, TransformError }!void {
     const cov = @import("transformer/symbol_coverage.zig");
     var normal = try standaloneOutputNormalForm(
@@ -4855,6 +4858,7 @@ fn requireStandaloneOutputNormalForm(
         analyzer,
         root,
         pre_transform_scope_count,
+        pre_transform_scope_history_event_count,
     );
     defer normal.deinit(allocator);
     if (normal.hasCompleteOutputIdentityBeforeNames()) return;
@@ -4862,7 +4866,7 @@ fn requireStandaloneOutputNormalForm(
         std.debug.print("R1_OUTPUT_INVALID file={s}\n", .{file_path});
         cov.printStrict(file_path, &normal.strict);
         cov.printExact(file_path, normal.exact);
-        std.debug.print("R1_RETIREMENT_STATE_INVALID count={d} scope_boundary_missing={d}\n", .{ normal.retirement_state_mismatch, normal.scope_boundary_missing });
+        std.debug.print("R1_RETIREMENT_STATE_INVALID count={d} scope_boundary_missing={d} scope_boundary_mismatch={d}\n", .{ normal.retirement_state_mismatch, normal.scope_boundary_missing, normal.scope_boundary_mismatch });
     }
     return error.TransformError;
 }
@@ -5033,6 +5037,7 @@ fn transpileWithCallbackInternal(
     // 위 `defer parser.ast.dumpStringInternStatsIfEnabled()` 가 stats 를 dump 하므로
     // 여기서 별도 defer 불필요 — parser.ast 와 transformer.ast 가 같은 instance.
     const pre_transform_scope_count = if (analyzer_storage) |*analyzer| analyzer.scopes.items.len else 0;
+    const pre_transform_scope_history_event_count = if (analyzer_storage) |*analyzer| analyzer.scope_history.events.len else 0;
     var runtime_import_identity_snapshot: ?RuntimeImportIdentitySnapshot = null;
     var type_import_shadow_snapshot: ?TypeImportShadowIdentitySnapshot = null;
     if (options.minify_identifiers and parser.source_mode == .ts) {
@@ -5226,7 +5231,7 @@ fn transpileWithCallbackInternal(
             // Raw stable source slots remain observable, but do not describe
             // the published output graph after typed source retirement.
             coverage.printExactSourceSlots(file_path, exact);
-            var normal = try standaloneOutputNormalForm(arena_alloc, &transformer, analyzer, root, pre_transform_scope_count);
+            var normal = try standaloneOutputNormalForm(arena_alloc, &transformer, analyzer, root, pre_transform_scope_count, pre_transform_scope_history_event_count);
             defer normal.deinit(arena_alloc);
             if (normal.hasCompleteOutputIdentityBeforeNames()) {
                 coverage.printExact(file_path, normal.exact);
@@ -5475,6 +5480,7 @@ fn transpileWithCallbackInternal(
         a,
         root,
         pre_transform_scope_count,
+        pre_transform_scope_history_event_count,
     );
     const explicit_global_ref_nodes = try transformer.ownedExplicitGlobalRefNodes(arena_alloc);
     if (options.minify_identifiers and analyzer_storage != null) {
@@ -15522,6 +15528,8 @@ test "R1 standalone type import erasure externalizes the actual source value rea
     transformer.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
     transformer.record_explicit_global_references = true;
     transformer.semantic_edit_enabled = true;
+    const pre_transform_scope_count = analyzer.scopes.items.len;
+    const pre_transform_scope_history_event_count = analyzer.scope_history.events.len;
     const output_root = try transformer.transform();
     if (try transformer.finishSemanticEdit()) |result| {
         analyzer.applyEdit(result);
@@ -15566,7 +15574,8 @@ test "R1 standalone type import erasure externalizes the actual source value rea
     try std.testing.expect(!missing_boundary_report.hasCompleteOutputIdentityBeforeNames());
     var report = try @import("transformer/symbol_coverage.zig").checkOutputNormalFormQuiet(a, transformer.ast, output_root, transformer.parser_node_count, analyzer.symbol_ids.items, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, &analyzer.scope_owner_map, analyzer.references.items, transformer.helper_ref_nodes.items, &analyzer.helper_scope_map, &analyzer.unresolved_reference_nodes, &transformer.explicit_global_reference_nodes, &transformer.reference_origin_map, .{
         .require_declaration_anchors = true,
-        .pre_transform_scope_count = analyzer.scopes.items.len,
+        .pre_transform_scope_count = pre_transform_scope_count,
+        .pre_transform_scope_history_event_count = pre_transform_scope_history_event_count,
         .namespace_member_owners = &analyzer.namespace_member_owners,
         .namespace_declaration_owners = &analyzer.namespace_declaration_owners,
     }, &analyzer.source_owned_retirements, .{
@@ -15986,7 +15995,7 @@ test "static capture alias retirement consumes actual producer journal and prese
     try std.testing.expectEqualStrings("1\n", runtime.stdout);
 }
 
-test "function name elision retires exact empty environments with journal history and cache proof" {
+test "function name elision scope boundary rejects overstatement with journal history and cache proof" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -16152,8 +16161,58 @@ test "function name elision retires exact empty environments with journal histor
     const default_exact = try coverage.checkExactQuiet(a, t.ast, root, t.parser_node_count, editor.symbol_ids.items, editor.symbols.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, t.helper_ref_nodes.items, &editor.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &origins, .{ .pre_transform_scope_count = source_scope_count });
     try std.testing.expect(!default_exact.isClean());
     try std.testing.expect(default_exact.scope_owner_mismatch > 0);
-    const normal = try coverage.checkOutputNormalFormQuiet(a, t.ast, root, t.parser_node_count, editor.symbol_ids.items, editor.symbols.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, t.helper_ref_nodes.items, &editor.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &origins, .{ .pre_transform_scope_count = source_scope_count, .namespace_member_owners = &analyzer.namespace_member_owners, .namespace_declaration_owners = &analyzer.namespace_declaration_owners }, &editor.source_owned_retirements, .{ .node_scope_provenance = &editor.node_scope_provenance, .scope_history = &actual_history, .class_self_symbols = &class_self, .namespace_member_owners = &analyzer.namespace_member_owners, .namespace_declaration_owners = &analyzer.namespace_declaration_owners });
+    const normal = try coverage.checkOutputNormalFormQuiet(a, t.ast, root, t.parser_node_count, editor.symbol_ids.items, editor.symbols.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, t.helper_ref_nodes.items, &editor.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &origins, .{ .pre_transform_scope_count = source_scope_count, .pre_transform_scope_history_event_count = 0, .namespace_member_owners = &analyzer.namespace_member_owners, .namespace_declaration_owners = &analyzer.namespace_declaration_owners }, &editor.source_owned_retirements, .{ .node_scope_provenance = &editor.node_scope_provenance, .scope_history = &actual_history, .class_self_symbols = &class_self, .namespace_member_owners = &analyzer.namespace_member_owners, .namespace_declaration_owners = &analyzer.namespace_declaration_owners });
     try std.testing.expect(normal.hasCompleteOutputIdentityBeforeNames());
+    try std.testing.expect(source_scope_count < editor.scopes.items.len);
+    var boundary_mismatch_fallback = try coverage.checkOutputNormalFormQuiet(a, t.ast, root, t.parser_node_count, editor.symbol_ids.items, editor.symbols.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, t.helper_ref_nodes.items, &editor.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &origins, .{ .pre_transform_scope_count = editor.scopes.items.len, .pre_transform_scope_history_event_count = 0, .namespace_member_owners = &analyzer.namespace_member_owners, .namespace_declaration_owners = &analyzer.namespace_declaration_owners }, &editor.source_owned_retirements, .{ .node_scope_provenance = &editor.node_scope_provenance, .scope_history = &actual_history, .class_self_symbols = &class_self, .namespace_member_owners = &analyzer.namespace_member_owners, .namespace_declaration_owners = &analyzer.namespace_declaration_owners });
+    defer boundary_mismatch_fallback.deinit(a);
+    try std.testing.expectEqual(@as(usize, 1), boundary_mismatch_fallback.scope_boundary_mismatch);
+    try std.testing.expect(!boundary_mismatch_fallback.hasCompleteOutputIdentityBeforeNames());
+    var missing_generated_scope: ?u32 = null;
+    for (source_scope_count..editor.scopes.items.len) |scope_index| {
+        if (scope_index >= editor.scope_maps.items.len) continue;
+        var scope_is_live = editor.scope_maps.items[scope_index].count() > 0;
+        if (!scope_is_live) for (editor.symbols.items) |symbol| {
+            if (symbol.scope_id.toIndex() == scope_index or symbol.origin_scope.toIndex() == scope_index) {
+                scope_is_live = true;
+                break;
+            }
+        };
+        if (!scope_is_live) for (editor.references.items) |reference| {
+            if (reference.scope_id.toIndex() == scope_index) {
+                scope_is_live = true;
+                break;
+            }
+        };
+        if (!scope_is_live) continue;
+        var owners = editor.scope_owner_map.iterator();
+        while (owners.next()) |entry| {
+            if (entry.value_ptr.* == scope_index) {
+                missing_generated_scope = @intCast(scope_index);
+                break;
+            }
+        }
+        if (missing_generated_scope != null) break;
+    }
+    const generated_scope = missing_generated_scope orelse return error.MissingLiveGeneratedScopeForBoundaryAudit;
+    var generated_owner_nodes: std.ArrayListUnmanaged(u32) = .empty;
+    var generated_owners = editor.scope_owner_map.iterator();
+    while (generated_owners.next()) |entry| {
+        if (entry.value_ptr.* == generated_scope) try generated_owner_nodes.append(a, entry.key_ptr.*);
+    }
+    try std.testing.expect(generated_owner_nodes.items.len > 0);
+    for (generated_owner_nodes.items) |owner_node| _ = editor.scope_owner_map.remove(owner_node);
+    var missing_owner_with_source_boundary = try coverage.checkOutputNormalFormQuiet(a, t.ast, root, t.parser_node_count, editor.symbol_ids.items, editor.symbols.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, t.helper_ref_nodes.items, &editor.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &origins, .{ .pre_transform_scope_count = source_scope_count, .pre_transform_scope_history_event_count = 0, .namespace_member_owners = &analyzer.namespace_member_owners, .namespace_declaration_owners = &analyzer.namespace_declaration_owners }, &editor.source_owned_retirements, .{ .node_scope_provenance = &editor.node_scope_provenance, .scope_history = &actual_history, .class_self_symbols = &class_self, .namespace_member_owners = &analyzer.namespace_member_owners, .namespace_declaration_owners = &analyzer.namespace_declaration_owners });
+    defer missing_owner_with_source_boundary.deinit(a);
+    try std.testing.expect(missing_owner_with_source_boundary.exact.scope_owner_mismatch > 0);
+    try std.testing.expect(!missing_owner_with_source_boundary.hasCompleteOutputIdentityBeforeNames());
+    var overstated_boundary = try coverage.checkOutputNormalFormQuiet(a, t.ast, root, t.parser_node_count, editor.symbol_ids.items, editor.symbols.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, t.helper_ref_nodes.items, &editor.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &origins, .{ .pre_transform_scope_count = editor.scopes.items.len, .pre_transform_scope_history_event_count = 0, .namespace_member_owners = &analyzer.namespace_member_owners, .namespace_declaration_owners = &analyzer.namespace_declaration_owners }, &editor.source_owned_retirements, .{ .node_scope_provenance = &editor.node_scope_provenance, .scope_history = &actual_history, .class_self_symbols = &class_self, .namespace_member_owners = &analyzer.namespace_member_owners, .namespace_declaration_owners = &analyzer.namespace_declaration_owners });
+    defer overstated_boundary.deinit(a);
+    try std.testing.expectEqual(@as(usize, 1), overstated_boundary.scope_boundary_mismatch);
+    try std.testing.expect(overstated_boundary.exact.generated_scope_owners_checked > normal.exact.generated_scope_owners_checked);
+    try std.testing.expect(overstated_boundary.exact.scope_owner_mismatch > normal.exact.scope_owner_mismatch);
+    try std.testing.expect(!overstated_boundary.hasCompleteOutputIdentityBeforeNames());
+    for (generated_owner_nodes.items) |owner_node| try editor.scope_owner_map.put(a, owner_node, generated_scope);
     analyzer.applyEdit(try editor.finish());
     var data: @import("bundler/module.zig").ModuleSemanticData = .{ .symbols = analyzer.symbols, .scopes = analyzer.scopes.items, .scope_maps = analyzer.scope_maps.items, .scope_owner_map = analyzer.scope_owner_map, .symbol_ids = analyzer.symbol_ids.items, .references = analyzer.references.items, .exported_names = analyzer.exported_names, .unresolved_references = analyzer.unresolved_references, .helper_scope_map = analyzer.helper_scope_map, .node_scope_provenance = analyzer.node_scope_provenance, .source_owned_retirements = analyzer.source_owned_retirements, .scope_history = analyzer.scope_history };
     var wire: std.ArrayList(u8) = .empty;
@@ -16380,6 +16439,7 @@ test "standalone full-semantic output identity gate runs before name allocation 
     analyzer.enable_source_external_origins = true;
     try analyzer.analyze();
     const pre_transform_scope_count = analyzer.scopes.items.len;
+    const pre_transform_scope_history_event_count = analyzer.scope_history.events.len;
 
     var transformer = try Transformer.initFromOwnedAst(a, &parser.ast, .{ .unsupported = unsupported });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
@@ -16422,6 +16482,7 @@ test "standalone full-semantic output identity gate runs before name allocation 
         &analyzer,
         root,
         pre_transform_scope_count,
+        pre_transform_scope_history_event_count,
     );
 
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(a, transformer.ast, root);
@@ -16445,6 +16506,7 @@ test "standalone full-semantic output identity gate runs before name allocation 
             &analyzer,
             root,
             pre_transform_scope_count,
+            pre_transform_scope_history_event_count,
         ),
     );
     transformer.symbol_ids.items[raw] = original_symbol;
@@ -16455,6 +16517,7 @@ test "standalone full-semantic output identity gate runs before name allocation 
         &analyzer,
         root,
         pre_transform_scope_count,
+        pre_transform_scope_history_event_count,
     );
 
     const transformed = try transpile(a, source, "standalone-identity-gate.js", .{ .unsupported = unsupported });

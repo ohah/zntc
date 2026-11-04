@@ -5454,7 +5454,7 @@ test "source function retirement includes only its actual named expression self 
                     retired_arguments += 1;
                 };
                 try std.testing.expectEqual(retired_arguments, legacy_strict.orphan_symbols);
-                var normal = try coverage.checkOutputNormalFormQuiet(a, &parser.ast, root, @intCast(parser.ast.nodes.items.len), editor.symbol_ids.items, editor.symbols.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &.{}, &editor.helper_scope_map, &analyzer.unresolved_reference_nodes, &empty_nodes, &empty_origins, .{ .pre_transform_scope_count = editor.scopes.items.len }, &editor.source_owned_retirements, .{ .node_scope_provenance = &editor.node_scope_provenance });
+                var normal = try coverage.checkOutputNormalFormQuiet(a, &parser.ast, root, @intCast(parser.ast.nodes.items.len), editor.symbol_ids.items, editor.symbols.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &.{}, &editor.helper_scope_map, &analyzer.unresolved_reference_nodes, &empty_nodes, &empty_origins, .{ .pre_transform_scope_count = 0 }, &editor.source_owned_retirements, .{ .node_scope_provenance = &editor.node_scope_provenance });
                 defer normal.deinit(a);
                 try std.testing.expectEqual(@as(usize, 0), normal.retirement_state_mismatch);
                 try std.testing.expectEqual(@as(usize, 0), normal.strict.orphan_symbols);

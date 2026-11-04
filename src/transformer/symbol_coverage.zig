@@ -3525,8 +3525,74 @@ pub const ExactQuietOptions = struct {
     /// Optional for low-level diagnostic audits. Output-normal-form admission
     /// requires this boundary so live generated ScopeIds cannot skip owner checks.
     pre_transform_scope_count: ?usize = null,
+    /// History event count captured with `pre_transform_scope_count`. This
+    /// authenticates retained prefixes that already contain earlier generated
+    /// scopes without allowing the final post-transform scope length to be
+    /// mistaken for the pre-transform boundary.
+    pre_transform_scope_history_event_count: ?usize = null,
     require_declaration_anchors: bool = true,
 };
+
+fn scopeBoundaryMatchesHistory(
+    source_scope_count: usize,
+    history_event_count: ?usize,
+    history: ?*const @import("../semantic/scope_frame_history.zig").History,
+) bool {
+    // Zero is the conservative fresh-analysis mode: it checks every live
+    // ScopeId and does not rely on source ownership history.
+    if (source_scope_count == 0) return true;
+    const source_history = history orelse return false;
+    const epoch = history_event_count orelse return false;
+    if (epoch > source_history.events.len) return false;
+
+    var expected_scope_count = source_history.source_scopes.len;
+    for (source_history.events[0..epoch]) |event| {
+        if (event.kind == .birth) expected_scope_count += 1;
+    }
+    return source_scope_count == expected_scope_count;
+}
+
+test "output scope boundary rejects ten malformed retained-prefix inputs" {
+    const History = @import("../semantic/scope_frame_history.zig");
+    const root_scope: ScopeId = @fromBackingInt(0);
+    const generated_scope: ScopeId = @fromBackingInt(1);
+    const source_scopes = [_]Scope{.{ .parent = .none, .kind = .global, .is_strict = false }};
+    const generated_frame: Scope = .{ .parent = root_scope, .kind = .block, .is_strict = false };
+    const events = [_]History.Event{
+        .{ .kind = .birth, .scope = generated_scope, .before = null, .after = generated_frame },
+        .{ .kind = .frame, .scope = root_scope, .before = source_scopes[0], .after = source_scopes[0] },
+        .{ .kind = .owner, .scope = generated_scope, .before = generated_frame, .after = generated_frame },
+    };
+    const history: History.History = .{ .source_scopes = &source_scopes, .events = &events };
+    const RejectedInput = struct {
+        scope_count: usize,
+        history_event_count: ?usize,
+        history: ?*const History.History,
+    };
+    const rejected = [_]RejectedInput{
+        .{ .scope_count = 1, .history_event_count = 0, .history = null },
+        .{ .scope_count = 1, .history_event_count = null, .history = &history },
+        .{ .scope_count = 2, .history_event_count = 4, .history = &history },
+        .{ .scope_count = 2, .history_event_count = 0, .history = &history },
+        .{ .scope_count = 1, .history_event_count = 1, .history = &history },
+        .{ .scope_count = 3, .history_event_count = 1, .history = &history },
+        .{ .scope_count = 1, .history_event_count = 2, .history = &history },
+        .{ .scope_count = 3, .history_event_count = 2, .history = &history },
+        .{ .scope_count = 1, .history_event_count = 3, .history = &history },
+        .{ .scope_count = 3, .history_event_count = 3, .history = &history },
+    };
+    for (rejected) |input| {
+        try std.testing.expect(!scopeBoundaryMatchesHistory(input.scope_count, input.history_event_count, input.history));
+    }
+
+    // An original-only prefix and one captured generated-scope birth are
+    // valid even when later history contains frame and owner events.
+    try std.testing.expect(scopeBoundaryMatchesHistory(1, 0, &history));
+    try std.testing.expect(scopeBoundaryMatchesHistory(2, 1, &history));
+    try std.testing.expect(scopeBoundaryMatchesHistory(2, 3, &history));
+    // Fresh reanalysis uses zero and checks all scopes, with no history token.
+    try std.testing.expect(scopeBoundaryMatchesHistory(0, null, null));
+}
 
 pub fn checkExactQuiet(
     allocator: std.mem.Allocator,
@@ -3554,14 +3620,27 @@ pub const OutputNormalFormReport = struct {
     strict: StrictReport,
     retirement_state_mismatch: usize = 0,
     scope_boundary_missing: usize = 0,
+    scope_boundary_mismatch: usize = 0,
     pub fn deinit(self: *OutputNormalFormReport, allocator: std.mem.Allocator) void {
         self.strict.deinit(allocator);
     }
     pub fn hasCompleteOutputIdentityBeforeNames(self: OutputNormalFormReport) bool {
-        return self.retirement_state_mismatch == 0 and self.scope_boundary_missing == 0 and
+        return self.retirement_state_mismatch == 0 and self.scope_boundary_missing == 0 and self.scope_boundary_mismatch == 0 and
             self.exact.hasCompleteOutputIdentityBeforeNames() and self.strict.hasCompleteSymbolIdentity();
     }
 };
+
+test "output scope boundary mismatch alone rejects admission" {
+    var report: OutputNormalFormReport = .{
+        .exact = .{},
+        .strict = .{},
+        .scope_boundary_mismatch = 1,
+    };
+    defer report.deinit(std.testing.allocator);
+    try std.testing.expect(report.exact.hasCompleteOutputIdentityBeforeNames());
+    try std.testing.expect(report.strict.hasCompleteSymbolIdentity());
+    try std.testing.expect(!report.hasCompleteOutputIdentityBeforeNames());
+}
 
 pub fn checkOutputNormalFormQuiet(
     allocator: std.mem.Allocator,
@@ -3619,6 +3698,15 @@ pub fn checkOutputNormalFormQuiet(
     };
     const empty_history: @import("../semantic/scope_frame_history.zig").History = .{};
     const history = retirement_roots.scope_history orelse &empty_history;
+    // A nonzero boundary is meaningful only for a retained graph. It must
+    // match the immutable scope history at the caller's captured event epoch;
+    // accepting a later in-range length could hide generated scopes. Zero
+    // audits every scope after fresh reanalysis.
+    const scope_boundary_mismatch = if (options.pre_transform_scope_count) |source_scope_count|
+        !scopeBoundaryMatchesHistory(source_scope_count, options.pre_transform_scope_history_event_count, retirement_roots.scope_history)
+    else
+        false;
+    const exact_scope_boundary: ?usize = if (scope_boundary_mismatch) 0 else options.pre_transform_scope_count;
     var frame_index = try @import("../semantic/scope_frame_history.zig").validateAndIndex(allocator, ast, scopes, scope_owner_map, history, runtime_permission);
     defer frame_index.deinit(allocator);
     const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -3638,10 +3726,11 @@ pub fn checkOutputNormalFormQuiet(
     const valid = runtime_valid and frame_index.valid and lowered_proof != null and try @import("../semantic/source_owned_retirement.zig").validateWithIndex(allocator, ast, retirements, &reachable, symbols, symbol_ids, scopes, scope_maps, scope_owner_map, references, helper_scope_map, retirement_roots, &frame_index) and
         try validateNodeScopeProvenance(allocator, ast, root, scope_owner_map, retirement_roots.node_scope_provenance) and
         @import("../semantic/source_external_origin.zig").validate(ast, parser_node_count, symbol_ids, scopes, unresolved_nodes, retirement_roots.node_scope_provenance, &frame_index);
-    const exact = try checkExactImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_maps, scope_owner_map, references, helper_reference_nodes, helper_scope_map, unresolved_nodes, explicit_global_nodes, origins, options.erased_const_enum_external_origins, options.namespace_member_owners, options.namespace_declaration_owners, options.pre_transform_scope_count, options.require_declaration_anchors, false, if (valid) retirements else null, if (valid) retirement_roots.node_scope_provenance else null, if (valid) if (lowered_proof) |*proof| proof else null else null);
+    const exact = try checkExactImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_maps, scope_owner_map, references, helper_reference_nodes, helper_scope_map, unresolved_nodes, explicit_global_nodes, origins, options.erased_const_enum_external_origins, options.namespace_member_owners, options.namespace_declaration_owners, exact_scope_boundary, options.require_declaration_anchors, false, if (valid) retirements else null, if (valid) retirement_roots.node_scope_provenance else null, if (valid) if (lowered_proof) |*proof| proof else null else null);
     return .{
         .retirement_state_mismatch = @intFromBool(!valid),
         .scope_boundary_missing = @intFromBool(options.pre_transform_scope_count == null),
+        .scope_boundary_mismatch = @intFromBool(scope_boundary_mismatch),
         .strict = try checkStrictImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_owner_map, references, null, .{ .unresolved_reference_nodes = unresolved_nodes, .explicit_global_reference_nodes = explicit_global_nodes, .reference_origin_map = origins, .output_external_origins = if (valid) retirement_roots.node_scope_provenance else null }, true, options.known_output_names, if (valid) retirements else null, if (valid) runtime_proof else null),
         .exact = exact,
     };

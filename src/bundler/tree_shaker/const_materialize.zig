@@ -744,6 +744,7 @@ fn prepareJournalConstMinification(
         .namespace_member_owners = &sem.namespace_member_owners,
         .namespace_declaration_owners = &sem.namespace_declaration_owners,
         .pre_transform_scope_count = prepared.source.semantic.?.scopes.len,
+        .pre_transform_scope_history_event_count = prepared.source.semantic.?.scope_history.events.len,
     }, &sem.source_owned_retirements, .{
         .symbol_ids = output_roots,
         .node_scope_provenance = &sem.node_scope_provenance,
