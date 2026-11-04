@@ -32222,6 +32222,13 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         property: '__proto__undefined',
         emitted: /__toPropertyKey\(\s*["']__proto__["']\s*\+\s*undefined\s*\)/,
       },
+      {
+        name: 'numeric-binary-shift',
+        expression: '[undefined << 1]',
+        value: 'numeric-binary-shift-value',
+        property: '0',
+        emitted: /__toPropertyKey\(\s*undefined\s*<<\s*1\s*\)/,
+      },
     ] as const;
 
     for (const mode of modes) {
@@ -32404,9 +32411,22 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                       'undefined + "__proto__"',
                       '"__proto__" + undefined',
                     ];
+              const numericBinaryAlternatives = [
+                'undefined ** 0',
+                'undefined ** 2',
+                'undefined ** 1',
+                'undefined - 1',
+                'undefined * 2',
+                'undefined / 0',
+                'undefined % 3',
+                'undefined | 1',
+                'undefined ^ 2',
+                'undefined + "x"',
+              ];
               const isNumericUndefinedKey = ['plus', 'minus', 'tilde'].includes(keyCase.name);
               const isUndefinedUnaryChain = keyCase.name.startsWith('chain-');
               const isUndefinedAddition = keyCase.name.startsWith('addition-');
+              const isUndefinedNumericBinary = keyCase.name.startsWith('numeric-binary-');
               const replacement = keyCase.name.startsWith('typeof')
                 ? `__toPropertyKey(${typeofAlternatives[mutation]})`
                 : keyCase.name === 'not'
@@ -32417,7 +32437,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                       ? `__toPropertyKey(${chainAlternatives[mutation]})`
                       : isUndefinedAddition
                         ? `__toPropertyKey(${additionAlternatives[mutation]})`
-                        : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
+                        : isUndefinedNumericBinary
+                          ? `__toPropertyKey(${numericBinaryAlternatives[mutation]})`
+                          : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
               const mutated = emitted.replace(expression ?? '', replacement);
               writeFileSync(mutatedOutput, mutated);
               const mutantRun = spawnSync('node', [mutatedOutput], { encoding: 'utf8' });
@@ -32427,7 +32449,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                 keyCase.name === 'not' ||
                 isNumericUndefinedKey ||
                 isUndefinedUnaryChain ||
-                isUndefinedAddition
+                isUndefinedAddition ||
+                isUndefinedNumericBinary
               ) {
                 expect(mutantRun.status, `${label} compileable mutation ${mutation}`).toBe(0);
                 expect(mutantRun.stdout, `${label} compileable mutation ${mutation}`).not.toBe(
@@ -32450,6 +32473,71 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       }
     }
   }, 120_000);
+
+  test('JSX ES5 exponentiation key preserves generated Math identity under a source shadow', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-jsx-exponentiation-shadowed-math-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.tsx'),
+      [
+        'const Math = { pow(left, right) { return left + right; } };',
+        'globalThis.shadowMath = Math;',
+        'const items = [1];',
+        'function h(type, props) { return { type, props }; }',
+        "const Comp = 'Comp';",
+        "const result = <Comp {...{ [undefined ** 0]: 'value' }} key='k'>{...items}</Comp>;",
+        "console.log(JSON.stringify([result.props['1'], Object.prototype.hasOwnProperty.call(result.props, '1'), Object.getPrototypeOf(result.props) === Object.prototype, Object.keys(result.props), globalThis.shadowMath.pow(1, 2)]));",
+      ].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.tsx',
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--jsx=classic',
+          '--jsx-factory=h',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.tsx'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.tsx'),
+        );
+      expect(report, proc.stderr).toContain('shadowed_external_reference=1');
+      expect(report, proc.stderr).toMatch(/clean=0(?:\s|$)/);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(`${JSON.stringify(['value', true, true, ['1', 'key'], 3])}\n`);
+      const emitted = readFileSync(output, 'utf8');
+      const sourceMathName = emitted.match(/shadowMath\s*=\s*([\w$]+)/)?.[1];
+      expect(sourceMathName).toBeDefined();
+      expect(sourceMathName).not.toBe('Math');
+      expect(emitted).toContain('Math.pow');
+      expect(emitted).not.toMatch(/\b(?:var|let|const)\s+Math\b/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   test('classic JSX with a local factory preserves its semantic graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-classic-jsx-retained-'));
