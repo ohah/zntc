@@ -11901,11 +11901,21 @@ fn hasTopLevelAwaitInRetainedGraph(
     scopes: []const SemanticScope,
     scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
 ) ?bool {
-    if (scopes.len == 0 or ast.nodes.items.len == 0) return null;
+    if (ast.nodes.items.len == 0) return null;
     const root = ast.transformed_root orelse @as(
         ast_mod.NodeIndex,
         @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))),
     );
+    return hasTopLevelAwaitInRetainedGraphFromRoot(allocator, ast, root, scopes, scope_owner_map);
+}
+
+fn hasTopLevelAwaitInRetainedGraphFromRoot(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    root: ast_mod.NodeIndex,
+    scopes: []const SemanticScope,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+) ?bool {
     if (root.isNone() or @backingInt(root) >= ast.nodes.items.len or
         ast.getNode(root).tag != .program) return null;
     var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -11921,6 +11931,7 @@ fn hasTopLevelAwaitInRetainedGraph(
         // `for await` in its module-local bit. Keep the scan in sync with that
         // contract; a for-await loop does not need an await_expression node.
         if (tag != .await_expression and tag != .for_await_of_statement) continue;
+        if (scopes.len == 0) return null;
         var current_node: u32 = @intCast(raw);
         var scope_id: ?u32 = null;
         var parent_hops: usize = 0;
@@ -19496,6 +19507,186 @@ test "generic prepass run publishes transformed output and preserves parser AST"
             allocator,
         ));
     }
+
+    const TopLevelAwaitMutation = struct {
+        did_mutate: bool = false,
+        return_program: bool = false,
+
+        fn onProgram(
+            context_ptr: ?*anyopaque,
+            api: *plugin_mod.AstTransformCtx,
+            program_idx: ast_mod.NodeIndex,
+        ) plugin_mod.PluginError!?ast_mod.NodeIndex {
+            const state = @as(*@This(), @ptrCast(@alignCast(context_ptr orelse return null)));
+            const ast = api.transformer.ast;
+            const program = ast.getNode(program_idx);
+            if (program.tag != .program) return null;
+            const top_level = ast.extra_data.items[program.data.list.start .. program.data.list.start + program.data.list.len];
+            for (top_level) |raw_function| {
+                const function_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_function));
+                const function = ast.getNode(function_idx);
+                if (function.tag != .function_declaration or function.data.extra >= ast.extra_data.items.len) continue;
+                const body_idx = ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.body);
+                if (body_idx.isNone() or ast.getNode(body_idx).tag != .block_statement) continue;
+                const body = ast.getNode(body_idx);
+                const body_items = ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len];
+                for (body_items, 0..) |raw_statement, statement_index| {
+                    const statement_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_statement));
+                    const statement = ast.getNode(statement_idx);
+                    if (statement.tag != .expression_statement) continue;
+                    const expression = ast.getNode(statement.data.unary.operand);
+                    if (expression.tag != .await_expression) continue;
+
+                    const empty = try ast.addNode(.{
+                        .tag = .empty_statement,
+                        .span = statement.span,
+                        .data = .{ .none = 0 },
+                    });
+                    ast.extra_data.items[body.data.list.start + statement_index] = @backingInt(empty);
+                    const moved = try api.getAllocator().alloc(ast_mod.NodeIndex, top_level.len + 1);
+                    for (top_level, 0..) |raw, index| moved[index] = @fromBackingInt(@intCast(raw));
+                    moved[top_level.len] = statement_idx;
+                    ast.nodes.items[@backingInt(program_idx)].data.list = try ast.addNodeList(moved);
+                    state.did_mutate = true;
+                    return if (state.return_program) program_idx else null;
+                }
+            }
+            return null;
+        }
+    };
+    const plugin_tla_source = "async function wrapped(){await 1;}";
+    const plugin_tla_fixture = try runtimeHelperReanalysisTestFixtureForSource(allocator, plugin_tla_source, true);
+    var plugin_tla_mutation: TopLevelAwaitMutation = .{};
+    const plugin_tla_plugins = [_]plugin_mod.Plugin{.{
+        .name = "untracked-top-level-await",
+        .context = @ptrCast(&plugin_tla_mutation),
+        .visitor = .{ .on_program = TopLevelAwaitMutation.onProgram },
+    }};
+    context.plugins = &plugin_tla_plugins;
+    var plugin_tla_module = Module.init(@fromBackingInt(@as(u32, 40)), "plugin-tla.js");
+    plugin_tla_module.source = plugin_tla_source;
+    plugin_tla_module.module_type = .js;
+    plugin_tla_module.state = .ready;
+    plugin_tla_module.ast = plugin_tla_fixture.ast;
+    plugin_tla_module.semantic = plugin_tla_fixture.semantic;
+    try std.testing.expect(!plugin_tla_module.self_uses_top_level_await);
+    run(&context, &plugin_tla_module, allocator);
+    defer if (plugin_tla_module.alias_table) |*table| table.deinit();
+    defer if (plugin_tla_module.export_index_by_name) |*index| index.deinit(graph_allocator);
+    try std.testing.expect(plugin_tla_mutation.did_mutate);
+    try std.testing.expectEqual(@as(usize, 24), context.diag_count);
+    try std.testing.expect(plugin_tla_module.ast.?.transformed_root != null);
+    try std.testing.expect(plugin_tla_module.transform_cache != null);
+    try std.testing.expectEqual(
+        @as(?bool, true),
+        hasTopLevelAwaitInRetainedGraph(
+            allocator,
+            &plugin_tla_module.ast.?,
+            plugin_tla_module.semantic.?.scopes,
+            &plugin_tla_module.semantic.?.scope_owner_map,
+        ),
+    );
+    try std.testing.expect(plugin_tla_module.self_uses_top_level_await);
+
+    // Returning the replaced Program skips the transformer's native TLA
+    // lowering hook. The candidate must be refused before its AST/cache are
+    // installed when the selected target cannot emit native top-level await.
+    var unsupported_tla_mutation: TopLevelAwaitMutation = .{ .return_program = true };
+    const unsupported_tla_plugins = [_]plugin_mod.Plugin{.{
+        .name = "unlowered-top-level-await",
+        .context = @ptrCast(&unsupported_tla_mutation),
+        .visitor = .{ .on_program = TopLevelAwaitMutation.onProgram },
+    }};
+    context.plugins = &unsupported_tla_plugins;
+    context.transform_options_base.unsupported.top_level_await = true;
+    context.transform_options_base.tla_chunk_wrapped = false;
+    const unsupported_tla_fixture = try runtimeHelperReanalysisTestFixtureForSource(allocator, plugin_tla_source, true);
+    var unsupported_tla_module = Module.init(@fromBackingInt(@as(u32, 41)), "plugin-unlowered-tla.js");
+    unsupported_tla_module.source = plugin_tla_source;
+    unsupported_tla_module.module_type = .js;
+    unsupported_tla_module.state = .ready;
+    unsupported_tla_module.ast = unsupported_tla_fixture.ast;
+    unsupported_tla_module.semantic = unsupported_tla_fixture.semantic;
+    run(&context, &unsupported_tla_module, allocator);
+    try std.testing.expect(unsupported_tla_mutation.did_mutate);
+    try std.testing.expectEqual(@as(usize, 25), context.diag_count);
+    try std.testing.expect(unsupported_tla_module.ast.?.transformed_root == null);
+    try std.testing.expect(unsupported_tla_module.transform_cache == null);
+    try std.testing.expect(!unsupported_tla_module.self_uses_top_level_await);
+
+    // A chunk wrapper owns native TLA even when this module had none at parse
+    // time. The plugin's output must populate both facts for chunk emission.
+    context.transform_options_base.tla_chunk_wrapped = true;
+    const delegated_tla_fixture = try runtimeHelperReanalysisTestFixtureForSource(allocator, plugin_tla_source, true);
+    var delegated_tla_module = Module.init(@fromBackingInt(@as(u32, 42)), "plugin-delegated-tla.mjs");
+    delegated_tla_module.source = plugin_tla_source;
+    delegated_tla_module.module_type = .js;
+    delegated_tla_module.state = .ready;
+    delegated_tla_module.ast = delegated_tla_fixture.ast;
+    delegated_tla_module.semantic = delegated_tla_fixture.semantic;
+    run(&context, &delegated_tla_module, allocator);
+    defer if (delegated_tla_module.alias_table) |*table| table.deinit();
+    defer if (delegated_tla_module.export_index_by_name) |*index| index.deinit(graph_allocator);
+    try std.testing.expect(unsupported_tla_mutation.did_mutate);
+    try std.testing.expectEqual(@as(usize, 25), context.diag_count);
+    try std.testing.expect(delegated_tla_module.transform_cache != null);
+    try std.testing.expect(delegated_tla_module.self_uses_top_level_await);
+    try std.testing.expect(delegated_tla_module.tla_delegated_to_chunk);
+
+    // A chunk-delegated module can lose source TLA in an AST plugin. Refresh
+    // both module-local and delegated-TLA facts from the final candidate.
+    const RemoveTopLevelAwait = struct {
+        did_mutate: bool = false,
+
+        fn onProgram(
+            context_ptr: ?*anyopaque,
+            api: *plugin_mod.AstTransformCtx,
+            program_idx: ast_mod.NodeIndex,
+        ) plugin_mod.PluginError!?ast_mod.NodeIndex {
+            const state = @as(*@This(), @ptrCast(@alignCast(context_ptr orelse return null)));
+            const ast = api.transformer.ast;
+            const program = ast.getNode(program_idx);
+            if (program.tag != .program) return null;
+            const top_level = ast.extra_data.items[program.data.list.start .. program.data.list.start + program.data.list.len];
+            for (top_level) |raw_statement| {
+                const statement_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_statement));
+                const statement = ast.getNode(statement_idx);
+                if (statement.tag != .expression_statement) continue;
+                const expression = ast.getNode(statement.data.unary.operand);
+                if (expression.tag != .await_expression) continue;
+                ast.nodes.items[@backingInt(program_idx)].data.list = try ast.addNodeList(&.{});
+                state.did_mutate = true;
+                return null;
+            }
+            return null;
+        }
+    };
+    const remove_tla_source = "await 1;";
+    const remove_tla_fixture = try runtimeHelperReanalysisTestFixtureForSource(allocator, remove_tla_source, true);
+    var remove_tla_mutation: RemoveTopLevelAwait = .{};
+    const remove_tla_plugins = [_]plugin_mod.Plugin{.{
+        .name = "remove-top-level-await",
+        .context = @ptrCast(&remove_tla_mutation),
+        .visitor = .{ .on_program = RemoveTopLevelAwait.onProgram },
+    }};
+    context.plugins = &remove_tla_plugins;
+    context.transform_options_base.tla_chunk_wrapped = true;
+    var remove_tla_module = Module.init(@fromBackingInt(@as(u32, 43)), "plugin-remove-tla.mjs");
+    remove_tla_module.source = remove_tla_source;
+    remove_tla_module.module_type = .js;
+    remove_tla_module.state = .ready;
+    remove_tla_module.self_uses_top_level_await = true;
+    remove_tla_module.uses_top_level_await = true;
+    remove_tla_module.ast = remove_tla_fixture.ast;
+    remove_tla_module.semantic = remove_tla_fixture.semantic;
+    run(&context, &remove_tla_module, allocator);
+    defer if (remove_tla_module.alias_table) |*table| table.deinit();
+    defer if (remove_tla_module.export_index_by_name) |*index| index.deinit(graph_allocator);
+    try std.testing.expect(remove_tla_mutation.did_mutate);
+    try std.testing.expectEqual(@as(usize, 25), context.diag_count);
+    try std.testing.expect(remove_tla_module.transform_cache != null);
+    try std.testing.expect(!remove_tla_module.self_uses_top_level_await);
+    try std.testing.expect(!remove_tla_module.tla_delegated_to_chunk);
 }
 
 fn genericPreparedOutputHasNormalForm(
@@ -20215,6 +20406,7 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
         transformer.removeSemanticReference(reference) catch return;
     }
     const semantic_edit = transformer.finishSemanticEdit() catch return;
+    var plugin_output_self_tla: ?bool = null;
     if (has_ast_plugin_hooks) {
         const eval_scope_facts_present = if (semantic_edit) |candidate| blk: {
             break :blk reachableDirectEvalCallsHaveScopeFacts(
@@ -20237,6 +20429,51 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
                 self,
                 module,
                 "An AST plugin produced a direct-eval call in an execution scope without retained dynamic-name-lookup facts.",
+            );
+            return;
+        }
+
+        const output_self_tla = if (semantic_edit) |candidate|
+            hasTopLevelAwaitInRetainedGraphFromRoot(
+                arena_alloc,
+                transformer.ast,
+                root,
+                candidate.scopes,
+                &candidate.scope_owner_map,
+            )
+        else if (module.semantic) |*semantic|
+            hasTopLevelAwaitInRetainedGraphFromRoot(
+                arena_alloc,
+                transformer.ast,
+                root,
+                semantic.scopes,
+                &semantic.scope_owner_map,
+            )
+        else blk: {
+            const empty_scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+            break :blk hasTopLevelAwaitInRetainedGraphFromRoot(
+                arena_alloc,
+                transformer.ast,
+                root,
+                &.{},
+                &empty_scope_owner_map,
+            );
+        };
+        plugin_output_self_tla = output_self_tla orelse {
+            candidate_diagnosed.* = true;
+            failRetainedGraphRefresh(
+                self,
+                module,
+                "An AST plugin produced top-level-await output whose retained scope ownership cannot be proven.",
+            );
+            return;
+        };
+        if (plugin_output_self_tla.? and self.transform_options_base.unsupported.top_level_await and !opts.tla_chunk_wrapped) {
+            candidate_diagnosed.* = true;
+            failRetainedGraphRefresh(
+                self,
+                module,
+                "An AST plugin left native top-level await in output for a target that does not support it.",
             );
             return;
         }
@@ -20354,6 +20591,34 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
         };
         if (@import("builtin").is_test)
             std.debug.print("GENERIC_MINIFY_RECEIPT file={s} published={any}\n", .{ module.path, optimized });
+    }
+
+    if (has_ast_plugin_hooks) {
+        const output_self_tla = hasTopLevelAwaitInRetainedGraphFromRoot(
+            arena_alloc,
+            transformer.ast,
+            root,
+            transformer.scopes,
+            &transformer.scope_owner_map,
+        ) orelse {
+            candidate_diagnosed.* = true;
+            failRetainedGraphRefresh(
+                self,
+                module,
+                "The final AST-plugin output no longer has provable top-level-await scope ownership.",
+            );
+            return;
+        };
+        plugin_output_self_tla = output_self_tla;
+        if (output_self_tla and self.transform_options_base.unsupported.top_level_await and !opts.tla_chunk_wrapped) {
+            candidate_diagnosed.* = true;
+            failRetainedGraphRefresh(
+                self,
+                module,
+                "The final AST-plugin output retains native top-level await for an unsupported target.",
+            );
+            return;
+        }
     }
 
     // transformer 가 새 ast (clone) 에 transform 결과를 보유. module.ast 를 그 새 ast 로
@@ -20736,6 +21001,13 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
             &unresolved_nodes,
             published_exact,
         );
+        if (candidate_completed.*) {
+            if (plugin_output_self_tla) |uses_tla| {
+                module.self_uses_top_level_await = uses_tla;
+                if (opts.tla_chunk_wrapped and self.transform_options_base.unsupported.top_level_await)
+                    module.tla_delegated_to_chunk = uses_tla;
+            }
+        }
         candidate_diagnosed.* = !candidate_completed.*;
         return;
     }
