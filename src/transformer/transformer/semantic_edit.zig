@@ -2833,7 +2833,32 @@ pub fn functionListInsertionScope(self: *Transformer, owner: NodeIndex) ScopeId 
     if (self.options.plugins.len == 0) return self.current_scope;
     const function_scope = self.outputOwnedScope(owner) orelse return self.current_scope;
     if (function_scope.isNone()) return self.current_scope;
-    return self.outputScopeParent(function_scope);
+    var insertion_scope = self.outputScopeParent(function_scope);
+    const owner_node = self.ast.getNode(owner);
+    const params_node = switch (owner_node.tag) {
+        .arrow_function_expression => self.ast.readExtraNode(owner_node.data.extra, 0),
+        .function_declaration, .function_expression, .method_definition => self.ast.readExtraNode(owner_node.data.extra, ast_mod.FunctionExtra.params),
+        else => NodeIndex.none,
+    };
+    // Non-simple parameter lists can put a separate parameter environment
+    // between the function body and the scope of its containing statement
+    // list. Plugin trailing statements belong to that outer list.
+    if (!params_node.isNone()) if (self.outputOwnedScope(params_node)) |parameter_scope| {
+        if (insertion_scope == parameter_scope) insertion_scope = self.outputScopeParent(insertion_scope);
+    };
+
+    // A named function expression has a private name environment between its
+    // body (or parameter environment) and its containing list. It is visible
+    // inside the expression but does not own statements inserted beside it.
+    if (owner_node.tag == .function_expression) {
+        const name_node = self.ast.readExtraNode(owner_node.data.extra, ast_mod.FunctionExtra.name);
+        if (!name_node.isNone()) if (self.getSymbolIdAt(name_node)) |raw_symbol_id| {
+            const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+            if (raw_symbol_id < symbols.len and insertion_scope == symbols[raw_symbol_id].scope_id)
+                insertion_scope = self.outputScopeParent(insertion_scope);
+        };
+    }
+    return insertion_scope;
 }
 
 /// Track all copies of a lexical boundary. A source node can be revisited on

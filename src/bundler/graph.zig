@@ -925,6 +925,209 @@ fn expectColdAndCachedTrackedDirectEvalGraph() !void {
     try expectTrackedDirectEvalGraph(&warm_graph, entry, warm_state);
 }
 
+const TrackedInjectedBindingGraphState = struct {
+    callbacks: usize = 0,
+    target_calls: usize = 0,
+    method_calls: usize = 0,
+    did_inject: bool = false,
+    insertion_scope: ScopeId = .none,
+    source_binding: ast_mod.NodeIndex = .none,
+    source_reference: ast_mod.NodeIndex = .none,
+    decoy_binding: ast_mod.NodeIndex = .none,
+    injected_binding: ast_mod.NodeIndex = .none,
+    injected_reference: ast_mod.NodeIndex = .none,
+};
+
+fn trackedInjectedBindingGraphHook(
+    ctx: ?*anyopaque,
+    api: *plugin_mod.AstTransformCtx,
+    info: @import("../transformer/ast_plugin.zig").FunctionInfo,
+) plugin_mod.PluginError!void {
+    const state_ptr = ctx orelse return error.PluginFailed;
+    const state: *TrackedInjectedBindingGraphState = @ptrCast(@alignCast(state_ptr));
+    state.callbacks += 1;
+    const ast = api.transformer.ast;
+    if (state.decoy_binding.isNone() or state.source_binding.isNone()) {
+        for (ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .binding_identifier) continue;
+            const name = ast.getText(node.data.string_ref);
+            if (state.decoy_binding.isNone() and Scanner.identifierNamesEqual(name, "injectedValue"))
+                state.decoy_binding = @fromBackingInt(@intCast(raw));
+            if (state.source_binding.isNone() and Scanner.identifierNamesEqual(name, "secret"))
+                state.source_binding = @fromBackingInt(@intCast(raw));
+        }
+    }
+    const function_name = info.name orelse "";
+    if (info.node_tag == .method_definition and std.mem.eql(u8, function_name, "run")) {
+        state.method_calls += 1;
+        return;
+    }
+    if (!std.mem.eql(u8, function_name, "read") and
+        info.node_tag != .arrow_function_expression and info.node_tag != .function_expression) return;
+    state.target_calls += 1;
+    if (state.target_calls != 1 or state.source_binding.isNone() or state.decoy_binding.isNone()) return error.PluginFailed;
+
+    state.insertion_scope = api.insertion_scope;
+    if (!Scanner.identifierNamesEqual(ast.getText(ast.getNode(state.source_binding).data.string_ref), "secret")) return error.PluginFailed;
+
+    const injected = try api.parseAndInjectStatements("const injectedValue = secret; injectedValue;");
+    defer api.getAllocator().free(injected);
+    for (injected) |statement| {
+        const node = api.getNode(statement);
+        switch (node.tag) {
+            .variable_declaration => {
+                const start = ast.extra_data.items[node.data.extra + 1];
+                const declarator_raw = ast.extra_data.items[start];
+                const declarator = ast.nodes.items[declarator_raw];
+                state.injected_binding = ast.readExtraNode(declarator.data.extra, 0);
+                state.source_reference = ast.readExtraNode(declarator.data.extra, 2);
+            },
+            .expression_statement => state.injected_reference = node.data.unary.operand,
+            else => return error.PluginFailed,
+        }
+        try api.addTrailingStatement(statement);
+    }
+    if (state.injected_binding.isNone() or state.source_reference.isNone() or state.injected_reference.isNone())
+        return error.PluginFailed;
+    state.did_inject = true;
+}
+
+fn expectTrackedInjectedBindingGraph(
+    graph: *const ModuleGraph,
+    entry: []const u8,
+    state: TrackedInjectedBindingGraphState,
+    expected_method_calls: usize,
+) !void {
+    try std.testing.expect(state.callbacks >= 1);
+    try std.testing.expectEqual(@as(usize, 1), state.target_calls);
+    try std.testing.expectEqual(expected_method_calls, state.method_calls);
+    try std.testing.expect(state.did_inject);
+    try std.testing.expect(!state.insertion_scope.isNone());
+    try expectVisitorGraphReady(graph, entry);
+
+    const module = graph.findModuleByPath(entry).?;
+    const semantic = &module.semantic.?;
+    const ast = &module.ast.?;
+    const binding_raw: usize = @intCast(@backingInt(state.injected_binding));
+    const source_binding_raw: usize = @intCast(@backingInt(state.source_binding));
+    const decoy_binding_raw: usize = @intCast(@backingInt(state.decoy_binding));
+    const source_reference_raw: usize = @intCast(@backingInt(state.source_reference));
+    const injected_reference_raw: usize = @intCast(@backingInt(state.injected_reference));
+    try std.testing.expect(binding_raw < semantic.symbol_ids.len);
+    try std.testing.expect(source_binding_raw < semantic.symbol_ids.len);
+    try std.testing.expect(decoy_binding_raw < semantic.symbol_ids.len);
+    try std.testing.expect(source_reference_raw < semantic.symbol_ids.len);
+    try std.testing.expect(injected_reference_raw < semantic.symbol_ids.len);
+    const injected_symbol = semantic.symbol_ids[binding_raw] orelse return error.TestUnexpectedResult;
+    const source_symbol = semantic.symbol_ids[source_binding_raw] orelse return error.TestUnexpectedResult;
+    const decoy_symbol = semantic.symbol_ids[decoy_binding_raw] orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(source_symbol, semantic.symbol_ids[source_reference_raw].?);
+    try std.testing.expectEqual(injected_symbol, semantic.symbol_ids[injected_reference_raw].?);
+    try std.testing.expect(injected_symbol != source_symbol);
+    try std.testing.expect(injected_symbol != decoy_symbol);
+    try std.testing.expectEqual(.variable_const, semantic.symbols.items[injected_symbol].kind);
+
+    const scope_index = state.insertion_scope.toIndex();
+    try std.testing.expect(scope_index < semantic.scopes.len);
+    try std.testing.expectEqual(state.insertion_scope, semantic.symbols.items[injected_symbol].scope_id);
+    try std.testing.expectEqual(@as(usize, injected_symbol), semantic.scope_maps[scope_index].get("injectedValue").?);
+    const decoy_scope = semantic.symbols.items[decoy_symbol].scope_id;
+    try std.testing.expect(decoy_scope != state.insertion_scope);
+    try std.testing.expectEqual(@as(usize, decoy_symbol), semantic.scope_maps[decoy_scope.toIndex()].get("injectedValue").?);
+
+    var declaration_rows: usize = 0;
+    var source_reference_rows: usize = 0;
+    var injected_reference_rows: usize = 0;
+    for (semantic.references) |reference| {
+        if (reference.flags.declare and reference.declaration_node_index == state.injected_binding) {
+            try std.testing.expectEqual(injected_symbol, @backingInt(reference.symbol_id));
+            try std.testing.expectEqual(state.insertion_scope, reference.scope_id);
+            declaration_rows += 1;
+        }
+        if (reference.node_index == state.source_reference) {
+            try std.testing.expectEqual(source_symbol, @backingInt(reference.symbol_id));
+            source_reference_rows += 1;
+        }
+        if (reference.node_index == state.injected_reference) {
+            try std.testing.expectEqual(injected_symbol, @backingInt(reference.symbol_id));
+            try std.testing.expectEqual(state.insertion_scope, reference.scope_id);
+            injected_reference_rows += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), declaration_rows);
+    try std.testing.expectEqual(@as(usize, 1), source_reference_rows);
+    try std.testing.expectEqual(@as(usize, 1), injected_reference_rows);
+
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, ast.transformed_root.?);
+    defer std.testing.allocator.free(reachable);
+    for ([_]ast_mod.NodeIndex{ state.injected_binding, state.source_reference, state.injected_reference }) |node| {
+        try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(node)) != null);
+    }
+}
+
+fn expectColdAndCachedTrackedInjectedBindingGraph(source: []const u8, expected_method_calls: usize) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", source);
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.js" });
+    defer std.testing.allocator.free(entry);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    var cold_state: TrackedInjectedBindingGraphState = .{};
+    const cold_plugins = [_]plugin_mod.Plugin{.{
+        .name = "tracked-injected-binding-function-hook",
+        .context = @ptrCast(&cold_state),
+        .onFunction = trackedInjectedBindingGraphHook,
+        .ast_graph_contract = .tracked_function_edits,
+    }};
+    {
+        var cache = ResolveCache.init(std.testing.allocator, .{});
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.disk_cache = &disk;
+        graph.disk_load_enabled = true;
+        graph.disk_options_hash = 0xB17D;
+        graph.disk_compiler_build_id = 0xCACE;
+        graph.max_threads = 1;
+        graph.plugins = &cold_plugins;
+
+        try graph.build(std.testing.io, &.{entry});
+
+        try std.testing.expectEqual(@as(usize, 0), graph.disk_load_hits.load(.monotonic));
+        try expectTrackedInjectedBindingGraph(&graph, entry, cold_state, expected_method_calls);
+    }
+
+    var warm_state: TrackedInjectedBindingGraphState = .{};
+    const warm_plugins = [_]plugin_mod.Plugin{.{
+        .name = "tracked-injected-binding-function-hook",
+        .context = @ptrCast(&warm_state),
+        .onFunction = trackedInjectedBindingGraphHook,
+        .ast_graph_contract = .tracked_function_edits,
+    }};
+    var warm_cache = ResolveCache.init(std.testing.allocator, .{});
+    defer warm_cache.deinit();
+    var warm_graph = ModuleGraph.init(std.testing.allocator, &warm_cache);
+    defer warm_graph.deinit();
+    warm_graph.disk_cache = &disk;
+    warm_graph.disk_load_enabled = true;
+    warm_graph.disk_options_hash = 0xB17D;
+    warm_graph.disk_compiler_build_id = 0xCACE;
+    warm_graph.max_threads = 1;
+    warm_graph.plugins = &warm_plugins;
+
+    try warm_graph.build(std.testing.io, &.{entry});
+
+    try std.testing.expectEqual(@as(usize, 1), warm_graph.disk_load_hits.load(.monotonic));
+    try expectTrackedInjectedBindingGraph(&warm_graph, entry, warm_state, expected_method_calls);
+}
+
 const UntrackedEvalGraphMutationState = struct {
     mutations: usize = 0,
 };
@@ -1197,6 +1400,27 @@ test "graph visitor caller: identity-retaining edits keep the graph on cold and 
 
 test "graph function-hook caller: tracked direct eval injection retains its exact graph on cold and cached ASTs" {
     try expectColdAndCachedTrackedDirectEvalGraph();
+}
+
+test "graph function-hook caller: injected binding and references keep exact identities on cold and cached ASTs" {
+    const cases = [_]struct { source: []const u8, method_calls: usize }{
+        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} function read(){}", .method_calls = 0 },
+        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} function read(ignored=0){}", .method_calls = 0 },
+        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} async function read(){}", .method_calls = 0 },
+        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} function* read(){}", .method_calls = 0 },
+        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} const read=function read(){};", .method_calls = 0 },
+        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} const read=function read(ignored=0){};", .method_calls = 0 },
+        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} const read=function(){};", .method_calls = 0 },
+        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} const read=()=>{};", .method_calls = 0 },
+        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} const read=(ignored=0)=>{};", .method_calls = 0 },
+        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} const holder={run(){function read(){}}};", .method_calls = 1 },
+        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} class Holder{run(){function read(){}}}", .method_calls = 1 },
+        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} class Holder{static run(){function read(){}}}", .method_calls = 1 },
+        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} function outer(){function read(){}}", .method_calls = 0 },
+        .{ .source = "\"use strict\"; const secret=1; function decoy(){const injectedValue=99;} {function read(){}}", .method_calls = 0 },
+    };
+
+    for (cases) |case| try expectColdAndCachedTrackedInjectedBindingGraph(case.source, case.method_calls);
 }
 
 test "graph function-hook caller: ten untracked direct eval edits fail closed" {
