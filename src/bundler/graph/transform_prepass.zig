@@ -3148,8 +3148,9 @@ fn isExactJsxNoSubstitutionTemplateLiteral(ast: *const ast_mod.Ast, node_idx: as
 }
 
 /// A computed inline JSX spread key stays on the retained graph when its
-/// expression is only a primitive literal, a no-substitution template, or
-/// plain parentheses around one. Keep computed `__proto__` strings out because
+/// expression is a primitive literal, a no-substitution template, or a pure
+/// unary literal chain without signed composition (or one signed Number
+/// literal), optionally wrapped in plain parentheses. Keep computed `__proto__` strings out because
 /// downstream lowering currently changes their data-property behavior; escaped
 /// strings stay out so alternate spellings cannot bypass that guard. Calls,
 /// reads, coercive operators, and malformed wrapper/list metadata remain on
@@ -3173,6 +3174,8 @@ fn isRetainableJsxStaticComputedPropertyKey(ast: *const ast_mod.Ast, node_idx: a
             .string_literal => isSafeJsxComputedStringLiteralKey(ast, operand_idx),
             .numeric_literal, .bigint_literal, .boolean_literal, .null_literal => true,
             .template_literal => isExactJsxNoSubstitutionTemplateLiteral(ast, operand_idx),
+            .unary_expression => isRetainableJsxSignedNumericValue(ast, operand_idx) or
+                isRetainableJsxLiteralUnaryMemberKey(ast, operand_idx),
             else => false,
         };
     }
@@ -17932,7 +17935,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     }
     try std.testing.expectEqual(@as(usize, 5), deep_member_key_read_count);
 
-    const computed_prop_key_source = "const label = \"L\"; const count = 7; const items = [1]; const result = <Comp {...{ [\"named\"]: label, [1]: count, [true]: label, [null]: count, [`static`]: label }} key=\"k\">{...items}</Comp>;";
+    const computed_prop_key_source = "const label = \"L\"; const count = 7; const items = [1]; const result = <Comp {...{ [\"named\"]: label, [1]: count, [true]: label, [null]: count, [`static`]: label, [!0]: label, [typeof delete 0]: count, [void (typeof delete !0)]: label, [+1]: count, [-(2)]: count, [~~0]: label, [!!!!!!!!!!!!0]: label }} key=\"k\">{...items}</Comp>;";
     var computed_prop_key_fixture = try jsxSpreadChildTestFixture(allocator, computed_prop_key_source);
     const computed_prop_key_owner = computed_prop_key_fixture.semantic.captureOwnerToken();
     var computed_prop_key_symbols: [3]?u32 = .{ null, null, null };
@@ -17990,7 +17993,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
         computed_prop_key_reads[slot] += 1;
     }
     try std.testing.expectEqual(@as(usize, 0), computed_prop_key_nodes);
-    try std.testing.expectEqual([_]usize{ 3, 2, 1 }, computed_prop_key_reads);
+    try std.testing.expectEqual([_]usize{ 7, 5, 1 }, computed_prop_key_reads);
 
     const dev_source = "const member = { deep: { value: \"D\" }, \"undefined\": \"U\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...{ staticTemplateValue: `static`, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}</Comp>;";
     var dev_fixture = try jsxSpreadChildTestFixture(allocator, dev_source);
@@ -25763,6 +25766,13 @@ test "#6193 JSX spread retains only static computed object keys" {
         "const items = [1]; const result = <Comp {...{ [null]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [`static`]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [(((false)))]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [!0]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [typeof delete 0]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [void (typeof delete !0)]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [+1]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [-(2)]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [~~0]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [!!!!!!!!!!!!0]: 1 }} key=\"k\">{...items}</Comp>;",
     };
     for (safe_sources) |source| {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -25781,11 +25791,20 @@ test "#6193 JSX spread retains only static computed object keys" {
         "const items = [1]; const result = <Comp {...{ [/x/]: 1 }} key=\"k\">{...items}</Comp>;",
         "function getKey() { return \"name\"; } const items = [1]; const result = <Comp {...{ [`${getKey()}`]: 1 }} key=\"k\">{...items}</Comp>;",
         "const tag = (value) => value; const items = [1]; const result = <Comp {...{ [tag`name`]: 1 }} key=\"k\">{...items}</Comp>;",
-        "const items = [1]; const result = <Comp {...{ [!0]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const key = 0; const items = [1]; const result = <Comp {...{ [!key]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [new String(\"name\")]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [Symbol()]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [\"__proto__\"]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [\"\\u005f_proto__\"]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const key = 0; const items = [1]; const result = <Comp {...{ [typeof key]: 1 }} key=\"k\">{...items}</Comp>;",
+        "function getKey() { return 0; } const items = [1]; const result = <Comp {...{ [typeof delete getKey()]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const key = 1; const items = [1]; const result = <Comp {...{ [+key]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [-1n]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [-(-0)]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [typeof -0]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [void +0]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ [!member.value]: 1 }} key=\"k\">{...items}</Comp>;",
+        "let key = 0; const items = [1]; const result = <Comp {...{ [key++]: 1 }} key=\"k\">{...items}</Comp>;",
     };
     for (hostile_sources) |source| {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -25839,6 +25858,29 @@ test "#6193 JSX spread retains only static computed object keys" {
     malformed.ast.nodes.items[paren_raw].data.unary.operand = paren_idx;
     try std.testing.expect(!isRetainableJsxStaticComputedPropertyKey(&malformed.ast, key_idx));
     malformed.ast.nodes.items[paren_raw].data.unary.operand = saved_paren_operand;
+
+    var malformed_unary_arena = std.heap.ArenaAllocator.init(allocator);
+    defer malformed_unary_arena.deinit();
+    var malformed_unary = try jsxSpreadChildTestFixture(
+        malformed_unary_arena.allocator(),
+        "const items = [1]; const result = <Comp {...{ [!!0]: 1 }} key=\"k\">{...items}</Comp>;",
+    );
+    var unary_key: ?ast_mod.NodeIndex = null;
+    for (malformed_unary.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .computed_property_key) continue;
+        unary_key = @fromBackingInt(@intCast(raw));
+        break;
+    }
+    const unary_key_idx = unary_key orelse return error.MissingJsxUnaryComputedPropertyKey;
+    try std.testing.expect(isRetainableJsxStaticComputedPropertyKey(&malformed_unary.ast, unary_key_idx));
+    const unary_key_node = malformed_unary.ast.nodes.items[@backingInt(unary_key_idx)];
+    const unary_node_idx = unary_key_node.data.unary.operand;
+    const unary_raw: usize = @intCast(@backingInt(unary_node_idx));
+    const unary_extra = malformed_unary.ast.nodes.items[unary_raw].data.extra;
+    const saved_unary_operand = malformed_unary.ast.extra_data.items[unary_extra];
+    malformed_unary.ast.extra_data.items[unary_extra] = @intCast(unary_raw);
+    try std.testing.expect(!isRetainableJsxStaticComputedPropertyKey(&malformed_unary.ast, unary_key_idx));
+    malformed_unary.ast.extra_data.items[unary_extra] = saved_unary_operand;
 }
 
 test "#6193 JSX spread admits only pure signed numeric literals" {
