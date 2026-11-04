@@ -1282,11 +1282,16 @@ fn expectVisitorGraphSkipped(graph: *const ModuleGraph, entry: []const u8) !void
     }
 }
 
-fn expectBuiltInDropConsoleGraph(
+fn expectBuiltInTransformGraph(
     entry: []const u8,
     disk: *@import("disk_module_store.zig").DiskModuleStore,
     expected_load_hits: usize,
+    options: TransformOptions,
     expect_prepass: bool,
+    removed_identifier: []const u8,
+    retained_symbol_name: []const u8,
+    expected_reference_count: u32,
+    expected_boolean_value: ?bool,
 ) !void {
     const profile = @import("../profile.zig");
     profile.resetForTest();
@@ -1302,7 +1307,7 @@ fn expectBuiltInDropConsoleGraph(
     graph.disk_load_enabled = true;
     graph.disk_options_hash = 0x6193;
     graph.disk_compiler_build_id = 0x4819;
-    graph.transform_options_base.drop_console = true;
+    graph.transform_options_base = options;
     graph.max_threads = 1;
 
     try graph.build(std.testing.io, &.{entry});
@@ -1320,18 +1325,26 @@ fn expectBuiltInDropConsoleGraph(
     const root = ast.transformed_root.?;
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
     defer std.testing.allocator.free(reachable);
+    var found_boolean_value = false;
     for (reachable) |raw| {
         const node = ast.nodes.items[raw];
-        if (node.tag != .identifier_reference) continue;
-        try std.testing.expect(!Scanner.identifierNamesEqual(ast.getText(node.span), "console"));
+        if (node.tag == .identifier_reference) {
+            try std.testing.expect(!Scanner.identifierNamesEqual(ast.getText(node.span), removed_identifier));
+        } else if (node.tag == .boolean_literal) {
+            if (expected_boolean_value) |expected| {
+                const expected_text = if (expected) "true" else "false";
+                if (std.mem.eql(u8, ast.getText(node.span), expected_text)) found_boolean_value = true;
+            }
+        }
     }
+    if (expected_boolean_value != null) try std.testing.expect(found_boolean_value);
 
     const semantic = &module.semantic.?;
     var found_retained = false;
     for (semantic.symbols.items) |symbol| {
-        if (!std.mem.eql(u8, symbol.nameText(ast.source), "retained")) continue;
+        if (!std.mem.eql(u8, symbol.nameText(ast.source), retained_symbol_name)) continue;
         found_retained = true;
-        try std.testing.expectEqual(@as(u32, 0), symbol.reference_count);
+        try std.testing.expectEqual(expected_reference_count, symbol.reference_count);
     }
     try std.testing.expect(found_retained);
 }
@@ -1439,10 +1452,36 @@ test "graph built-in caller: drop-console retains its graph on cold/cache and sk
     var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
     defer disk.deinit();
 
-    try expectBuiltInDropConsoleGraph(drop_entry, &disk, 0, true);
-    try expectBuiltInDropConsoleGraph(drop_entry, &disk, 1, true);
-    try expectBuiltInDropConsoleGraph(plain_entry, &disk, 0, false);
-    try expectBuiltInDropConsoleGraph(plain_entry, &disk, 1, false);
+    const options: TransformOptions = .{ .drop_console = true };
+    try expectBuiltInTransformGraph(drop_entry, &disk, 0, options, true, "console", "retained", 0, null);
+    try expectBuiltInTransformGraph(drop_entry, &disk, 1, options, true, "console", "retained", 0, null);
+    try expectBuiltInTransformGraph(plain_entry, &disk, 0, options, false, "console", "untouched", 1, null);
+    try expectBuiltInTransformGraph(plain_entry, &disk, 1, options, false, "console", "untouched", 1, null);
+}
+
+test "graph built-in caller: define retains its graph on cold/cache and skips a no-match module" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "define.js", "const retained = 42; console.log(retained, __DEV__);");
+    try writeFile(tmp.dir, "plain.js", "const untouched = 42; console.log(untouched);");
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const define_entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "define.js" });
+    defer std.testing.allocator.free(define_entry);
+    const plain_entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "plain.js" });
+    defer std.testing.allocator.free(plain_entry);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    const defines = [_]@import("../parser/scan_results.zig").DefineEntry{.{ .key = "__DEV__", .value = "false" }};
+    const options: TransformOptions = .{ .define = &defines };
+    try expectBuiltInTransformGraph(define_entry, &disk, 0, options, true, "__DEV__", "retained", 1, false);
+    try expectBuiltInTransformGraph(define_entry, &disk, 1, options, true, "__DEV__", "retained", 1, false);
+    try expectBuiltInTransformGraph(plain_entry, &disk, 0, options, false, "__DEV__", "untouched", 1, null);
+    try expectBuiltInTransformGraph(plain_entry, &disk, 1, options, false, "__DEV__", "untouched", 1, null);
 }
 
 test "graph visitor caller: cold parse runs every hook and retains its semantic graph" {
