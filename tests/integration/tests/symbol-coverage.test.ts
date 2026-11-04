@@ -32179,6 +32179,34 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         property: '-1',
         emitted: /__toPropertyKey\(\s*(?:~\s*\(*\s*undefined\s*\)*|-1|"-1")\s*\)/,
       },
+      {
+        name: 'chain-double-not',
+        expression: '[!!undefined]',
+        value: 'double-not-global-key-value',
+        property: 'false',
+        emitted: /__toPropertyKey\(\s*(?:!!\s*\(*\s*undefined\s*\)*|false|"false")\s*\)/,
+      },
+      {
+        name: 'chain-double-tilde',
+        expression: '[~~undefined]',
+        value: 'double-tilde-global-key-value',
+        property: '0',
+        emitted: /__toPropertyKey\(\s*(?:~~\s*\(*\s*undefined\s*\)*|0|"0")\s*\)/,
+      },
+      {
+        name: 'chain-nested-typeof',
+        expression: '[typeof typeof undefined]',
+        value: 'nested-typeof-global-key-value',
+        property: 'string',
+        emitted: /__toPropertyKey\(\s*(?:typeof\s+typeof\s+undefined|"string")\s*\)/,
+      },
+      {
+        name: 'chain-mixed',
+        expression: '[!void undefined]',
+        value: 'mixed-global-key-value',
+        property: 'true',
+        emitted: /__toPropertyKey\(\s*(?:!\s*void\s+undefined|true|"true")\s*\)/,
+      },
     ] as const;
 
     for (const mode of modes) {
@@ -32323,14 +32351,29 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                 '0n',
                 'Symbol()',
               ];
+              const chainAlternatives = [
+                '2',
+                'null',
+                '"changed"',
+                '[]',
+                '({})',
+                'Symbol()',
+                '-1',
+                'typeof 0',
+                '0 / 0',
+                '1n',
+              ];
               const isNumericUndefinedKey = ['plus', 'minus', 'tilde'].includes(keyCase.name);
+              const isUndefinedUnaryChain = keyCase.name.startsWith('chain-');
               const replacement = keyCase.name.startsWith('typeof')
                 ? `__toPropertyKey(${typeofAlternatives[mutation]})`
                 : keyCase.name === 'not'
                   ? `__toPropertyKey(${notAlternatives[mutation]})`
                   : isNumericUndefinedKey
                     ? `__toPropertyKey(${numericAlternatives[mutation]})`
-                    : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
+                    : isUndefinedUnaryChain
+                      ? `__toPropertyKey(${chainAlternatives[mutation]})`
+                      : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
               const mutated = emitted.replace(expression ?? '', replacement);
               writeFileSync(mutatedOutput, mutated);
               const mutantRun = spawnSync('node', [mutatedOutput], { encoding: 'utf8' });
@@ -32338,7 +32381,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
               if (
                 keyCase.name.startsWith('typeof') ||
                 keyCase.name === 'not' ||
-                isNumericUndefinedKey
+                isNumericUndefinedKey ||
+                isUndefinedUnaryChain
               ) {
                 expect(mutantRun.status, `${label} compileable mutation ${mutation}`).toBe(0);
                 expect(mutantRun.stdout, `${label} compileable mutation ${mutation}`).not.toBe(

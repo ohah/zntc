@@ -128,6 +128,10 @@ const result = (
 const unaryPlusKeyResult = <div {...{ [+undefined]: 'plus-key' }} />;
 const unaryMinusKeyResult = <div {...{ [-undefined]: 'minus-key' }} />;
 const unaryTildeKeyResult = <div {...{ [~undefined]: 'tilde-key' }} />;
+const unaryDoubleNotKeyResult = <div {...{ [!!undefined]: 'double-not-key' }} />;
+const unaryDoubleTildeKeyResult = <div {...{ [~~undefined]: 'double-tilde-key' }} />;
+const unaryNestedTypeofKeyResult = <div {...{ [typeof typeof undefined]: 'nested-typeof-key' }} />;
+const unaryMixedKeyResult = <div {...{ [!void undefined]: 'mixed-unary-key' }} />;
 
 console.log(
   result.type,
@@ -207,6 +211,10 @@ console.log(
   unaryPlusKeyResult.props.NaN,
   unaryMinusKeyResult.props.NaN,
   unaryTildeKeyResult.props[-1],
+  unaryDoubleNotKeyResult.props.false,
+  unaryDoubleTildeKeyResult.props[0],
+  unaryNestedTypeofKeyResult.props.string,
+  unaryMixedKeyResult.props.true,
   result.props[1],
   result.props[-2],
   result.props[0],
