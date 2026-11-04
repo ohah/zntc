@@ -45254,11 +45254,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
   }, 120_000);
 
   test('실행 가능한 전체 MJS oracle은 ESNext 심볼 minify 뒤에도 런타임이 같다', () => {
-    const mjsFixtures = fixtures.filter((file) => file.endsWith('.mjs'));
+    // `.reference.mjs` files are oracle sidecars, not independent transform inputs.
+    const mjsFixtures = fixtures.filter(
+      (file) => file.endsWith('.mjs') && !file.endsWith('.reference.mjs'),
+    );
     const runtimeFixtures = mjsFixtures.filter((file) => !file.endsWith('.flow.mjs'));
-    expect(mjsFixtures).toHaveLength(303);
+    expect(mjsFixtures).toHaveLength(302);
     expect(mjsFixtures.filter((file) => file.endsWith('.flow.mjs'))).toHaveLength(1);
-    expect(runtimeFixtures).toHaveLength(302);
+    expect(runtimeFixtures).toHaveLength(301);
 
     const dir = mkdtempSync(join(tmpdir(), 'zntc-esnext-runtime-oracle-'));
     const referenceDir = join(dir, 'reference');
