@@ -1289,6 +1289,8 @@ const BuiltInTransformGraphExpectation = struct {
     retained_symbol_name: ?[]const u8 = null,
     expected_reference_count: ?u32 = null,
     expected_boolean_value: ?bool = null,
+    expected_numeric_literal: ?[]const u8 = null,
+    expected_numeric_literal_count: ?usize = null,
 };
 
 fn expectBuiltInTransformGraph(
@@ -1332,6 +1334,8 @@ fn expectBuiltInTransformGraph(
     defer std.testing.allocator.free(reachable);
     var found_boolean_value = false;
     var found_removed_node_tag = false;
+    var found_numeric_literal = false;
+    var numeric_literal_count: usize = 0;
     for (reachable) |raw| {
         const node = ast.nodes.items[raw];
         if (node.tag == .identifier_reference) {
@@ -1343,11 +1347,18 @@ fn expectBuiltInTransformGraph(
                 const expected_text = if (expected) "true" else "false";
                 if (std.mem.eql(u8, ast.getText(node.span), expected_text)) found_boolean_value = true;
             }
+        } else if (node.tag == .numeric_literal) {
+            numeric_literal_count += 1;
+            if (expectation.expected_numeric_literal) |expected| {
+                if (std.mem.eql(u8, ast.getText(node.span), expected)) found_numeric_literal = true;
+            }
         }
         if (expectation.removed_node_tag == node.tag) found_removed_node_tag = true;
     }
     if (expectation.expected_boolean_value != null) try std.testing.expect(found_boolean_value);
     if (expectation.removed_node_tag != null) try std.testing.expect(!found_removed_node_tag);
+    if (expectation.expected_numeric_literal != null) try std.testing.expect(found_numeric_literal);
+    if (expectation.expected_numeric_literal_count) |expected| try std.testing.expectEqual(expected, numeric_literal_count);
 
     if (expectation.retained_symbol_name) |retained_symbol_name| {
         const expected_reference_count = expectation.expected_reference_count orelse return error.TestUnexpectedResult;
@@ -1554,6 +1565,37 @@ test "graph built-in caller: debugger and label drops retain graphs on cold/cach
     });
     try expectBuiltInTransformGraph(plain_label_entry, &disk, 0, label_options, .{ .expect_prepass = false });
     try expectBuiltInTransformGraph(plain_label_entry, &disk, 1, label_options, .{ .expect_prepass = false });
+}
+
+test "graph built-in caller: syntax minification retains its edited graph on cold/cache" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "function read(value) { return value + (2 * 3); }");
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.js" });
+    defer std.testing.allocator.free(entry);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    const options: TransformOptions = .{ .minify_syntax = true };
+    try expectBuiltInTransformGraph(entry, &disk, 0, options, .{
+        .expect_prepass = true,
+        .retained_symbol_name = "value",
+        .expected_reference_count = 1,
+        .expected_numeric_literal = "6",
+        .expected_numeric_literal_count = 1,
+    });
+    try expectBuiltInTransformGraph(entry, &disk, 1, options, .{
+        .expect_prepass = true,
+        .retained_symbol_name = "value",
+        .expected_reference_count = 1,
+        .expected_numeric_literal = "6",
+        .expected_numeric_literal_count = 1,
+    });
 }
 
 test "graph visitor caller: cold parse runs every hook and retains its semantic graph" {
