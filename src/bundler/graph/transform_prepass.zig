@@ -48,6 +48,7 @@ const styled_components_scan = @import("../../transformer/transformer/styled_com
 const emotion_scan = @import("../../transformer/transformer/emotion.zig");
 const refresh_mod = @import("../../transformer/transformer/refresh.zig");
 const worklet_plugin = @import("../../transformer/plugins/worklet_plugin.zig");
+const plugin_dispatch = @import("../../transformer/transformer/plugins.zig");
 const plugin_mod = @import("../plugin.zig");
 const Transformer = @import("../../transformer/transformer.zig").Transformer;
 const TransformOptions = @import("../../transformer/transformer.zig").TransformOptions;
@@ -201,13 +202,124 @@ fn hasAstTransformPlugin(plugins: []const plugin_mod.Plugin, ast: *const ast_mod
         if ((plugin.onFunction != null and has_function) or
             (plugin.autoWorkletCallees.len > 0 and has_call)) return true;
         if (plugin.visitor) |visitor| {
-            if (visitor.on_program != null or
-                (visitor.on_object_expression != null and has_object) or
-                (visitor.on_call_expression != null and has_call) or
-                ((visitor.on_class_declaration != null or visitor.on_class_expression != null) and has_class)) return true;
+            // Keep the plugin data shape and visitor dispatch enum in sync.
+            // Adding a new visitor callback without teaching this admission
+            // gate when it can run must fail at compile time: otherwise the
+            // emitter could apply the AST edit after graph linking.
+            inline for (@typeInfo(plugin_mod.Visitor).@"struct".field_names) |field_name| {
+                if (@field(visitor, field_name) != null) {
+                    if (visitorHookFieldMatchesAst(field_name, has_object, has_call, has_class)) return true;
+                }
+            }
         }
     }
     return false;
+}
+
+fn visitorHookFieldMatchesAst(
+    comptime field_name: []const u8,
+    has_object: bool,
+    has_call: bool,
+    has_class: bool,
+) bool {
+    if (comptime std.mem.eql(u8, field_name, "on_program"))
+        return visitorHookMatchesAst(.on_program, has_object, has_call, has_class);
+    if (comptime std.mem.eql(u8, field_name, "on_object_expression"))
+        return visitorHookMatchesAst(.on_object_expression, has_object, has_call, has_class);
+    if (comptime std.mem.eql(u8, field_name, "on_call_expression"))
+        return visitorHookMatchesAst(.on_call_expression, has_object, has_call, has_class);
+    if (comptime std.mem.eql(u8, field_name, "on_class_declaration"))
+        return visitorHookMatchesAst(.on_class_declaration, has_object, has_call, has_class);
+    if (comptime std.mem.eql(u8, field_name, "on_class_expression"))
+        return visitorHookMatchesAst(.on_class_expression, has_object, has_call, has_class);
+    @compileError("Classify new AST visitor hook in graph prepass admission: " ++ field_name);
+}
+
+fn visitorHookMatchesAst(
+    hook: plugin_dispatch.VisitorHookKind,
+    has_object: bool,
+    has_call: bool,
+    has_class: bool,
+) bool {
+    return switch (hook) {
+        .on_program => true,
+        .on_object_expression => has_object,
+        .on_call_expression => has_call,
+        .on_class_declaration, .on_class_expression => has_class,
+    };
+}
+
+fn prepassDecisionForPluginTest(source: []const u8, plugin: plugin_mod.Plugin) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var options = TransformOptions{};
+    options.strip_types = parser.ast.is_typescript;
+
+    var module = Module.init(@fromBackingInt(0), "plugin-admission.js");
+    module.module_type = .js;
+    module.ast = parser.ast;
+    const plugins = [_]plugin_mod.Plugin{plugin};
+    var context = .{
+        .plugins = &plugins,
+        .minify_identifiers = false,
+        .react_refresh = false,
+        .styled_components = false,
+        .emotion = false,
+        .worklet_transform = false,
+        .transform_options_base = options,
+    };
+    return shouldRun(&context, &module, false);
+}
+
+fn prepassAdmissionTestVisitor(
+    _: ?*anyopaque,
+    _: *plugin_mod.AstTransformCtx,
+    _: ast_mod.NodeIndex,
+) plugin_mod.PluginError!?ast_mod.NodeIndex {
+    return null;
+}
+
+fn prepassAdmissionTestFunction(
+    _: ?*anyopaque,
+    _: *plugin_mod.AstTransformCtx,
+    _: @import("../../transformer/ast_plugin.zig").FunctionInfo,
+) plugin_mod.PluginError!void {}
+
+test "graph prepass admission tracks every dispatched AST plugin hook" {
+    const cases = [_]struct {
+        source: []const u8,
+        visitor: plugin_mod.Visitor,
+        expected: bool,
+    }{
+        .{ .source = "const value = 1;", .visitor = .{ .on_program = prepassAdmissionTestVisitor }, .expected = true },
+        .{ .source = "const value = {};", .visitor = .{ .on_object_expression = prepassAdmissionTestVisitor }, .expected = true },
+        .{ .source = "read();", .visitor = .{ .on_call_expression = prepassAdmissionTestVisitor }, .expected = true },
+        .{ .source = "class Value {}", .visitor = .{ .on_class_declaration = prepassAdmissionTestVisitor }, .expected = true },
+        .{ .source = "const Value = class {};", .visitor = .{ .on_class_expression = prepassAdmissionTestVisitor }, .expected = true },
+        .{ .source = "const value = 1;", .visitor = .{ .on_object_expression = prepassAdmissionTestVisitor }, .expected = false },
+        .{ .source = "const value = 1;", .visitor = .{ .on_call_expression = prepassAdmissionTestVisitor }, .expected = false },
+        .{ .source = "const value = 1;", .visitor = .{ .on_class_declaration = prepassAdmissionTestVisitor }, .expected = false },
+        .{ .source = "const value = 1;", .visitor = .{ .on_class_expression = prepassAdmissionTestVisitor }, .expected = false },
+    };
+    for (cases) |case| {
+        const plugin = plugin_mod.Plugin{ .name = "admission-visitor", .visitor = case.visitor };
+        try std.testing.expectEqual(case.expected, try prepassDecisionForPluginTest(case.source, plugin));
+    }
+
+    const function_plugin = plugin_mod.Plugin{ .name = "admission-function", .onFunction = prepassAdmissionTestFunction };
+    try std.testing.expect(try prepassDecisionForPluginTest("function read() {}", function_plugin));
+    try std.testing.expect(!try prepassDecisionForPluginTest("const value = 1;", function_plugin));
+
+    const auto_worklet = plugin_mod.Plugin{
+        .name = "admission-auto-worklet",
+        .autoWorkletCallees = &.{.{ .name = "worklet" }},
+    };
+    try std.testing.expect(try prepassDecisionForPluginTest("worklet(() => 1);", auto_worklet));
+    try std.testing.expect(!try prepassDecisionForPluginTest("const value = 1;", auto_worklet));
 }
 
 /// Scan imports once when one or both CSS plugins are configured. Their exact
