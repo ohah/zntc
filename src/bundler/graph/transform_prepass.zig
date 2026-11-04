@@ -13509,6 +13509,84 @@ fn hasReachableWithStatement(
     return false;
 }
 
+/// Verify direct-eval output against the retained execution scope that owns
+/// each call. A module-wide flag is insufficient: an eval in a sibling
+/// function must not authorize a call inserted into a different function.
+fn reachableDirectEvalCallsHaveScopeFacts(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    root: ast_mod.NodeIndex,
+    scopes: []const SemanticScope,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+) bool {
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len) return false;
+
+    const ParentFrame = struct { node: ast_mod.NodeIndex, parent: ?u32 };
+    var stack: std.ArrayList(ParentFrame) = .empty;
+    defer stack.deinit(allocator);
+    stack.append(allocator, .{ .node = root, .parent = null }) catch return false;
+
+    var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer parents.deinit(allocator);
+    var ambiguous: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer ambiguous.deinit(allocator);
+    const visited = allocator.alloc(bool, ast.nodes.items.len) catch return false;
+    defer allocator.free(visited);
+    @memset(visited, false);
+
+    while (stack.pop()) |frame| {
+        if (frame.node.isNone()) return false;
+        const raw = @backingInt(frame.node);
+        if (raw >= ast.nodes.items.len) return false;
+        if (visited[raw]) {
+            if (frame.parent) |parent| {
+                if (parents.get(raw)) |first_parent| {
+                    if (first_parent != parent) ambiguous.put(allocator, raw, {}) catch return false;
+                } else {
+                    // A reachable cycle can revisit the root, which has no
+                    // recorded parent. Treat that ancestry as unprovable.
+                    ambiguous.put(allocator, raw, {}) catch return false;
+                }
+            }
+            continue;
+        }
+        visited[raw] = true;
+        if (frame.parent) |parent| parents.put(allocator, raw, parent) catch return false;
+
+        var children = ast_walk.children(ast, ast.nodes.items[raw]);
+        while (children.next()) |child| {
+            if (child.isNone()) continue;
+            if (@backingInt(child) >= ast.nodes.items.len) return false;
+            stack.append(allocator, .{ .node = child, .parent = raw }) catch return false;
+        }
+    }
+
+    for (ast.nodes.items, 0..) |node, raw| {
+        if (!visited[raw] or node.tag != .call_expression or
+            !@import("../../transformer/static_class_capture.zig").isDirectEvalCall(.{ .ast = ast }, node)) continue;
+
+        var current: u32 = @intCast(raw);
+        var owner_scope: ?u32 = null;
+        var hops: usize = 0;
+        while (hops <= ast.nodes.items.len) : (hops += 1) {
+            if (ambiguous.contains(current)) return false;
+            if (scope_owner_map.get(current)) |scope_raw| {
+                owner_scope = scope_raw;
+                break;
+            }
+            current = parents.get(current) orelse return false;
+        }
+        const scope_raw = owner_scope orelse return false;
+        if (scope_raw >= scopes.len) return false;
+        const exec_unit = @import("../../semantic/scope.zig").enclosingExecUnit(
+            scopes,
+            @fromBackingInt(scope_raw),
+        ) orelse return false;
+        if (exec_unit >= scopes.len or !scopes[exec_unit].subtree_has_direct_eval) return false;
+    }
+    return true;
+}
+
 fn hasReachableDynamicNameLookup(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -19302,6 +19380,122 @@ test "generic prepass run publishes transformed output and preserves parser AST"
     try std.testing.expect(try sameGenericPrepassAstContents(&source_ast_snapshot, &fixture.ast, allocator));
     if (module_without_semantic.alias_table) |*table| table.deinit();
     if (module_without_semantic.export_index_by_name) |*index| index.deinit(graph_allocator);
+
+    const ExistingEvalCallMutation = struct {
+        did_mutate: bool = false,
+
+        fn onFunction(
+            context_ptr: ?*anyopaque,
+            api: *plugin_mod.AstTransformCtx,
+            info: @import("../../transformer/ast_plugin.zig").FunctionInfo,
+        ) plugin_mod.PluginError!void {
+            const state = @as(*@This(), @ptrCast(@alignCast(context_ptr orelse return)));
+            const ast = api.transformer.ast;
+            const body = ast.getNode(info.body_idx);
+            if (body.tag != .block_statement) return;
+            const body_items = ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len];
+            var eval_statement: ?ast_mod.NodeIndex = null;
+            var eval_reference: ?ast_mod.NodeIndex = null;
+            var eval_span: ?Span = null;
+            var argument_span: ?Span = null;
+            for (body_items) |raw| {
+                const statement: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+                const statement_node = ast.getNode(statement);
+                if (statement_node.tag != .expression_statement) continue;
+                const expression = ast.getNode(statement_node.data.unary.operand);
+                if (expression.tag == .identifier_reference and
+                    Scanner.identifierNamesEqual(ast.identifierNameText(expression), "eval"))
+                {
+                    eval_statement = statement;
+                    eval_reference = statement_node.data.unary.operand;
+                    eval_span = expression.span;
+                } else if (expression.tag == .string_literal and
+                    std.mem.eql(u8, ast.getText(expression.span), "\"secret\""))
+                {
+                    argument_span = expression.span;
+                }
+            }
+            const statement = eval_statement orelse return;
+            const callee = eval_reference orelse return;
+            const callee_span = eval_span orelse return;
+            const source_argument_span = argument_span orelse return;
+            const argument = try ast.addNode(.{
+                .tag = .string_literal,
+                .span = source_argument_span,
+                .data = .{ .string_ref = source_argument_span },
+            });
+            const arguments = try ast.addNodeList(&.{argument});
+            const call_extra = try ast.addExtras(&.{ @backingInt(callee), arguments.start, arguments.len, 0 });
+            const call = try ast.addExtraNode(.call_expression, callee_span, call_extra);
+            ast.nodes.items[@backingInt(statement)].data.unary.operand = call;
+            state.did_mutate = true;
+        }
+    };
+    const untracked_eval_sources = [_][]const u8{
+        "function sibling(){eval('retained');}function read(){let secret=1;eval;\"secret\";}",
+        "function sibling(){eval('retained');}async function read(){let secret=1;eval;\"secret\";}",
+        "function sibling(){eval('retained');}function* read(){let secret=1;eval;\"secret\";}",
+        "function sibling(){eval('retained');}const read=function read(){let secret=1;eval;\"secret\";};",
+        "function sibling(){eval('retained');}const read=()=>{let secret=1;eval;\"secret\";};",
+        "function sibling(){eval('retained');}const holder={read(){let secret=1;eval;\"secret\";}};",
+        "function sibling(){eval('retained');}class Holder{read(){let secret=1;eval;\"secret\";}}",
+        "function sibling(){eval('retained');}class Holder{static read(){let secret=1;eval;\"secret\";}}",
+        "function sibling(){eval('retained');}function outer(){function read(){let secret=1;eval;\"secret\";}}",
+        "function sibling(){eval('retained');}{function read(){let secret=1;eval;\"secret\";}}",
+    };
+    for (untracked_eval_sources, 0..) |untracked_eval_source, case_index| {
+        const untracked_eval_fixture = try runtimeHelperReanalysisTestFixtureForSource(allocator, untracked_eval_source, false);
+        const untracked_eval_owner = untracked_eval_fixture.semantic.owner_token;
+        var untracked_eval_read_scope: ?ScopeId = null;
+        for (untracked_eval_fixture.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .binding_identifier or
+                !Scanner.identifierNamesEqual(untracked_eval_fixture.ast.getText(node.span), "secret")) continue;
+            const symbol = untracked_eval_fixture.semantic.symbol_ids[raw] orelse continue;
+            untracked_eval_read_scope = untracked_eval_fixture.semantic.symbols.items[symbol].scope_id;
+            break;
+        }
+        const untracked_eval_read_scope_id = untracked_eval_read_scope orelse return error.MissingUntrackedEvalReadScope;
+        try std.testing.expect(!untracked_eval_fixture.semantic.scopes[untracked_eval_read_scope_id.toIndex()].subtree_has_direct_eval);
+        var sibling_dynamic_scope_found = false;
+        for (untracked_eval_fixture.semantic.scopes) |scope| {
+            sibling_dynamic_scope_found = sibling_dynamic_scope_found or scope.subtree_has_direct_eval;
+        }
+        try std.testing.expect(sibling_dynamic_scope_found);
+        var untracked_eval_snapshot = try ast_mod.Ast.cloneForTransformer(&untracked_eval_fixture.ast, allocator);
+        untracked_eval_snapshot.type_only_binding_names = try untracked_eval_fixture.ast.type_only_binding_names.clone(allocator);
+        var untracked_eval_mutation: ExistingEvalCallMutation = .{};
+        const untracked_eval_plugins = [_]plugin_mod.Plugin{.{
+            .name = "untracked-existing-eval-call",
+            .context = @ptrCast(&untracked_eval_mutation),
+            .onFunction = ExistingEvalCallMutation.onFunction,
+        }};
+        context.plugins = &untracked_eval_plugins;
+        var untracked_eval_module = Module.init(@fromBackingInt(@intCast(23 + case_index)), "untracked-eval-call.js");
+        untracked_eval_module.source = untracked_eval_source;
+        untracked_eval_module.module_type = .js;
+        untracked_eval_module.state = .ready;
+        untracked_eval_module.ast = untracked_eval_fixture.ast;
+        untracked_eval_module.semantic = untracked_eval_fixture.semantic;
+        run(&context, &untracked_eval_module, allocator);
+        defer if (untracked_eval_module.alias_table) |*table| table.deinit();
+        defer if (untracked_eval_module.export_index_by_name) |*index| index.deinit(graph_allocator);
+        try std.testing.expect(untracked_eval_mutation.did_mutate);
+        try std.testing.expectEqual(@as(usize, 15) + case_index, context.diag_count);
+        try std.testing.expect(untracked_eval_module.ast.?.transformed_root == null);
+        try std.testing.expect(untracked_eval_module.transform_cache == null);
+        try std.testing.expectEqual(untracked_eval_owner, untracked_eval_module.semantic.?.owner_token);
+        try std.testing.expect(!untracked_eval_module.semantic.?.scopes[untracked_eval_read_scope_id.toIndex()].subtree_has_direct_eval);
+        try std.testing.expect(try sameGenericPrepassAstContents(
+            &untracked_eval_snapshot,
+            &untracked_eval_fixture.ast,
+            allocator,
+        ));
+        try std.testing.expect(try sameGenericPrepassAstContents(
+            &untracked_eval_snapshot,
+            &untracked_eval_module.ast.?,
+            allocator,
+        ));
+    }
 }
 
 fn genericPreparedOutputHasNormalForm(
@@ -20020,7 +20214,34 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     for (retained_console_object_references) |reference| {
         transformer.removeSemanticReference(reference) catch return;
     }
-    if (transformer.finishSemanticEdit() catch return) |edited| {
+    const semantic_edit = transformer.finishSemanticEdit() catch return;
+    if (has_ast_plugin_hooks) {
+        const eval_scope_facts_present = if (semantic_edit) |candidate| blk: {
+            break :blk reachableDirectEvalCallsHaveScopeFacts(
+                arena_alloc,
+                transformer.ast,
+                root,
+                candidate.scopes,
+                &candidate.scope_owner_map,
+            );
+        } else if (module.semantic) |*semantic| reachableDirectEvalCallsHaveScopeFacts(
+            arena_alloc,
+            transformer.ast,
+            root,
+            semantic.scopes,
+            &semantic.scope_owner_map,
+        ) else false;
+        if (!eval_scope_facts_present) {
+            candidate_diagnosed.* = true;
+            failRetainedGraphRefresh(
+                self,
+                module,
+                "An AST plugin produced a direct-eval call in an execution scope without retained dynamic-name-lookup facts.",
+            );
+            return;
+        }
+    }
+    if (semantic_edit) |edited| {
         module.semantic.?.applyEdit(edited);
         // Class clone creators can grow and rehash this producer-owned map.
         // Publish its current backing before reading the semantic view again.
