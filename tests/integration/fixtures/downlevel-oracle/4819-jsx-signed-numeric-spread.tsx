@@ -20,6 +20,7 @@ const member = {
   false: 'falsy',
 };
 const items = [1, 2];
+const dynamicKey = 'bound-computed';
 const result = (
   <div
     {...{
@@ -97,6 +98,7 @@ const result = (
       [-2]: 'computed-minus',
       [~~0]: 'computed-tilde',
       [!!!!!!!!!!!!0]: 'computed-long-not',
+      [dynamicKey]: 'computed-bound',
       valueDeleteZero: delete 0,
       keyDeleteZero: member[delete 0],
       valueVoidDeleteZero: void delete 0,
@@ -185,6 +187,7 @@ console.log(
   result.props[-2],
   result.props[0],
   result.props.false,
+  result.props['bound-computed'],
   result.props.valueDeleteZero,
   result.props.keyDeleteZero,
   result.props.valueVoidDeleteZero,
