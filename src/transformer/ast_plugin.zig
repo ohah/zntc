@@ -28,6 +28,14 @@ const transformer_mod = @import("transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 
+/// Plugin callbacks may reject an operation that cannot be represented in
+/// the current AST context. Keep this here so AstTransformCtx can report that
+/// rejection without importing the bundler facade that re-exports it.
+pub const PluginError = error{
+    PluginFailed,
+    OutOfMemory,
+};
+
 // worklet 유틸리티 (기존 코드 재사용)
 pub const worklet_mod = @import("transformer/worklet.zig");
 
@@ -40,7 +48,7 @@ pub const worklet_mod = @import("transformer/worklet.zig");
 pub const FunctionInfo = struct {
     /// 변환된 함수 노드의 인덱스
     node_idx: NodeIndex,
-    /// 노드 태그 (function_declaration / function_expression / arrow_function_expression)
+    /// 노드 태그 (function declaration/expression, arrow, or method definition)
     node_tag: Tag,
     /// 함수 이름 (null = 익명 함수/화살표)
     name: ?[]const u8,
@@ -69,9 +77,13 @@ pub const FunctionInfo = struct {
 /// 내부적으로 Transformer를 위임 호출하므로 별도 상태를 가지지 않는다.
 pub const AstTransformCtx = struct {
     transformer: *Transformer,
-    /// `onFunction` trailing statements execute beside the function, so their
-    /// references resolve in the exact lexical scope that owns that list.
+    /// Exact lexical scope for supported function-declaration trailing code.
     insertion_scope: ScopeId = .none,
+    /// Trailing statements are valid only when the hook owner is a function
+    /// declaration in a statement list. Expressions and methods are nested in
+    /// expression/member lists, where appending statements would corrupt AST
+    /// structure and make generated JavaScript invalid.
+    trailing_statements_allowed: bool = false,
 
     /// 플러그인이 body를 수정한 경우 새 body 인덱스.
     /// dispatcher가 이 값을 확인하여 result 노드의 extra_data를 패치한다.
@@ -156,7 +168,8 @@ pub const AstTransformCtx = struct {
     /// in the exact lexical scope that owns this function's trailing list.
     /// A graphless transformer has no SymbolId to return; when semantic output
     /// is enabled, a missing insertion scope is an invariant violation.
-    pub fn registerSyntheticBinding(self: *AstTransformCtx, binding: NodeIndex, kind: SymbolKind) Error!?SymbolId {
+    pub fn registerSyntheticBinding(self: *AstTransformCtx, binding: NodeIndex, kind: SymbolKind) PluginError!?SymbolId {
+        if (!self.trailing_statements_allowed) return error.PluginFailed;
         const transformer = self.transformer;
         if (!transformer.semantic_edit_enabled) return null;
         if (self.insertion_scope.isNone())
@@ -262,7 +275,8 @@ pub const AstTransformCtx = struct {
 
     /// 현재 노드 뒤에 문장을 삽입한다.
     /// visitExtraList의 trailing_nodes 메커니즘을 통해 부모 리스트에 추가.
-    pub fn addTrailingStatement(self: *AstTransformCtx, stmt: NodeIndex) Error!void {
+    pub fn addTrailingStatement(self: *AstTransformCtx, stmt: NodeIndex) PluginError!void {
+        if (!self.trailing_statements_allowed) return error.PluginFailed;
         try self.transformer.trailing_nodes.append(self.transformer.allocator, stmt);
     }
 
@@ -294,7 +308,8 @@ pub const AstTransformCtx = struct {
     /// 코드 문자열을 파싱하여 statement NodeIndex 배열을 반환한다.
     /// JS AST 플러그인의 trailingCode 문자열을 AST 노드로 변환하는 데 사용.
     /// 반환된 슬라이스는 caller가 getAllocator().free()로 해제해야 한다.
-    pub fn parseAndInjectStatements(self: *AstTransformCtx, code: []const u8) Error![]const NodeIndex {
+    pub fn parseAndInjectStatements(self: *AstTransformCtx, code: []const u8) PluginError![]const NodeIndex {
+        if (!self.trailing_statements_allowed) return error.PluginFailed;
         const Parser = @import("../parser/parser.zig").Parser;
         const alloc = self.transformer.allocator;
 
@@ -391,7 +406,7 @@ pub const AstTransformCtx = struct {
         root: NodeIndex,
         generated_symbols: *std.StringHashMapUnmanaged(SymbolId),
         generated_symbol_names: *std.ArrayList([]const u8),
-    ) Error!void {
+    ) PluginError!void {
         if (!self.transformer.semantic_edit_enabled) return;
         if (self.insertion_scope.isNone())
             std.debug.panic("plugin trailing code has no exact insertion ScopeId", .{});

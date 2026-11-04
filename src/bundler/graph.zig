@@ -1402,17 +1402,135 @@ test "graph function-hook caller: tracked direct eval injection retains its exac
     try expectColdAndCachedTrackedDirectEvalGraph();
 }
 
+const RejectedTrailingCodeGraphState = struct {
+    target_calls: usize = 0,
+    parse_rejections: usize = 0,
+    binding_rejections: usize = 0,
+    append_rejections: usize = 0,
+};
+
+fn rejectNonStatementTrailingCodeGraphHook(
+    ctx: ?*anyopaque,
+    api: *plugin_mod.AstTransformCtx,
+    info: @import("../transformer/ast_plugin.zig").FunctionInfo,
+) plugin_mod.PluginError!void {
+    const state_ptr = ctx orelse return error.PluginFailed;
+    const state: *RejectedTrailingCodeGraphState = @ptrCast(@alignCast(state_ptr));
+    const is_target = info.node_tag != .function_declaration;
+    if (!is_target) return;
+    state.target_calls += 1;
+
+    if (api.parseAndInjectStatements("const injectedValue = secret; injectedValue;")) |statements| {
+        defer api.getAllocator().free(statements);
+        for (statements) |statement| try api.addTrailingStatement(statement);
+    } else |err| {
+        if (err == error.PluginFailed) {
+            state.parse_rejections += 1;
+        } else {
+            return err;
+        }
+    }
+
+    const binding_name = try api.addString("syntheticBinding");
+    const binding = try api.addNode(.{
+        .tag = .binding_identifier,
+        .span = binding_name,
+        .data = .{ .string_ref = binding_name },
+    });
+    if (api.registerSyntheticBinding(binding, .variable_const)) |symbol| {
+        _ = symbol;
+    } else |err| {
+        if (err == error.PluginFailed) {
+            state.binding_rejections += 1;
+        } else {
+            return err;
+        }
+    }
+
+    const statement = try api.addNode(.{
+        .tag = .empty_statement,
+        .span = api.getNode(info.node_idx).span,
+        .data = .{ .none = 0 },
+    });
+    api.addTrailingStatement(statement) catch |err| {
+        if (err == error.PluginFailed) {
+            state.append_rejections += 1;
+        } else {
+            return err;
+        }
+    };
+}
+
+fn expectRejectedTrailingCodeGraph(source: []const u8) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", source);
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.js" });
+    defer std.testing.allocator.free(entry);
+
+    var state: RejectedTrailingCodeGraphState = .{};
+    const plugins = [_]plugin_mod.Plugin{.{
+        .name = "reject-non-statement-trailing-code",
+        .context = @ptrCast(&state),
+        .onFunction = rejectNonStatementTrailingCodeGraphHook,
+    }};
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.max_threads = 1;
+    graph.plugins = &plugins;
+
+    try graph.build(std.testing.io, &.{entry});
+
+    try std.testing.expectEqual(@as(usize, 1), state.target_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.parse_rejections);
+    try std.testing.expectEqual(@as(usize, 1), state.binding_rejections);
+    try std.testing.expectEqual(@as(usize, 1), state.append_rejections);
+    try expectVisitorGraphReady(&graph, entry);
+
+    const module = graph.findModuleByPath(entry).?;
+    const ast = &module.ast.?;
+    const semantic = &module.semantic.?;
+    var decoy_bindings: usize = 0;
+    var forbidden_references: usize = 0;
+    for (semantic.symbols.items) |*symbol| {
+        if (std.mem.eql(u8, symbol.nameText(ast.source), "injectedValue")) decoy_bindings += 1;
+        if (std.mem.eql(u8, symbol.nameText(ast.source), "syntheticBinding")) return error.UnexpectedSyntheticSymbol;
+    }
+    for (ast.nodes.items) |node| {
+        if (node.tag != .identifier_reference) continue;
+        if (Scanner.identifierNamesEqual(ast.getText(node.data.string_ref), "secret")) forbidden_references += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), decoy_bindings);
+    try std.testing.expectEqual(@as(usize, 0), forbidden_references);
+}
+
+test "graph function-hook caller: non-statement trailing injection is rejected before semantic edits" {
+    const sources = [_][]const u8{
+        "const secret=1; function decoy(){const injectedValue=99;} const holder={read(){}};",
+        "const secret=1; function decoy(){const injectedValue=99;} class Holder{read(){}}",
+        "const secret=1; function decoy(){const injectedValue=99;} class Holder{static read(){}}",
+        "const secret=1; function decoy(){const injectedValue=99;} const read=function read(){};",
+        "const secret=1; function decoy(){const injectedValue=99;} const read=()=>{};",
+        "const secret=1; function decoy(){const injectedValue=99;} const holder={get read(){}};",
+        "const secret=1; function decoy(){const injectedValue=99;} const holder={set read(value){}};",
+        "const secret=1; function decoy(){const injectedValue=99;} const holder={[\"read\"](){}};",
+        "const secret=1; function decoy(){const injectedValue=99;} class Holder{async read(){}}",
+        "const secret=1; function decoy(){const injectedValue=99;} class Holder{*read(){}}",
+    };
+    for (sources) |source| try expectRejectedTrailingCodeGraph(source);
+}
+
 test "graph function-hook caller: injected binding and references keep exact identities on cold and cached ASTs" {
     const cases = [_]struct { source: []const u8, method_calls: usize }{
         .{ .source = "const secret=1; function decoy(){const injectedValue=99;} function read(){}", .method_calls = 0 },
         .{ .source = "const secret=1; function decoy(){const injectedValue=99;} function read(ignored=0){}", .method_calls = 0 },
         .{ .source = "const secret=1; function decoy(){const injectedValue=99;} async function read(){}", .method_calls = 0 },
         .{ .source = "const secret=1; function decoy(){const injectedValue=99;} function* read(){}", .method_calls = 0 },
-        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} const read=function read(){};", .method_calls = 0 },
-        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} const read=function read(ignored=0){};", .method_calls = 0 },
-        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} const read=function(){};", .method_calls = 0 },
-        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} const read=()=>{};", .method_calls = 0 },
-        .{ .source = "const secret=1; function decoy(){const injectedValue=99;} const read=(ignored=0)=>{};", .method_calls = 0 },
         .{ .source = "const secret=1; function decoy(){const injectedValue=99;} const holder={run(){function read(){}}};", .method_calls = 1 },
         .{ .source = "const secret=1; function decoy(){const injectedValue=99;} class Holder{run(){function read(){}}}", .method_calls = 1 },
         .{ .source = "const secret=1; function decoy(){const injectedValue=99;} class Holder{static run(){function read(){}}}", .method_calls = 1 },

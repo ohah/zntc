@@ -169,6 +169,10 @@ trailing_nodes가 있으면 함수 뒤에 삽입
 스코프를 `origin_scope`에 보존한다. 복사 경로는 최상위 trailing statement의 식별자 binding만 지원한다.
 구조분해, TypeScript 타입 주석, 중첩 블록 선언, 함수 안쪽 선언은 지원하지 않아 해당 statement를 건너뛴다.
 
+Trailing statement 삽입은 statement list의 직접 구성원인 `function_declaration` 훅에서만 지원한다.
+함수 표현식, 화살표 함수, object/class method는 표현식 또는 멤버 목록 안에 있으므로 이 API를 호출하면
+`PluginFailed`로 거부된다. 거부는 파싱/심볼 등록/AST 삽입 전에 일어나며, 함수 body 변경 API는 계속 사용할 수 있다.
+
 의미 그래프가 없는 transformer-only 호출은 `SymbolId`를 만들 수 없어 등록 결과가 `null`이다. semantic edit가
 활성화된 상태에서 삽입 scope가 없으면 변환은 실패한다. 이름 문자열로 나중에 심볼을 복구하는 fallback은 사용하지 않는다.
 

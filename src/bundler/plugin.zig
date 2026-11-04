@@ -35,10 +35,7 @@ pub const LoadResult = struct {
 /// 플러그인 훅에서 반환할 수 있는 에러 타입.
 /// anyerror를 쓰지 않고 specific error set으로 제한하여
 /// 호출부에서 switch로 명시적 처리 가능.
-pub const PluginError = error{
-    PluginFailed,
-    OutOfMemory,
-};
+pub const PluginError = ast_plugin_mod.PluginError;
 
 pub const PluginFailure = struct {
     allocator: std.mem.Allocator,
