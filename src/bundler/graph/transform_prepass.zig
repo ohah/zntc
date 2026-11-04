@@ -3169,9 +3169,9 @@ fn isExactJsxNoSubstitutionTemplateLiteral(ast: *const ast_mod.Ast, node_idx: as
 /// wrapper/list metadata remain on reanalysis. Dynamic computed keys also stay
 /// on reanalysis when object spread lowers to Object.assign: that copy can
 /// treat a runtime `"__proto__"` key as prototype mutation instead of an own
-/// data key. The exact unresolved global `undefined`, `void undefined`, and
-/// `typeof undefined` are fixed non-`__proto__` keys, so they remain safe on
-/// that path.
+/// data key. The exact unresolved global `undefined`, `void undefined`,
+/// `typeof undefined`, and `!undefined` are fixed non-`__proto__` keys, so
+/// they remain safe on that path.
 fn isRetainableJsxComputedPropertyKey(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -3377,19 +3377,21 @@ fn isRetainableJsxVoidMemberKey(
     return isRetainableJsxVoidValueWithSignedNumbers(ast, semantic, node_idx, false);
 }
 
-/// Computed prop keys using exact `void undefined` or `typeof undefined` are
-/// statically fixed to the ordinary string `"undefined"`. Keep this narrower
-/// than general unary chains: validate one exact operator and allow only the
-/// exact unresolved global reference beneath plain parentheses.
+/// Computed prop keys using exact `void undefined`, `typeof undefined`, or
+/// `!undefined` are statically fixed to the ordinary string `"undefined"` or
+/// `"true"`. Keep this narrower than general unary chains: validate one exact
+/// operator and allow only the exact unresolved global reference beneath
+/// plain parentheses.
 fn isRetainableJsxGlobalUndefinedUnaryMemberKey(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     node_idx: ast_mod.NodeIndex,
 ) bool {
     const unary = retainableJsxLiteralUnaryOperand(ast, node_idx) orelse return false;
+    const bang_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.bang)));
     const typeof_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.kw_typeof)));
     const void_raw = @as(u32, @intCast(@backingInt(token_mod.Kind.kw_void)));
-    if (unary.operator_raw != typeof_raw and unary.operator_raw != void_raw) return false;
+    if (unary.operator_raw != bang_raw and unary.operator_raw != typeof_raw and unary.operator_raw != void_raw) return false;
 
     var operand_idx = unary.operand_idx;
     var remaining_nodes = ast.nodes.items.len;
@@ -17995,7 +17997,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     }
     try std.testing.expectEqual(@as(usize, 5), deep_member_key_read_count);
 
-    const computed_prop_key_source = "const label = \"L\"; const count = 7; const items = [1]; const computedKey = \"dynamic\"; const result = <Comp {...{ [\"named\"]: label, [1]: count, [true]: label, [null]: count, [undefined]: label, [void undefined]: label, [typeof undefined]: label, [`static`]: label, [!0]: label, [typeof delete 0]: count, [void (typeof delete !0)]: label, [+1]: count, [-(2)]: count, [~~0]: label, [!!!!!!!!!!!!0]: label, [computedKey]: label }} key=\"k\">{...items}</Comp>;";
+    const computed_prop_key_source = "const label = \"L\"; const count = 7; const items = [1]; const computedKey = \"dynamic\"; const result = <Comp {...{ [\"named\"]: label, [1]: count, [true]: label, [null]: count, [undefined]: label, [void undefined]: label, [typeof undefined]: label, [!undefined]: label, [`static`]: label, [!0]: label, [typeof delete 0]: count, [void (typeof delete !0)]: label, [+1]: count, [-(2)]: count, [~~0]: label, [!!!!!!!!!!!!0]: label, [computedKey]: label }} key=\"k\">{...items}</Comp>;";
     var computed_prop_key_fixture = try jsxSpreadChildTestFixture(allocator, computed_prop_key_source);
     const computed_prop_key_owner = computed_prop_key_fixture.semantic.captureOwnerToken();
     var computed_prop_key_symbols: [4]?u32 = .{ null, null, null, null };
@@ -18090,9 +18092,9 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
         }
         computed_prop_key_reads[slot] += 1;
     }
-    try std.testing.expectEqual(@as(usize, 16), computed_prop_key_nodes);
-    try std.testing.expectEqual([_]usize{ 11, 5, 1, 1 }, computed_prop_key_reads);
-    try std.testing.expectEqual(@as(usize, 3), computed_prop_key_global_undefined_reads);
+    try std.testing.expectEqual(@as(usize, 17), computed_prop_key_nodes);
+    try std.testing.expectEqual([_]usize{ 12, 5, 1, 1 }, computed_prop_key_reads);
+    try std.testing.expectEqual(@as(usize, 4), computed_prop_key_global_undefined_reads);
 
     const dev_source = "const member = { deep: { value: \"D\" }, \"undefined\": \"U\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...{ staticTemplateValue: `static`, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}</Comp>;";
     var dev_fixture = try jsxSpreadChildTestFixture(allocator, dev_source);
@@ -26004,6 +26006,10 @@ test "#6193 JSX spread retains native bound/member-chain and static computed obj
         "const items = [1]; const result = <Comp {...{ [typeof undefined]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [typeof (undefined)]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [typeof (((undefined)))]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [!undefined]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [! (undefined)]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [!(((undefined)))]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [(!undefined)]: 1 }} key=\"k\">{...items}</Comp>;",
     };
     for (safe_global_undefined_sources) |source| {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -26046,6 +26052,22 @@ test "#6193 JSX spread retains native bound/member-chain and static computed obj
         true,
     ));
     malformed_void_undefined.ast.extra_data.items[malformed_void_extra + 1] = saved_malformed_void_operator;
+    const malformed_bang_operator = @as(u32, @intCast(@backingInt(token_mod.Kind.bang)));
+    malformed_void_undefined.ast.extra_data.items[malformed_void_extra + 1] = malformed_bang_operator;
+    try std.testing.expect(isRetainableJsxComputedPropertyKey(
+        &malformed_void_undefined.ast,
+        &malformed_void_undefined.semantic,
+        malformed_void_key,
+        true,
+    ));
+    malformed_void_undefined.ast.extra_data.items[malformed_void_extra + 1] = malformed_bang_operator | 0x100;
+    try std.testing.expect(!isRetainableJsxComputedPropertyKey(
+        &malformed_void_undefined.ast,
+        &malformed_void_undefined.semantic,
+        malformed_void_key,
+        true,
+    ));
+    malformed_void_undefined.ast.extra_data.items[malformed_void_extra + 1] = saved_malformed_void_operator;
 
     const shadowed_undefined_source = "const undefined = \"__proto__\"; const items = [1]; const result = <Comp {...{ [undefined]: 1 }} key=\"k\">{...items}</Comp>;";
     var shadowed_undefined_arena = std.heap.ArenaAllocator.init(allocator);
@@ -26071,14 +26093,24 @@ test "#6193 JSX spread retains native bound/member-chain and static computed obj
     try std.testing.expect(!auditedJsxSpreadPropsOperandForTargetForTest(&shadowed_typeof_undefined, true));
     try std.testing.expect(!fullPrepassAuditedJsxGraphAdmissionForTest(&shadowed_typeof_undefined, .automatic));
 
+    const shadowed_not_undefined_source = "const undefined = \"__proto__\"; const items = [1]; const result = <Comp {...{ [!undefined]: 1 }} key=\"k\">{...items}</Comp>;";
+    var shadowed_not_undefined_arena = std.heap.ArenaAllocator.init(allocator);
+    defer shadowed_not_undefined_arena.deinit();
+    var shadowed_not_undefined = try jsxSpreadChildTestFixture(shadowed_not_undefined_arena.allocator(), shadowed_not_undefined_source);
+    try std.testing.expect(!auditedJsxSpreadPropsOperandForTargetForTest(&shadowed_not_undefined, false));
+    try std.testing.expect(!auditedJsxSpreadPropsOperandForTargetForTest(&shadowed_not_undefined, true));
+    try std.testing.expect(!fullPrepassAuditedJsxGraphAdmissionForTest(&shadowed_not_undefined, .automatic));
+
     const hostile_sources = [_][]const u8{
         "const items = [1]; const result = <Comp {...{ [missingKey]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [(missingKey)]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [typeof missingKey]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [typeof (undefined + \"\")]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [typeof void undefined]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [!missingKey]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [!(undefined + \"\")]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [!void undefined]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [void missingKey]: 1 }} key=\"k\">{...items}</Comp>;",
-        "const items = [1]; const result = <Comp {...{ [!undefined]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [+undefined]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [undefined.value]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [globalThis.undefined]: 1 }} key=\"k\">{...items}</Comp>;",

@@ -32120,31 +32120,43 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         name: 'direct',
         expression: '[undefined]',
         value: 'global-key-value',
+        property: 'undefined',
         emitted: /__toPropertyKey\(\s*undefined\s*\)/,
       },
       {
         name: 'void',
         expression: '[void undefined]',
         value: 'void-global-key-value',
+        property: 'undefined',
         emitted: /__toPropertyKey\(\s*void\s+undefined\s*\)/,
       },
       {
         name: 'typeof',
         expression: '[typeof undefined]',
         value: 'typeof-global-key-value',
+        property: 'undefined',
         emitted: /__toPropertyKey\(\s*(?:typeof\s*\(*\s*undefined\s*\)*|"undefined")\s*\)/,
       },
       {
         name: 'typeof-parenthesized',
         expression: '[typeof (undefined)]',
         value: 'typeof-parenthesized-global-key-value',
+        property: 'undefined',
         emitted: /__toPropertyKey\(\s*(?:typeof\s*\(*\s*undefined\s*\)*|"undefined")\s*\)/,
       },
       {
         name: 'typeof-deeply-parenthesized',
         expression: '[typeof (((undefined)))]',
         value: 'typeof-deeply-parenthesized-global-key-value',
+        property: 'undefined',
         emitted: /__toPropertyKey\(\s*(?:typeof\s*\(*\s*undefined\s*\)*|"undefined")\s*\)/,
+      },
+      {
+        name: 'not',
+        expression: '[!undefined]',
+        value: 'not-global-key-value',
+        property: 'true',
+        emitted: /__toPropertyKey\(\s*(?:!\s*\(*\s*undefined\s*\)*|true|"true")\s*\)/,
       },
     ] as const;
 
@@ -32181,14 +32193,14 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             'function h(type, props) { return { type, props }; }',
             "const Comp = 'Comp';",
             `const result = <Comp {...{ ${keyCase.expression}: '${keyCase.value}' }} />;`,
-            "console.log(JSON.stringify([result.props.undefined, Object.prototype.hasOwnProperty.call(result.props, 'undefined'), Object.getPrototypeOf(result.props) === Object.prototype, Object.keys(result.props)]));",
+            `console.log(JSON.stringify([result.props['${keyCase.property}'], Object.prototype.hasOwnProperty.call(result.props, '${keyCase.property}'), Object.getPrototypeOf(result.props) === Object.prototype, Object.keys(result.props)]));`,
           ].join('\n'),
         );
         writeFileSync(
           join(dir, 'baseline.js'),
           [
             `const props = { ${keyCase.expression}: '${keyCase.value}' };`,
-            "console.log(JSON.stringify([props.undefined, Object.prototype.hasOwnProperty.call(props, 'undefined'), Object.getPrototypeOf(props) === Object.prototype, Object.keys(props)]));",
+            `console.log(JSON.stringify([props['${keyCase.property}'], Object.prototype.hasOwnProperty.call(props, '${keyCase.property}'), Object.getPrototypeOf(props) === Object.prototype, Object.keys(props)]));`,
           ].join('\n'),
         );
 
@@ -32244,7 +32256,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           expect(actual.status, `${label}: ${actual.stderr}`).toBe(0);
           expect(actual.stdout, label).toBe(baseline.stdout);
           expect(actual.stdout, `${label} expected output`).toBe(
-            `["${keyCase.value}",true,true,["undefined"]]\n`,
+            `${JSON.stringify([keyCase.value, true, true, [keyCase.property]])}\n`,
           );
 
           if (mode.name === 'classic') {
@@ -32266,14 +32278,28 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                 'typeof function () {}',
                 'typeof /x/',
               ];
+              const notAlternatives = [
+                'false',
+                '0',
+                '1',
+                'null',
+                '""',
+                '"false"',
+                '[]',
+                '({})',
+                '0n',
+                'Symbol()',
+              ];
               const replacement = keyCase.name.startsWith('typeof')
                 ? `__toPropertyKey(${typeofAlternatives[mutation]})`
-                : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
+                : keyCase.name === 'not'
+                  ? `__toPropertyKey(${notAlternatives[mutation]})`
+                  : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
               const mutated = emitted.replace(expression ?? '', replacement);
               writeFileSync(mutatedOutput, mutated);
               const mutantRun = spawnSync('node', [mutatedOutput], { encoding: 'utf8' });
               expect(mutated, `${label} compileable mutation ${mutation}`).not.toBe(emitted);
-              if (keyCase.name.startsWith('typeof')) {
+              if (keyCase.name.startsWith('typeof') || keyCase.name === 'not') {
                 expect(mutantRun.status, `${label} compileable mutation ${mutation}`).toBe(0);
                 expect(mutantRun.stdout, `${label} compileable mutation ${mutation}`).not.toBe(
                   baseline.stdout,
