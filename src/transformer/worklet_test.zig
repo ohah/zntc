@@ -2466,3 +2466,41 @@ test "worklet public class factory source witnesses preserve collision and long-
     };
     try std.testing.expectEqual(@as(usize, 0), failures);
 }
+
+test "Worklet closure analysis preserves capture through 20000 nested scopes" {
+    const ast_mod = @import("../parser/ast.zig");
+    const worklet = @import("transformer/worklet.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = ast_mod.Ast.init(allocator, "");
+    const name = try ast.addString("capturedValue");
+    const reference = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
+    var body = reference;
+    for (0..20000) |_| {
+        const params = try ast.addFormalParameters(try ast.addNodeList(&.{}), .EMPTY);
+        const extra = try ast.addExtras(&.{ @backingInt(params), @backingInt(body), 0, @backingInt(ast_mod.NodeIndex.none) });
+        body = try ast.addNode(.{ .tag = .arrow_function_expression, .span = .EMPTY, .data = .{ .extra = extra } });
+    }
+    var transformer = try transformer_mod.Transformer.init(allocator, &ast, .{});
+    const Job = struct {
+        transformer: *transformer_mod.Transformer,
+        body: ast_mod.NodeIndex,
+        result: ?[]const worklet.ClosureVar = null,
+        failure: ?transformer_mod.Transformer.Error = null,
+        fn run(job: *@This()) void {
+            job.result = worklet.collectClosureVars(job.transformer, job.body, .{ .start = 0, .len = 0 }, null) catch |err| {
+                job.failure = err;
+                return;
+            };
+        }
+    };
+    var job = Job{ .transformer = &transformer, .body = body };
+    const thread = try std.Thread.spawn(.{ .stack_size = 256 * 1024 }, Job.run, .{&job});
+    thread.join();
+    if (job.failure) |err| return err;
+    const captured = job.result orelse return error.MissingClosureResult;
+    try std.testing.expectEqual(@as(usize, 1), captured.len);
+    try std.testing.expectEqualStrings("capturedValue", captured[0].name);
+    try std.testing.expectEqual(reference, captured[0].ref_idx);
+}
