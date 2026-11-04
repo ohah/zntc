@@ -99,6 +99,7 @@ const result = React.createElement(
     [typeof delete 0]: 'computed-typeof-delete',
     [void typeof delete !0]: 'computed-void',
     [undefined]: 'computed-global-undefined',
+    [void undefined]: 'computed-void-global-undefined',
     [+1]: 'computed-plus',
     [-2]: 'computed-minus',
     [~~0]: 'computed-tilde',
