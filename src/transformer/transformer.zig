@@ -1385,6 +1385,7 @@ pub const Transformer = struct {
     pub const reparentGeneratedBodyScopes = @import("transformer/semantic_edit.zig").reparentGeneratedBodyScopes;
     pub const ensureSymbolDeclaration = @import("transformer/semantic_edit.zig").ensureSymbolDeclaration;
     pub const materializeDefaultExportFacade = @import("transformer/semantic_edit.zig").materializeDefaultExportFacade;
+    pub const reanchorRenamedSourceBinding = @import("transformer/semantic_edit.zig").reanchorRenamedSourceBinding;
     pub const ensureSymbolDeclarationAtNode = @import("transformer/semantic_edit.zig").ensureSymbolDeclarationAtNode;
     pub const bindHoistedTemp = @import("transformer/semantic_edit.zig").bindHoistedTemp;
     pub const bindHoistedTempWithProducerSymbol = @import("transformer/semantic_edit.zig").bindHoistedTempWithProducerSymbol;

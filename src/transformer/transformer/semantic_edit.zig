@@ -5263,6 +5263,33 @@ pub fn materializeDefaultExportFacade(self: *Transformer, source: NodeIndex, bin
     try setSymbolId(self, binding, @fromBackingInt(@intCast(raw)));
 }
 
+/// Rename replaces an actual declaration slot even when the original leaf
+/// remains reachable as a shorthand property key. Publish that exact edge at
+/// the producer; a later reachability scan cannot infer its declaration role.
+pub fn reanchorRenamedSourceBinding(self: *Transformer, source: NodeIndex, output: NodeIndex) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or source == output) return;
+    const id = self.getSymbolIdAt(source) orelse @panic("renamed source binding has no SymbolId");
+    if (self.getSymbolIdAt(output) != id or self.ast.getNode(source).tag != .binding_identifier or
+        self.ast.getNode(output).tag != .binding_identifier)
+        @panic("renamed declaration changed its exact binding identity");
+    // Anchorless Analyzer domains have no declaration-edge handoff for this
+    // producer. Do not introduce an Editor or synthesize an anchor there.
+    const references = if (self.semantic_editor) |*editor| editor.references.items else self.references;
+    var source_rows: usize = 0;
+    var output_rows: usize = 0;
+    for (references) |reference| {
+        if (!reference.flags.declare) continue;
+        if (reference.declaration_node_index != source and reference.declaration_node_index != output) continue;
+        if (@backingInt(reference.symbol_id) != id) @panic("renamed declaration anchor changed SymbolId");
+        if (reference.declaration_node_index == source) source_rows += 1 else output_rows += 1;
+    }
+    if (source_rows == 0 and output_rows == 0) return;
+    const editor = try editorFor(self);
+    if (source_rows != 0) {
+        _ = editor.reanchorDeclarationFromNode(self.ast, source, output, @fromBackingInt(id)) catch |err| return editError(err);
+    }
+}
+
 pub fn ensureSymbolDeclarationAtNode(self: *Transformer, raw_id: u32, scope: ScopeId, binding: NodeIndex) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);
@@ -6608,5 +6635,62 @@ pub fn completeStaticBlockExternalHandoff(self: *Transformer, source: NodeIndex,
         entry.value_ptr.source_external = origin;
         try self.transformed_node_scope_provenance.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
         self.node_scope_provenance_changed = true;
+    }
+}
+
+test "renamed source binding preserves anchorless domains and exact repeated-var anchors" {
+    for ([_]bool{ false, true }) |exact_anchors| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, "var value=1;var value=2;");
+        var parser = @import("../../parser/parser.zig").Parser.init(a, &scanner);
+        _ = try parser.parse();
+        var analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.enable_exact_declaration_anchors = exact_anchors;
+        try analyzer.analyze();
+        var bindings: std.ArrayList(NodeIndex) = .empty;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag == .binding_identifier) try bindings.append(a, @fromBackingInt(@intCast(raw)));
+        }
+        try std.testing.expectEqual(@as(usize, 2), bindings.items.len);
+        const source = bindings.items[0];
+        const other = bindings.items[1];
+        const sid = analyzer.symbol_ids.items[@backingInt(source)].?;
+        try std.testing.expectEqual(@as(?u32, sid), analyzer.symbol_ids.items[@backingInt(other)]);
+        var t = try Transformer.init(a, &parser.ast, .{});
+        try t.initSymbolIds(analyzer.symbol_ids.items);
+        t.symbols = analyzer.symbols.items;
+        t.references = analyzer.references.items;
+        t.scopes = analyzer.scopes.items;
+        t.scope_maps = analyzer.scope_maps.items;
+        t.scope_owner_map = analyzer.scope_owner_map;
+        t.current_scope = @fromBackingInt(0);
+        t.semantic_edit_enabled = true;
+        t.block_rename_map = .empty;
+        try t.block_rename_map.?.put(a, sid, "value$renamed");
+        const output = (try t.tryRenameIdentifierLike(source, .binding_identifier)).?;
+        try std.testing.expect(source != output);
+        try std.testing.expectEqual(@as(?u32, sid), t.getSymbolIdAt(output));
+        if (!exact_anchors) {
+            try std.testing.expect(t.semantic_editor == null);
+            for (t.references) |row| if (row.flags.declare) try std.testing.expect(row.declaration_node_index.isNone());
+        } else {
+            const editor = &(t.semantic_editor orelse return error.MissingRenameEditor);
+            try std.testing.expectEqual(analyzer.references.items.len, editor.references.items.len);
+            var source_rows: usize = 0;
+            var output_rows: usize = 0;
+            var other_rows: usize = 0;
+            for (editor.references.items) |row| {
+                if (!row.flags.declare) continue;
+                try std.testing.expectEqual(sid, @backingInt(row.symbol_id));
+                if (row.declaration_node_index == source) source_rows += 1;
+                if (row.declaration_node_index == output) output_rows += 1;
+                if (row.declaration_node_index == other) other_rows += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 0), source_rows);
+            try std.testing.expectEqual(@as(usize, 1), output_rows);
+            try std.testing.expectEqual(@as(usize, 1), other_rows);
+        }
     }
 }
