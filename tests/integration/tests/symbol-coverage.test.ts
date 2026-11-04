@@ -32251,6 +32251,36 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         emitted: /__toPropertyKey\(\s*(?:0\s*&&\s*undefined|0)\s*\)/,
       },
       {
+        name: 'logical-or-undefined-left',
+        expression: '[undefined || "safe"]',
+        value: 'logical-or-undefined-left-value',
+        property: 'safe',
+        emitted: /__toPropertyKey\(\s*(?:undefined\s*\|\|\s*["']safe["']|["']safe["'])\s*\)/,
+      },
+      {
+        name: 'logical-or-undefined-right',
+        expression: '["safe" || undefined]',
+        value: 'logical-or-undefined-right-value',
+        property: 'safe',
+        emitted: /__toPropertyKey\(\s*(?:["']safe["']\s*\|\|\s*undefined|["']safe["'])\s*\)/,
+      },
+      {
+        name: 'logical-nullish-undefined-left',
+        expression: '[undefined ?? "safe"]',
+        value: 'logical-nullish-undefined-left-value',
+        property: 'safe',
+        emitted:
+          /__toPropertyKey\(\s*(?:undefined\s*\?\?\s*["']safe["']|undefined\s*!=\s*null\s*\?\s*undefined\s*:\s*["']safe["']|["']safe["'])\s*\)/,
+      },
+      {
+        name: 'logical-nullish-undefined-right',
+        expression: '["safe" ?? undefined]',
+        value: 'logical-nullish-undefined-right-value',
+        property: 'safe',
+        emitted:
+          /__toPropertyKey\(\s*(?:["']safe["']\s*\?\?\s*undefined|\(\s*([A-Za-z_$][\w$]*)\s*=\s*["']safe["']\s*\)\s*!=\s*null\s*\?\s*\1\s*:\s*undefined|["']safe["'])\s*\)/,
+      },
+      {
         name: 'numeric-binary-shift',
         expression: '[undefined << 1]',
         value: 'numeric-binary-shift-value',
@@ -32487,12 +32517,27 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                 'null && undefined',
                 '"" && undefined',
               ];
+              const logicalFallbackAlternatives = [
+                'false',
+                '""',
+                'null',
+                '0',
+                'true',
+                '1',
+                '"__proto__"',
+                'undefined',
+                'undefined || 0',
+                'undefined ?? 1',
+              ];
               const isNumericUndefinedKey = ['plus', 'minus', 'tilde'].includes(keyCase.name);
               const isUndefinedUnaryChain = keyCase.name.startsWith('chain-');
               const isUndefinedAddition = keyCase.name.startsWith('addition-');
               const isUndefinedNumericBinary = keyCase.name.startsWith('numeric-binary-');
               const isUndefinedBooleanBinary = keyCase.name.startsWith('comparison-binary-');
               const isUndefinedLogicalAnd = keyCase.name.startsWith('logical-and');
+              const isUndefinedLogicalFallback =
+                keyCase.name.startsWith('logical-or-') ||
+                keyCase.name.startsWith('logical-nullish-');
               const logicalAndMutations =
                 keyCase.name === 'logical-and-falsy-left'
                   ? logicalAndFalsyLeftAlternatives
@@ -32511,9 +32556,11 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                           ? `__toPropertyKey(${numericBinaryAlternatives[mutation]})`
                           : isUndefinedBooleanBinary
                             ? `__toPropertyKey(${booleanBinaryAlternatives[mutation]})`
-                            : isUndefinedLogicalAnd
-                              ? `__toPropertyKey(${logicalAndMutations[mutation]})`
-                              : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
+                            : isUndefinedLogicalFallback
+                              ? `__toPropertyKey(${logicalFallbackAlternatives[mutation]})`
+                              : isUndefinedLogicalAnd
+                                ? `__toPropertyKey(${logicalAndMutations[mutation]})`
+                                : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
               const mutated = emitted.replace(expression ?? '', replacement);
               writeFileSync(mutatedOutput, mutated);
               const mutantRun = spawnSync('node', [mutatedOutput], { encoding: 'utf8' });
@@ -32526,6 +32573,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                 isUndefinedAddition ||
                 isUndefinedNumericBinary ||
                 isUndefinedBooleanBinary ||
+                isUndefinedLogicalFallback ||
                 isUndefinedLogicalAnd
               ) {
                 expect(mutantRun.status, `${label} compileable mutation ${mutation}`).toBe(0);
