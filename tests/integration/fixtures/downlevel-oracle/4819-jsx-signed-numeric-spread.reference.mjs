@@ -102,6 +102,9 @@ const result = React.createElement(
     [void undefined]: 'computed-void-global-undefined',
     [typeof undefined]: 'computed-typeof-global-undefined',
     [!undefined]: 'computed-not-global-undefined',
+    [+undefined]: 'computed-plus-global-undefined',
+    [-undefined]: 'computed-minus-global-undefined',
+    [~undefined]: 'computed-tilde-global-undefined',
     [+1]: 'computed-plus',
     [-2]: 'computed-minus',
     [~~0]: 'computed-tilde',
@@ -118,6 +121,9 @@ const result = React.createElement(
   },
   ...items,
 );
+const unaryPlusKeyResult = React.createElement('div', { [+undefined]: 'plus-key' });
+const unaryMinusKeyResult = React.createElement('div', { [-undefined]: 'minus-key' });
+const unaryTildeKeyResult = React.createElement('div', { [~undefined]: 'tilde-key' });
 
 console.log(
   result.type,
@@ -192,6 +198,11 @@ console.log(
   result.props.true,
   result.props.boolean,
   result.props.undefined,
+  result.props.NaN,
+  result.props[-1],
+  unaryPlusKeyResult.props.NaN,
+  unaryMinusKeyResult.props.NaN,
+  unaryTildeKeyResult.props[-1],
   result.props[1],
   result.props[-2],
   result.props[0],
