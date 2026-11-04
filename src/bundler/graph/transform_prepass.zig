@@ -3170,8 +3170,12 @@ fn isExactJsxNoSubstitutionTemplateLiteral(ast: *const ast_mod.Ast, node_idx: as
 /// a Number. Neither can produce `"__proto__"`. Exponentiation is excluded
 /// from this whitelist; its ES5 `Math.pow` reference is handled by the separate
 /// exponentiation identity gate. Direct primitive comparisons also produce
-/// only booleans. Other unresolved identifiers, calls, optional/member chains
-/// with unsafe roots, logical and unproven coercive expressions, and malformed
+/// only booleans. The exact global `undefined` combined with a direct
+/// primitive using `&&` also cannot produce the special key:
+/// `undefined && value` short-circuits to `undefined`, while
+/// `value && undefined` yields either the primitive or `undefined`. Other
+/// unresolved identifiers, calls, optional/member chains with unsafe roots,
+/// other logical and unproven coercive expressions, and malformed
 /// wrapper/list metadata remain on reanalysis.
 /// Dynamic computed keys also stay
 /// on reanalysis when object spread lowers to Object.assign: that copy can
@@ -3209,6 +3213,7 @@ fn isRetainableJsxComputedPropertyKey(
             .binary_expression => isRetainableJsxGlobalUndefinedAdditionMemberKey(ast, semantic, operand_idx) or
                 isRetainableJsxGlobalUndefinedNumericBinaryMemberKey(ast, semantic, operand_idx) or
                 isRetainableJsxGlobalUndefinedBooleanBinaryMemberKey(ast, semantic, operand_idx),
+            .logical_expression => isRetainableJsxGlobalUndefinedLogicalAndMemberKey(ast, semantic, operand_idx),
             .unary_expression => isRetainableJsxGlobalUndefinedUnaryMemberKey(ast, semantic, operand_idx) or
                 isRetainableJsxSignedNumericValue(ast, operand_idx) or
                 isRetainableJsxLiteralUnaryMemberKey(ast, operand_idx),
@@ -3319,8 +3324,8 @@ fn isRetainableJsxGlobalUndefinedAdditionMemberKey(
 /// its property key cannot be `"__proto__"`. Exponentiation is excluded from
 /// this whitelist because ES5 lowering introduces a free `Math.pow` reference;
 /// the separate exponentiation identity gate reconciles that reference.
-/// Unproven comparisons, logical and assignment
-/// operators, `in`, `instanceof`, references, objects, BigInt, and nested
+/// Unproven comparisons, other logical and assignment operators, `in`,
+/// `instanceof`, references, objects, BigInt, and nested
 /// expressions also stay on the conservative fallback path.
 fn isRetainableJsxGlobalUndefinedNumericBinaryMemberKey(
     ast: *const ast_mod.Ast,
@@ -3396,6 +3401,32 @@ fn isRetainableJsxGlobalUndefinedBooleanBinaryMemberKey(
         }
     }
     if (!operator_is_boolean) return false;
+
+    const left_idx = unwrapRetainableJsxParentheses(ast, node.data.binary.left) orelse return false;
+    const right_idx = unwrapRetainableJsxParentheses(ast, node.data.binary.right) orelse return false;
+    const left_is_undefined = isUnresolvedGlobalUndefinedReference(ast, semantic, left_idx);
+    const right_is_undefined = isUnresolvedGlobalUndefinedReference(ast, semantic, right_idx);
+    if (left_is_undefined and right_is_undefined) return true;
+    if (left_is_undefined) return isRetainableJsxNonBigIntPrimitiveBinaryOperand(ast, right_idx);
+    if (right_is_undefined) return isRetainableJsxNonBigIntPrimitiveBinaryOperand(ast, left_idx);
+    return false;
+}
+
+/// A direct `&&` involving exact unresolved global `undefined` and a
+/// non-BigInt primitive literal has a result that cannot be the special
+/// `"__proto__"` key. With `undefined` on the left it short-circuits before
+/// the literal; with it on the right the result is either the left primitive
+/// or `undefined`. Keep `||` and `??` excluded because they can return a
+/// fallback string such as `"__proto__"`.
+fn isRetainableJsxGlobalUndefinedLogicalAndMemberKey(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+) bool {
+    if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[@backingInt(node_idx)];
+    if (node.tag != .logical_expression or
+        node.data.binary.flags != @as(u16, @intCast(@backingInt(token_mod.Kind.amp2)))) return false;
 
     const left_idx = unwrapRetainableJsxParentheses(ast, node.data.binary.left) orelse return false;
     const right_idx = unwrapRetainableJsxParentheses(ast, node.data.binary.right) orelse return false;
@@ -26227,6 +26258,14 @@ test "#6193 JSX spread retains native bound/member-chain and static computed obj
         "const items = [1]; const result = <Comp {...{ [undefined === undefined]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [undefined !== null]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [1 < (undefined)]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [undefined && \"__proto__\"]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [true && undefined]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [\"__proto__\" && undefined]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [\"\" && undefined]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [0 && undefined]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [undefined && undefined]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [undefined && `static`]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [((true)) && (((undefined)))]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [!!!!!!!!!!!!!!!!!!!!!!!!undefined]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [!((!((undefined))))]: 1 }} key=\"k\">{...items}</Comp>;",
     };
@@ -26339,6 +26378,63 @@ test "#6193 JSX spread retains native bound/member-chain and static computed obj
     ));
     malformed_addition.ast.nodes.items[addition_raw].data.binary = saved_addition;
 
+    var malformed_logical_arena = std.heap.ArenaAllocator.init(allocator);
+    defer malformed_logical_arena.deinit();
+    var malformed_logical = try jsxSpreadChildTestFixture(
+        malformed_logical_arena.allocator(),
+        "const items = [1]; const result = <Comp {...{ [undefined && \"x\"]: 1 }} key=\"k\">{...items}</Comp>;",
+    );
+    var logical_idx: ?ast_mod.NodeIndex = null;
+    for (malformed_logical.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .logical_expression) continue;
+        logical_idx = @fromBackingInt(@intCast(raw));
+        break;
+    }
+    const logical_node_idx = logical_idx orelse return error.MissingUndefinedLogicalAndNode;
+    const logical_raw: usize = @intCast(@backingInt(logical_node_idx));
+    const saved_logical_node = malformed_logical.ast.nodes.items[logical_raw];
+    try std.testing.expect(isRetainableJsxGlobalUndefinedLogicalAndMemberKey(
+        &malformed_logical.ast,
+        &malformed_logical.semantic,
+        logical_node_idx,
+    ));
+    malformed_logical.ast.nodes.items[logical_raw].data.binary.flags =
+        @as(u16, @intCast(@backingInt(token_mod.Kind.amp2))) | @as(u16, 0x100);
+    try std.testing.expect(!isRetainableJsxGlobalUndefinedLogicalAndMemberKey(
+        &malformed_logical.ast,
+        &malformed_logical.semantic,
+        logical_node_idx,
+    ));
+    malformed_logical.ast.nodes.items[logical_raw] = saved_logical_node;
+    malformed_logical.ast.nodes.items[logical_raw].data.binary.flags = @intCast(@backingInt(token_mod.Kind.pipe2));
+    try std.testing.expect(!isRetainableJsxGlobalUndefinedLogicalAndMemberKey(
+        &malformed_logical.ast,
+        &malformed_logical.semantic,
+        logical_node_idx,
+    ));
+    malformed_logical.ast.nodes.items[logical_raw].data.binary.flags = @intCast(@backingInt(token_mod.Kind.question2));
+    try std.testing.expect(!isRetainableJsxGlobalUndefinedLogicalAndMemberKey(
+        &malformed_logical.ast,
+        &malformed_logical.semantic,
+        logical_node_idx,
+    ));
+    malformed_logical.ast.nodes.items[logical_raw] = saved_logical_node;
+    malformed_logical.ast.nodes.items[logical_raw].tag = .binary_expression;
+    try std.testing.expect(!isRetainableJsxGlobalUndefinedLogicalAndMemberKey(
+        &malformed_logical.ast,
+        &malformed_logical.semantic,
+        logical_node_idx,
+    ));
+    malformed_logical.ast.nodes.items[logical_raw] = saved_logical_node;
+    malformed_logical.ast.nodes.items[logical_raw].data.binary.right =
+        @fromBackingInt(@intCast(malformed_logical.ast.nodes.items.len));
+    try std.testing.expect(!isRetainableJsxGlobalUndefinedLogicalAndMemberKey(
+        &malformed_logical.ast,
+        &malformed_logical.semantic,
+        logical_node_idx,
+    ));
+    malformed_logical.ast.nodes.items[logical_raw] = saved_logical_node;
+
     var malformed_void_undefined_arena = std.heap.ArenaAllocator.init(allocator);
     defer malformed_void_undefined_arena.deinit();
     var malformed_void_undefined = try jsxSpreadChildTestFixture(
@@ -26444,9 +26540,15 @@ test "#6193 JSX spread retains native bound/member-chain and static computed obj
         "const items = [1]; const result = <Comp {...{ [missingKey < undefined]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [undefined == 1n]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [undefined == {}]: 1 }} key=\"k\">{...items}</Comp>;",
-        "const items = [1]; const result = <Comp {...{ [undefined && \"__proto__\"]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [undefined || \"__proto__\"]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [undefined ?? \"__proto__\"]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [\"__proto__\" || undefined]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const undefined = true; const items = [1]; const result = <Comp {...{ [undefined && \"safe\"]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [undefined && missingKey]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [undefined && 1n]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [undefined && {}]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [undefined && (effect = 1)]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [true && \"__proto__\"]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [undefined - missingKey]: 1 }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ [missingKey - undefined]: 1 }} key=\"k\">{...items}</Comp>;",
         "const undefined = 2; const items = [1]; const result = <Comp {...{ [undefined - 1]: 1 }} key=\"k\">{...items}</Comp>;",
