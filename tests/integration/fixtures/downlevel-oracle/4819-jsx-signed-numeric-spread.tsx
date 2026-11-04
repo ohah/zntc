@@ -102,6 +102,7 @@ const result = (
       [void typeof delete !0]: 'computed-void',
       [undefined]: 'computed-global-undefined',
       [void undefined]: 'computed-void-global-undefined',
+      [typeof undefined]: 'computed-typeof-global-undefined',
       [+1]: 'computed-plus',
       [-2]: 'computed-minus',
       [~~0]: 'computed-tilde',

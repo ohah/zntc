@@ -32128,6 +32128,24 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         value: 'void-global-key-value',
         emitted: /__toPropertyKey\(\s*void\s+undefined\s*\)/,
       },
+      {
+        name: 'typeof',
+        expression: '[typeof undefined]',
+        value: 'typeof-global-key-value',
+        emitted: /__toPropertyKey\(\s*(?:typeof\s*\(*\s*undefined\s*\)*|"undefined")\s*\)/,
+      },
+      {
+        name: 'typeof-parenthesized',
+        expression: '[typeof (undefined)]',
+        value: 'typeof-parenthesized-global-key-value',
+        emitted: /__toPropertyKey\(\s*(?:typeof\s*\(*\s*undefined\s*\)*|"undefined")\s*\)/,
+      },
+      {
+        name: 'typeof-deeply-parenthesized',
+        expression: '[typeof (((undefined)))]',
+        value: 'typeof-deeply-parenthesized-global-key-value',
+        emitted: /__toPropertyKey\(\s*(?:typeof\s*\(*\s*undefined\s*\)*|"undefined")\s*\)/,
+      },
     ] as const;
 
     for (const mode of modes) {
@@ -32236,20 +32254,39 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             expect(expression, emitted).toBeDefined();
             for (let mutation = 0; mutation < 10; mutation++) {
               const mutatedOutput = join(dir, `mutant-${mutation}.cjs`);
-              const mutantOperand = keyCase.name === 'void' ? 'void ' : '';
-              const mutated = emitted.replace(
-                expression ?? '',
-                `__toPropertyKey(${mutantOperand}__zntc_missing_global_undefined_${mutation})`,
-              );
+              const typeofAlternatives = [
+                'typeof 0',
+                'typeof "x"',
+                'typeof true',
+                'typeof 0n',
+                'typeof null',
+                'typeof []',
+                'typeof ({})',
+                'typeof Symbol()',
+                'typeof function () {}',
+                'typeof /x/',
+              ];
+              const replacement = keyCase.name.startsWith('typeof')
+                ? `__toPropertyKey(${typeofAlternatives[mutation]})`
+                : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
+              const mutated = emitted.replace(expression ?? '', replacement);
               writeFileSync(mutatedOutput, mutated);
               const mutantRun = spawnSync('node', [mutatedOutput], { encoding: 'utf8' });
-              expect(mutantRun.status, `${label} compileable mutation ${mutation}`).not.toBe(0);
-              expect(mutantRun.stderr, `${label} compileable mutation ${mutation}`).toContain(
-                'ReferenceError',
-              );
-              expect(mutantRun.stderr, `${label} compileable mutation ${mutation}`).not.toContain(
-                'SyntaxError',
-              );
+              expect(mutated, `${label} compileable mutation ${mutation}`).not.toBe(emitted);
+              if (keyCase.name.startsWith('typeof')) {
+                expect(mutantRun.status, `${label} compileable mutation ${mutation}`).toBe(0);
+                expect(mutantRun.stdout, `${label} compileable mutation ${mutation}`).not.toBe(
+                  baseline.stdout,
+                );
+              } else {
+                expect(mutantRun.status, `${label} compileable mutation ${mutation}`).not.toBe(0);
+                expect(mutantRun.stderr, `${label} compileable mutation ${mutation}`).toContain(
+                  'ReferenceError',
+                );
+                expect(mutantRun.stderr, `${label} compileable mutation ${mutation}`).not.toContain(
+                  'SyntaxError',
+                );
+              }
             }
           }
         } finally {
