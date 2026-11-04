@@ -1282,16 +1282,21 @@ fn expectVisitorGraphSkipped(graph: *const ModuleGraph, entry: []const u8) !void
     }
 }
 
+const BuiltInTransformGraphExpectation = struct {
+    expect_prepass: bool,
+    removed_identifier: ?[]const u8 = null,
+    removed_node_tag: ?ast_mod.Node.Tag = null,
+    retained_symbol_name: ?[]const u8 = null,
+    expected_reference_count: ?u32 = null,
+    expected_boolean_value: ?bool = null,
+};
+
 fn expectBuiltInTransformGraph(
     entry: []const u8,
     disk: *@import("disk_module_store.zig").DiskModuleStore,
     expected_load_hits: usize,
     options: TransformOptions,
-    expect_prepass: bool,
-    removed_identifier: []const u8,
-    retained_symbol_name: []const u8,
-    expected_reference_count: u32,
-    expected_boolean_value: ?bool,
+    expectation: BuiltInTransformGraphExpectation,
 ) !void {
     const profile = @import("../profile.zig");
     profile.resetForTest();
@@ -1314,7 +1319,7 @@ fn expectBuiltInTransformGraph(
 
     try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
     try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
-    if (!expect_prepass) {
+    if (!expectation.expect_prepass) {
         try expectVisitorGraphSkipped(&graph, entry);
         return;
     }
@@ -1326,27 +1331,35 @@ fn expectBuiltInTransformGraph(
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
     defer std.testing.allocator.free(reachable);
     var found_boolean_value = false;
+    var found_removed_node_tag = false;
     for (reachable) |raw| {
         const node = ast.nodes.items[raw];
         if (node.tag == .identifier_reference) {
-            try std.testing.expect(!Scanner.identifierNamesEqual(ast.getText(node.span), removed_identifier));
+            if (expectation.removed_identifier) |removed_identifier| {
+                try std.testing.expect(!Scanner.identifierNamesEqual(ast.getText(node.span), removed_identifier));
+            }
         } else if (node.tag == .boolean_literal) {
-            if (expected_boolean_value) |expected| {
+            if (expectation.expected_boolean_value) |expected| {
                 const expected_text = if (expected) "true" else "false";
                 if (std.mem.eql(u8, ast.getText(node.span), expected_text)) found_boolean_value = true;
             }
         }
+        if (expectation.removed_node_tag == node.tag) found_removed_node_tag = true;
     }
-    if (expected_boolean_value != null) try std.testing.expect(found_boolean_value);
+    if (expectation.expected_boolean_value != null) try std.testing.expect(found_boolean_value);
+    if (expectation.removed_node_tag != null) try std.testing.expect(!found_removed_node_tag);
 
-    const semantic = &module.semantic.?;
-    var found_retained = false;
-    for (semantic.symbols.items) |symbol| {
-        if (!std.mem.eql(u8, symbol.nameText(ast.source), retained_symbol_name)) continue;
-        found_retained = true;
-        try std.testing.expectEqual(expected_reference_count, symbol.reference_count);
+    if (expectation.retained_symbol_name) |retained_symbol_name| {
+        const expected_reference_count = expectation.expected_reference_count orelse return error.TestUnexpectedResult;
+        const semantic = &module.semantic.?;
+        var found_retained = false;
+        for (semantic.symbols.items) |symbol| {
+            if (!std.mem.eql(u8, symbol.nameText(ast.source), retained_symbol_name)) continue;
+            found_retained = true;
+            try std.testing.expectEqual(expected_reference_count, symbol.reference_count);
+        }
+        try std.testing.expect(found_retained);
     }
-    try std.testing.expect(found_retained);
 }
 
 fn expectColdParseVisitorRetainsGraph(kind: ColdParseVisitorKind, source: []const u8) !void {
@@ -1453,10 +1466,10 @@ test "graph built-in caller: drop-console retains its graph on cold/cache and sk
     defer disk.deinit();
 
     const options: TransformOptions = .{ .drop_console = true };
-    try expectBuiltInTransformGraph(drop_entry, &disk, 0, options, true, "console", "retained", 0, null);
-    try expectBuiltInTransformGraph(drop_entry, &disk, 1, options, true, "console", "retained", 0, null);
-    try expectBuiltInTransformGraph(plain_entry, &disk, 0, options, false, "console", "untouched", 1, null);
-    try expectBuiltInTransformGraph(plain_entry, &disk, 1, options, false, "console", "untouched", 1, null);
+    try expectBuiltInTransformGraph(drop_entry, &disk, 0, options, .{ .expect_prepass = true, .removed_identifier = "console", .retained_symbol_name = "retained", .expected_reference_count = 0 });
+    try expectBuiltInTransformGraph(drop_entry, &disk, 1, options, .{ .expect_prepass = true, .removed_identifier = "console", .retained_symbol_name = "retained", .expected_reference_count = 0 });
+    try expectBuiltInTransformGraph(plain_entry, &disk, 0, options, .{ .expect_prepass = false, .retained_symbol_name = "untouched", .expected_reference_count = 1 });
+    try expectBuiltInTransformGraph(plain_entry, &disk, 1, options, .{ .expect_prepass = false, .retained_symbol_name = "untouched", .expected_reference_count = 1 });
 }
 
 test "graph built-in caller: define retains its graph on cold/cache and skips a no-match module" {
@@ -1478,10 +1491,69 @@ test "graph built-in caller: define retains its graph on cold/cache and skips a 
 
     const defines = [_]@import("../parser/scan_results.zig").DefineEntry{.{ .key = "__DEV__", .value = "false" }};
     const options: TransformOptions = .{ .define = &defines };
-    try expectBuiltInTransformGraph(define_entry, &disk, 0, options, true, "__DEV__", "retained", 1, false);
-    try expectBuiltInTransformGraph(define_entry, &disk, 1, options, true, "__DEV__", "retained", 1, false);
-    try expectBuiltInTransformGraph(plain_entry, &disk, 0, options, false, "__DEV__", "untouched", 1, null);
-    try expectBuiltInTransformGraph(plain_entry, &disk, 1, options, false, "__DEV__", "untouched", 1, null);
+    try expectBuiltInTransformGraph(define_entry, &disk, 0, options, .{ .expect_prepass = true, .removed_identifier = "__DEV__", .retained_symbol_name = "retained", .expected_reference_count = 1, .expected_boolean_value = false });
+    try expectBuiltInTransformGraph(define_entry, &disk, 1, options, .{ .expect_prepass = true, .removed_identifier = "__DEV__", .retained_symbol_name = "retained", .expected_reference_count = 1, .expected_boolean_value = false });
+    try expectBuiltInTransformGraph(plain_entry, &disk, 0, options, .{ .expect_prepass = false, .retained_symbol_name = "untouched", .expected_reference_count = 1 });
+    try expectBuiltInTransformGraph(plain_entry, &disk, 1, options, .{ .expect_prepass = false, .retained_symbol_name = "untouched", .expected_reference_count = 1 });
+}
+
+test "graph built-in caller: debugger and label drops retain graphs on cold/cache and skip no-match modules" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "debugger.js", "function read(value) { debugger; return value; }");
+    try writeFile(tmp.dir, "plain-debugger.js", "function read(value) { return value; }");
+    try writeFile(tmp.dir, "label.js", "function read(value) { DEV: { console.log(value); } return value; }");
+    try writeFile(tmp.dir, "plain-label.js", "function read(value) { TEST: { console.log(value); } return value; }");
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const debugger_entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "debugger.js" });
+    defer std.testing.allocator.free(debugger_entry);
+    const plain_debugger_entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "plain-debugger.js" });
+    defer std.testing.allocator.free(plain_debugger_entry);
+    const label_entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "label.js" });
+    defer std.testing.allocator.free(label_entry);
+    const plain_label_entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "plain-label.js" });
+    defer std.testing.allocator.free(plain_label_entry);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    const debugger_options: TransformOptions = .{ .drop_debugger = true };
+    try expectBuiltInTransformGraph(debugger_entry, &disk, 0, debugger_options, .{
+        .expect_prepass = true,
+        .removed_node_tag = .debugger_statement,
+        .retained_symbol_name = "value",
+        .expected_reference_count = 1,
+    });
+    try expectBuiltInTransformGraph(debugger_entry, &disk, 1, debugger_options, .{
+        .expect_prepass = true,
+        .removed_node_tag = .debugger_statement,
+        .retained_symbol_name = "value",
+        .expected_reference_count = 1,
+    });
+    try expectBuiltInTransformGraph(plain_debugger_entry, &disk, 0, debugger_options, .{ .expect_prepass = false });
+    try expectBuiltInTransformGraph(plain_debugger_entry, &disk, 1, debugger_options, .{ .expect_prepass = false });
+
+    const labels = [_][]const u8{"DEV"};
+    const label_options: TransformOptions = .{ .drop_labels = &labels };
+    try expectBuiltInTransformGraph(label_entry, &disk, 0, label_options, .{
+        .expect_prepass = true,
+        .removed_identifier = "console",
+        .removed_node_tag = .labeled_statement,
+        .retained_symbol_name = "value",
+        .expected_reference_count = 1,
+    });
+    try expectBuiltInTransformGraph(label_entry, &disk, 1, label_options, .{
+        .expect_prepass = true,
+        .removed_identifier = "console",
+        .removed_node_tag = .labeled_statement,
+        .retained_symbol_name = "value",
+        .expected_reference_count = 1,
+    });
+    try expectBuiltInTransformGraph(plain_label_entry, &disk, 0, label_options, .{ .expect_prepass = false });
+    try expectBuiltInTransformGraph(plain_label_entry, &disk, 1, label_options, .{ .expect_prepass = false });
 }
 
 test "graph visitor caller: cold parse runs every hook and retains its semantic graph" {
