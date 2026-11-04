@@ -2451,6 +2451,7 @@ fn isRetainableJsxSpreadPropsOperand(
         if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return false;
         switch (ast.nodes.items[@backingInt(key_idx)].tag) {
             .identifier_reference, .string_literal, .numeric_literal, .bigint_literal => {},
+            .computed_property_key => if (!isRetainableJsxStaticComputedPropertyKey(ast, key_idx)) return false,
             else => return false,
         }
 
@@ -3144,6 +3145,49 @@ fn isExactJsxNoSubstitutionTemplateLiteral(ast: *const ast_mod.Ast, node_idx: as
     if (node.tag != .template_literal) return false;
     const list = node.data.list;
     return list.len == 0 and list.start <= ast.extra_data.items.len;
+}
+
+/// A computed inline JSX spread key stays on the retained graph when its
+/// expression is only a primitive literal, a no-substitution template, or
+/// plain parentheses around one. Keep computed `__proto__` strings out because
+/// downstream lowering currently changes their data-property behavior; escaped
+/// strings stay out so alternate spellings cannot bypass that guard. Calls,
+/// reads, coercive operators, and malformed wrapper/list metadata remain on
+/// reanalysis.
+fn isRetainableJsxStaticComputedPropertyKey(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
+    if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
+    const key = ast.nodes.items[@backingInt(node_idx)];
+    if (key.tag != .computed_property_key or key.data.unary.flags != 0) return false;
+
+    var operand_idx = key.data.unary.operand;
+    var remaining_nodes = ast.nodes.items.len;
+    while (remaining_nodes > 0) : (remaining_nodes -= 1) {
+        if (operand_idx.isNone() or @backingInt(operand_idx) >= ast.nodes.items.len) return false;
+        const operand = ast.nodes.items[@backingInt(operand_idx)];
+        if (operand.tag == .parenthesized_expression) {
+            if (operand.data.unary.flags != 0) return false;
+            operand_idx = operand.data.unary.operand;
+            continue;
+        }
+        return switch (operand.tag) {
+            .string_literal => isSafeJsxComputedStringLiteralKey(ast, operand_idx),
+            .numeric_literal, .bigint_literal, .boolean_literal, .null_literal => true,
+            .template_literal => isExactJsxNoSubstitutionTemplateLiteral(ast, operand_idx),
+            else => false,
+        };
+    }
+    return false;
+}
+
+fn isSafeJsxComputedStringLiteralKey(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
+    if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[@backingInt(node_idx)];
+    if (node.tag != .string_literal) return false;
+    const raw = ast.getText(node.span);
+    if (raw.len < 2 or (raw[0] != '\'' and raw[0] != '"') or raw[raw.len - 1] != raw[0]) return false;
+    const value = raw[1 .. raw.len - 1];
+    if (std.mem.indexOfScalar(u8, value, '\\') != null) return false;
+    return !std.mem.eql(u8, value, "__proto__");
 }
 
 /// A single unary plus/minus over a numeric literal is a pure Number value.
@@ -17888,6 +17932,66 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     }
     try std.testing.expectEqual(@as(usize, 5), deep_member_key_read_count);
 
+    const computed_prop_key_source = "const label = \"L\"; const count = 7; const items = [1]; const result = <Comp {...{ [\"named\"]: label, [1]: count, [true]: label, [null]: count, [`static`]: label }} key=\"k\">{...items}</Comp>;";
+    var computed_prop_key_fixture = try jsxSpreadChildTestFixture(allocator, computed_prop_key_source);
+    const computed_prop_key_owner = computed_prop_key_fixture.semantic.captureOwnerToken();
+    var computed_prop_key_symbols: [3]?u32 = .{ null, null, null };
+    var computed_prop_key_symbol_count: usize = 0;
+    for (computed_prop_key_fixture.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier) continue;
+        const name = computed_prop_key_fixture.ast.getText(node.data.string_ref);
+        if (std.mem.eql(u8, name, "label")) {
+            computed_prop_key_symbols[0] = computed_prop_key_fixture.semantic.symbol_ids[raw];
+            computed_prop_key_symbol_count += 1;
+        } else if (std.mem.eql(u8, name, "count")) {
+            computed_prop_key_symbols[1] = computed_prop_key_fixture.semantic.symbol_ids[raw];
+            computed_prop_key_symbol_count += 1;
+        } else if (std.mem.eql(u8, name, "items")) {
+            computed_prop_key_symbols[2] = computed_prop_key_fixture.semantic.symbol_ids[raw];
+            computed_prop_key_symbol_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 3), computed_prop_key_symbol_count);
+    const expected_computed_prop_key_symbols = [_]u32{
+        computed_prop_key_symbols[0] orelse return error.MissingComputedPropLabelSymbol,
+        computed_prop_key_symbols[1] orelse return error.MissingComputedPropCountSymbol,
+        computed_prop_key_symbols[2] orelse return error.MissingComputedPropItemsSymbol,
+    };
+    var computed_prop_key_module = Module.init(@fromBackingInt(0), "jsx-static-computed-prop-keys.tsx");
+    computed_prop_key_module.source = computed_prop_key_source;
+    computed_prop_key_module.module_type = .ts;
+    computed_prop_key_module.state = .ready;
+    computed_prop_key_module.ast = computed_prop_key_fixture.ast;
+    computed_prop_key_module.semantic = computed_prop_key_fixture.semantic;
+    var computed_prop_key_context: TestGraph = .{ .allocator = std.testing.allocator };
+    const computed_prop_key_resyncs_before = profile.count(.graph_resync_semantic);
+    run(&computed_prop_key_context, &computed_prop_key_module, allocator);
+    defer if (computed_prop_key_module.alias_table) |*table| table.deinit();
+    defer if (computed_prop_key_module.export_index_by_name) |*index| index.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), computed_prop_key_context.diag_count);
+    try std.testing.expectEqual(computed_prop_key_resyncs_before, profile.count(.graph_resync_semantic));
+    try std.testing.expectEqual(computed_prop_key_owner, computed_prop_key_module.semantic.?.owner_token);
+    const computed_prop_key_root = computed_prop_key_module.ast.?.transformed_root.?;
+    const computed_prop_key_reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, &computed_prop_key_module.ast.?, computed_prop_key_root);
+    defer allocator.free(computed_prop_key_reachable);
+    var computed_prop_key_reads: [3]usize = .{ 0, 0, 0 };
+    var computed_prop_key_nodes: usize = 0;
+    for (computed_prop_key_reachable) |raw| {
+        const node = computed_prop_key_module.ast.?.nodes.items[raw];
+        if (node.tag == .computed_property_key) computed_prop_key_nodes += 1;
+        if (node.tag != .identifier_reference) continue;
+        const name = computed_prop_key_module.ast.?.getText(node.data.string_ref);
+        const symbol_slot: ?usize = if (std.mem.eql(u8, name, "label")) 0 else if (std.mem.eql(u8, name, "count")) 1 else if (std.mem.eql(u8, name, "items")) 2 else null;
+        const slot = symbol_slot orelse continue;
+        try std.testing.expectEqual(
+            expected_computed_prop_key_symbols[slot],
+            computed_prop_key_module.semantic.?.symbol_ids[raw] orelse return error.MissingComputedPropReferenceSymbol,
+        );
+        computed_prop_key_reads[slot] += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), computed_prop_key_nodes);
+    try std.testing.expectEqual([_]usize{ 3, 2, 1 }, computed_prop_key_reads);
+
     const dev_source = "const member = { deep: { value: \"D\" }, \"undefined\": \"U\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...{ staticTemplateValue: `static`, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}</Comp>;";
     var dev_fixture = try jsxSpreadChildTestFixture(allocator, dev_source);
     const dev_owner = dev_fixture.semantic.captureOwnerToken();
@@ -25647,6 +25751,94 @@ test "#6193 automatic key fallback props accepts only exact no-substitution temp
     fixture.ast.nodes.items[template_raw].data.list.len = 1;
     try std.testing.expect(!isExactJsxNoSubstitutionTemplateLiteral(&fixture.ast, template));
     try std.testing.expect(!auditedJsxSpreadPropsOperandForTest(&fixture));
+}
+
+test "#6193 JSX spread retains only static computed object keys" {
+    const allocator = std.testing.allocator;
+    const safe_sources = [_][]const u8{
+        "const items = [1]; const result = <Comp {...{ [\"name\"]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [1]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [1n]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [true]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [null]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [`static`]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [(((false)))]: 1 }} key=\"k\">{...items}</Comp>;",
+    };
+    for (safe_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(auditedJsxSpreadPropsOperandForTest(&fixture));
+    }
+
+    const hostile_sources = [_][]const u8{
+        "const key = \"name\"; const items = [1]; const result = <Comp {...{ [key]: 1 }} key=\"k\">{...items}</Comp>;",
+        "function getKey() { return \"name\"; } const items = [1]; const result = <Comp {...{ [getKey()]: 1 }} key=\"k\">{...items}</Comp>;",
+        "let key = 1; const items = [1]; const result = <Comp {...{ [key++]: 1 }} key=\"k\">{...items}</Comp>;",
+        "let key = 1; const items = [1]; const result = <Comp {...{ [key = 2]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [{}]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [[]]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [/x/]: 1 }} key=\"k\">{...items}</Comp>;",
+        "function getKey() { return \"name\"; } const items = [1]; const result = <Comp {...{ [`${getKey()}`]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const tag = (value) => value; const items = [1]; const result = <Comp {...{ [tag`name`]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [!0]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [new String(\"name\")]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [Symbol()]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [\"__proto__\"]: 1 }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ [\"\\u005f_proto__\"]: 1 }} key=\"k\">{...items}</Comp>;",
+    };
+    for (hostile_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(!auditedJsxSpreadPropsOperandForTest(&fixture));
+    }
+
+    var malformed_arena = std.heap.ArenaAllocator.init(allocator);
+    defer malformed_arena.deinit();
+    var malformed = try jsxSpreadChildTestFixture(
+        malformed_arena.allocator(),
+        "const items = [1]; const result = <Comp {...{ [(\"static\")]: 1 }} key=\"k\">{...items}</Comp>;",
+    );
+    var computed_key: ?ast_mod.NodeIndex = null;
+    var paren: ?ast_mod.NodeIndex = null;
+    for (malformed.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .computed_property_key) continue;
+        const key_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+        computed_key = key_idx;
+        const operand_idx = node.data.unary.operand;
+        if (!operand_idx.isNone() and @backingInt(operand_idx) < malformed.ast.nodes.items.len and
+            malformed.ast.nodes.items[@backingInt(operand_idx)].tag == .parenthesized_expression)
+        {
+            paren = operand_idx;
+        }
+        break;
+    }
+    const key_idx = computed_key orelse return error.MissingJsxComputedPropertyKey;
+    const key_raw: usize = @intCast(@backingInt(key_idx));
+    try std.testing.expect(isRetainableJsxStaticComputedPropertyKey(&malformed.ast, key_idx));
+
+    const saved_key_flags = malformed.ast.nodes.items[key_raw].data.unary.flags;
+    malformed.ast.nodes.items[key_raw].data.unary.flags = 1;
+    try std.testing.expect(!isRetainableJsxStaticComputedPropertyKey(&malformed.ast, key_idx));
+    malformed.ast.nodes.items[key_raw].data.unary.flags = saved_key_flags;
+
+    const saved_key_operand = malformed.ast.nodes.items[key_raw].data.unary.operand;
+    malformed.ast.nodes.items[key_raw].data.unary.operand = @fromBackingInt(@intCast(malformed.ast.nodes.items.len));
+    try std.testing.expect(!isRetainableJsxStaticComputedPropertyKey(&malformed.ast, key_idx));
+    malformed.ast.nodes.items[key_raw].data.unary.operand = saved_key_operand;
+
+    const paren_idx = paren orelse return error.MissingJsxComputedPropertyParentheses;
+    const paren_raw: usize = @intCast(@backingInt(paren_idx));
+    const saved_paren_flags = malformed.ast.nodes.items[paren_raw].data.unary.flags;
+    malformed.ast.nodes.items[paren_raw].data.unary.flags = 1;
+    try std.testing.expect(!isRetainableJsxStaticComputedPropertyKey(&malformed.ast, key_idx));
+    malformed.ast.nodes.items[paren_raw].data.unary.flags = saved_paren_flags;
+
+    const saved_paren_operand = malformed.ast.nodes.items[paren_raw].data.unary.operand;
+    malformed.ast.nodes.items[paren_raw].data.unary.operand = paren_idx;
+    try std.testing.expect(!isRetainableJsxStaticComputedPropertyKey(&malformed.ast, key_idx));
+    malformed.ast.nodes.items[paren_raw].data.unary.operand = saved_paren_operand;
 }
 
 test "#6193 JSX spread admits only pure signed numeric literals" {
