@@ -2772,7 +2772,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const key = if (reference.key_producer) |key_producer|
                     try makeGeneratorTempRefForProducer(self, key_producer, source.span, .{ .read = true })
                 else
-                    reference.key;
+                    // Each emitted member owns a physical property leaf. The
+                    // old-value read and later write coexist across suspension.
+                    try es_helpers.cloneNode(self, reference.key);
                 const extra = try self.ast.addExtras(&.{ @backingInt(object), @backingInt(key), reference.flags });
                 return self.ast.addNode(.{ .tag = reference.tag, .span = source.span, .data = .{ .extra = extra } });
             }
@@ -6641,5 +6643,30 @@ test "suspension member receiver and key only retain native call without invoke 
         try std.testing.expect(!transformer.runtime_helper_symbol_ids.contains("__suspensionInvoke"));
         const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{ .unsupported = @import("compat.zig").fromESTarget(.es5) });
         try std.testing.expect(std.mem.indexOf(u8, result.code, "__suspensionInvoke") == null);
+    }
+}
+
+test "suspension compound static members own separate property leaves" {
+    const source = "var events=[];async function test(){var object={value:20};object.value+=await(events.push('rhs'),object.value=100,Promise.resolve(22));return object.value;}test().then(function(value){console.log(JSON.stringify({value:value,events:events}))});";
+    try checkSuspensionEvaluationRuntime(source);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const Transformer = @import("transformer.zig").Transformer;
+    var transformer = try Transformer.init(a, &parser.ast, .{ .unsupported = @import("compat.zig").fromESTarget(.es5) });
+    const root = try transformer.transform();
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(a, &parser.ast, root);
+    var property_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    for (reachable) |raw| {
+        const node = parser.ast.nodes.items[raw];
+        if (node.tag != .static_member_expression) continue;
+        const key = transformer.readNodeIdx(node.data.extra, 1);
+        const owner = try property_owners.getOrPut(a, @backingInt(key));
+        if (owner.found_existing) try std.testing.expectEqual(owner.value_ptr.*, @as(u32, @intCast(raw)));
+        owner.value_ptr.* = @intCast(raw);
     }
 }
