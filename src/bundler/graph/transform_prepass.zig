@@ -19084,6 +19084,173 @@ test "generic prepass run publishes transformed output and preserves parser AST"
         ));
     }
 
+    // The supported injection API must publish direct-eval scope facts on the
+    // same graph that the bundler prepass retains.
+    const TrackedEvalInjection = struct {
+        did_inject: bool = false,
+        insertion_scope: @import("../../semantic/scope.zig").ScopeId = .none,
+
+        fn onFunction(
+            context_ptr: ?*anyopaque,
+            api: *plugin_mod.AstTransformCtx,
+            info: @import("../../transformer/ast_plugin.zig").FunctionInfo,
+        ) plugin_mod.PluginError!void {
+            if (!std.mem.eql(u8, info.name orelse "", "read")) return;
+            const state = @as(*@This(), @ptrCast(@alignCast(context_ptr orelse return)));
+            state.insertion_scope = api.insertion_scope;
+            const injected = try api.parseAndInjectStatements("eval('secret');");
+            defer api.getAllocator().free(injected);
+            for (injected) |statement| try api.addTrailingStatement(statement);
+            state.did_inject = true;
+        }
+    };
+    const direct_eval_source = "function read(){let secret=1;}";
+    const direct_eval_fixture = try runtimeHelperReanalysisTestFixtureForSource(allocator, direct_eval_source, false);
+    const direct_eval_owner = direct_eval_fixture.semantic.owner_token;
+    var direct_eval_snapshot = try ast_mod.Ast.cloneForTransformer(&direct_eval_fixture.ast, allocator);
+    direct_eval_snapshot.type_only_binding_names = try direct_eval_fixture.ast.type_only_binding_names.clone(allocator);
+    var direct_eval_injection: TrackedEvalInjection = .{};
+    const tracked_eval_plugins = [_]plugin_mod.Plugin{.{
+        .name = "tracked-direct-eval-injection",
+        .context = @ptrCast(&direct_eval_injection),
+        .onFunction = TrackedEvalInjection.onFunction,
+        .ast_graph_contract = .tracked_function_edits,
+    }};
+    context.plugins = &tracked_eval_plugins;
+    var direct_eval_module = Module.init(@fromBackingInt(@as(u32, 20)), "tracked-eval.js");
+    direct_eval_module.source = direct_eval_source;
+    direct_eval_module.module_type = .js;
+    direct_eval_module.state = .ready;
+    direct_eval_module.ast = direct_eval_fixture.ast;
+    direct_eval_module.semantic = direct_eval_fixture.semantic;
+    run(&context, &direct_eval_module, allocator);
+    defer if (direct_eval_module.alias_table) |*table| table.deinit();
+    defer if (direct_eval_module.export_index_by_name) |*index| index.deinit(graph_allocator);
+    try std.testing.expect(direct_eval_injection.did_inject);
+    try std.testing.expectEqual(@as(usize, 11), context.diag_count);
+    try std.testing.expect(direct_eval_module.ast.?.transformed_root != null);
+    try std.testing.expect(direct_eval_module.transform_cache != null);
+    try std.testing.expectEqual(direct_eval_owner, direct_eval_module.semantic.?.owner_token);
+    try std.testing.expect(!direct_eval_injection.insertion_scope.isNone());
+    try std.testing.expect(!direct_eval_fixture.semantic.scopes[direct_eval_injection.insertion_scope.toIndex()].subtree_has_direct_eval);
+    try std.testing.expect(direct_eval_module.semantic.?.scopes[direct_eval_injection.insertion_scope.toIndex()].subtree_has_direct_eval);
+    var direct_eval_scope: ?@import("../../semantic/scope.zig").ScopeId = null;
+    for (direct_eval_module.ast.?.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or
+            !Scanner.identifierNamesEqual(direct_eval_module.ast.?.getText(node.span), "secret")) continue;
+        const symbol_id = direct_eval_module.semantic.?.symbol_ids[raw] orelse continue;
+        direct_eval_scope = direct_eval_module.semantic.?.symbols.items[symbol_id].scope_id;
+        break;
+    }
+    const exact_direct_eval_scope = direct_eval_scope orelse return error.MissingDirectEvalBindingScope;
+    var current_scope = exact_direct_eval_scope;
+    var dynamic_scope_found = false;
+    while (!current_scope.isNone()) {
+        const scope_index = current_scope.toIndex();
+        if (direct_eval_module.semantic.?.scopes[scope_index].subtree_has_direct_eval) dynamic_scope_found = true;
+        current_scope = direct_eval_module.semantic.?.scopes[scope_index].parent;
+    }
+    try std.testing.expect(dynamic_scope_found);
+    try std.testing.expect(try sameGenericPrepassAstContents(
+        &direct_eval_snapshot,
+        &direct_eval_fixture.ast,
+        allocator,
+    ));
+
+    // A plugin that bypasses those APIs cannot borrow their dynamic-scope
+    // registration; its unclassified eval reference must fail closed.
+    const RawEvalMutation = struct {
+        did_mutate: bool = false,
+
+        fn onFunction(
+            context_ptr: ?*anyopaque,
+            api: *plugin_mod.AstTransformCtx,
+            info: @import("../../transformer/ast_plugin.zig").FunctionInfo,
+        ) plugin_mod.PluginError!void {
+            if (!std.mem.eql(u8, info.name orelse "", "read")) return;
+            const state = @as(*@This(), @ptrCast(@alignCast(context_ptr orelse return)));
+            const ast = api.transformer.ast;
+            const body = ast.getNode(info.body_idx);
+            if (body.tag != .block_statement) return;
+            const body_items = ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len];
+            var declaration: ?ast_mod.NodeIndex = null;
+            var eval_statement: ?ast_mod.NodeIndex = null;
+            var secret_statement: ?ast_mod.NodeIndex = null;
+            var eval_span: ?Span = null;
+            var secret_span: ?Span = null;
+            for (body_items) |raw| {
+                const statement: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+                const node = ast.getNode(statement);
+                if (node.tag == .variable_declaration) declaration = statement;
+                if (node.tag != .expression_statement) continue;
+                const expression = ast.getNode(node.data.unary.operand);
+                if (expression.tag != .string_literal) continue;
+                const text = ast.getText(expression.span);
+                if (std.mem.eql(u8, text, "\"eval\"")) {
+                    eval_statement = statement;
+                    eval_span = .{ .start = expression.span.start + 1, .end = expression.span.end - 1 };
+                } else if (std.mem.eql(u8, text, "\"secret\"")) {
+                    secret_statement = statement;
+                    secret_span = expression.span;
+                }
+            }
+            const declaration_node = declaration orelse return;
+            const old_eval_statement = eval_statement orelse return;
+            const old_secret_statement = secret_statement orelse return;
+            const callee_span = eval_span orelse return;
+            const argument_span = secret_span orelse return;
+            const callee = try ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = callee_span,
+                .data = .{ .string_ref = callee_span },
+            });
+            const argument = try ast.addNode(.{
+                .tag = .string_literal,
+                .span = argument_span,
+                .data = .{ .string_ref = argument_span },
+            });
+            const arguments = try ast.addNodeList(&.{argument});
+            const call_extra = try ast.addExtras(&.{ @backingInt(callee), arguments.start, arguments.len, 0 });
+            const call = try ast.addExtraNode(.call_expression, callee_span, call_extra);
+            const call_statement = try ast.addUnaryNode(.expression_statement, callee_span, call, 0);
+            const replacement = try ast.addNodeList(&.{ declaration_node, call_statement, old_eval_statement, old_secret_statement });
+            ast.nodes.items[@backingInt(info.body_idx)].data.list = replacement;
+            state.did_mutate = true;
+        }
+    };
+    const raw_eval_source = "function read(){let secret=1;\"eval\";\"secret\";}";
+    const raw_eval_fixture = try runtimeHelperReanalysisTestFixtureForSource(allocator, raw_eval_source, false);
+    const raw_eval_owner = raw_eval_fixture.semantic.owner_token;
+    var raw_eval_snapshot = try ast_mod.Ast.cloneForTransformer(&raw_eval_fixture.ast, allocator);
+    raw_eval_snapshot.type_only_binding_names = try raw_eval_fixture.ast.type_only_binding_names.clone(allocator);
+    var raw_eval_mutation: RawEvalMutation = .{};
+    const raw_eval_plugins = [_]plugin_mod.Plugin{.{
+        .name = "raw-untracked-eval-injection",
+        .context = @ptrCast(&raw_eval_mutation),
+        .onFunction = RawEvalMutation.onFunction,
+        .ast_graph_contract = .tracked_function_edits,
+    }};
+    context.plugins = &raw_eval_plugins;
+    var raw_eval_module = Module.init(@fromBackingInt(@as(u32, 21)), "raw-eval.js");
+    raw_eval_module.source = raw_eval_source;
+    raw_eval_module.module_type = .js;
+    raw_eval_module.state = .ready;
+    raw_eval_module.ast = raw_eval_fixture.ast;
+    raw_eval_module.semantic = raw_eval_fixture.semantic;
+    run(&context, &raw_eval_module, allocator);
+    defer if (raw_eval_module.alias_table) |*table| table.deinit();
+    defer if (raw_eval_module.export_index_by_name) |*index| index.deinit(graph_allocator);
+    try std.testing.expect(raw_eval_mutation.did_mutate);
+    try std.testing.expectEqual(@as(usize, 12), context.diag_count);
+    try std.testing.expect(raw_eval_module.ast.?.transformed_root == null);
+    try std.testing.expect(raw_eval_module.transform_cache == null);
+    try std.testing.expectEqual(raw_eval_owner, raw_eval_module.semantic.?.owner_token);
+    try std.testing.expect(try sameGenericPrepassAstContents(
+        &raw_eval_snapshot,
+        &raw_eval_module.ast.?,
+        allocator,
+    ));
+
     context.plugins = &.{};
     var module_without_semantic = Module.init(@fromBackingInt(@as(u32, 1)), "input-without-semantic.js");
     module_without_semantic.source = source;
@@ -19093,7 +19260,7 @@ test "generic prepass run publishes transformed output and preserves parser AST"
     run(&context, &module_without_semantic, allocator);
     // Installed generic output requires the initial parser's semantic graph.
     // A missing graph is rejected before candidate publication, never repaired.
-    try std.testing.expectEqual(@as(usize, 12), context.diag_count);
+    try std.testing.expectEqual(@as(usize, 13), context.diag_count);
     try std.testing.expect(module_without_semantic.semantic == null);
     try std.testing.expect(module_without_semantic.ast.?.transformed_root == null);
     try std.testing.expect(module_without_semantic.transform_cache == null);
