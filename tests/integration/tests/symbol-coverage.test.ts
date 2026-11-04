@@ -117,23 +117,23 @@ const EXACT_MATRIX_REPORT_PREFIX_BY_KIND = {
   post: 'zntc: symbol-identity-post-minify ',
 } as const;
 const EXACT_MATRIX_OBSERVATION_FINGERPRINT =
-  '1f9a7d55e74f3ce98d0aba7386f7e22d4762fd3f549863dc690e0df813356f82';
+  '734d888b4d4a6d4df07c7cba964b288497df201ef083b2178cdc82867ae4e1a5';
 const EXACT_MATRIX_OBSERVATION_TOTALS = {
-  'exact.generated_bindings': 15270,
-  'exact.generated_references': 47478,
+  'exact.generated_bindings': 15318,
+  'exact.generated_references': 48396,
   'exact.generated_scope_owners_checked': 13413,
-  'exact.external': 14436,
-  'exact.declaration_anchors_checked': 48798,
+  'exact.external': 15147,
+  'exact.declaration_anchors_checked': 49458,
   'exact.namespace_iife_params': 270,
   'exact.enum_iife_params': 36,
-  'coverage.new_user_idents': 8037,
-  'strict.bound': 60594,
-  'strict.external': 1986,
-  'strict.marked_synthetic': 52779,
-  'post.bindings': 50310,
-  'post.references': 109491,
-  'post.external': 14436,
-  'post.helpers': 8109,
+  'coverage.new_user_idents': 8187,
+  'strict.bound': 61479,
+  'strict.external': 2067,
+  'strict.marked_synthetic': 53514,
+  'post.bindings': 50931,
+  'post.references': 115681,
+  'post.external': 15051,
+  'post.helpers': 8490,
   'post.preserved_transform_refs': 204,
 } as const;
 // These module entries intentionally contain top-level await. The identity
