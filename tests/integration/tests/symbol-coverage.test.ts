@@ -32109,7 +32109,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   }, 120_000);
 
-  test('JSX computed global undefined keys retain the graph on ES5', () => {
+  test('JSX computed global undefined unary keys retain the graph on ES5', () => {
     const modes = [
       { name: 'classic', args: ['--jsx=classic', '--jsx-factory=h'] },
       { name: 'automatic', args: ['--jsx=automatic', '--jsx-import-source=./runtime'] },
@@ -32157,6 +32157,27 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         value: 'not-global-key-value',
         property: 'true',
         emitted: /__toPropertyKey\(\s*(?:!\s*\(*\s*undefined\s*\)*|true|"true")\s*\)/,
+      },
+      {
+        name: 'plus',
+        expression: '[+undefined]',
+        value: 'plus-global-key-value',
+        property: 'NaN',
+        emitted: /__toPropertyKey\(\s*(?:\+\s*\(*\s*undefined\s*\)*|NaN|"NaN")\s*\)/,
+      },
+      {
+        name: 'minus',
+        expression: '[-undefined]',
+        value: 'minus-global-key-value',
+        property: 'NaN',
+        emitted: /__toPropertyKey\(\s*(?:-\s*\(*\s*undefined\s*\)*|NaN|"NaN")\s*\)/,
+      },
+      {
+        name: 'tilde',
+        expression: '[~undefined]',
+        value: 'tilde-global-key-value',
+        property: '-1',
+        emitted: /__toPropertyKey\(\s*(?:~\s*\(*\s*undefined\s*\)*|-1|"-1")\s*\)/,
       },
     ] as const;
 
@@ -32290,16 +32311,35 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                 '0n',
                 'Symbol()',
               ];
+              const numericAlternatives = [
+                '0',
+                '1',
+                'false',
+                'null',
+                '""',
+                '"other"',
+                '[]',
+                '({})',
+                '0n',
+                'Symbol()',
+              ];
+              const isNumericUndefinedKey = ['plus', 'minus', 'tilde'].includes(keyCase.name);
               const replacement = keyCase.name.startsWith('typeof')
                 ? `__toPropertyKey(${typeofAlternatives[mutation]})`
                 : keyCase.name === 'not'
                   ? `__toPropertyKey(${notAlternatives[mutation]})`
-                  : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
+                  : isNumericUndefinedKey
+                    ? `__toPropertyKey(${numericAlternatives[mutation]})`
+                    : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
               const mutated = emitted.replace(expression ?? '', replacement);
               writeFileSync(mutatedOutput, mutated);
               const mutantRun = spawnSync('node', [mutatedOutput], { encoding: 'utf8' });
               expect(mutated, `${label} compileable mutation ${mutation}`).not.toBe(emitted);
-              if (keyCase.name.startsWith('typeof') || keyCase.name === 'not') {
+              if (
+                keyCase.name.startsWith('typeof') ||
+                keyCase.name === 'not' ||
+                isNumericUndefinedKey
+              ) {
                 expect(mutantRun.status, `${label} compileable mutation ${mutation}`).toBe(0);
                 expect(mutantRun.stdout, `${label} compileable mutation ${mutation}`).not.toBe(
                   baseline.stdout,
