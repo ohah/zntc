@@ -15,6 +15,7 @@ const member = {
   number: 'numeric',
   string: 'string',
   boolean: 'boolean',
+  false: 'falsy',
 };
 const items = [1, 2];
 const result = React.createElement(
@@ -79,6 +80,9 @@ const result = React.createElement(
     valueDeepUnaryMixed: typeof void delete !~0,
     keyDeepUnary: member[typeof delete !0],
     keyDeepUnaryVoid: member[void typeof delete !0],
+    keyDeepUnaryMixed: member[typeof void delete !~0],
+    keyDeepUnaryNot: member[!!!0],
+    keyDeepUnaryLong: member[!!!!!!!!!!!!0],
     valueDeleteZero: delete 0,
     keyDeleteZero: member[delete 0],
     valueVoidDeleteZero: void delete 0,
@@ -150,6 +154,9 @@ console.log(
   result.props.valueDeepUnaryMixed,
   result.props.keyDeepUnary,
   result.props.keyDeepUnaryVoid,
+  result.props.keyDeepUnaryMixed,
+  result.props.keyDeepUnaryNot,
+  result.props.keyDeepUnaryLong,
   result.props.valueDeleteZero,
   result.props.keyDeleteZero,
   result.props.valueVoidDeleteZero,
