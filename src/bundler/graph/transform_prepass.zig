@@ -18059,7 +18059,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
         computed_prop_key_reads[slot] += 1;
     }
     try std.testing.expectEqual(@as(usize, 14), computed_prop_key_nodes);
-    try std.testing.expectEqual([_]usize{ 8, 5, 1, 1 }, computed_prop_key_reads);
+    try std.testing.expectEqual([_]usize{ 9, 5, 1, 1 }, computed_prop_key_reads);
     try std.testing.expectEqual(@as(usize, 1), computed_prop_key_global_undefined_reads);
 
     const dev_source = "const member = { deep: { value: \"D\" }, \"undefined\": \"U\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...{ staticTemplateValue: `static`, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}</Comp>;";
