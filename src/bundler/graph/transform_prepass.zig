@@ -2377,10 +2377,11 @@ fn isRetainableJsxSpreadChild(
 /// Member chains allow dot names, primitive literal bracket keys, one signed
 /// Number literal, pure unary chains without signed operators, and `void` over
 /// those values or the exact unresolved global undefined. Composite `+`/`-`
-/// chains are retained for direct prop values; their computed-key form remains
-/// fallback because its receiver SymbolId is not preserved by JSX lowering.
-/// Exact bound identifier keys remain valid; other computed-key effects, new
-/// scopes, and nested spreads are not admitted.
+/// chains are retained for direct prop values; computed-key form is admitted
+/// only for non-signed literal-safe chains because signed compositions can lose
+/// the receiver SymbolId during JSX lowering. Exact bound identifier keys
+/// remain valid; other computed-key effects, new scopes, and nested spreads are
+/// not admitted.
 fn isRetainableJsxMemberChain(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -3227,11 +3228,12 @@ fn isRetainableJsxLiteralUnaryValue(ast: *const ast_mod.Ast, node_idx: ast_mod.N
     return isRetainableJsxLiteralUnaryValueWithSignedNumbers(ast, node_idx, true, ast.nodes.items.len);
 }
 
-/// Composite signed unary keys currently fail the exact retained-graph
-/// identity check after JSX lowering. Single signed-number keys use their own
-/// proven path; keep the composition out of this member-chain gate.
+/// Unary computed keys use the same AST-bounded literal walk as direct values,
+/// but signed operators remain outside this gate because composite signed keys
+/// can lose the receiver SymbolId after JSX lowering. Single signed-number
+/// keys use their own proven path.
 fn isRetainableJsxLiteralUnaryMemberKey(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
-    return isRetainableJsxLiteralUnaryValueWithSignedNumbers(ast, node_idx, false, 2);
+    return isRetainableJsxLiteralUnaryValueWithSignedNumbers(ast, node_idx, false, ast.nodes.items.len);
 }
 
 fn isRetainableJsxLiteralUnaryValueWithSignedNumbers(
@@ -17845,6 +17847,47 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 1), key_fallback_member_key_read_count);
     try std.testing.expectEqual(@as(usize, 2), key_fallback_undefined_read_count);
 
+    const deep_member_key_source = "const member = { boolean: \"bool\", undefined: \"undefined\", true: \"truthy\", false: \"falsy\" }; const items = [1]; const result = <Comp {...{ typeofKey: member[typeof delete !0], voidKey: member[void (typeof delete !0)], mixedKey: member[typeof void delete !~0], notKey: member[!!!0], longNotKey: member[!!!!!!!!!!!!0] }} key=\"k\">{...items}</Comp>;";
+    var deep_member_key_fixture = try jsxSpreadChildTestFixture(allocator, deep_member_key_source);
+    const deep_member_key_owner = deep_member_key_fixture.semantic.captureOwnerToken();
+    var deep_member_key_symbol: ?u32 = null;
+    for (deep_member_key_fixture.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or
+            !std.mem.eql(u8, deep_member_key_fixture.ast.getText(node.data.string_ref), "member")) continue;
+        deep_member_key_symbol = deep_member_key_fixture.semantic.symbol_ids[raw];
+        break;
+    }
+    const deep_member_symbol = deep_member_key_symbol orelse return error.MissingDeepJsxMemberKeyBinding;
+    var deep_member_key_module = Module.init(@fromBackingInt(0), "jsx-deep-member-key.tsx");
+    deep_member_key_module.source = deep_member_key_source;
+    deep_member_key_module.module_type = .ts;
+    deep_member_key_module.state = .ready;
+    deep_member_key_module.ast = deep_member_key_fixture.ast;
+    deep_member_key_module.semantic = deep_member_key_fixture.semantic;
+    var deep_member_key_context: TestGraph = .{ .allocator = std.testing.allocator };
+    const deep_member_key_resyncs_before = profile.count(.graph_resync_semantic);
+    run(&deep_member_key_context, &deep_member_key_module, allocator);
+    defer if (deep_member_key_module.alias_table) |*table| table.deinit();
+    defer if (deep_member_key_module.export_index_by_name) |*index| index.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), deep_member_key_context.diag_count);
+    try std.testing.expectEqual(deep_member_key_resyncs_before, profile.count(.graph_resync_semantic));
+    try std.testing.expectEqual(deep_member_key_owner, deep_member_key_module.semantic.?.owner_token);
+    const deep_member_key_root = deep_member_key_module.ast.?.transformed_root.?;
+    const deep_member_key_reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, &deep_member_key_module.ast.?, deep_member_key_root);
+    defer allocator.free(deep_member_key_reachable);
+    var deep_member_key_read_count: usize = 0;
+    for (deep_member_key_reachable) |raw| {
+        const node = deep_member_key_module.ast.?.nodes.items[raw];
+        if (node.tag != .identifier_reference or
+            !std.mem.eql(u8, deep_member_key_module.ast.?.getText(node.data.string_ref), "member")) continue;
+        try std.testing.expectEqual(
+            deep_member_symbol,
+            deep_member_key_module.semantic.?.symbol_ids[raw] orelse return error.MissingDeepJsxMemberKeyReferenceSymbol,
+        );
+        deep_member_key_read_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 5), deep_member_key_read_count);
+
     const dev_source = "const member = { deep: { value: \"D\" }, \"undefined\": \"U\" }; const memberKey = \"deep\"; const items = [1, 2]; const result = <Comp {...{ staticTemplateValue: `static`, memberValue: member[memberKey].value, templateValue: member[`undefined`], voidTemplateValue: member[void (`unused`)], voidPrimitiveValue: member[void (true)], voidZeroValue: member[void (0)], undefinedKeyValue: member[undefined], optional: undefined, unset: void 0 }} key=\"k\"><span />{...items}</Comp>;";
     var dev_fixture = try jsxSpreadChildTestFixture(allocator, dev_source);
     const dev_owner = dev_fixture.semantic.captureOwnerToken();
@@ -26058,6 +26101,11 @@ test "#6193 JSX spread retains pure nested unary chains" {
         "const items = [1]; const result = <Comp {...{ value: ~~0 }} key=\"k\">{...items}</Comp>;",
         "const member = { boolean: \"bool\" }; const items = [1]; const result = <Comp {...{ value: member[typeof delete 0] }} key=\"k\">{...items}</Comp>;",
         "const member = { true: \"truthy\" }; const items = [1]; const result = <Comp {...{ value: member[delete !0] }} key=\"k\">{...items}</Comp>;",
+        "const member = { boolean: \"bool\" }; const items = [1]; const result = <Comp {...{ value: member[typeof delete !0] }} key=\"k\">{...items}</Comp>;",
+        "const member = { undefined: \"u\" }; const items = [1]; const result = <Comp {...{ value: member[void (typeof delete !0)] }} key=\"k\">{...items}</Comp>;",
+        "const member = { undefined: \"u\" }; const items = [1]; const result = <Comp {...{ value: member[typeof void delete !~0] }} key=\"k\">{...items}</Comp>;",
+        "const member = { true: \"truthy\" }; const items = [1]; const result = <Comp {...{ value: member[!!!0] }} key=\"k\">{...items}</Comp>;",
+        "const member = { false: \"falsy\" }; const items = [1]; const result = <Comp {...{ value: member[!!!!!!!!!!!!0] }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ value: void (!!0) }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ value: void (~~0) }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ value: void (typeof delete 0) }} key=\"k\">{...items}</Comp>;",
@@ -26098,8 +26146,9 @@ test "#6193 JSX spread retains pure nested unary chains" {
         "function getKey() { return \"x\"; } const items = [1]; const result = <Comp {...{ value: typeof `${getKey()}` }} key=\"k\">{...items}</Comp>;",
         "const key = 0; const member = {}; const items = [1]; const result = <Comp {...{ value: member[typeof delete (key + \"\")] }} key=\"k\">{...items}</Comp>;",
         "function getKey() { return \"x\"; } const member = {}; const items = [1]; const result = <Comp {...{ value: member[void (!!getKey())] }} key=\"k\">{...items}</Comp>;",
-        "const member = { boolean: \"bool\" }; const items = [1]; const result = <Comp {...{ value: member[typeof delete !0] }} key=\"k\">{...items}</Comp>;",
-        "const member = { undefined: \"u\" }; const items = [1]; const result = <Comp {...{ value: member[void (typeof delete !0)] }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ value: member[typeof delete -0] }} key=\"k\">{...items}</Comp>;",
+        "const member = {}; const items = [1]; const result = <Comp {...{ value: member[void (typeof delete +0)] }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ value: missing[typeof delete !0] }} key=\"k\">{...items}</Comp>;",
     };
     for (hostile_sources) |source| {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -26129,6 +26178,7 @@ test "#6193 JSX spread retains pure nested unary chains" {
     const outer_idx = outer_typeof orelse return error.MissingNestedUnaryTypeof;
     const delete_idx = inner_delete orelse return error.MissingNestedUnaryDelete;
     try std.testing.expect(isRetainableJsxLiteralUnaryValue(&malformed.ast, outer_idx));
+    try std.testing.expect(isRetainableJsxLiteralUnaryMemberKey(&malformed.ast, outer_idx));
 
     const delete_node_raw: usize = @intCast(@backingInt(delete_idx));
     const delete_extra = malformed.ast.nodes.items[delete_node_raw].data.extra;
@@ -26167,6 +26217,7 @@ test "#6193 JSX spread retains pure nested unary chains" {
 
     malformed.ast.extra_data.items[delete_extra] = @intCast(delete_node_raw);
     try std.testing.expect(!isRetainableJsxLiteralUnaryValue(&malformed.ast, outer_idx));
+    try std.testing.expect(!isRetainableJsxLiteralUnaryMemberKey(&malformed.ast, outer_idx));
     malformed.ast.extra_data.items[delete_extra] = saved_delete_operand;
 }
 
