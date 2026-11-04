@@ -604,6 +604,95 @@ fn noopPrePassTestVisitor(
     return null;
 }
 
+const ColdParseVisitorKind = enum {
+    program,
+    object_expression,
+    call_expression,
+    class_declaration,
+    class_expression,
+};
+
+const ColdParseVisitorState = struct {
+    calls: usize = 0,
+    observed_tag: ?@import("../parser/ast.zig").Node.Tag = null,
+};
+
+fn coldParseVisitorHook(
+    ctx: ?*anyopaque,
+    api: *plugin_mod.AstTransformCtx,
+    node_idx: @import("../parser/ast.zig").NodeIndex,
+) plugin_mod.PluginError!?@import("../parser/ast.zig").NodeIndex {
+    const state_ptr = ctx orelse return error.PluginFailed;
+    const state: *ColdParseVisitorState = @ptrCast(@alignCast(state_ptr));
+    state.calls += 1;
+    state.observed_tag = api.transformer.ast.getNode(node_idx).tag;
+    return null;
+}
+
+fn coldParseVisitorFor(kind: ColdParseVisitorKind) plugin_mod.Visitor {
+    return switch (kind) {
+        .program => .{ .on_program = coldParseVisitorHook },
+        .object_expression => .{ .on_object_expression = coldParseVisitorHook },
+        .call_expression => .{ .on_call_expression = coldParseVisitorHook },
+        .class_declaration => .{ .on_class_declaration = coldParseVisitorHook },
+        .class_expression => .{ .on_class_expression = coldParseVisitorHook },
+    };
+}
+
+fn coldParseVisitorNodeTag(kind: ColdParseVisitorKind) @import("../parser/ast.zig").Node.Tag {
+    return switch (kind) {
+        .program => .program,
+        .object_expression => .object_expression,
+        .call_expression => .call_expression,
+        .class_declaration => .class_declaration,
+        .class_expression => .class_expression,
+    };
+}
+
+fn expectColdParseVisitorRetainsGraph(kind: ColdParseVisitorKind, source: []const u8) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", source);
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.js" });
+    defer std.testing.allocator.free(entry);
+
+    var hook_state: ColdParseVisitorState = .{};
+    const plugins = [_]plugin_mod.Plugin{.{
+        .name = "cold-parse-visitor",
+        .context = @ptrCast(&hook_state),
+        .visitor = coldParseVisitorFor(kind),
+        .ast_graph_contract = .identity_preserving_visitor_edits,
+    }};
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.max_threads = 1;
+    graph.plugins = &plugins;
+
+    try graph.build(std.testing.io, &.{entry});
+
+    try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+    try std.testing.expectEqual(@as(usize, 1), hook_state.calls);
+    try std.testing.expectEqual(coldParseVisitorNodeTag(kind), hook_state.observed_tag.?);
+    const module_option = graph.findModuleByPath(entry);
+    try std.testing.expect(module_option != null);
+    const module = module_option.?;
+    try std.testing.expectEqual(Module.State.ready, module.state);
+    try std.testing.expect(module.semantic != null);
+    try std.testing.expect(module.ast != null);
+    try std.testing.expect(module.ast.?.transformed_root != null);
+    try std.testing.expect(module.transform_cache != null);
+    try std.testing.expectEqualSlices(?u32, module.semantic.?.symbol_ids, module.transform_cache.?.symbol_ids);
+    for (graph.diagnostics.items) |diagnostic| {
+        try std.testing.expect(diagnostic.severity != .@"error");
+    }
+}
+
 fn expectPrePassDecision(
     expected: bool,
     source: []const u8,
@@ -662,6 +751,21 @@ test "graph pre-pass predicate: simple ESM and TS strip modules can skip" {
 test "graph pre-pass predicate: synthetic no-op graphs skip every eligible module" {
     try expectAllBuiltModulesSkipPrePass(50);
     try expectAllBuiltModulesSkipPrePass(200);
+}
+
+test "graph cold parse: every visitor hook runs and retains its semantic transform graph" {
+    const cases = [_]struct {
+        kind: ColdParseVisitorKind,
+        source: []const u8,
+    }{
+        .{ .kind = .program, .source = "export const value = 1;" },
+        .{ .kind = .object_expression, .source = "export const value = { amount: 1 };" },
+        .{ .kind = .call_expression, .source = "function read(value) { return value; } export const result = read(1);" },
+        .{ .kind = .class_declaration, .source = "export class Value {}" },
+        .{ .kind = .class_expression, .source = "export const Value = class {};" },
+    };
+
+    for (cases) |case| try expectColdParseVisitorRetainsGraph(case.kind, case.source);
 }
 
 test "graph pre-pass predicate: syntax and options that mutate graph-visible surface keep pre-pass" {
