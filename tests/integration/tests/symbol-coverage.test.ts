@@ -32287,6 +32287,13 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         property: '0',
         emitted: /__toPropertyKey\(\s*undefined\s*<<\s*1\s*\)/,
       },
+      {
+        name: 'exponentiation-number',
+        expression: '[undefined ** 0]',
+        value: 'exponentiation-number-value',
+        property: '1',
+        emitted: /__toPropertyKey\(\s*Math\.pow\(\s*undefined\s*,\s*0\s*\)\s*\)/,
+      },
     ] as const;
 
     for (const mode of modes) {
@@ -32481,6 +32488,18 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                 'undefined ^ 2',
                 'undefined + "x"',
               ];
+              const exponentiationAlternatives = [
+                'Math.pow(undefined, 1)',
+                'Math.pow(undefined, 2)',
+                'Math.pow(0, undefined)',
+                'Math.pow(2, undefined)',
+                'Math.pow(undefined, -1)',
+                'Math.pow("2", undefined)',
+                'Math.pow(undefined, "2")',
+                'Math.pow("2", "3")',
+                'Math.pow(3, 2)',
+                'Math.pow(false, undefined)',
+              ];
               const booleanBinaryAlternatives = [
                 'undefined === null',
                 'undefined !== undefined',
@@ -32533,6 +32552,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
               const isUndefinedUnaryChain = keyCase.name.startsWith('chain-');
               const isUndefinedAddition = keyCase.name.startsWith('addition-');
               const isUndefinedNumericBinary = keyCase.name.startsWith('numeric-binary-');
+              const isUndefinedExponentiation = keyCase.name.startsWith('exponentiation-');
               const isUndefinedBooleanBinary = keyCase.name.startsWith('comparison-binary-');
               const isUndefinedLogicalAnd = keyCase.name.startsWith('logical-and');
               const isUndefinedLogicalFallback =
@@ -32552,15 +32572,17 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                       ? `__toPropertyKey(${chainAlternatives[mutation]})`
                       : isUndefinedAddition
                         ? `__toPropertyKey(${additionAlternatives[mutation]})`
-                        : isUndefinedNumericBinary
-                          ? `__toPropertyKey(${numericBinaryAlternatives[mutation]})`
-                          : isUndefinedBooleanBinary
-                            ? `__toPropertyKey(${booleanBinaryAlternatives[mutation]})`
-                            : isUndefinedLogicalFallback
-                              ? `__toPropertyKey(${logicalFallbackAlternatives[mutation]})`
-                              : isUndefinedLogicalAnd
-                                ? `__toPropertyKey(${logicalAndMutations[mutation]})`
-                                : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
+                        : isUndefinedExponentiation
+                          ? `__toPropertyKey(${exponentiationAlternatives[mutation]})`
+                          : isUndefinedNumericBinary
+                            ? `__toPropertyKey(${numericBinaryAlternatives[mutation]})`
+                            : isUndefinedBooleanBinary
+                              ? `__toPropertyKey(${booleanBinaryAlternatives[mutation]})`
+                              : isUndefinedLogicalFallback
+                                ? `__toPropertyKey(${logicalFallbackAlternatives[mutation]})`
+                                : isUndefinedLogicalAnd
+                                  ? `__toPropertyKey(${logicalAndMutations[mutation]})`
+                                  : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
               const mutated = emitted.replace(expression ?? '', replacement);
               writeFileSync(mutatedOutput, mutated);
               const mutantRun = spawnSync('node', [mutatedOutput], { encoding: 'utf8' });
@@ -32571,6 +32593,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                 isNumericUndefinedKey ||
                 isUndefinedUnaryChain ||
                 isUndefinedAddition ||
+                isUndefinedExponentiation ||
                 isUndefinedNumericBinary ||
                 isUndefinedBooleanBinary ||
                 isUndefinedLogicalFallback ||
