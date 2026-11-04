@@ -1850,6 +1850,98 @@ const VisitorPlugin = plugin_mod.Plugin;
 const AstTransformCtx = plugin_mod.AstTransformCtx;
 const PluginError = plugin_mod.PluginError;
 
+test "onFunction trailing-code APIs reject expression and method owners" {
+    const State = struct {
+        callbacks: usize = 0,
+        parse_rejections: usize = 0,
+        binding_rejections: usize = 0,
+        append_rejections: usize = 0,
+
+        fn hook(context: ?*anyopaque, api: *AstTransformCtx, info: plugin_mod.FunctionInfo) PluginError!void {
+            const state: *@This() = @ptrCast(@alignCast(context.?));
+            state.callbacks += 1;
+
+            if (api.parseAndInjectStatements("const injectedValue = 1; injectedValue;")) |statements| {
+                defer api.getAllocator().free(statements);
+                for (statements) |statement| try api.addTrailingStatement(statement);
+            } else |err| {
+                if (err == error.PluginFailed) {
+                    state.parse_rejections += 1;
+                } else {
+                    return err;
+                }
+            }
+
+            const name_span = try api.addString("syntheticBinding");
+            const binding = try api.addNode(.{
+                .tag = .binding_identifier,
+                .span = name_span,
+                .data = .{ .string_ref = name_span },
+            });
+            if (api.registerSyntheticBinding(binding, @import("../semantic/symbol.zig").SymbolKind.variable_const)) |symbol| {
+                _ = symbol;
+            } else |err| {
+                if (err == error.PluginFailed) {
+                    state.binding_rejections += 1;
+                } else {
+                    return err;
+                }
+            }
+
+            const statement = try api.addNode(.{
+                .tag = .empty_statement,
+                .span = api.getNode(info.node_idx).span,
+                .data = .{ .none = 0 },
+            });
+            api.addTrailingStatement(statement) catch |err| {
+                if (err == error.PluginFailed) {
+                    state.append_rejections += 1;
+                } else {
+                    return err;
+                }
+            };
+        }
+    };
+    const sources = [_][]const u8{
+        "const holder = { read() {} };",
+        "class Holder { read() {} }",
+        "class Holder { static read() {} }",
+        "const read = function read() {};",
+        "const read = () => {};",
+        "const holder = { get read() {} };",
+        "const holder = { set read(value) {} };",
+        "const holder = { [\"read\"]() {} };",
+        "class Holder { async read() {} }",
+        "class Holder { *read() {} }",
+    };
+    for (sources) |source| {
+        var state: State = .{};
+        const plugins = [_]plugin_mod.Plugin{.{
+            .name = "reject-non-statement-trailing-code",
+            .context = @ptrCast(&state),
+            .onFunction = State.hook,
+        }};
+        var result = try parseAndTransformWithOptions(std.testing.allocator, source, .{ .plugins = &plugins });
+        defer result.deinit();
+        try std.testing.expectEqual(@as(usize, 1), state.callbacks);
+        try std.testing.expectEqual(@as(usize, 1), state.parse_rejections);
+        try std.testing.expectEqual(@as(usize, 1), state.binding_rejections);
+        try std.testing.expectEqual(@as(usize, 1), state.append_rejections);
+
+        const code = try generateCode(&result);
+        defer result.allocator.free(code);
+        try std.testing.expect(std.mem.indexOf(u8, code, "injectedValue") == null);
+        try std.testing.expect(std.mem.indexOf(u8, code, "syntheticBinding") == null);
+
+        var scanner = try Scanner.init(std.testing.allocator, code);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    }
+}
+
 /// 테스트용 플러그인: object_expression을 string_literal로 교체.
 fn testOnObjectExpression(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeIndex) PluginError!?NodeIndex {
     _ = ctx;

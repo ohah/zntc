@@ -29,7 +29,12 @@ pub fn dispatchVisitor(self: *Transformer, comptime kind: VisitorHookKind, node_
 
 pub fn dispatchFunctionPlugins(self: *Transformer, result: NodeIndex, func_info: FunctionInfo, insertion_scope: ScopeId) Error!?NodeIndex {
     if (self.options.plugins.len == 0) return null;
-    var api = AstTransformCtx{ .transformer = self, .insertion_scope = insertion_scope, .modified_body = null };
+    var api = AstTransformCtx{
+        .transformer = self,
+        .insertion_scope = insertion_scope,
+        .trailing_statements_allowed = func_info.node_tag == .function_declaration,
+        .modified_body = null,
+    };
     defer api.deinitClosureCache();
     for (self.options.plugins) |p| {
         if (p.onFunction) |hook| {
