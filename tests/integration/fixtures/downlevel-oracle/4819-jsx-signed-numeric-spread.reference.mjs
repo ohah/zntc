@@ -101,6 +101,7 @@ const result = React.createElement(
     [undefined]: 'computed-global-undefined',
     [void undefined]: 'computed-void-global-undefined',
     [typeof undefined]: 'computed-typeof-global-undefined',
+    [!undefined]: 'computed-not-global-undefined',
     [+1]: 'computed-plus',
     [-2]: 'computed-minus',
     [~~0]: 'computed-tilde',
