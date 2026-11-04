@@ -3522,6 +3522,8 @@ pub const ExactQuietOptions = struct {
     erased_const_enum_external_origins: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     namespace_member_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     namespace_declaration_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
+    /// Optional for low-level diagnostic audits. Output-normal-form admission
+    /// requires this boundary so live generated ScopeIds cannot skip owner checks.
     pre_transform_scope_count: ?usize = null,
     require_declaration_anchors: bool = true,
 };
@@ -3551,11 +3553,13 @@ pub const OutputNormalFormReport = struct {
     exact: ExactReport,
     strict: StrictReport,
     retirement_state_mismatch: usize = 0,
+    scope_boundary_missing: usize = 0,
     pub fn deinit(self: *OutputNormalFormReport, allocator: std.mem.Allocator) void {
         self.strict.deinit(allocator);
     }
     pub fn hasCompleteOutputIdentityBeforeNames(self: OutputNormalFormReport) bool {
-        return self.retirement_state_mismatch == 0 and self.exact.hasCompleteOutputIdentityBeforeNames() and self.strict.hasCompleteSymbolIdentity();
+        return self.retirement_state_mismatch == 0 and self.scope_boundary_missing == 0 and
+            self.exact.hasCompleteOutputIdentityBeforeNames() and self.strict.hasCompleteSymbolIdentity();
     }
 };
 
@@ -3637,6 +3641,7 @@ pub fn checkOutputNormalFormQuiet(
     const exact = try checkExactImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_maps, scope_owner_map, references, helper_reference_nodes, helper_scope_map, unresolved_nodes, explicit_global_nodes, origins, options.erased_const_enum_external_origins, options.namespace_member_owners, options.namespace_declaration_owners, options.pre_transform_scope_count, options.require_declaration_anchors, false, if (valid) retirements else null, if (valid) retirement_roots.node_scope_provenance else null, if (valid) if (lowered_proof) |*proof| proof else null else null);
     return .{
         .retirement_state_mismatch = @intFromBool(!valid),
+        .scope_boundary_missing = @intFromBool(options.pre_transform_scope_count == null),
         .strict = try checkStrictImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_owner_map, references, null, .{ .unresolved_reference_nodes = unresolved_nodes, .explicit_global_reference_nodes = explicit_global_nodes, .reference_origin_map = origins, .output_external_origins = if (valid) retirement_roots.node_scope_provenance else null }, true, options.known_output_names, if (valid) retirements else null, if (valid) runtime_proof else null),
         .exact = exact,
     };

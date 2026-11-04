@@ -4862,7 +4862,7 @@ fn requireStandaloneOutputNormalForm(
         std.debug.print("R1_OUTPUT_INVALID file={s}\n", .{file_path});
         cov.printStrict(file_path, &normal.strict);
         cov.printExact(file_path, normal.exact);
-        std.debug.print("R1_RETIREMENT_STATE_INVALID count={d}\n", .{normal.retirement_state_mismatch});
+        std.debug.print("R1_RETIREMENT_STATE_INVALID count={d} scope_boundary_missing={d}\n", .{ normal.retirement_state_mismatch, normal.scope_boundary_missing });
     }
     return error.TransformError;
 }
@@ -15548,6 +15548,22 @@ test "R1 standalone type import erasure externalizes the actual source value rea
     try std.testing.expectEqual(source_scope.?, origin.scope);
     try std.testing.expect(!analyzer.unresolved_reference_nodes.contains(@backingInt(output_read)));
     try std.testing.expect(!transformer.explicit_global_reference_nodes.contains(@backingInt(output_read)));
+    var missing_boundary_report = try @import("transformer/symbol_coverage.zig").checkOutputNormalFormQuiet(a, transformer.ast, output_root, transformer.parser_node_count, analyzer.symbol_ids.items, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, &analyzer.scope_owner_map, analyzer.references.items, transformer.helper_ref_nodes.items, &analyzer.helper_scope_map, &analyzer.unresolved_reference_nodes, &transformer.explicit_global_reference_nodes, &transformer.reference_origin_map, .{
+        .require_declaration_anchors = true,
+        .namespace_member_owners = &analyzer.namespace_member_owners,
+        .namespace_declaration_owners = &analyzer.namespace_declaration_owners,
+    }, &analyzer.source_owned_retirements, .{
+        .node_scope_provenance = &analyzer.node_scope_provenance,
+        .scope_history = &analyzer.scope_history,
+        .class_self_symbols = &analyzer.class_self_symbol_map,
+        .namespace_member_owners = &analyzer.namespace_member_owners,
+        .namespace_declaration_owners = &analyzer.namespace_declaration_owners,
+    });
+    defer missing_boundary_report.deinit(a);
+    try std.testing.expectEqual(@as(usize, 1), missing_boundary_report.scope_boundary_missing);
+    try std.testing.expect(missing_boundary_report.exact.hasCompleteOutputIdentityBeforeNames());
+    try std.testing.expect(missing_boundary_report.strict.hasCompleteSymbolIdentity());
+    try std.testing.expect(!missing_boundary_report.hasCompleteOutputIdentityBeforeNames());
     var report = try @import("transformer/symbol_coverage.zig").checkOutputNormalFormQuiet(a, transformer.ast, output_root, transformer.parser_node_count, analyzer.symbol_ids.items, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, &analyzer.scope_owner_map, analyzer.references.items, transformer.helper_ref_nodes.items, &analyzer.helper_scope_map, &analyzer.unresolved_reference_nodes, &transformer.explicit_global_reference_nodes, &transformer.reference_origin_map, .{
         .require_declaration_anchors = true,
         .pre_transform_scope_count = analyzer.scopes.items.len,
