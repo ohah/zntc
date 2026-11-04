@@ -32208,6 +32208,20 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         property: 'true',
         emitted: /__toPropertyKey\(\s*(?:!\s*void\s+undefined|true|"true")\s*\)/,
       },
+      {
+        name: 'addition-empty-string',
+        expression: '[undefined + ""]',
+        value: 'addition-empty-string-value',
+        property: 'undefined',
+        emitted: /__toPropertyKey\(\s*undefined\s*\+\s*["']["']\s*\)/,
+      },
+      {
+        name: 'addition-proto-suffix',
+        expression: '["__proto__" + undefined]',
+        value: 'addition-proto-suffix-value',
+        property: '__proto__undefined',
+        emitted: /__toPropertyKey\(\s*["']__proto__["']\s*\+\s*undefined\s*\)/,
+      },
     ] as const;
 
     for (const mode of modes) {
@@ -32364,8 +32378,35 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                 '0 / 0',
                 '1n',
               ];
+              const additionAlternatives =
+                keyCase.name === 'addition-proto-suffix'
+                  ? [
+                      'undefined + "x"',
+                      '"x" + undefined',
+                      'undefined + 0',
+                      '0 + undefined',
+                      'undefined + false',
+                      'false + undefined',
+                      'undefined + null',
+                      'null + undefined',
+                      'undefined + "__proto__"',
+                      '"__proto__" + "x"',
+                    ]
+                  : [
+                      'undefined + "x"',
+                      '"x" + undefined',
+                      'undefined + 0',
+                      '0 + undefined',
+                      'undefined + false',
+                      'false + undefined',
+                      'undefined + null',
+                      'null + undefined',
+                      'undefined + "__proto__"',
+                      '"__proto__" + undefined',
+                    ];
               const isNumericUndefinedKey = ['plus', 'minus', 'tilde'].includes(keyCase.name);
               const isUndefinedUnaryChain = keyCase.name.startsWith('chain-');
+              const isUndefinedAddition = keyCase.name.startsWith('addition-');
               const replacement = keyCase.name.startsWith('typeof')
                 ? `__toPropertyKey(${typeofAlternatives[mutation]})`
                 : keyCase.name === 'not'
@@ -32374,7 +32415,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                     ? `__toPropertyKey(${numericAlternatives[mutation]})`
                     : isUndefinedUnaryChain
                       ? `__toPropertyKey(${chainAlternatives[mutation]})`
-                      : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
+                      : isUndefinedAddition
+                        ? `__toPropertyKey(${additionAlternatives[mutation]})`
+                        : `__toPropertyKey(${keyCase.name === 'void' ? 'void ' : ''}__zntc_missing_global_undefined_${mutation})`;
               const mutated = emitted.replace(expression ?? '', replacement);
               writeFileSync(mutatedOutput, mutated);
               const mutantRun = spawnSync('node', [mutatedOutput], { encoding: 'utf8' });
@@ -32383,7 +32426,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
                 keyCase.name.startsWith('typeof') ||
                 keyCase.name === 'not' ||
                 isNumericUndefinedKey ||
-                isUndefinedUnaryChain
+                isUndefinedUnaryChain ||
+                isUndefinedAddition
               ) {
                 expect(mutantRun.status, `${label} compileable mutation ${mutation}`).toBe(0);
                 expect(mutantRun.stdout, `${label} compileable mutation ${mutation}`).not.toBe(
