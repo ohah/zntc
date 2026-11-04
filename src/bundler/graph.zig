@@ -639,6 +639,15 @@ fn coldParseVisitorFor(kind: ColdParseVisitorKind) plugin_mod.Visitor {
     };
 }
 
+fn coldParseVisitorPlugin(kind: ColdParseVisitorKind, state: *ColdParseVisitorState) plugin_mod.Plugin {
+    return .{
+        .name = "cold-parse-visitor",
+        .context = @ptrCast(state),
+        .visitor = coldParseVisitorFor(kind),
+        .ast_graph_contract = .identity_preserving_visitor_edits,
+    };
+}
+
 fn coldParseVisitorNodeTag(kind: ColdParseVisitorKind) @import("../parser/ast.zig").Node.Tag {
     return switch (kind) {
         .program => .program,
@@ -647,6 +656,42 @@ fn coldParseVisitorNodeTag(kind: ColdParseVisitorKind) @import("../parser/ast.zi
         .class_declaration => .class_declaration,
         .class_expression => .class_expression,
     };
+}
+
+fn expectColdParseVisitorInvoked(kind: ColdParseVisitorKind, state: ColdParseVisitorState) !void {
+    try std.testing.expectEqual(@as(usize, 1), state.calls);
+    try std.testing.expect(state.observed_tag != null);
+    try std.testing.expectEqual(coldParseVisitorNodeTag(kind), state.observed_tag.?);
+}
+
+fn expectVisitorGraphReady(graph: *const ModuleGraph, entry: []const u8) !void {
+    try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+    const module_option = graph.findModuleByPath(entry);
+    try std.testing.expect(module_option != null);
+    const module = module_option.?;
+    try std.testing.expectEqual(Module.State.ready, module.state);
+    try std.testing.expect(module.semantic != null);
+    try std.testing.expect(module.ast != null);
+    try std.testing.expect(module.ast.?.transformed_root != null);
+    try std.testing.expect(module.transform_cache != null);
+    try std.testing.expectEqualSlices(?u32, module.semantic.?.symbol_ids, module.transform_cache.?.symbol_ids);
+    for (graph.diagnostics.items) |diagnostic| {
+        try std.testing.expect(diagnostic.severity != .@"error");
+    }
+}
+
+fn expectVisitorGraphSkipped(graph: *const ModuleGraph, entry: []const u8) !void {
+    try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+    const module_option = graph.findModuleByPath(entry);
+    try std.testing.expect(module_option != null);
+    const module = module_option.?;
+    try std.testing.expectEqual(Module.State.ready, module.state);
+    try std.testing.expect(module.semantic != null);
+    try std.testing.expect(module.ast != null);
+    try std.testing.expect(module.transform_cache == null);
+    for (graph.diagnostics.items) |diagnostic| {
+        try std.testing.expect(diagnostic.severity != .@"error");
+    }
 }
 
 fn expectColdParseVisitorRetainsGraph(kind: ColdParseVisitorKind, source: []const u8) !void {
@@ -660,12 +705,7 @@ fn expectColdParseVisitorRetainsGraph(kind: ColdParseVisitorKind, source: []cons
     defer std.testing.allocator.free(entry);
 
     var hook_state: ColdParseVisitorState = .{};
-    const plugins = [_]plugin_mod.Plugin{.{
-        .name = "cold-parse-visitor",
-        .context = @ptrCast(&hook_state),
-        .visitor = coldParseVisitorFor(kind),
-        .ast_graph_contract = .identity_preserving_visitor_edits,
-    }};
+    const plugins = [_]plugin_mod.Plugin{coldParseVisitorPlugin(kind, &hook_state)};
 
     var cache = ResolveCache.init(std.testing.allocator, .{});
     defer cache.deinit();
@@ -676,21 +716,8 @@ fn expectColdParseVisitorRetainsGraph(kind: ColdParseVisitorKind, source: []cons
 
     try graph.build(std.testing.io, &.{entry});
 
-    try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
-    try std.testing.expectEqual(@as(usize, 1), hook_state.calls);
-    try std.testing.expectEqual(coldParseVisitorNodeTag(kind), hook_state.observed_tag.?);
-    const module_option = graph.findModuleByPath(entry);
-    try std.testing.expect(module_option != null);
-    const module = module_option.?;
-    try std.testing.expectEqual(Module.State.ready, module.state);
-    try std.testing.expect(module.semantic != null);
-    try std.testing.expect(module.ast != null);
-    try std.testing.expect(module.ast.?.transformed_root != null);
-    try std.testing.expect(module.transform_cache != null);
-    try std.testing.expectEqualSlices(?u32, module.semantic.?.symbol_ids, module.transform_cache.?.symbol_ids);
-    for (graph.diagnostics.items) |diagnostic| {
-        try std.testing.expect(diagnostic.severity != .@"error");
-    }
+    try expectColdParseVisitorInvoked(kind, hook_state);
+    try expectVisitorGraphReady(&graph, entry);
 }
 
 fn expectPrePassDecision(
@@ -753,7 +780,7 @@ test "graph pre-pass predicate: synthetic no-op graphs skip every eligible modul
     try expectAllBuiltModulesSkipPrePass(200);
 }
 
-test "graph cold parse: every visitor hook runs and retains its semantic transform graph" {
+test "graph visitor caller: cold parse runs every hook and retains its semantic graph" {
     const cases = [_]struct {
         kind: ColdParseVisitorKind,
         source: []const u8,
@@ -766,6 +793,153 @@ test "graph cold parse: every visitor hook runs and retains its semantic transfo
     };
 
     for (cases) |case| try expectColdParseVisitorRetainsGraph(case.kind, case.source);
+}
+
+test "graph visitor caller: cached AST load reruns every hook on the restored graph" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const source = "export const object = { amount: 1 }; function read(value) { return value; } export const result = read(object.amount); export class Decl {} export const Expr = class {};";
+    try writeFile(tmp.dir, "entry.js", source);
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.js" });
+    defer std.testing.allocator.free(entry);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    const kinds = [_]ColdParseVisitorKind{
+        .program,
+        .object_expression,
+        .call_expression,
+        .class_declaration,
+        .class_expression,
+    };
+
+    var cold_states: [5]ColdParseVisitorState = .{ .{}, .{}, .{}, .{}, .{} };
+    var cold_plugins: [5]plugin_mod.Plugin = undefined;
+    for (kinds, 0..) |kind, index| {
+        cold_plugins[index] = coldParseVisitorPlugin(kind, &cold_states[index]);
+    }
+    {
+        var cache = ResolveCache.init(std.testing.allocator, .{});
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.disk_cache = &disk;
+        graph.disk_load_enabled = true;
+        graph.disk_options_hash = 0x1234;
+        graph.disk_compiler_build_id = 0xABCD;
+        graph.max_threads = 1;
+        graph.plugins = &cold_plugins;
+
+        try graph.build(std.testing.io, &.{entry});
+
+        try std.testing.expectEqual(@as(usize, 0), graph.disk_load_hits.load(.monotonic));
+        for (kinds, cold_states) |kind, state| try expectColdParseVisitorInvoked(kind, state);
+        try expectVisitorGraphReady(&graph, entry);
+    }
+
+    var warm_states: [5]ColdParseVisitorState = .{ .{}, .{}, .{}, .{}, .{} };
+    var warm_plugins: [5]plugin_mod.Plugin = undefined;
+    for (kinds, 0..) |kind, index| {
+        warm_plugins[index] = coldParseVisitorPlugin(kind, &warm_states[index]);
+    }
+    var warm_cache = ResolveCache.init(std.testing.allocator, .{});
+    defer warm_cache.deinit();
+    var warm_graph = ModuleGraph.init(std.testing.allocator, &warm_cache);
+    defer warm_graph.deinit();
+    warm_graph.disk_cache = &disk;
+    warm_graph.disk_load_enabled = true;
+    warm_graph.disk_options_hash = 0x1234;
+    warm_graph.disk_compiler_build_id = 0xABCD;
+    warm_graph.max_threads = 1;
+    warm_graph.plugins = &warm_plugins;
+
+    try warm_graph.build(std.testing.io, &.{entry});
+
+    try std.testing.expectEqual(@as(usize, 1), warm_graph.disk_load_hits.load(.monotonic));
+    for (kinds, warm_states) |kind, state| try expectColdParseVisitorInvoked(kind, state);
+    try expectVisitorGraphReady(&warm_graph, entry);
+}
+
+fn expectCachedAstVisitorDoesNotMatch(kind: ColdParseVisitorKind, source: []const u8) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", source);
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.js" });
+    defer std.testing.allocator.free(entry);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    var cold_state: ColdParseVisitorState = .{};
+    const cold_plugins = [_]plugin_mod.Plugin{coldParseVisitorPlugin(kind, &cold_state)};
+    {
+        var cache = ResolveCache.init(std.testing.allocator, .{});
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.disk_cache = &disk;
+        graph.disk_load_enabled = true;
+        graph.disk_options_hash = 0x1234;
+        graph.disk_compiler_build_id = 0xABCD;
+        graph.max_threads = 1;
+        graph.plugins = &cold_plugins;
+
+        try graph.build(std.testing.io, &.{entry});
+
+        try std.testing.expectEqual(@as(usize, 0), graph.disk_load_hits.load(.monotonic));
+        try std.testing.expectEqual(@as(usize, 0), cold_state.calls);
+        try std.testing.expect(cold_state.observed_tag == null);
+        try expectVisitorGraphSkipped(&graph, entry);
+    }
+
+    var warm_state: ColdParseVisitorState = .{};
+    const warm_plugins = [_]plugin_mod.Plugin{coldParseVisitorPlugin(kind, &warm_state)};
+    var warm_cache = ResolveCache.init(std.testing.allocator, .{});
+    defer warm_cache.deinit();
+    var warm_graph = ModuleGraph.init(std.testing.allocator, &warm_cache);
+    defer warm_graph.deinit();
+    warm_graph.disk_cache = &disk;
+    warm_graph.disk_load_enabled = true;
+    warm_graph.disk_options_hash = 0x1234;
+    warm_graph.disk_compiler_build_id = 0xABCD;
+    warm_graph.max_threads = 1;
+    warm_graph.plugins = &warm_plugins;
+
+    try warm_graph.build(std.testing.io, &.{entry});
+
+    try std.testing.expectEqual(@as(usize, 1), warm_graph.disk_load_hits.load(.monotonic));
+    try std.testing.expectEqual(@as(usize, 0), warm_state.calls);
+    try std.testing.expect(warm_state.observed_tag == null);
+    try expectVisitorGraphSkipped(&warm_graph, entry);
+}
+
+test "graph visitor caller: ten nonmatching syntax cases skip pre-pass" {
+    const cases = [_]struct {
+        kind: ColdParseVisitorKind,
+        source: []const u8,
+    }{
+        .{ .kind = .object_expression, .source = "read();" },
+        .{ .kind = .object_expression, .source = "class Decl {}" },
+        .{ .kind = .call_expression, .source = "const object = {};" },
+        .{ .kind = .call_expression, .source = "const Expr = class {};" },
+        .{ .kind = .call_expression, .source = "class Decl {}" },
+        .{ .kind = .class_declaration, .source = "const object = {};" },
+        .{ .kind = .class_declaration, .source = "read();" },
+        .{ .kind = .class_declaration, .source = "const Expr = class {};" },
+        .{ .kind = .class_expression, .source = "const object = {};" },
+        .{ .kind = .class_expression, .source = "read();" },
+    };
+
+    for (cases) |case| try expectCachedAstVisitorDoesNotMatch(case.kind, case.source);
 }
 
 test "graph pre-pass predicate: syntax and options that mutate graph-visible surface keep pre-pass" {

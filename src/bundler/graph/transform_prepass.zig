@@ -187,13 +187,15 @@ fn hasAstTransformPlugin(plugins: []const plugin_mod.Plugin, ast: *const ast_mod
     var has_function = false;
     var has_object = false;
     var has_call = false;
-    var has_class = false;
+    var has_class_declaration = false;
+    var has_class_expression = false;
     for (ast.nodes.items) |node| {
         switch (node.tag) {
             .function, .function_declaration, .function_expression, .arrow_function_expression, .method_definition => has_function = true,
             .object_expression => has_object = true,
             .call_expression => has_call = true,
-            .class_declaration, .class_expression => has_class = true,
+            .class_declaration => has_class_declaration = true,
+            .class_expression => has_class_expression = true,
             else => {},
         }
     }
@@ -208,7 +210,13 @@ fn hasAstTransformPlugin(plugins: []const plugin_mod.Plugin, ast: *const ast_mod
             // emitter could apply the AST edit after graph linking.
             inline for (@typeInfo(plugin_mod.Visitor).@"struct".field_names) |field_name| {
                 if (@field(visitor, field_name) != null) {
-                    if (visitorHookFieldMatchesAst(field_name, has_object, has_call, has_class)) return true;
+                    if (visitorHookFieldMatchesAst(
+                        field_name,
+                        has_object,
+                        has_call,
+                        has_class_declaration,
+                        has_class_expression,
+                    )) return true;
                 }
             }
         }
@@ -220,18 +228,19 @@ fn visitorHookFieldMatchesAst(
     comptime field_name: []const u8,
     has_object: bool,
     has_call: bool,
-    has_class: bool,
+    has_class_declaration: bool,
+    has_class_expression: bool,
 ) bool {
     if (comptime std.mem.eql(u8, field_name, "on_program"))
-        return visitorHookMatchesAst(.on_program, has_object, has_call, has_class);
+        return visitorHookMatchesAst(.on_program, has_object, has_call, has_class_declaration, has_class_expression);
     if (comptime std.mem.eql(u8, field_name, "on_object_expression"))
-        return visitorHookMatchesAst(.on_object_expression, has_object, has_call, has_class);
+        return visitorHookMatchesAst(.on_object_expression, has_object, has_call, has_class_declaration, has_class_expression);
     if (comptime std.mem.eql(u8, field_name, "on_call_expression"))
-        return visitorHookMatchesAst(.on_call_expression, has_object, has_call, has_class);
+        return visitorHookMatchesAst(.on_call_expression, has_object, has_call, has_class_declaration, has_class_expression);
     if (comptime std.mem.eql(u8, field_name, "on_class_declaration"))
-        return visitorHookMatchesAst(.on_class_declaration, has_object, has_call, has_class);
+        return visitorHookMatchesAst(.on_class_declaration, has_object, has_call, has_class_declaration, has_class_expression);
     if (comptime std.mem.eql(u8, field_name, "on_class_expression"))
-        return visitorHookMatchesAst(.on_class_expression, has_object, has_call, has_class);
+        return visitorHookMatchesAst(.on_class_expression, has_object, has_call, has_class_declaration, has_class_expression);
     @compileError("Classify new AST visitor hook in graph prepass admission: " ++ field_name);
 }
 
@@ -239,13 +248,15 @@ fn visitorHookMatchesAst(
     hook: plugin_dispatch.VisitorHookKind,
     has_object: bool,
     has_call: bool,
-    has_class: bool,
+    has_class_declaration: bool,
+    has_class_expression: bool,
 ) bool {
     return switch (hook) {
         .on_program => true,
         .on_object_expression => has_object,
         .on_call_expression => has_call,
-        .on_class_declaration, .on_class_expression => has_class,
+        .on_class_declaration => has_class_declaration,
+        .on_class_expression => has_class_expression,
     };
 }
 
@@ -300,6 +311,8 @@ test "graph prepass admission tracks every dispatched AST plugin hook" {
         .{ .source = "read();", .visitor = .{ .on_call_expression = prepassAdmissionTestVisitor }, .expected = true },
         .{ .source = "class Value {}", .visitor = .{ .on_class_declaration = prepassAdmissionTestVisitor }, .expected = true },
         .{ .source = "const Value = class {};", .visitor = .{ .on_class_expression = prepassAdmissionTestVisitor }, .expected = true },
+        .{ .source = "const Value = class {};", .visitor = .{ .on_class_declaration = prepassAdmissionTestVisitor }, .expected = false },
+        .{ .source = "class Value {}", .visitor = .{ .on_class_expression = prepassAdmissionTestVisitor }, .expected = false },
         .{ .source = "const value = 1;", .visitor = .{ .on_object_expression = prepassAdmissionTestVisitor }, .expected = false },
         .{ .source = "const value = 1;", .visitor = .{ .on_call_expression = prepassAdmissionTestVisitor }, .expected = false },
         .{ .source = "const value = 1;", .visitor = .{ .on_class_declaration = prepassAdmissionTestVisitor }, .expected = false },
