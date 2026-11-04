@@ -17001,6 +17001,88 @@ fn exactPrepassReport(
     );
 }
 
+test "reanalyzed exact prepass audit rejects a live scope without a reachable owner" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "function outer(){ const local = 1; return local; }";
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+
+    var module = Module.init(@fromBackingInt(0), "scope-owner.js");
+    module.ast = parser.ast;
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
+        .source_owned_retirements = analyzer.source_owned_retirements,
+        .scope_history = analyzer.scope_history,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_member_owners = analyzer.namespace_member_owners,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+    var transformer = try Transformer.initFromOwnedAst(allocator, &parser.ast, .{});
+
+    const valid = (try exactPrepassReport(
+        allocator,
+        &module,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        &transformer,
+        &analyzer.unresolved_reference_nodes,
+        analyzer.scopes.items.len,
+        false,
+    )) orelse return error.MissingExactReport;
+    try std.testing.expectEqual(@as(usize, 0), valid.scope_owner_mismatch);
+    try std.testing.expect(valid.generated_scope_owners_checked > 0);
+
+    const live_scope = for (analyzer.symbols.items) |symbol| {
+        if (std.mem.eql(u8, analyzer.ast.getText(symbol.name), "local")) break symbol.scope_id;
+    } else return error.MissingLocalSymbol;
+    var owner_nodes: std.ArrayListUnmanaged(u32) = .empty;
+    var owners = module.semantic.?.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        if (entry.value_ptr.* == @backingInt(live_scope)) try owner_nodes.append(allocator, entry.key_ptr.*);
+    }
+    try std.testing.expect(owner_nodes.items.len > 0);
+    for (owner_nodes.items) |raw| _ = module.semantic.?.scope_owner_map.remove(raw);
+
+    const missing_owner = (try exactPrepassReport(
+        allocator,
+        &module,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        &transformer,
+        &analyzer.unresolved_reference_nodes,
+        analyzer.scopes.items.len,
+        false,
+    )) orelse return error.MissingExactReport;
+    try std.testing.expect(missing_owner.scope_owner_mismatch > 0);
+    try std.testing.expect(missing_owner.generated_scope_owners_checked < valid.generated_scope_owners_checked);
+    try std.testing.expectEqualStrings(
+        "generated-scope-owner-unreachable",
+        missing_owner.first_scope_owner_mismatch.?.issue,
+    );
+    try std.testing.expect(!missing_owner.isClean());
+}
+
 fn printPrepassExact(
     allocator: std.mem.Allocator,
     module: *const Module,
