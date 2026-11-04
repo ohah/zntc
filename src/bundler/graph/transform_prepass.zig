@@ -18868,7 +18868,7 @@ fn genericPreparedOutputHasNormalForm(
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
     parser_node_count: u32,
-    pre_transform_scope_count: ?usize,
+    pre_transform_scope_count: usize,
     source_unresolved: *const std.AutoHashMapUnmanaged(u32, void),
     published_exact: *?@import("../../transformer/symbol_coverage.zig").ExactReport,
 ) !bool {
@@ -18951,7 +18951,7 @@ fn genericPreparedOutputHasNormalForm(
     if (@import("builtin").is_test and !valid) {
         report_mod.printExactRejectedOutput(module.path, report.exact);
         report_mod.printStrict(module.path, &report.strict);
-        std.debug.print("GENERIC_NORMAL_FORM_REJECT file={s} retirement_state_mismatch={d}\n", .{ module.path, report.retirement_state_mismatch });
+        std.debug.print("GENERIC_NORMAL_FORM_REJECT file={s} retirement_state_mismatch={d} scope_boundary_missing={d}\n", .{ module.path, report.retirement_state_mismatch, report.scope_boundary_missing });
     }
     return valid;
 }
@@ -19030,7 +19030,7 @@ fn completeGenericPrepassCandidate(
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
     parser_node_count: u32,
-    pre_transform_scope_count: ?usize,
+    pre_transform_scope_count: usize,
     arena_alloc: std.mem.Allocator,
     candidate_completed: *bool,
     source_unresolved: *const std.AutoHashMapUnmanaged(u32, void),
@@ -23832,7 +23832,12 @@ fn appendBufferMetadataRoot(a: std.mem.Allocator, roots: *std.ArrayListUnmanaged
     }
 }
 
-fn bufferPreparedOutputHasNormalForm(a: std.mem.Allocator, module: *const Module, runtime_target: @import("../../semantic/output_runtime_witness.zig").Target) !bool {
+fn bufferPreparedOutputHasNormalForm(
+    a: std.mem.Allocator,
+    module: *const Module,
+    runtime_target: @import("../../semantic/output_runtime_witness.zig").Target,
+    pre_transform_scope_count: usize,
+) !bool {
     const runtime_proof = @import("../../semantic/output_runtime_coverage.zig").forTarget(runtime_target) orelse return false;
     const ast = if (module.ast) |*value| value else return false;
     const sem = if (module.semantic) |*value| value else return false;
@@ -23877,6 +23882,7 @@ fn bufferPreparedOutputHasNormalForm(a: std.mem.Allocator, module: *const Module
         &globals,
         &origins,
         .{
+            .pre_transform_scope_count = pre_transform_scope_count,
             .namespace_member_owners = &sem.namespace_member_owners,
             .namespace_declaration_owners = &sem.namespace_declaration_owners,
         },
@@ -23905,6 +23911,7 @@ pub fn prepareNodeBufferCapabilityFold(
     const runtime_source = (try @import("../../semantic/output_runtime_witness.zig").capture(arena_alloc, self, module)) orelse return null;
     const source_ast = if (module.ast) |*value| value else return null;
     const source_semantic = if (module.semantic) |*value| value else return null;
+    const scope_boundary_count = source_semantic.scopes.len;
     var external_reads: std.AutoHashMapUnmanaged(u32, void) = .empty;
     for (plan.removed_nodes) |node| {
         const entry = source_semantic.node_scope_provenance.get(node) orelse continue;
@@ -23920,13 +23927,13 @@ pub fn prepareNodeBufferCapabilityFold(
     // lookup. Validate its complete source/history/runtime context before the
     // immutable plan changes any AST edge; the staged copy is not authority.
     if (external_reads.count() != 0 and (!plan.isCurrent(module) or
-        !try bufferPreparedOutputHasNormalForm(arena_alloc, module, .{ .source = &runtime_source, .module = module }))) return null;
+        !try bufferPreparedOutputHasNormalForm(arena_alloc, module, .{ .source = &runtime_source, .module = module }, scope_boundary_count))) return null;
     var replaced_conditions: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
     for (plan.branches) |branch| try replaced_conditions.append(arena_alloc, source_ast.getNode(branch.if_index).data.ternary.a);
     const candidate_ast = (try plan.cloneForPublication(module, arena_alloc)) orelse return null;
     var prepared = (try prepareBufferGraphForAst(self, module, arena_alloc, candidate_ast, plan.removed_nodes, plan.retirements, &external_reads, replaced_conditions.items, plan.setup_statements)) orelse return null;
     errdefer prepared.discard();
-    if (!try bufferPreparedOutputHasNormalForm(arena_alloc, &prepared.candidate, .{ .source = &runtime_source, .module = &prepared.candidate })) {
+    if (!try bufferPreparedOutputHasNormalForm(arena_alloc, &prepared.candidate, .{ .source = &runtime_source, .module = &prepared.candidate }, scope_boundary_count)) {
         prepared.discard();
         return null;
     }
