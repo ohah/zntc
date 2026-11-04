@@ -1282,6 +1282,60 @@ fn expectVisitorGraphSkipped(graph: *const ModuleGraph, entry: []const u8) !void
     }
 }
 
+fn expectBuiltInDropConsoleGraph(
+    entry: []const u8,
+    disk: *@import("disk_module_store.zig").DiskModuleStore,
+    expected_load_hits: usize,
+    expect_prepass: bool,
+) !void {
+    const profile = @import("../profile.zig");
+    profile.resetForTest();
+    defer profile.resetForTest();
+    profile.setIoForTest(std.testing.io);
+    profile.addFromCsv("graph.resync_semantic");
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.disk_cache = disk;
+    graph.disk_load_enabled = true;
+    graph.disk_options_hash = 0x6193;
+    graph.disk_compiler_build_id = 0x4819;
+    graph.transform_options_base.drop_console = true;
+    graph.max_threads = 1;
+
+    try graph.build(std.testing.io, &.{entry});
+
+    try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+    try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+    if (!expect_prepass) {
+        try expectVisitorGraphSkipped(&graph, entry);
+        return;
+    }
+
+    try expectVisitorGraphReady(&graph, entry);
+    const module = graph.findModuleByPath(entry).?;
+    const ast = &module.ast.?;
+    const root = ast.transformed_root.?;
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
+    defer std.testing.allocator.free(reachable);
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag != .identifier_reference) continue;
+        try std.testing.expect(!Scanner.identifierNamesEqual(ast.getText(node.span), "console"));
+    }
+
+    const semantic = &module.semantic.?;
+    var found_retained = false;
+    for (semantic.symbols.items) |symbol| {
+        if (!std.mem.eql(u8, symbol.nameText(ast.source), "retained")) continue;
+        found_retained = true;
+        try std.testing.expectEqual(@as(u32, 0), symbol.reference_count);
+    }
+    try std.testing.expect(found_retained);
+}
+
 fn expectColdParseVisitorRetainsGraph(kind: ColdParseVisitorKind, source: []const u8) !void {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1366,6 +1420,29 @@ test "graph pre-pass predicate: simple ESM and TS strip modules can skip" {
 test "graph pre-pass predicate: synthetic no-op graphs skip every eligible module" {
     try expectAllBuiltModulesSkipPrePass(50);
     try expectAllBuiltModulesSkipPrePass(200);
+}
+
+test "graph built-in caller: drop-console retains its graph on cold/cache and skips a no-match module" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "drop.js", "const retained = 42; console.log(retained);");
+    try writeFile(tmp.dir, "plain.js", "const untouched = 42;");
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const drop_entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "drop.js" });
+    defer std.testing.allocator.free(drop_entry);
+    const plain_entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "plain.js" });
+    defer std.testing.allocator.free(plain_entry);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    try expectBuiltInDropConsoleGraph(drop_entry, &disk, 0, true);
+    try expectBuiltInDropConsoleGraph(drop_entry, &disk, 1, true);
+    try expectBuiltInDropConsoleGraph(plain_entry, &disk, 0, false);
+    try expectBuiltInDropConsoleGraph(plain_entry, &disk, 1, false);
 }
 
 test "graph visitor caller: cold parse runs every hook and retains its semantic graph" {
