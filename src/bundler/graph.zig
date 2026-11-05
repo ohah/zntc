@@ -3657,6 +3657,10 @@ test "graph TypeScript caller: namespace local require import-equals keeps captu
     const targets = [_]@import("../transformer/compat.zig").ESTarget{
         .es5, .es2015, .es2017, .es2020, .es2022, .esnext,
     };
+    const expected_targets = [_]@import("../transformer/compat.zig").ESTarget{
+        .es5, .es2015, .es2017, .es2020, .es2022, .esnext,
+    };
+    try std.testing.expectEqualSlices(@TypeOf(targets[0]), &expected_targets, &targets);
     const MinifyMode = struct {
         name: []const u8,
         syntax: bool,
@@ -3664,9 +3668,16 @@ test "graph TypeScript caller: namespace local require import-equals keeps captu
     };
     const minify_modes = [_]MinifyMode{
         .{ .name = "plain", .syntax = false, .identifiers = false },
+        .{ .name = "syntax", .syntax = true, .identifiers = false },
         .{ .name = "identifiers", .syntax = false, .identifiers = true },
         .{ .name = "full", .syntax = true, .identifiers = true },
     };
+    var minify_mode_mask: u4 = 0;
+    for (minify_modes) |mode| {
+        const mode_index: u2 = (@as(u2, @intFromBool(mode.syntax)) << 1) | @as(u2, @intFromBool(mode.identifiers));
+        minify_mode_mask |= @as(u4, 1) << mode_index;
+    }
+    try std.testing.expectEqual(@as(u4, 0b1111), minify_mode_mask);
     var matrix_cases: usize = 0;
     for (targets, 0..) |target, target_index| {
         for (minify_modes, 0..) |mode, mode_index| {
@@ -3735,7 +3746,7 @@ test "graph TypeScript caller: namespace local require import-equals keeps captu
             matrix_cases += 1;
         }
     }
-    try std.testing.expectEqual(@as(usize, 18), matrix_cases);
+    try std.testing.expectEqual(@as(usize, 24), matrix_cases);
 }
 
 test "graph visitor caller: cold parse runs every hook and retains its semantic graph" {
