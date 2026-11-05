@@ -36,6 +36,20 @@ const runtime_polyfills = @import("runtime_polyfills.zig");
 const transpile_mod = @import("../transpile.zig");
 const compat = @import("../transformer/transformer.zig").TransformOptions.compat;
 
+/// These transforms intentionally retain their source on failure. Their graph
+/// diagnostics must become API errors before linking/emitting any partial AST.
+fn rejectUnsupportedLoopPublication(graph: *const ModuleGraph) !void {
+    for (graph.diagnostics.items) |diagnostic| {
+        if (diagnostic.severity != .@"error") continue;
+        switch (diagnostic.code) {
+            .loop_dynamic_scope => return error.LoopDynamicScope,
+            .generator_native_lexical_resume => return error.GeneratorNativeLexicalResume,
+            .generator_native_lexical_nesting => return error.GeneratorNativeLexicalNesting,
+            else => {},
+        }
+    }
+}
+
 /// `--platform=react-native` 프리셋 부울 플래그.
 /// CLI(main.zig)와 NAPI(napi_entry.zig) 양쪽에서 단일 소스로 참조되어
 /// 향후 플래그 추가/변경 시 한 곳만 수정하면 된다.
@@ -1241,6 +1255,7 @@ pub const Bundler = struct {
         const entry_path = try arena_alloc.dupe(u8, worker_path);
         const entry_arr: [1][]const u8 = .{entry_path};
         try worker_graph.build(io, &entry_arr);
+        try rejectUnsupportedLoopPublication(&worker_graph);
 
         // 링킹
         var worker_linker = Linker.init(arena_alloc, &worker_graph, format);
@@ -1578,6 +1593,10 @@ pub const Bundler = struct {
         //   rebuild 간 emit 이 달라져도 HMR update 에서 제외.
         var reparsed_count: ?usize = null;
         var reparsed_paths_out: ?[]const []const u8 = null;
+        errdefer if (reparsed_paths_out) |paths| {
+            for (paths) |path| self.allocator.free(path);
+            self.allocator.free(paths);
+        };
         {
             var gb_scope = profile.begin(.graph_build);
             defer gb_scope.end();
@@ -1624,6 +1643,8 @@ pub const Bundler = struct {
                 try graph.build(io, self.options.entry_points);
             }
         }
+
+        try rejectUnsupportedLoopPublication(graph);
 
         // Module Federation 연합 경계 식별 (#3318 P1-1). mf!=null 일 때만 —
         // 비-MF 빌드 영향 0. 표시·안정 ID 만(분석); wrap_kind/출력 불변.
@@ -1681,6 +1702,10 @@ pub const Bundler = struct {
         }
 
         {
+            errdefer for (worker_output_files.items) |output| {
+                self.allocator.free(output.path);
+                self.allocator.free(output.contents);
+            };
             var gw_scope = profile.begin(.graph_worker);
             defer gw_scope.end();
             // 같은 worker 파일을 참조하는 `new Worker` 가 **모두** `type: 'module'` 일 때만 ESM 으로
@@ -1696,8 +1721,9 @@ pub const Bundler = struct {
                 // 같은 worker 파일이 여러 곳에서 참조되면 한 번만 빌드
                 if (!worker_output_map.contains(we.resolved_path)) {
                     const worker_format = self.workerFormatFor(!classic_workers.contains(we.resolved_path));
-                    const worker_result = self.buildWorker(io, we.resolved_path, worker_format, graph) catch {
-                        continue;
+                    const worker_result = self.buildWorker(io, we.resolved_path, worker_format, graph) catch |err| switch (err) {
+                        error.LoopDynamicScope, error.GeneratorNativeLexicalResume, error.GeneratorNativeLexicalNesting => return err,
+                        else => continue,
                     };
                     try worker_output_map.put(self.allocator, we.resolved_path, worker_result.filename);
                     try worker_output_files.append(self.allocator, .{
@@ -3039,4 +3065,47 @@ fn appendInt(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, val: usize) 
     var tmp: [20]u8 = undefined;
     const s = std.fmt.bufPrint(&tmp, "{d}", .{val}) catch unreachable;
     try buf.appendSlice(allocator, s);
+}
+
+test "unsupported loop publication returns typed errors before bundle results" {
+    const helpers = @import("test_helpers.zig");
+    const cases = .{
+        .{ "for(let index=0;index<2;index++){eval('index=9')}", error.LoopDynamicScope, true },
+        .{ "function* run(){for(var i=0;i<2;i++){class Cell{}yield 0;use(()=>Cell)}}run();", error.GeneratorNativeLexicalResume, false },
+        .{ "function* run(){for(let i=0;i<2;i++){use(()=>i);for(let i=4;i<6;i++){yield 0;use(()=>i)}}}run();", error.GeneratorNativeLexicalNesting, false },
+    };
+    inline for (cases) |case| {
+        inline for (.{ false, true }) |worker| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            const entry_name = if (worker) "entry.mjs" else "entry.cjs";
+            try helpers.writeFile(tmp.dir, entry_name, if (worker)
+                "new Worker(new URL('./worker.cjs', import.meta.url));"
+            else
+                case[0]);
+            if (worker) try helpers.writeFile(tmp.dir, "worker.cjs", case[0]);
+            const entry = try helpers.absPath(&tmp, entry_name);
+            defer std.testing.allocator.free(entry);
+            var unsupported = compat.fromESTarget(if (case[2]) .es5 else .es2015);
+            unsupported.generator = true;
+            var bundler = Bundler.init(std.testing.allocator, .{
+                .entry_points = &.{entry},
+                .format = .cjs,
+                .unsupported = unsupported,
+            });
+            defer bundler.deinit();
+            // No BundleResult (including an empty or partially emitted output) may
+            // escape to a caller's write:true filesystem publication path.
+            if (bundler.bundle(std.testing.io)) |result| {
+                defer result.deinit(std.testing.allocator);
+                std.debug.print("unexpected loop publication case={s} worker={} entry={s} output_bytes={d}\n", .{ @errorName(case[1]), worker, entry_name, result.output.len });
+                if (result.diagnostics) |diagnostics| for (diagnostics) |diagnostic| {
+                    std.debug.print("  code={s} message={s} file={s}\n", .{ @tagName(diagnostic.code), diagnostic.message, diagnostic.file_path });
+                };
+                return error.TestExpectedError;
+            } else |err| {
+                try std.testing.expectEqual(case[1], err);
+            }
+        }
+    }
 }
