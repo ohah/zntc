@@ -120,6 +120,7 @@ const AstFacts = struct {
 pub const TranspileError = error{
     StaticInitializerDynamicScope,
     ArrowPrivateDynamicScope,
+    LoopDynamicScope,
     ParseError,
     SemanticError,
     TransformError,
@@ -5113,6 +5114,15 @@ fn transpileWithCallbackInternal(
         }
     }
     const root = transformer.transform() catch return error.TransformError;
+    if (transformer.unsupported_loop_dynamic_scope_span) |span| {
+        if (on_error) |cb| cb(source, file_path, &scanner, &.{.{
+            .code = .loop_dynamic_scope,
+            .span = span,
+            .message = TransformOptions.loop_dynamic_scope_msg,
+            .kind = .semantic,
+        }});
+        return error.LoopDynamicScope;
+    }
     if (transformer.unsupported_arrow_private_scope_span) |span| {
         if (on_error) |cb| cb(source, file_path, &scanner, &.{.{
             .code = .arrow_private_dynamic_scope,
@@ -16526,4 +16536,75 @@ test "standalone full-semantic output identity gate runs before name allocation 
     try std.testing.expect(native.term == .exited and native.term.exited == 0);
     try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
     try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+}
+
+test "loop dynamic eval reports precise downlevel demand and preserves native boundaries" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const compat = @import("transformer/compat.zig");
+    const bad = [_][]const u8{
+        "var readers=[];for(let value=0;value<3;value++){readers.push(()=>eval('value'))}",
+        "var code='value';for(let value=0;value<3;value++){(()=>eval(code))()}",
+        "for(let value=0;value<3;value++){(()=>eval('eval(\"value\")'))()}",
+        "function* run(){var readers=[];for(let value=0;value<3;value++){yield value;readers.push(()=>eval('value'))}return readers}",
+        "async function run(){var readers=[];for(let value=0;value<3;value++){await 0;readers.push(()=>eval('value'))}return readers}",
+    };
+    for (bad) |source| {
+        try std.testing.expectError(error.LoopDynamicScope, transpile(a, source, "loop-eval.js", .{ .unsupported = compat.fromESTarget(.es5) }));
+        _ = try transpile(a, source, "loop-eval.js", .{});
+    }
+    const good = [_][]const u8{
+        "for(let value=0;value<3;value++){(()=>eval('40+2'))()}",
+        "for(let value=0;value<3;value++){(()=>eval(42))()}",
+        "for(let value=0;value<3;value++){(()=>eval())()}",
+        "for(let value=0;value<3;value++){(()=>((0,eval)('40+2')))()}",
+        "for(let value=0;value<3;value++){(()=>eval?.('40+2'))()}",
+        "for(let value=0;value<3;value++){(function(value){return eval('value')})(9)}",
+        "var other=9;for(let value=0;value<3;value++){(()=>eval('other'))()}",
+        "function sibling(){return eval('value')}for(let value=0;value<3;value++){(()=>value)()}",
+    };
+    for (good) |source| _ = try transpile(a, source, "loop-eval.js", .{ .unsupported = compat.fromESTarget(.es5) });
+}
+
+test "loop dynamic eval bounded initialized values and synchronous reads preserve baseline" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const compat = @import("transformer/compat.zig");
+    const good = [_][]const u8{
+        "var out=[];for(let index=0;index<2;index++){out.push((()=>eval('\\\\u0069ndex'))())}console.log(JSON.stringify(out));",
+        "var events=[];for(let index=0;index<2;index++){events.push(eval(({value:index,toString(){events.push('coerce');return 'index'}})).value,Array.isArray(eval(([]))),typeof eval((function(){})),typeof eval((class Local{})),eval((`40+2`)));}console.log(JSON.stringify(events));",
+        "function run(){const values=[];for(let index=0;index<2;index++){const item={value:index};values.push(eval(item)===item)}return values}console.log(JSON.stringify(run()));",
+        "function run(){const values=[];for(let index=0;index<2;index++){function local(){let eval=value=>value+4;return eval(index)}values.push(local())}return values}console.log(JSON.stringify(run()));",
+        "var out=[];function* run(){class Holder{static{for(let value=0;value<2;value++){out.push((()=>eval('value'))())}}}}run().next();console.log(JSON.stringify(out));",
+        "var out=[];for(let value=0;value<2;value++){out.push((/* @__NO_SIDE_EFFECTS__ */()=>eval('value'))())}console.log(JSON.stringify(out));",
+    };
+    for (good) |source| {
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        const result = try transpile(a, source, "loop-eval.cjs", .{ .unsupported = compat.fromESTarget(.es5) });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+    }
+    const bad = [_][]const u8{
+        "for(let arguments=0;arguments<2;arguments++){(()=>eval('\\\\u0061rguments'))()}",
+        "var readers=[];for(let value=0;value<2;value++){readers.push(()=>eval(`value`))}",
+        "function run(){let eval=function(x){return x};var realEval=globalThis.eval,readers=[];var bridge={get eval(){delete this.eval;return realEval}};with(bridge){eval(\"eval = realEval\")};for(let index=0;index<3;index++){eval(\"readers.push(function(){return index})\")};return readers.map(function(f){return f()})}console.log(JSON.stringify(run()));",
+        "for(let index=0;index<2;index++){let value=1;(()=>eval('value'))()}",
+        "for(let value=0;value<2;value++){(async()=>eval('value'))()}",
+        "function run(eval){for(let value=0;value<2;value++){eval('value')}}",
+        "function run(){let eval=value=>value;eval=globalThis.eval;for(let value=0;value<2;value++){eval('value')}}",
+        "for(let value=0;value<2;value++){const item=readCode();eval(item)}",
+        "for(let arguments=0;arguments<2;arguments++){(()=>eval('arguments'))()}",
+    };
+    for (bad) |source| try std.testing.expectError(error.LoopDynamicScope, transpile(a, source, "loop-eval.cjs", .{ .unsupported = compat.fromESTarget(.es5) }));
+    var native_blocks = compat.fromESTarget(.es2015);
+    native_blocks.generator = true;
+    for (good) |source| {
+        if (std.mem.indexOf(u8, source, "class Holder") != null)
+            _ = try transpile(a, source, "loop-eval.cjs", .{ .unsupported = native_blocks });
+    }
 }

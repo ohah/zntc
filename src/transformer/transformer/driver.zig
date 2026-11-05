@@ -47,6 +47,8 @@ pub fn transform(self: anytype) Error!NodeIndex {
     if (self.ast.transformed_root) |cached| {
         return cached;
     }
+    const source_root: NodeIndex = @fromBackingInt(@intCast(self.parser_node_count - 1));
+    if (try @import("../loop_dynamic_capture.zig").preflight(self, source_root)) return source_root;
     const ArrowStatements = @import("../native_arrow_statement_publication.zig");
     var arrow_statements: ArrowStatements.Batch = .{};
     const arrow_statement_lease = ArrowStatements.borrow(&self.native_arrow_statement_batch, &arrow_statements);

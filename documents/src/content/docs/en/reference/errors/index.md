@@ -237,3 +237,4 @@ ZNTC assigns a unique code to every diagnostic. Click a code for details and a r
 | [`ZNTC1506`](/zntc/en/reference/errors/zntc1506) | Retained dynamic capture contains private class syntax that requires lowering for the configured target |
 | [`ZNTC1507`](/zntc/en/reference/errors/zntc1507) | Computed accessor object is retained in its with environment; the configured target may not support retained syntax |
 | [`ZNTC1508`](/zntc/en/reference/errors/zntc1508) | Computed accessor object is retained because opaque eval can intercept generated bindings; the configured target may not support retained syntax |
+| [`ZNTC1509`](/zntc/en/reference/errors/zntc1509) | Direct eval observes a loop lexical environment that cannot be lowered safely |

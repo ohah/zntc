@@ -35,6 +35,18 @@ const srcRoot = join(root, 'src');
 // "<relpath>::<fn>" → { class, note }. class ∈ {iterative_safe, one_level, bounded_recursive, recursive_tracked}.
 // 파일 경로로 스코프해 동명 walker 가 분류를 상속하는 false-negative 를 차단.
 const ALLOWLIST = {
+  'src/transformer/loop_dynamic_capture.zig::initializedBefore': {
+    class: 'one_level',
+    note: 'source-parent chain proof plus one-level statement-list ordering',
+  },
+  'src/transformer/loop_dynamic_capture.zig::checkLoop': {
+    class: 'iterative_safe',
+    note: 'explicit source worklist and iterative reachable collector; no recursive AST descent',
+  },
+  'src/transformer/loop_dynamic_capture.zig::preflight': {
+    class: 'iterative_safe',
+    note: 'explicit source-owner stack records scope and actual enclosing lowering mode',
+  },
   // Exact main1f417 audit: actual function bodies reviewed; inline tests tracked separately.
   'src/bundler/graph/transform_prepass.zig::methodSuperUsesOnlyBodyOrSyncArrowChain': {
     class: 'iterative_safe',
