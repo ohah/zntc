@@ -20135,6 +20135,30 @@ test "generic prepass run publishes transformed output and preserves parser AST"
     try std.testing.expectEqual(object_shadow_owner, object_shadow_module.semantic.?.owner_token);
     try std.testing.expectEqual(@as(usize, 2), object_shadow_module.transform_cache.?.explicit_global_ref_nodes.len);
 
+    const computed_object_source = "function nextKey() { return 'value'; } export const box = { get [nextKey()]() { return this._value; }, set [nextKey()](value = 1) { this._value = value; } };";
+    var computed_object_fixture = try genericPrepassTestFixture(allocator, computed_object_source, true);
+    const computed_object_owner = computed_object_fixture.semantic.captureOwnerToken();
+    var computed_object_module = Module.init(@fromBackingInt(@as(u32, 8)), "computed-object-accessors.js");
+    computed_object_module.source = computed_object_source;
+    computed_object_module.module_type = .js;
+    computed_object_module.state = .ready;
+    computed_object_module.ast = computed_object_fixture.ast;
+    computed_object_module.semantic = computed_object_fixture.semantic;
+    var computed_object_context: TestGraph = .{
+        .allocator = graph_allocator,
+        .transform_options_base = .{
+            .strip_types = true,
+            .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+        },
+    };
+    run(&computed_object_context, &computed_object_module, allocator);
+    defer if (computed_object_module.alias_table) |*table| table.deinit();
+    defer if (computed_object_module.export_index_by_name) |*index| index.deinit(graph_allocator);
+    try std.testing.expectEqual(@as(usize, 0), computed_object_context.diag_count);
+    try std.testing.expect(computed_object_module.ast.?.transformed_root != null);
+    try std.testing.expect(computed_object_module.transform_cache != null);
+    try std.testing.expectEqual(computed_object_owner, computed_object_module.semantic.?.owner_token);
+
     const visitor_source = "const value = 1 + 2; value;";
     const visitor_fixture = try runtimeHelperReanalysisTestFixture(allocator, visitor_source);
     const visitor_owner = visitor_fixture.semantic.owner_token;
@@ -28775,6 +28799,50 @@ test "retained graph preserves setter defaults across distinct accessors with a 
     const hostile_sources = [_][]const u8{
         "var Object; class Box { get value() { return this._value; } set value(value = next()) { this._value = value; } }",
         "var Object; const key = 'value'; class Box { get [key]() { return this._value; } set [key](value = 1) { this._value = value; } }",
+    };
+    for (hostile_sources) |hostile_source| {
+        var hostile_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer hostile_arena.deinit();
+        const hostile_fixture = try runtimeHelperReanalysisTestFixture(hostile_arena.allocator(), hostile_source);
+        var hostile_get = false;
+        var hostile_set = false;
+        try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+            hostile_arena.allocator(),
+            &hostile_fixture.ast,
+            &hostile_fixture.semantic,
+            .{ .unsupported = es5 },
+            &hostile_get,
+            &hostile_set,
+            null,
+            null,
+        ));
+    }
+}
+
+test "retained graph preserves simple setter defaults in a computed object accessor pair" {
+    const es5 = @import("../../transformer/compat.zig").fromESTarget(.es5);
+    const source = "function nextKey() { return 'value'; } export const box = { get [nextKey()]() { return this._value; }, set [nextKey()](value = 1) { this._value = value; } };";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+    var get = false;
+    var set = false;
+    try std.testing.expect(canRetainGraphForAuditedSyntaxSubset(
+        allocator,
+        &fixture.ast,
+        &fixture.semantic,
+        .{ .unsupported = es5 },
+        &get,
+        &set,
+        null,
+        null,
+    ));
+    try expectRetainedMethodDefaultSymbolIdentityForTest(source, "value");
+
+    const hostile_sources = [_][]const u8{
+        "function nextKey() { return 'value'; } function nextDefault() { return 1; } export const box = { get [nextKey()]() { return this._value; }, set [nextKey()](value = nextDefault()) { this._value = value; } };",
+        "function nextKey() { return 'value'; } export const box = { get [nextKey()]() { return this._value; }, set [nextKey()](value = 1) { eval('value'); this._value = value; } };",
     };
     for (hostile_sources) |hostile_source| {
         var hostile_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
