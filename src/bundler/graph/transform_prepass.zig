@@ -2365,6 +2365,83 @@ fn isRetainableTopLevelExportedDeclarationWithSemantic(
     };
 }
 
+fn isRetainableTopLevelLocalExportListWithSemantic(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    raw_statement: usize,
+    statement: ast_mod.Node,
+    top_level_statements: *const std.DynamicBitSet,
+) bool {
+    if (ast.is_typescript or statement.tag != .export_named_declaration or
+        !top_level_statements.isSet(raw_statement)) return false;
+    const extra = statement.data.extra;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 6) return false;
+    const export_decl = module_parser.readExportNamedExtras(ast, extra);
+    if (!export_decl.decl.isNone() or !export_decl.source.isNone() or export_decl.specs_len == 0 or
+        export_decl.specs_start > ast.extra_data.items.len or
+        export_decl.specs_len > ast.extra_data.items.len - export_decl.specs_start or
+        export_decl.attrs_start > ast.extra_data.items.len or
+        export_decl.attrs_len > ast.extra_data.items.len - export_decl.attrs_start or
+        export_decl.attrs_len != 0) return false;
+
+    for (ast.extra_data.items[export_decl.specs_start .. export_decl.specs_start + export_decl.specs_len]) |raw_specifier| {
+        if (raw_specifier >= ast.nodes.items.len) return false;
+        const specifier = ast.nodes.items[raw_specifier];
+        if (specifier.tag != .export_specifier) return false;
+        if ((specifier.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) continue;
+        const local = specifier.data.binary.left;
+        if (local.isNone() or @backingInt(local) >= ast.nodes.items.len or
+            ast.getNode(local).tag != .identifier_reference or
+            !isBoundSourceIdentifierReference(ast, semantic, local)) return false;
+        const symbol_id = semantic.symbol_ids[@backingInt(local)] orelse return false;
+        if (symbol_id >= semantic.symbols.items.len) return false;
+        switch (semantic.symbols.items[symbol_id].kind) {
+            .variable_var,
+            .variable_let,
+            .variable_const,
+            .function_decl,
+            .generator_decl,
+            .async_function_decl,
+            .async_generator_decl,
+            .class_decl,
+            => {},
+            else => return false,
+        }
+        const exported = specifier.data.binary.right;
+        if (!exported.isNone() and
+            (@backingInt(exported) >= ast.nodes.items.len or
+                ast.getNode(exported).tag != .identifier_reference)) return false;
+    }
+    return true;
+}
+
+fn collectRetainableTopLevelLocalExportSpecifiers(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    top_level_statements: *const std.DynamicBitSet,
+    allow_local_exports: bool,
+    retained_specifiers: *std.AutoHashMapUnmanaged(u32, void),
+) bool {
+    if (!allow_local_exports) return true;
+    const statements = ast_walk.topLevelStatementIndices(ast) orelse return false;
+    for (statements) |raw_statement| {
+        if (raw_statement >= ast.nodes.items.len) return false;
+        const statement = ast.nodes.items[raw_statement];
+        if (!isRetainableTopLevelLocalExportListWithSemantic(
+            ast,
+            semantic,
+            raw_statement,
+            statement,
+            top_level_statements,
+        )) continue;
+        const export_decl = module_parser.readExportNamedExtras(ast, statement.data.extra);
+        for (ast.extra_data.items[export_decl.specs_start .. export_decl.specs_start + export_decl.specs_len]) |raw_specifier| {
+            retained_specifiers.put(ast.allocator, raw_specifier, {}) catch return false;
+        }
+    }
+    return true;
+}
+
 /// Top-level local export lists retain their local references, while a narrow
 /// static named re-export subset preserves its loader record through lowering.
 /// Namespace exports, attributes, and string names still require the full
@@ -7520,8 +7597,10 @@ fn isRetainableSimpleComputedClassAccessorKey(
 /// identifier parameters with literal defaults may accompany those members
 /// when its body contains only audited declarations, expressions, control
 /// flow, and loops. Named or anonymous class expressions are admitted only as
-/// direct initializers of a `var` declarator; other expression positions stay
-/// on reanalysis.
+/// direct initializers of a `var` declarator. An anonymous class declaration
+/// is admitted only when its exact owner is a top-level `export default`
+/// declaration; `isRetainableGraphClass` proves that owner before using this
+/// syntax subset. Other expression positions stay on reanalysis.
 /// Anonymous expressions are safe because lowering registers the generated
 /// constructor self binding and call-check reference in the exact output
 /// function scope. Static fields must pass `isRetainableSimpleStaticClassField`;
@@ -7559,7 +7638,6 @@ fn isSimpleClass(
     const body: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + ast_mod.ClassExtra.body]));
     if ((!name.isNone() and (@backingInt(name) >= ast.nodes.items.len or
         ast.getNode(name).tag != .binding_identifier)) or
-        (name.isNone() and node.tag != .class_expression) or
         (!super.isNone() and !isBoundSourceIdentifierReference(ast, semantic, super)) or
         body.isNone() or @backingInt(body) >= ast.nodes.items.len) return false;
     if (!name.isNone() and !super.isNone()) {
@@ -7885,6 +7963,23 @@ fn collectDirectFunctionBodyClassDeclarations(
     return true;
 }
 
+fn collectTopLevelDefaultExportClassDeclarations(
+    ast: *const ast_mod.Ast,
+    class_declarations: *std.AutoHashMapUnmanaged(u32, void),
+) bool {
+    const statements = ast_walk.topLevelStatementIndices(ast) orelse return false;
+    for (statements) |raw_statement| {
+        if (raw_statement >= ast.nodes.items.len) return false;
+        const statement = ast.nodes.items[raw_statement];
+        if (statement.tag != .export_default_declaration) continue;
+        const declaration = statement.data.unary.operand;
+        if (declaration.isNone() or @backingInt(declaration) >= ast.nodes.items.len) continue;
+        if (ast.getNode(declaration).tag != .class_declaration) continue;
+        class_declarations.put(ast.allocator, @backingInt(declaration), {}) catch return false;
+    }
+    return true;
+}
+
 fn isRetainableGraphClass(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -7892,6 +7987,7 @@ fn isRetainableGraphClass(
     node: ast_mod.Node,
     raw_node: usize,
     top_level_statements: *const std.DynamicBitSet,
+    default_export_class_declarations: *const std.AutoHashMapUnmanaged(u32, void),
     function_body_class_declarations: *const std.AutoHashMapUnmanaged(u32, void),
     direct_var_class_expressions: *const std.AutoHashMapUnmanaged(u32, void),
     source_object_shadows_class: bool,
@@ -7903,7 +7999,8 @@ fn isRetainableGraphClass(
 ) bool {
     const raw: u32 = @intCast(raw_node);
     const has_safe_owner = switch (node.tag) {
-        .class_declaration => top_level_statements.isSet(raw_node) or function_body_class_declarations.contains(raw),
+        .class_declaration => top_level_statements.isSet(raw_node) or
+            default_export_class_declarations.contains(raw) or function_body_class_declarations.contains(raw),
         .class_expression => direct_var_class_expressions.contains(raw),
         else => false,
     };
@@ -7920,6 +8017,44 @@ fn isRetainableGraphClass(
         allow_es5_async_generator_class_methods,
         allow_es5_generator_class_methods,
     );
+}
+
+fn isRetainableTopLevelDefaultClassExport(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    raw_statement: usize,
+    statement: ast_mod.Node,
+    top_level_statements: *const std.DynamicBitSet,
+    default_export_class_declarations: *const std.AutoHashMapUnmanaged(u32, void),
+) bool {
+    if (statement.tag != .export_default_declaration or !top_level_statements.isSet(raw_statement)) return false;
+    const declaration = statement.data.unary.operand;
+    if (declaration.isNone() or @backingInt(declaration) >= ast.nodes.items.len or
+        ast.getNode(declaration).tag != .class_declaration or
+        !default_export_class_declarations.contains(@backingInt(declaration))) return false;
+
+    const class_node = ast.getNode(declaration);
+    const class_extra = class_node.data.extra;
+    if (class_extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - class_extra <= ast_mod.ClassExtra.name) return false;
+    const name: ast_mod.NodeIndex = @fromBackingInt(@intCast(
+        ast.extra_data.items[class_extra + ast_mod.ClassExtra.name],
+    ));
+    if (name.isNone()) {
+        const facade = @import("../default_facade_identity.zig").symbolAt(
+            ast,
+            @fromBackingInt(@intCast(raw_statement)),
+            semantic.symbol_ids,
+            semantic.symbols.items,
+        ) catch return false;
+        return facade != null;
+    }
+    if (@backingInt(name) >= ast.nodes.items.len or
+        ast.getNode(name).tag != .binding_identifier or
+        !isBoundSourceIdentifierBinding(ast, semantic, name)) return false;
+    const class_symbol = semantic.symbol_ids[@backingInt(name)] orelse return false;
+    return class_symbol < semantic.symbols.items.len and
+        semantic.symbols.items[class_symbol].kind == .class_decl;
 }
 
 fn registerRetainableEs5AsyncClassMethods(
@@ -10084,6 +10219,19 @@ fn canRetainGraphForAuditedSyntaxSubset(
     );
     var top_level_statements = ast_walk.topLevelStatementMask(ast) catch return false;
     defer top_level_statements.deinit();
+    var default_export_class_declarations: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer default_export_class_declarations.deinit(ast.allocator);
+    if (options.unsupported.class and
+        !collectTopLevelDefaultExportClassDeclarations(ast, &default_export_class_declarations)) return false;
+    var retained_local_export_specifiers: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer retained_local_export_specifiers.deinit(ast.allocator);
+    if (!collectRetainableTopLevelLocalExportSpecifiers(
+        ast,
+        semantic,
+        &top_level_statements,
+        options.unsupported.class and default_export_class_declarations.count() > 0,
+        &retained_local_export_specifiers,
+    )) return false;
     const optional_nullish_source = optionalNullishSource(allocator, ast, semantic, options) catch null;
     defer if (optional_nullish_source) |source| source.deinit(allocator);
     var retained_static_field_optional_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -10595,6 +10743,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 class_node,
                 raw_idx,
                 &top_level_statements,
+                &default_export_class_declarations,
                 &function_body_class_declarations,
                 &direct_var_class_expressions,
                 source_object_shadows_class,
@@ -11470,7 +11619,26 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     raw_idx,
                     node,
                     &top_level_statements,
+                ) and !isRetainableTopLevelLocalExportListWithSemantic(
+                    ast,
+                    semantic,
+                    raw_idx,
+                    node,
+                    &top_level_statements,
                 )) return false;
+            },
+            .export_default_declaration => {
+                if (!isRetainableTopLevelDefaultClassExport(
+                    ast,
+                    semantic,
+                    raw_idx,
+                    node,
+                    &top_level_statements,
+                    &default_export_class_declarations,
+                )) return false;
+            },
+            .export_specifier => {
+                if (!retained_local_export_specifiers.contains(raw_idx)) return false;
             },
             else => return false,
         }
@@ -29219,6 +29387,311 @@ test "retained graph preserves simple setter defaults in a computed class access
             null,
             null,
         ));
+    }
+}
+
+test "#4819 retains class declarations only through a direct default export owner" {
+    const es5 = @import("../../transformer/compat.zig").fromESTarget(.es5);
+    const safe_sources = [_][]const u8{
+        "export default class { value() { return 1; } }",
+        "const _default = 'source'; export { _default }; export default class Widget { value() { return _default; } }",
+    };
+    for (safe_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+        var get = false;
+        var set = false;
+        const retained = canRetainGraphForAuditedSyntaxSubset(
+            allocator,
+            &fixture.ast,
+            &fixture.semantic,
+            .{ .unsupported = es5 },
+            &get,
+            &set,
+            null,
+            null,
+        );
+        if (!retained) std.debug.print("default-export class admission failed: {s}\n", .{source});
+        try std.testing.expect(retained);
+    }
+
+    const hostile_sources = [_][]const u8{
+        "function makeKey() { return 'value'; } export default class { [makeKey()]() { return 1; } }",
+        "function makeValue() { return 1; } export default class { value = makeValue(); }",
+        "function touch() {} export default class { static { touch(); } }",
+        "function makeBase() {} export default class extends makeBase() {}",
+        "export default class Widget extends Widget {}",
+        "export default (class { value() { return 1; } });",
+        "export default class { get ['value']() { return 1; } set ['other'](value) {} }",
+    };
+    for (hostile_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+        var get = false;
+        var set = false;
+        try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+            allocator,
+            &fixture.ast,
+            &fixture.semantic,
+            .{ .unsupported = es5 },
+            &get,
+            &set,
+            null,
+            null,
+        ));
+    }
+
+    // The class node stays reachable through the unary operand, but it no
+    // longer has the one owning statement shape that permits an anonymous
+    // declaration to reuse this graph.
+    var owner_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer owner_arena.deinit();
+    const owner_allocator = owner_arena.allocator();
+    var owner_fixture = try runtimeHelperReanalysisTestFixture(
+        owner_allocator,
+        "export default class { value() { return 1; } }",
+    );
+    const owner_symbol_ids = try owner_allocator.dupe(?u32, owner_fixture.semantic.symbol_ids);
+    owner_fixture.semantic.symbol_ids = owner_symbol_ids;
+    const statements = ast_walk.topLevelStatementIndices(&owner_fixture.ast) orelse return error.InvalidProgramRoot;
+    try std.testing.expectEqual(@as(usize, 1), statements.len);
+    var top_level = try ast_walk.topLevelStatementMask(&owner_fixture.ast);
+    defer top_level.deinit();
+    var default_export_classes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer default_export_classes.deinit(owner_fixture.ast.allocator);
+    try std.testing.expect(collectTopLevelDefaultExportClassDeclarations(
+        &owner_fixture.ast,
+        &default_export_classes,
+    ));
+    const wrapper_raw = statements[0];
+    const wrapper = owner_fixture.ast.nodes.items[wrapper_raw];
+    try std.testing.expect(isRetainableTopLevelDefaultClassExport(
+        &owner_fixture.ast,
+        &owner_fixture.semantic,
+        wrapper_raw,
+        wrapper,
+        &top_level,
+        &default_export_classes,
+    ));
+    top_level.unset(wrapper_raw);
+    try std.testing.expect(!isRetainableTopLevelDefaultClassExport(
+        &owner_fixture.ast,
+        &owner_fixture.semantic,
+        wrapper_raw,
+        wrapper,
+        &top_level,
+        &default_export_classes,
+    ));
+    top_level.set(wrapper_raw);
+    const facade_symbol = owner_fixture.semantic.symbol_ids[wrapper_raw] orelse return error.MissingDefaultFacadeSymbol;
+    owner_symbol_ids[wrapper_raw] = null;
+    try std.testing.expect(!isRetainableTopLevelDefaultClassExport(
+        &owner_fixture.ast,
+        &owner_fixture.semantic,
+        wrapper_raw,
+        wrapper,
+        &top_level,
+        &default_export_classes,
+    ));
+    owner_symbol_ids[wrapper_raw] = facade_symbol;
+
+    owner_fixture.ast.nodes.items[wrapper_raw].tag = .expression_statement;
+    try std.testing.expect(!isRetainableTopLevelDefaultClassExport(
+        &owner_fixture.ast,
+        &owner_fixture.semantic,
+        wrapper_raw,
+        owner_fixture.ast.nodes.items[wrapper_raw],
+        &top_level,
+        &default_export_classes,
+    ));
+    var owner_get = false;
+    var owner_set = false;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+        owner_allocator,
+        &owner_fixture.ast,
+        &owner_fixture.semantic,
+        .{ .unsupported = es5 },
+        &owner_get,
+        &owner_set,
+        null,
+        null,
+    ));
+
+    var named_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer named_arena.deinit();
+    const named_allocator = named_arena.allocator();
+    var named_fixture = try runtimeHelperReanalysisTestFixture(
+        named_allocator,
+        "const _default = 'source'; export { _default }; export default class Widget { value() { return _default; } }",
+    );
+    const named_symbol_ids = try named_allocator.dupe(?u32, named_fixture.semantic.symbol_ids);
+    named_fixture.semantic.symbol_ids = named_symbol_ids;
+    var class_name_raw: ?usize = null;
+    var local_export_raw: ?usize = null;
+    for (named_fixture.ast.nodes.items) |node| {
+        if (node.tag == .class_declaration) {
+            const name = named_fixture.ast.readExtraNode(node.data.extra, ast_mod.ClassExtra.name);
+            if (!name.isNone() and Scanner.identifierNamesEqual(named_fixture.ast.getText(named_fixture.ast.getNode(name).span), "Widget"))
+                class_name_raw = @backingInt(name);
+        }
+        if (node.tag == .export_specifier) {
+            const local = node.data.binary.left;
+            if (!local.isNone() and @backingInt(local) < named_fixture.ast.nodes.items.len and
+                Scanner.identifierNamesEqual(named_fixture.ast.getText(named_fixture.ast.getNode(local).span), "_default"))
+                local_export_raw = @backingInt(local);
+        }
+    }
+    const class_binding_raw = class_name_raw orelse return error.MissingNamedDefaultClassBinding;
+    const class_symbol = named_fixture.semantic.symbol_ids[class_binding_raw] orelse return error.MissingNamedDefaultClassSymbol;
+    const original_class_kind = named_fixture.semantic.symbols.items[class_symbol].kind;
+    named_symbol_ids[class_binding_raw] = null;
+    var named_get = false;
+    var named_set = false;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+        named_allocator,
+        &named_fixture.ast,
+        &named_fixture.semantic,
+        .{ .unsupported = es5 },
+        &named_get,
+        &named_set,
+        null,
+        null,
+    ));
+    named_symbol_ids[class_binding_raw] = class_symbol;
+    named_fixture.semantic.symbols.items[class_symbol].kind = .variable_const;
+    named_get = false;
+    named_set = false;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+        named_allocator,
+        &named_fixture.ast,
+        &named_fixture.semantic,
+        .{ .unsupported = es5 },
+        &named_get,
+        &named_set,
+        null,
+        null,
+    ));
+    named_fixture.semantic.symbols.items[class_symbol].kind = original_class_kind;
+
+    const exported_local_raw = local_export_raw orelse return error.MissingDefaultClassLocalExport;
+    const exported_local_symbol = named_fixture.semantic.symbol_ids[exported_local_raw] orelse return error.MissingDefaultClassLocalExportSymbol;
+    const original_local_kind = named_fixture.semantic.symbols.items[exported_local_symbol].kind;
+    named_symbol_ids[exported_local_raw] = null;
+    named_get = false;
+    named_set = false;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+        named_allocator,
+        &named_fixture.ast,
+        &named_fixture.semantic,
+        .{ .unsupported = es5 },
+        &named_get,
+        &named_set,
+        null,
+        null,
+    ));
+    named_symbol_ids[exported_local_raw] = exported_local_symbol;
+    named_fixture.semantic.symbols.items[exported_local_symbol].kind = .import_binding;
+    named_get = false;
+    named_set = false;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+        named_allocator,
+        &named_fixture.ast,
+        &named_fixture.semantic,
+        .{ .unsupported = es5 },
+        &named_get,
+        &named_set,
+        null,
+        null,
+    ));
+    named_fixture.semantic.symbols.items[exported_local_symbol].kind = original_local_kind;
+
+    const named_statements = ast_walk.topLevelStatementIndices(&named_fixture.ast) orelse return error.InvalidNamedProgramRoot;
+    var named_top_level = try ast_walk.topLevelStatementMask(&named_fixture.ast);
+    defer named_top_level.deinit();
+    var named_default_classes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer named_default_classes.deinit(named_fixture.ast.allocator);
+    try std.testing.expect(collectTopLevelDefaultExportClassDeclarations(
+        &named_fixture.ast,
+        &named_default_classes,
+    ));
+    var named_default_wrapper: ?usize = null;
+    for (named_statements) |raw_statement| {
+        const statement = named_fixture.ast.nodes.items[raw_statement];
+        if (statement.tag != .export_default_declaration) continue;
+        named_default_wrapper = raw_statement;
+        try std.testing.expect(isRetainableTopLevelDefaultClassExport(
+            &named_fixture.ast,
+            &named_fixture.semantic,
+            raw_statement,
+            statement,
+            &named_top_level,
+            &named_default_classes,
+        ));
+        break;
+    }
+    const named_wrapper_raw = named_default_wrapper orelse return error.MissingNamedDefaultClassExport;
+    const named_wrapper = named_fixture.ast.nodes.items[named_wrapper_raw];
+    named_symbol_ids[class_binding_raw] = null;
+    try std.testing.expect(!isRetainableTopLevelDefaultClassExport(
+        &named_fixture.ast,
+        &named_fixture.semantic,
+        named_wrapper_raw,
+        named_wrapper,
+        &named_top_level,
+        &named_default_classes,
+    ));
+    named_symbol_ids[class_binding_raw] = class_symbol;
+    named_fixture.semantic.symbols.items[class_symbol].kind = .variable_const;
+    try std.testing.expect(!isRetainableTopLevelDefaultClassExport(
+        &named_fixture.ast,
+        &named_fixture.semantic,
+        named_wrapper_raw,
+        named_wrapper,
+        &named_top_level,
+        &named_default_classes,
+    ));
+    named_fixture.semantic.symbols.items[class_symbol].kind = original_class_kind;
+    for (named_statements) |raw_statement| {
+        const statement = named_fixture.ast.nodes.items[raw_statement];
+        if (statement.tag != .export_named_declaration) continue;
+        try std.testing.expect(isRetainableTopLevelLocalExportListWithSemantic(
+            &named_fixture.ast,
+            &named_fixture.semantic,
+            raw_statement,
+            statement,
+            &named_top_level,
+        ));
+        named_symbol_ids[exported_local_raw] = null;
+        try std.testing.expect(!isRetainableTopLevelLocalExportListWithSemantic(
+            &named_fixture.ast,
+            &named_fixture.semantic,
+            raw_statement,
+            statement,
+            &named_top_level,
+        ));
+        named_symbol_ids[exported_local_raw] = exported_local_symbol;
+        named_fixture.semantic.symbols.items[exported_local_symbol].kind = .import_binding;
+        try std.testing.expect(!isRetainableTopLevelLocalExportListWithSemantic(
+            &named_fixture.ast,
+            &named_fixture.semantic,
+            raw_statement,
+            statement,
+            &named_top_level,
+        ));
+        named_fixture.semantic.symbols.items[exported_local_symbol].kind = original_local_kind;
+        named_top_level.unset(raw_statement);
+        try std.testing.expect(!isRetainableTopLevelLocalExportListWithSemantic(
+            &named_fixture.ast,
+            &named_fixture.semantic,
+            raw_statement,
+            statement,
+            &named_top_level,
+        ));
+        break;
     }
 }
 

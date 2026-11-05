@@ -143,7 +143,7 @@ export { default } from './dep.mjs';
     });
   }
 
-  test('anonymous default class keeps its facade identity through ES5 reanalysis', async () => {
+  test('anonymous default class keeps its facade identity on the retained ES5 graph', async () => {
     const fixture = await createFixture({
       'entry.mjs':
         "import DefaultClass, { _default as local } from './dep.mjs';\n" +
@@ -188,7 +188,7 @@ export { default } from './dep.mjs';
     const identity = lines.find(
       (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('dep.mjs'),
     );
-    expect(mode, result.stderr).toContain('semantic_graph=reanalyzed');
+    expect(mode, result.stderr).toContain('semantic_graph=retained');
     expect(identity, result.stderr).toMatch(/clean=1(?:\s|$)/);
     expect(identity).toMatch(/missing_binding=0(?:\s|$)/);
     expect(identity).toMatch(/declaration_identity_mismatch=0(?:\s|$)/);
@@ -220,7 +220,7 @@ export { default } from './dep.mjs';
         writeFileSync(join(fixture.dir, 'package.json'), JSON.stringify({ type: 'module' }));
         const native = await runNode(entry);
         expect(native.stderr).toBe('');
-        expect(native.stdout.trim()).toBe('[42,\"barrel local\"]');
+        expect(native.stdout.trim()).toBe('[42,"barrel local"]');
 
         const result = await runZntc([
           '--bundle',
@@ -265,8 +265,8 @@ export { default } from './dep.mjs';
     const native = await runNode(entry);
     expect(native.stderr).toBe('');
     expect(native.stdout.trim().split('\n')).toEqual([
-      '[42,\"barrel local\"]',
-      '[42,\"barrel local\"]',
+      '[42,"barrel local"]',
+      '[42,"barrel local"]',
     ]);
 
     const result = await runZntc([
@@ -282,6 +282,58 @@ export { default } from './dep.mjs';
 
     writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
     const bundled = await runNode(join(outDir, 'entry.js'));
+    expect(bundled.stderr).toBe('');
+    expect(bundled.stdout).toBe(native.stdout);
+  });
+
+  test('named default class declaration retains its source binding through ES5 lowering', async () => {
+    const fixture = await createFixture({
+      'entry.mjs':
+        "import DefaultClass, { _default as local } from './dep.mjs';\n" +
+        'console.log(JSON.stringify([new DefaultClass().value(), local]));\n',
+      'dep.mjs':
+        "const _default = 'source';\n" +
+        'export { _default };\n' +
+        'export default class Widget { value() { return _default; } }\n',
+    });
+    cleanup = fixture.cleanup;
+
+    const entry = join(fixture.dir, 'entry.mjs');
+    const output = join(fixture.dir, 'bundle.mjs');
+    const native = await runNode(entry);
+    expect(native.stderr).toBe('');
+    expect(native.stdout.trim()).toBe('["source","source"]');
+
+    const result = await runZntc(
+      [
+        '--bundle',
+        entry,
+        '-o',
+        output,
+        '--format=esm',
+        '--target=es5',
+        '--minify-identifiers',
+        '--minify-syntax',
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const lines = result.stderr.split(/\r?\n/);
+    const mode = lines.find(
+      (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('dep.mjs'),
+    );
+    const identity = lines.find(
+      (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('dep.mjs'),
+    );
+    expect(mode, result.stderr).toContain('semantic_graph=retained');
+    expect(identity, result.stderr).toMatch(/clean=1(?:\s|$)/);
+    expect(identity).toMatch(/missing_binding=0(?:\s|$)/);
+    expect(identity).toMatch(/declaration_identity_mismatch=0(?:\s|$)/);
+    expect(identity).toMatch(/declaration_anchor_mismatch=0(?:\s|$)/);
+    expect(identity).toMatch(/scope_owner_mismatch=0(?:\s|$)/);
+
+    const bundled = await runNode(output);
     expect(bundled.stderr).toBe('');
     expect(bundled.stdout).toBe(native.stdout);
   });
