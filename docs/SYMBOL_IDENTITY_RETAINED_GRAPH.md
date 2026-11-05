@@ -29,16 +29,46 @@ Zig bundler AST Visitor는 기본적으로 graph 보존 계약이 없다. plain 
 
 Standalone의 `post_minify_analyzer`와 bundler의 test-only resync만 이 주요 source-to-output 경로에서 후행 분석을 한다. 앞의 것은 진단 oracle이고 뒤의 것은 테스트 oracle이다. 둘 다 output identity를 게시하지 않는다. 독립적으로 생성된 runtime wrapper/import/helper AST와 Worklet serialized payload는 각각 별도 AST domain이며 해당 AST의 최초 분석으로 분류한다.
 
-`runCandidate`의 admission 축은 아래처럼 서로 독립적으로 확인한다. 통과한 하나의 syntax/target 조합을 전체 지원 조합의 증거로 확대하지 않는다.
+### 실제 호출자와 admission 트리거
 
-| 축 | 실제 판단 | exact output 단계 |
+Standalone의 production 분석 모드는 [`buildTransformPlan`](../src/transpile.zig)에 의해 정해진다. `.full`은 Flow·non-TS·JSX, transform-semantic 옵션, downlevel target, 비-ESM 출력, `export =`, 비-이름형 import, runtime-sensitive syntax 및 안전하지 않은 import-shadow 형태를 포함한다. `.bindings`는 그 외 blocker가 없는 TypeScript named-import elision 경로이고, `.none`은 단순 TS type stripping 경로다. `.full` graph는 변환 후 [`requireStandaloneOutputNormalForm`](../src/transpile.zig)에서 출력 이름 결정 전에 검증한다. `canMangleWithTransformSemantic*`/`canMangleWithTransformFacts`는 source unit-test 경로에서만 참조되며 production mode selector가 아니다. 전체 함수명 검색을 production caller 조사에 포함하되 이 predicate를 실제 admission 실행으로 세지 않는다.
+
+Bundler에는 실행 트리거와 graph-retention admission이라는 두 단계가 있다.
+
+| 단계 | 실제 caller / 조건 | 결과 |
 | --- | --- | --- |
-| syntax / target | `canKeepPrepassSemanticGraphPrepared`가 `unsupported` feature, audited syntax subset, declaration/import/export 형태와 target-specific certificates를 확인한다. | 실행된 lowerer의 generated binding/reference/scope와 source identity는 candidate output proof에서 다시 확인한다. |
-| AST plugin | graph contract 또는 tracked semantic edit API를 확인한다. output `with`와 scope 사실이 없는 direct `eval`은 candidate를 abort한다. | untracked edit가 기존 SymbolId를 보존해 보이더라도 dynamic lookup 사실이 다르면 게시하지 않는다. |
-| syntax minify / statement deletion | statement list가 변하는 경우 reference statement coordinates를 재구성하고 exact minified graph gate를 적용한다. | counts, declaration anchors, scope maps, reachable resolution이 함께 맞아야 후보를 유지한다. |
-| graph ownership | parser owner token, scope history, retained source scope prefix와 각 certificate owner를 같은 transaction에서 확인한다. | `completeGenericPrepassCandidate`의 output normal form 통과 뒤에만 prepared module을 publish한다. |
+| 실행 트리거 | cold parse의 [`parseModule`](../src/bundler/graph/parse_module.zig)와 disk-cache hit의 `tryDiskLoadHit`가 `shouldRunTransformerPrePass`를 호출하고 true일 때 `runTransformerPrePass`를 호출한다. | `shouldRun`은 transform이 필요한 module을 고를 뿐 retained graph를 승인하지 않는다. |
+| `shouldRun` 조건 | JavaScript-like module, 이미 적용된 source plugin, 현재 AST에 적용 가능한 AST plugin hook, identifier minify, user-code React Refresh/style plugin import, JSX/decorator/TS namespace·enum/import-equals/export-equals flags, worklet signal, 또는 `requiresGraphPrePass` 옵션을 검사한다. | 조건이 모두 false이면 parser AST·graph를 그대로 사용한다. RN core worklet 제외와 `node_modules` plugin 적용 범위는 각 조건 안에서 결정한다. |
+| candidate 준비 | `run`은 설치된 module의 prepared snapshot으로 candidate를 만들고 `runCandidate`에 넘긴다. candidate 완료, export-owner 확인, source-current 확인이 모두 성공한 뒤에만 `prepared.publish`를 호출한다. | 후보의 AST/semantic/module metadata는 한 transaction으로 게시된다. 원본 module은 publish 전까지 유지된다. |
 
-이 표는 current production boundary의 code review map이다. 모든 syntax × target × plugin × minify 조합의 실행 증거는 아니며, 각 bounded feature의 hostile inputs와 compileable mutations는 해당 PR 기록에서 별도로 센다.
+### `runCandidate`의 bounded graph gate
+
+`canKeepPrepassSemanticGraphPrepared`는 통과 목록 자체가 아니라 보수적 preflight다. 이후 lowerer 실행, graph edit completion, certificate completion, exact output proof까지 별도로 통과해야 한다.
+
+| 축 | admission / output 증명 | 거부 또는 rollback |
+| --- | --- | --- |
+| Syntax / target | `moduleUnsupported`로 module별 target을 정규화한다. `options.unsupported`가 있는 경우 audited syntax subset, 제한된 class/loop/async/super 경로, 또는 native-noop·side-effect-entry·class·helper certificate가 source와 output에서 각각 맞아야 한다. TS/Flow/JSX/decorator/import-export 별 preflight는 AST feature flags와 실제 node 형태를 함께 확인한다. | 지원 subset을 벗어나거나 source/output 증명이 맞지 않으면 candidate가 완료되지 않는다. exact proof를 약화해 통과시키지 않는다. |
+| AST plugins | 실제 AST hook이 가능한지 `shouldRun`이 거르고, retained path에서는 semantic-edit API 또는 명시적 identity-preserving visitor contract를 요구한다. output의 `with`, scope 사실이 빠진 direct `eval`, 증명할 수 없는 TLA는 별도 output 검사에서 막는다. | contract가 없으면 preflight가 닫힌다. contract 위반은 diagnostic을 내고 candidate를 abort한다. resolve/load/source/output/lifecycle hook은 분석된 AST를 직접 편집하지 않는 경로로 분류한다. |
+| Minify / statement edits | identifier minify는 retained module graph를 linker까지 넘기는 실행 트리거다. `minify_syntax`는 private AST/semantic journal 안에서 적용되고 완료 receipt와 owner/ref 증명이 필요하다. label·console 삭제와 mapped-import split은 surviving reference statement coordinates와 exact graph를 다시 확인한다. | 선택적 syntax minify journal이 거부되면 직전 AST/graph snapshot을 복원하고 그 최적화만 생략한다. 이 rollback은 analyzer fallback이 아니다. 전체 candidate의 graph 증명이 실패하면 candidate transaction을 게시하지 않는다. |
+| Import/export·dynamic scope | stable runtime import, supported top-level exports, mapped/TypeScript import subsets, direct-eval name lookup 사실을 source와 output에서 확인한다. statement deletion 후에는 statement owner/reference 좌표를 projection하고 tree-shaker `StmtInfo`를 같은 graph에서 다시 만든다. | 형태가 지원되지 않거나 dynamic lookup facts가 불완전하면 admission/output proof가 실패한다. |
+| Graph ownership | parser owner token, source scope-history prefix, generated scope owner/provenance, retirements, helper/class/namespace owner와 module metadata를 같은 candidate transaction에서 이어 간다. `completeGenericPrepassCandidate`는 exact output normal form을 통과해야 완료 표시를 한다. | 누락·불일치·OOM은 prepared candidate를 폐기한다. `run`은 특정 diagnostic이 없으면 transaction failure를 보고하고 원본 module을 유지한다. |
+
+`canKeepPrepassSemanticGraphPrepared`가 false이거나 후속 exact/certificate gate가 실패하는 경우의 production 동작은 output 재분석이 아니다. candidate는 `candidate_completed` 상태에 도달하지 못해 `PreparedGenericPrepass`에서 폐기된다. 일부 오류는 명시적 diagnostic을 내고, preflight 거부에는 generic transaction-failure diagnostic이 난다. [`refreshSemanticAndStmtInfoAfterAstMutation`](../src/bundler/graph/transform_prepass.zig)은 `resyncAfterAstMutationForTest` oracle 내부에서만 호출되며 non-test 빌드 compile fence가 있다.
+
+### 그 외 production graph owner
+
+| 경로 | actual caller | identity 처리 |
+| --- | --- | --- |
+| cache restore | [`tryDiskLoadHit`](../src/bundler/graph/parse_module.zig) → `materializeFromCachedAst` | cache에 같이 저장된 parse AST와 semantic graph를 복원하고 graph-facing module metadata만 재구성한다. output AST를 새로 분석하지 않는다. |
+| cross-module const materialization | `TreeShaker.materializeFullPrepass`, `propagateNumericExportConstFacts`, `materializeNumericConstFactsWorklist` → [`prepareAndPublishConstFactsForIndex`](../src/bundler/tree_shaker/const_materialize.zig) | COW candidate에 exact materialized read receipt를 적용하고 semantic journal/editor로 같은 graph의 references·owners를 갱신한다. tracking이 불완전하거나 publication guard가 실패하면 candidate를 게시하지 않는다. |
+| CJS Node Buffer capability fold | `TreeShaker.applyNodeBufferCapabilityFacts` → `prepareNodeBufferCapabilityPlan` → [`prepareNodeBufferCapabilityFold`](../src/bundler/graph/transform_prepass.zig) | exact removed-node/retirement proof로 retained graph candidate를 만든다. 계획·graph·publication 증명 실패 시 원본 AST를 유지해 두 runtime branch를 남기며 analyzer fallback은 없다. |
+| const graph projection helper | [`resyncAfterConstMaterializationRetainingGraph`](../src/bundler/graph/transform_prepass.zig) | 현재 직접 호출은 unit-test path이며 graph API로 re-export된다. 이것을 production caller로 세지 않는다. |
+| legacy Buffer graph resync helper | `resyncLegacyBufferGraphForTest` | non-test compile fence가 있는 test helper다. production Buffer fold의 거부 복구 경로가 아니다. |
+| JSON source | [`parse`](../src/bundler/graph/json_module.zig) | JSON AST domain의 최초 분석이다. |
+
+이 caller/decision 목록은 실제 함수 호출 경계를 모두 식별하지만 syntax × target × plugin × minify의 가능한 모든 cross-product가 실행되었다는 뜻은 아니다. 각 bounded 조합의 실행 분모와 hostile validation은 해당 구현 PR의 증거로 따로 기록한다.
+
+이 caller/decision 목록은 current production boundary의 code review map이다. 모든 syntax × target × plugin × minify 조합의 실행 증거는 아니며, 각 bounded feature의 hostile inputs와 compileable mutations는 해당 PR 기록에서 별도로 센다.
 
 | 호출 | 역할 | 유지 이유 / 종료 조건 |
 | --- | --- | --- |

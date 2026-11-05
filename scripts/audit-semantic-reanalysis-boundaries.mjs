@@ -67,21 +67,32 @@ function maskZigNonCode(source) {
   return chars.join('');
 }
 
-function firstTopLevelTestOffset(code) {
-  return /^\s*test\b/m.exec(code)?.index ?? code.length;
+function topLevelTestRanges(code) {
+  const ranges = [];
+  for (const match of code.matchAll(/^[\t ]*test\b/gm)) {
+    const open = code.indexOf('{', match.index + match[0].length);
+    if (open === -1) continue;
+    const close = matchingBrace(code, open);
+    if (close === -1) continue;
+    ranges.push([match.index, close + 1]);
+  }
+  return ranges;
 }
 
-function analyzerInitSites(source, stopAtTests = true) {
+function containingRange(ranges, offset) {
+  return ranges.find(([start, end]) => offset >= start && offset < end) ?? null;
+}
+
+function analyzerInitSites(source, includeTestBodies = false) {
   const code = maskZigNonCode(source);
-  const end = stopAtTests ? firstTopLevelTestOffset(code) : code.length;
-  const prefix = code.slice(0, end);
+  const testRanges = topLevelTestRanges(code);
   const sites = [];
   const aliases = new Set(['SemanticAnalyzer', 'Analyzer']);
   const declarations = /\bconst\s+([A-Za-z_]\w*)\s*=\s*([^;]+);/g;
   let changed = true;
   while (changed) {
     changed = false;
-    for (const match of prefix.matchAll(declarations)) {
+    for (const match of code.matchAll(declarations)) {
       const rhs = match[2].trim().replace(/\s+/g, ' ');
       const isAnalyzerType =
         aliases.has(rhs) ||
@@ -94,10 +105,11 @@ function analyzerInitSites(source, stopAtTests = true) {
     }
   }
   const pattern = new RegExp(`\\b(?:${[...aliases].join('|')})\\s*\\.\\s*init\\s*\\(`, 'g');
-  for (const match of prefix.matchAll(pattern)) {
+  for (const match of code.matchAll(pattern)) {
+    if (!includeTestBodies && containingRange(testRanges, match.index)) continue;
     sites.push({
       offset: match.index,
-      line: prefix.slice(0, match.index).split('\n').length,
+      line: code.slice(0, match.index).split('\n').length,
     });
   }
   return { code, sites };
@@ -112,30 +124,101 @@ function matchingBrace(code, open) {
   return -1;
 }
 
+function functionBody(code, name, label) {
+  const declaration = new RegExp(`\\b(?:pub\\s+)?fn\\s+${name}\\s*\\(`).exec(code);
+  requireCondition(declaration, `${label}: function ${name} is missing`);
+  const open = code.indexOf('{', declaration.index + declaration[0].length);
+  const close = open === -1 ? -1 : matchingBrace(code, open);
+  requireCondition(close > open, `${label}: function ${name} body is malformed`);
+  return {
+    declaration: declaration.index,
+    start: open + 1,
+    end: close,
+    body: code.slice(open + 1, close),
+  };
+}
+
+// Zig test blocks can be interleaved with production declarations and test
+// helpers can live outside the blocks. Follow same-file function calls from
+// production roots instead of treating everything after the first `test` as
+// either production or test-only.
+function productionFunctionDefinitions(code) {
+  const testRanges = topLevelTestRanges(code);
+  const definitions = new Map();
+  const declarationPattern = /\b(?:pub\s+)?fn\s+([A-Za-z_]\w*)\s*\(/g;
+  for (const declaration of code.matchAll(declarationPattern)) {
+    if (containingRange(testRanges, declaration.index)) continue;
+    const open = code.indexOf('{', declaration.index + declaration[0].length);
+    if (open === -1) continue;
+    const close = matchingBrace(code, open);
+    if (close === -1) continue;
+    const rows = definitions.get(declaration[1]) ?? [];
+    rows.push({ start: open + 1, end: close, body: code.slice(open + 1, close) });
+    definitions.set(declaration[1], rows);
+  }
+  return definitions;
+}
+
+function analyzerSitesReachableFrom(source, roots, label) {
+  const code = maskZigNonCode(source);
+  const definitions = productionFunctionDefinitions(code);
+  const allSites = analyzerInitSites(source, true).sites;
+  const pending = [...roots];
+  const visited = new Set();
+  const ranges = [];
+  while (pending.length > 0) {
+    const name = pending.pop();
+    if (visited.has(name)) continue;
+    visited.add(name);
+    const bodies = definitions.get(name);
+    requireCondition(bodies, `${label}: production root/callee ${name} is missing`);
+    for (const row of bodies) {
+      ranges.push([row.start, row.end]);
+      for (const call of row.body.matchAll(/(?<![.\w])([A-Za-z_]\w*)\s*\(/g)) {
+        if (definitions.has(call[1]) && !visited.has(call[1])) pending.push(call[1]);
+      }
+    }
+  }
+  return allSites.filter((site) =>
+    ranges.some(([start, end]) => site.offset >= start && site.offset < end),
+  );
+}
+
+function auditAnalyzerFreePath(source, roots, label) {
+  const sites = analyzerSitesReachableFrom(source, roots, label);
+  requireCondition(
+    sites.length === 0,
+    `${label}: unexpected analyzer initialization reachable from ${roots.join(', ')}`,
+  );
+}
+
 function requireCondition(condition, message) {
   if (!condition) throw new Error(message);
 }
 
 function auditTranspile(source, label = 'src/transpile.zig') {
-  const { code, sites } = analyzerInitSites(source);
+  const code = maskZigNonCode(source);
+  const sites = analyzerSitesReachableFrom(source, ['transpile'], label);
+  const transpile = functionBody(code, 'transpileWithCallbackInternal', label);
+  const body = code.slice(transpile.start, transpile.end);
   requireCondition(
     sites.length === 2,
-    `${label}: expected one source analysis and one debug oracle; found ${sites.length}`,
+    `${label}: expected one source analysis and one debug oracle; found ${sites.length} at lines ${sites.map((site) => site.line).join(', ')}`,
   );
 
-  const sourceCall = code.indexOf(
+  const sourceCall = body.indexOf(
     'analyzer_storage = SemanticAnalyzer.init(arena_alloc, &parser.ast);',
   );
-  const sourceGraphGate = code.indexOf('requireStandaloneOutputNormalForm(', sourceCall);
+  const sourceGraphGate = body.indexOf('requireStandaloneOutputNormalForm(', sourceCall);
   const guard =
     'if (symbol_coverage_env.enabled() and (options.minify_syntax or options.minify_identifiers))';
-  const guardStart = code.indexOf(guard);
-  const guardOpen = guardStart === -1 ? -1 : code.indexOf('{', guardStart + guard.length);
-  const guardClose = guardOpen === -1 ? -1 : matchingBrace(code, guardOpen);
-  const oracleCall = code.indexOf('SemanticAnalyzer.init(arena_alloc, transformer.ast);');
-  const oracleAnalyze = code.indexOf('post_minify_analyzer.analyze()', oracleCall);
-  const oracleReport = code.indexOf('checkPostMinifyWithNativeOwners(', oracleCall);
-  const oraclePrint = code.indexOf('post_minify_coverage.printPostMinify(', oracleCall);
+  const guardStart = body.indexOf(guard);
+  const guardOpen = guardStart === -1 ? -1 : body.indexOf('{', guardStart + guard.length);
+  const guardClose = guardOpen === -1 ? -1 : matchingBrace(body, guardOpen);
+  const oracleCall = body.indexOf('SemanticAnalyzer.init(arena_alloc, transformer.ast);');
+  const oracleAnalyze = body.indexOf('post_minify_analyzer.analyze()', oracleCall);
+  const oracleReport = body.indexOf('checkPostMinifyWithNativeOwners(', oracleCall);
+  const oraclePrint = body.indexOf('post_minify_coverage.printPostMinify(', oracleCall);
 
   requireCondition(
     sourceCall >= 0 && sourceCall < sourceGraphGate,
@@ -162,13 +245,14 @@ function auditTranspile(source, label = 'src/transpile.zig') {
     `${label}: debug oracle must only publish diagnostics`,
   );
   requireCondition(
-    !/transformer\.symbol_ids\s*=\s*post_minify_analyzer\./.test(code.slice(guardOpen, guardClose)),
+    !/transformer\.symbol_ids\s*=\s*post_minify_analyzer\./.test(body.slice(guardOpen, guardClose)),
     `${label}: diagnostic IDs must not replace producer IDs`,
   );
 }
 
-function auditSingleInitialAnalysis(source, file, expectedCall) {
-  const { code, sites } = analyzerInitSites(source, false);
+function auditSingleInitialAnalysis(source, file, expectedCall, root) {
+  const code = maskZigNonCode(source);
+  const sites = analyzerSitesReachableFrom(source, [root], file);
   requireCondition(
     sites.length === 1,
     `${file}: expected one first analysis for its AST domain; found ${sites.length}`,
@@ -180,18 +264,37 @@ function auditSingleInitialAnalysis(source, file, expectedCall) {
 }
 
 function auditPrepass(source, label = 'src/bundler/graph/transform_prepass.zig') {
-  const { code, sites } = analyzerInitSites(source);
+  const code = maskZigNonCode(source);
+  const productionSites = analyzerSitesReachableFrom(source, ['run'], label);
+  const oracle = functionBody(code, 'refreshSemanticAndStmtInfoAfterAstMutation', label);
+  const wrapper = functionBody(code, 'resyncAfterAstMutationForTest', label);
+  const allSites = analyzerInitSites(source, true).sites;
+  const oracleSites = allSites.filter(
+    (site) => site.offset >= oracle.start && site.offset < oracle.end,
+  );
+  const wrapperCallSites = [
+    ...code.matchAll(/\brefreshSemanticAndStmtInfoAfterAstMutation\s*\(/g),
+  ].filter((match) => match.index >= wrapper.start && match.index < wrapper.end);
+  const allRefreshReferences = [
+    ...code.matchAll(/\brefreshSemanticAndStmtInfoAfterAstMutation\s*\(/g),
+  ];
+  const oracleName = code.indexOf('refreshSemanticAndStmtInfoAfterAstMutation', oracle.declaration);
+  const refreshCallSites = allRefreshReferences.filter((match) => match.index !== oracleName);
+
   requireCondition(
-    sites.length === 0,
-    `${label}: production transform prepass must edit or reject its input graph, not create an analyzer`,
+    productionSites.length === 0 && oracleSites.length === 1,
+    `${label}: the production prepass call graph must not initialize an analyzer; only its test oracle may do so`,
   );
   requireCondition(
-    /pub\s+fn\s+resyncAfterAstMutationForTest\s*\(/.test(code),
-    `${label}: test-only oracle wrapper is missing`,
+    wrapperCallSites.length === 1 &&
+      refreshCallSites.length === 1 &&
+      refreshCallSites[0].index >= wrapper.start &&
+      refreshCallSites[0].index < wrapper.end,
+    `${label}: semantic refresh helper must only be called by its test oracle wrapper`,
   );
   requireCondition(
-    /if\s*\(\s*!@import\s*\(\s*[^)]*\)\s*\.is_test\s*\)\s*@compileError\s*\(/.test(code),
-    `${label}: production compile fence for the test oracle is missing`,
+    /if\s*\(\s*!@import\s*\(\s*[^)]*\)\s*\.is_test\s*\)\s*@compileError\s*\(/.test(wrapper.body),
+    `${label}: test oracle wrapper must carry its production compile fence`,
   );
 }
 
@@ -207,7 +310,8 @@ function tryReject(fn, label) {
 
 function selfTest() {
   const transpile =
-    `fn transpile() {\n` +
+    `fn transpile() { transpileWithCallbackInternal(); }\n` +
+    `fn transpileWithCallbackInternal() {\n` +
     `  analyzer_storage = SemanticAnalyzer.init(arena_alloc, &parser.ast);\n` +
     `  requireStandaloneOutputNormalForm();\n` +
     `  if (symbol_coverage_env.enabled() and (options.minify_syntax or options.minify_identifiers)) {\n` +
@@ -223,11 +327,22 @@ function selfTest() {
     'fn parseModule() { var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast); }',
     'fixture/parse_module.zig',
     'SemanticAnalyzer.init(arena_alloc, &parser.ast)',
+    'parseModule',
   );
   auditPrepass(
-    'fn runCandidate() {}\n' +
-      'pub fn resyncAfterAstMutationForTest() { if (!@import("builtin").is_test) @compileError("test only"); }\n' +
-      'test "test helper" { var a = SemanticAnalyzer.init(alloc, ast); }',
+    'pub fn run() { runCandidate(); }\n' +
+      'fn runCandidate() {}\n' +
+      'test "earlier unit test" { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
+      'fn refreshSemanticAndStmtInfoAfterAstMutation() { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
+      'pub fn resyncAfterAstMutationForTest() { if (!@import("builtin").is_test) @compileError("test only"); refreshSemanticAndStmtInfoAfterAstMutation(); }\n' +
+      'test "later unit test" { var a = SemanticAnalyzer.init(alloc, ast); }',
+  );
+  auditAnalyzerFreePath(
+    'fn productionRoot() { safeHelper(); }\n' +
+      'fn safeHelper() {}\n' +
+      'fn unreachableUnitHelper() { var a = SemanticAnalyzer.init(alloc, ast); }',
+    ['productionRoot'],
+    'fixture/reachable-call-graph.zig',
   );
 
   tryReject(
@@ -286,6 +401,7 @@ function selfTest() {
         'fn parseModule() { var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast); var replacement = Analyzer.init(a, ast); }',
         'fixture/parse_module.zig',
         'SemanticAnalyzer.init(arena_alloc, &parser.ast)',
+        'parseModule',
       ),
     'new parse-module analyzer',
   );
@@ -295,6 +411,7 @@ function selfTest() {
         'const FreshAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer; fn parseModule() { var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast); var replacement = FreshAnalyzer.init(a, ast); }',
         'fixture/parse_module.zig',
         'SemanticAnalyzer.init(arena_alloc, &parser.ast)',
+        'parseModule',
       ),
     'import-aliased parse-module analyzer',
   );
@@ -304,14 +421,17 @@ function selfTest() {
         'fn parseJsonModule() { var analyzer = SemanticAnalyzer.init(arena_alloc, &(module.ast.?)); var replacement = Analyzer.init(a, ast); }',
         'fixture/json_module.zig',
         'SemanticAnalyzer.init(arena_alloc, &(module.ast.?))',
+        'parseJsonModule',
       ),
     'extra JSON-domain analyzer',
   );
   tryReject(
     () =>
       auditPrepass(
-        'fn runCandidate() { var replacement = SemanticAnalyzer.init(alloc, ast); }\n' +
-          'pub fn resyncAfterAstMutationForTest() { if (!@import("builtin").is_test) @compileError("test only"); }\n' +
+        'pub fn run() { runCandidate(); }\n' +
+          'fn runCandidate() { var replacement = SemanticAnalyzer.init(alloc, ast); }\n' +
+          'fn refreshSemanticAndStmtInfoAfterAstMutation() { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
+          'pub fn resyncAfterAstMutationForTest() { if (!@import("builtin").is_test) @compileError("test only"); refreshSemanticAndStmtInfoAfterAstMutation(); }\n' +
           'test "test helper" {}',
       ),
     'new production analyzer in prepass',
@@ -319,8 +439,9 @@ function selfTest() {
   tryReject(
     () =>
       auditPrepass(
-        'const FreshAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer; fn runCandidate() { var replacement = FreshAnalyzer.init(alloc, ast); }\n' +
-          'pub fn resyncAfterAstMutationForTest() { if (!@import("builtin").is_test) @compileError("test only"); }\n' +
+        'const FreshAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer; pub fn run() { runCandidate(); } fn runCandidate() { var replacement = FreshAnalyzer.init(alloc, ast); }\n' +
+          'fn refreshSemanticAndStmtInfoAfterAstMutation() { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
+          'pub fn resyncAfterAstMutationForTest() { if (!@import("builtin").is_test) @compileError("test only"); refreshSemanticAndStmtInfoAfterAstMutation(); }\n' +
           'test "test helper" {}',
       ),
     'aliased production analyzer in prepass',
@@ -328,27 +449,83 @@ function selfTest() {
   tryReject(
     () =>
       auditPrepass(
-        'fn runCandidate() {}\n' +
-          'pub fn resyncAfterAstMutationForTest() {}\n' +
+        'pub fn run() { runCandidate(); }\n' +
+          'fn runCandidate() {}\n' +
+          'fn refreshSemanticAndStmtInfoAfterAstMutation() { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
+          'pub fn resyncAfterAstMutationForTest() { refreshSemanticAndStmtInfoAfterAstMutation(); }\n' +
           'test "test helper" {}',
       ),
     'test-only compile fence removed',
   );
   tryReject(
-    () => auditPrepass('fn runCandidate() {}\ntest "test helper" {}'),
+    () =>
+      auditPrepass(
+        'pub fn run() { runCandidate(); }\n' +
+          'fn runCandidate() {}\n' +
+          'fn refreshSemanticAndStmtInfoAfterAstMutation() { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
+          'test "test helper" {}',
+      ),
     'test-only resync wrapper removed',
   );
   tryReject(
     () =>
       auditPrepass(
-        'fn runCandidate() {}\n' +
-          'pub fn resyncAfterAstMutationForTest() {}\n' +
-          '// if (!@import("builtin").is_test) @compileError("test only");\n' +
+        'pub fn run() { runCandidate(); }\n' +
+          'fn runCandidate() {}\n' +
+          'fn refreshSemanticAndStmtInfoAfterAstMutation() { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
+          'pub fn resyncAfterAstMutationForTest() { // if (!@import("builtin").is_test) @compileError("test only");\n refreshSemanticAndStmtInfoAfterAstMutation(); }\n' +
           'test "test helper" {}',
       ),
     'commented-out compile fence',
   );
-  console.log('semantic reanalysis boundary audit self-test PASS (13 hostile mutations rejected)');
+  tryReject(
+    () =>
+      auditPrepass(
+        'pub fn run() { runCandidate(); lateProductionPath(); }\n' +
+          'fn runCandidate() {}\n' +
+          'test "first test" {}\n' +
+          'fn refreshSemanticAndStmtInfoAfterAstMutation() { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
+          'pub fn resyncAfterAstMutationForTest() { if (!@import("builtin").is_test) @compileError("test only"); refreshSemanticAndStmtInfoAfterAstMutation(); }\n' +
+          'fn lateProductionPath() { var replacement = Analyzer.init(alloc, ast); }\n' +
+          'test "last test" {}',
+      ),
+    'production analyzer added after an earlier test block',
+  );
+  tryReject(
+    () =>
+      auditPrepass(
+        'pub fn run() { runCandidate(); }\n' +
+          'fn runCandidate() { refreshSemanticAndStmtInfoAfterAstMutation(); }\n' +
+          'fn refreshSemanticAndStmtInfoAfterAstMutation() { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
+          'pub fn resyncAfterAstMutationForTest() { if (!@import("builtin").is_test) @compileError("test only"); refreshSemanticAndStmtInfoAfterAstMutation(); }\n' +
+          'test "test helper" {}',
+      ),
+    'test oracle helper gained a production caller',
+  );
+  tryReject(
+    () =>
+      auditPrepass(
+        'pub fn run() { runCandidate(); anotherOracle(); }\n' +
+          'fn runCandidate() {}\n' +
+          'fn refreshSemanticAndStmtInfoAfterAstMutation() { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
+          'pub fn resyncAfterAstMutationForTest() { if (!@import("builtin").is_test) @compileError("test only"); refreshSemanticAndStmtInfoAfterAstMutation(); }\n' +
+          'fn anotherOracle() { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
+          'test "test helper" {}',
+      ),
+    'additional analyzer helper added outside the test oracle',
+  );
+  tryReject(
+    () =>
+      auditAnalyzerFreePath(
+        'const FreshAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;\n' +
+          'fn productionRoot() { unsafeHelper(); }\n' +
+          'fn unsafeHelper() { var a = FreshAnalyzer.init(alloc, ast); }',
+        ['productionRoot'],
+        'fixture/transitive-call-graph.zig',
+      ),
+    'aliased analyzer added in a reachable helper',
+  );
+  console.log('semantic reanalysis boundary audit self-test PASS (17 hostile mutations rejected)');
 }
 
 if (process.argv.includes('--self-test')) {
@@ -362,23 +539,50 @@ if (process.argv.includes('--self-test')) {
 }
 
 try {
+  selfTest();
   const transpile = readFileSync(join(root, 'src/transpile.zig'), 'utf8');
   const parseModule = readFileSync(join(root, 'src/bundler/graph/parse_module.zig'), 'utf8');
   const jsonModule = readFileSync(join(root, 'src/bundler/graph/json_module.zig'), 'utf8');
   const prepass = readFileSync(join(root, 'src/bundler/graph/transform_prepass.zig'), 'utf8');
+  const constMaterialize = readFileSync(
+    join(root, 'src/bundler/tree_shaker/const_materialize.zig'),
+    'utf8',
+  );
+  const treeShaker = readFileSync(join(root, 'src/bundler/tree_shaker.zig'), 'utf8');
 
   auditTranspile(transpile);
   auditSingleInitialAnalysis(
     parseModule,
     'src/bundler/graph/parse_module.zig',
     'SemanticAnalyzer.init(arena_alloc, &parser.ast)',
+    'parseModule',
   );
   auditSingleInitialAnalysis(
     jsonModule,
     'src/bundler/graph/json_module.zig',
     'SemanticAnalyzer.init(arena_alloc, &(module.ast.?))',
+    'parse',
   );
   auditPrepass(prepass);
+  auditAnalyzerFreePath(
+    prepass,
+    ['materializeFromCachedAst', 'prepareNodeBufferCapabilityFold'],
+    'src/bundler/graph/transform_prepass.zig retained graph owners',
+  );
+  auditAnalyzerFreePath(
+    constMaterialize,
+    [
+      'materializeFullPrepass',
+      'propagateNumericExportConstFacts',
+      'materializeNumericConstFactsWorklist',
+    ],
+    'src/bundler/tree_shaker/const_materialize.zig',
+  );
+  auditAnalyzerFreePath(
+    treeShaker,
+    ['applyNodeBufferCapabilityFacts'],
+    'src/bundler/tree_shaker.zig',
+  );
   console.log('semantic reanalysis boundary audit PASS');
 } catch (error) {
   console.error(`semantic reanalysis boundary audit FAIL: ${error.message}`);
