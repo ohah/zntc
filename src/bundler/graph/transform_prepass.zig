@@ -8292,14 +8292,21 @@ fn collectSimpleFunctionDefaultParameterNodes(
         ast_mod.FunctionExtra.params;
     if (extras.len - extra <= flags_slot or extras.len - extra <= params_slot) return false;
     if (function.tag == .method_definition) {
-        // Static is the only method-specific bit that does not change the
-        // parameter environment or method evaluation contract.
-        if ((extras[extra + flags_slot] & ~ast_mod.MethodFlags.is_static) != 0 or
+        // Static and setter bits do not change the method parameter
+        // environment. Getters, async/generator methods, and other flags
+        // remain outside this bounded default-lowering proof.
+        const flags = extras[extra + flags_slot];
+        if ((flags & ~(ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_setter)) != 0 or
             extras.len - extra <= ast_mod.MethodExtra.deco_len or
             extras[extra + ast_mod.MethodExtra.deco_start] != 0 or
             extras[extra + ast_mod.MethodExtra.deco_len] != 0) return false;
-        if ((extras[extra + flags_slot] & ast_mod.MethodFlags.is_static) != 0 and
-            !isDirectClassBodyMethod(ast, raw_function)) return false;
+        // Plain instance methods do not need a parent-list scan. Setter and
+        // static admission depends on the unique direct owner, so validate it
+        // only for those method forms.
+        if ((flags & (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_setter)) != 0) {
+            const owner = directMethodDefinitionOwner(ast, raw_function) orelse return false;
+            if ((flags & ast_mod.MethodFlags.is_static) != 0 and owner != .class_body) return false;
+        }
     } else if ((extras[extra + flags_slot] & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator)) != 0) {
         return false;
     }
@@ -8370,24 +8377,22 @@ fn collectSimpleFunctionDefaultParameterNodes(
     return true;
 }
 
-fn isDirectClassBodyMethod(ast: *const ast_mod.Ast, raw_method: u32) bool {
+const MethodDefinitionOwner = enum { class_body, object_literal };
+
+fn directMethodDefinitionOwner(ast: *const ast_mod.Ast, raw_method: u32) ?MethodDefinitionOwner {
     const extras = ast.extra_data.items;
-    var class_body_memberships: usize = 0;
-    var object_literal_memberships: usize = 0;
+    var owner: ?MethodDefinitionOwner = null;
     for (ast.nodes.items) |node| {
         if (node.tag != .class_body and node.tag != .object_expression) continue;
         const members = node.data.list;
-        if (members.start > extras.len or members.len > extras.len - members.start) return false;
+        if (members.start > extras.len or members.len > extras.len - members.start) return null;
         for (extras[members.start .. members.start + members.len]) |raw_member| {
             if (raw_member != raw_method) continue;
-            if (node.tag == .class_body) {
-                class_body_memberships += 1;
-            } else {
-                object_literal_memberships += 1;
-            }
+            if (owner != null) return null;
+            owner = if (node.tag == .class_body) .class_body else .object_literal;
         }
     }
-    return class_body_memberships == 1 and object_literal_memberships == 0;
+    return owner;
 }
 
 fn isExactSimpleFunctionParameterBinding(
@@ -9962,10 +9967,10 @@ test "using state-machine predicate follows syntax and target support" {
 /// `super` is present, admit it only when every use belongs to a plain method
 /// or an audited async class/object method with a retained home-object graph.
 /// Async-arrow captures must pass their own preflight.
-/// Simple literal defaults on strict ordinary synchronous functions use their
-/// original parameter SymbolIds. Direct eval, non-literal defaults, methods,
-/// async/generator functions, and unsupported arrow parameter expressions
-/// remain outside this subset.
+/// Simple literal defaults on strict synchronous ordinary functions, arrows,
+/// plain methods, and setters use their original parameter SymbolIds. Direct
+/// eval, non-literal defaults, getters, async/generator functions, and
+/// unsupported arrow parameter expressions remain outside this subset.
 pub fn optionalNullishSource(allocator: std.mem.Allocator, ast: *const ast_mod.Ast, semantic: *const ModuleSemanticData, options: TransformOptions) !?@import("../../transformer/optional_nullish_composition.zig").Source {
     return @import("../../transformer/optional_nullish_composition.zig").sourcePlan(allocator, ast, semantic, options, isRetainableOptionalChainMemberAccess, isRetainableBoundSourceCallCalleeChain);
 }
@@ -28312,6 +28317,227 @@ test "retained graph admits only strict simple synchronous method literal defaul
         .formal_parameter => poisoned.ast.extra_data.items[default_parameter.data.extra + ast_mod.FormalParameterExtra.default] = original_default_value_raw,
         else => unreachable,
     }
+
+    try std.testing.expect(poisoned.semantic.scope_owner_map.remove(raw_params));
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+}
+
+test "retained graph admits only strict simple synchronous setter literal defaults" {
+    const es5 = @import("../../transformer/compat.zig").fromESTarget(.es5);
+    const safe_sources = [_][]const u8{
+        "export const box = { set value(value = 1) { this.result = value; } };",
+        "class Box { set value(value = 'text') { this.result = value; } }",
+        "class Box { static set value(value = true) { this.result = value; } }",
+    };
+    for (safe_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+        var get = false;
+        var set = false;
+        var method_defaults: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        var method_default_collected = false;
+        for (fixture.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .method_definition) continue;
+            const method_flags = fixture.ast.extra_data.items[node.data.extra + ast_mod.MethodExtra.flags];
+            if ((method_flags & ast_mod.MethodFlags.is_setter) == 0) continue;
+            try std.testing.expect(directMethodDefinitionOwner(&fixture.ast, @intCast(raw)) != null);
+            const method_scope = fixture.semantic.scope_owner_map.get(@intCast(raw)) orelse return error.MissingSetterScope;
+            try std.testing.expectEqual(.function, fixture.semantic.scopes[method_scope].kind);
+            try std.testing.expect(fixture.semantic.scopes[method_scope].is_strict);
+            method_default_collected = collectSimpleFunctionDefaultParameterNodes(
+                &fixture.ast,
+                &fixture.semantic,
+                @intCast(raw),
+                node,
+                &method_defaults,
+            );
+            break;
+        }
+        try std.testing.expect(method_default_collected);
+        try std.testing.expect(canRetainGraphForAuditedSyntaxSubset(
+            allocator,
+            &fixture.ast,
+            &fixture.semantic,
+            .{ .unsupported = es5 },
+            &get,
+            &set,
+            null,
+            null,
+        ));
+    }
+
+    try expectRetainedMethodDefaultSymbolIdentityForTest(
+        "export const box = { set value(value = 1) { this.result = /./.test(value); } };",
+        "value",
+    );
+    try expectRetainedMethodDefaultSymbolIdentityForTest(
+        "class Box { set value(value = 'text') { this.result = /./.test(value); } }",
+        "value",
+    );
+    try expectRetainedMethodDefaultSymbolIdentityForTest(
+        "class Box { static set value(value = true) { this.result = /./.test(value); } }",
+        "value",
+    );
+
+    const hostile_sources = [_][]const u8{
+        "export const box = { set value(value = seed) { this.result = value; } };",
+        "export const box = { set value(value = next()) { this.result = value; } };",
+        "export const box = { set value(value = 1 + 2) { this.result = value; } };",
+        "export const box = { set value(value = -1) { this.result = value; } };",
+        "export const box = { set value(value = [1]) { this.result = value; } };",
+        "export const box = { set value(value = {}) { this.result = value; } };",
+        "export const box = { set value({ current } = {}) { this.result = current; } };",
+        "export const box = { set value(value = 1) { eval('value'); this.result = value; } };",
+        "export class Box { set value(value = 1) { this.result = value; } }",
+        "const box = { set value(value = 1) { this.result = value; } };",
+    };
+    for (hostile_sources, 0..) |source, source_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var fixture = if (source_index == hostile_sources.len - 1)
+            try runtimeHelperReanalysisTestFixtureForSource(
+                allocator,
+                source,
+                false,
+            )
+        else
+            try runtimeHelperReanalysisTestFixture(allocator, source);
+        var get = false;
+        var set = false;
+        try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+            allocator,
+            &fixture.ast,
+            &fixture.semantic,
+            .{ .unsupported = es5 },
+            &get,
+            &set,
+            null,
+            null,
+        ));
+    }
+
+    var poisoned_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer poisoned_arena.deinit();
+    const poisoned_allocator = poisoned_arena.allocator();
+    var poisoned = try runtimeHelperReanalysisTestFixture(
+        poisoned_allocator,
+        "export const other = 2; export const box = { set value(value = 1) { this.result = value; } };",
+    );
+    var get = false;
+    var set = false;
+    var method_raw: ?usize = null;
+    var parameter_raw: ?usize = null;
+    var other_raw: ?usize = null;
+    var parameter_node_raw: ?u32 = null;
+    var params_raw: ?u32 = null;
+    for (poisoned.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .method_definition) continue;
+        method_raw = raw;
+        const params_idx = poisoned.ast.readExtraNode(node.data.extra, ast_mod.MethodExtra.params);
+        params_raw = @backingInt(params_idx);
+        const params = poisoned.ast.functionParamsList(node);
+        for (poisoned.ast.extra_data.items[params.start .. params.start + params.len]) |raw_parameter| {
+            const parameter_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_parameter));
+            const parameter = poisoned.ast.getNode(parameter_idx);
+            const binding = switch (parameter.tag) {
+                .formal_parameter => poisoned.ast.readExtraNode(parameter.data.extra, ast_mod.FormalParameterExtra.pattern),
+                .assignment_pattern => parameter.data.binary.left,
+                else => parameter_idx,
+            };
+            const name = poisoned.ast.getText(poisoned.ast.getNode(binding).span);
+            if (std.mem.eql(u8, name, "value")) {
+                parameter_raw = @backingInt(binding);
+                parameter_node_raw = raw_parameter;
+            }
+        }
+    }
+    for (poisoned.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .binding_identifier and
+            std.mem.eql(u8, poisoned.ast.getText(node.span), "other")) other_raw = raw;
+    }
+    const raw_method = method_raw orelse return error.MissingPoisonedSetter;
+    const raw_parameter = parameter_raw orelse return error.MissingPoisonedSetterParameter;
+    const raw_parameter_node = parameter_node_raw orelse return error.MissingSetterFormalParameter;
+    const raw_other = other_raw orelse return error.MissingAlternativeSetterSymbol;
+    const raw_params = params_raw orelse return error.MissingSetterParameterList;
+    const method_scope = poisoned.semantic.scope_owner_map.get(@intCast(raw_method)) orelse return error.MissingSetterScope;
+    const parameter_scope = poisoned.semantic.scope_owner_map.get(raw_params) orelse return error.MissingSetterParameterScope;
+    const parameter_sid = poisoned.semantic.symbol_ids[raw_parameter] orelse return error.MissingSetterParameterSymbol;
+    const other_sid = poisoned.semantic.symbol_ids[raw_other] orelse return error.MissingAlternativeSetterSymbol;
+    const method_node = poisoned.ast.nodes.items[raw_method];
+    const parameter_node = poisoned.ast.nodes.items[raw_parameter_node];
+    const method_flags_index = method_node.data.extra + ast_mod.MethodExtra.flags;
+    const original_method_flags = poisoned.ast.extra_data.items[method_flags_index];
+    const parameter_type_index = parameter_node.data.extra + ast_mod.FormalParameterExtra.type_ann;
+    const parameter_flags_index = parameter_node.data.extra + ast_mod.FormalParameterExtra.flags;
+    const default_value_index = parameter_node.data.extra + ast_mod.FormalParameterExtra.default;
+    const original_parameter_type = poisoned.ast.extra_data.items[parameter_type_index];
+    const original_parameter_flags = poisoned.ast.extra_data.items[parameter_flags_index];
+    const original_default_value = poisoned.ast.extra_data.items[default_value_index];
+    const original_parent = poisoned.semantic.scopes[method_scope].parent;
+    const original_strict = poisoned.semantic.scopes[method_scope].is_strict;
+    get = false;
+    set = false;
+
+    @constCast(poisoned.semantic.symbol_ids)[raw_parameter] = other_sid;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    @constCast(poisoned.semantic.symbol_ids)[raw_parameter] = parameter_sid;
+
+    @constCast(poisoned.semantic.scopes)[method_scope].is_strict = false;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    @constCast(poisoned.semantic.scopes)[method_scope].is_strict = original_strict;
+
+    @constCast(poisoned.semantic.scopes)[method_scope].parent = .none;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    @constCast(poisoned.semantic.scopes)[method_scope].parent = original_parent;
+
+    try poisoned.semantic.scope_owner_map.put(poisoned_allocator, raw_params, method_scope);
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    try poisoned.semantic.scope_owner_map.put(poisoned_allocator, raw_params, parameter_scope);
+
+    @constCast(poisoned.semantic.scopes)[method_scope].subtree_has_direct_eval = true;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    @constCast(poisoned.semantic.scopes)[method_scope].subtree_has_direct_eval = false;
+
+    @constCast(poisoned.semantic.scopes)[method_scope].subtree_has_with = true;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    @constCast(poisoned.semantic.scopes)[method_scope].subtree_has_with = false;
+
+    for ([_]u32{ ast_mod.MethodFlags.is_async, ast_mod.MethodFlags.is_generator, ast_mod.MethodFlags.is_getter }) |invalid_flag| {
+        poisoned.ast.extra_data.items[method_flags_index] = original_method_flags | invalid_flag;
+        try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    }
+    poisoned.ast.extra_data.items[method_flags_index] = original_method_flags;
+
+    poisoned.ast.extra_data.items[method_flags_index] |= ast_mod.MethodFlags.is_static;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    const forged_class_member_list = try poisoned.ast.addNodeList(&.{@fromBackingInt(@intCast(raw_method))});
+    _ = try poisoned.ast.addNode(.{ .tag = .class_body, .span = .EMPTY, .data = .{ .list = forged_class_member_list } });
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    poisoned.ast.extra_data.items[method_flags_index] = original_method_flags;
+
+    const decorator_start_index = method_node.data.extra + ast_mod.MethodExtra.deco_start;
+    const decorator_len_index = method_node.data.extra + ast_mod.MethodExtra.deco_len;
+    poisoned.ast.extra_data.items[decorator_len_index] = 1;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    poisoned.ast.extra_data.items[decorator_len_index] = 0;
+    poisoned.ast.extra_data.items[decorator_start_index] = 1;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    poisoned.ast.extra_data.items[decorator_start_index] = 0;
+
+    poisoned.ast.extra_data.items[parameter_type_index] = @intCast(raw_other);
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    poisoned.ast.extra_data.items[parameter_type_index] = original_parameter_type;
+    poisoned.ast.extra_data.items[parameter_flags_index] = 1;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    poisoned.ast.extra_data.items[parameter_flags_index] = original_parameter_flags;
+
+    poisoned.ast.extra_data.items[default_value_index] = @intCast(raw_parameter);
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    poisoned.ast.extra_data.items[default_value_index] = original_default_value;
 
     try std.testing.expect(poisoned.semantic.scope_owner_map.remove(raw_params));
     try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));

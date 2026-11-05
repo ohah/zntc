@@ -18,9 +18,9 @@ Zig bundler AST Visitor는 기본적으로 graph 보존 계약이 없다. plain 
 
 ### 함수·메서드 기본 매개변수의 제한 admission
 
-Bundler retained-graph preflight는 strict 동기 일반 `function` 선언/표현식, arrow, plain object/class method의 단순 식별자 매개변수만 검사한다. 기본값은 boolean/null/number/string literal이어야 하고, 전체 매개변수 목록의 각 바인딩 SID·이름·parameter scope가 일치해야 하며, parameter scope가 실제 함수 scope의 부모여야 한다. 함수·메서드 scope subtree의 direct eval/`with`, async/generator, accessor·decorator, destructuring, 비리터럴 기본값은 거부한다. `static` 플래그는 실제 class body에 단 한 번 소속된 메서드에서만 허용한다. 클래스 메서드는 기존 클래스 retained-graph 조건도 별도로 통과해야 한다. Arrow에서는 cover-grammar `assignment_expression`이 해당 제한 증명을 통과한 매개변수 기본값일 때만 허용한다.
+Bundler retained-graph preflight는 strict 동기 일반 `function` 선언/표현식, arrow, plain object/class method, 단순 setter의 식별자 매개변수만 검사한다. 기본값은 boolean/null/number/string literal이어야 하고, 전체 매개변수 목록의 각 바인딩 SID·이름·parameter scope가 일치해야 하며, parameter scope가 실제 함수 scope의 부모여야 한다. 함수·메서드 scope subtree의 direct eval/`with`, async/generator, getter·decorator, destructuring, 비리터럴 기본값은 거부한다. MethodFlags는 `is_setter`를 허용하고, `is_static`은 실제 class body에 단 한 번 소속된 메서드에서만 허용한다. 클래스 본문의 메서드와 setter는 기존 클래스 retained-graph 조건도 별도로 통과해야 한다. Arrow에서는 cover-grammar `assignment_expression`이 해당 제한 증명을 통과한 매개변수 기본값일 때만 허용한다.
 
-허용된 기본값 lower는 기존 parameter binding의 `SymbolId`로 읽기/쓰기 참조를 복사한다. 회귀 테스트는 bundler preflight admission과 object/class method 변환 뒤 exact output audit를 함께 확인하며, 생성된 기본값 참조가 원본 parameter SID를 유지하는지 검사한다. 비리터럴·복합 패턴·async/generator·sloppy 함수·direct eval, 손상된 parameter SID·strictness·scope 연결·메서드 플래그를 적대 입력으로 거부한다. 이 조합 증거는 전체 target/plugin 조합이나 #4819/#6193 완료를 뜻하지 않는다.
+허용된 기본값 lower는 기존 parameter binding의 `SymbolId`로 읽기/쓰기 참조를 복사한다. 회귀 테스트는 bundler preflight admission과 object/class method·setter 변환 뒤 exact output audit를 함께 확인하며, 생성된 기본값 참조가 원본 parameter SID를 유지하는지 검사한다. 비리터럴·복합 패턴·async/generator·sloppy 함수·direct eval, 손상된 parameter SID·strictness·scope 연결·메서드 플래그를 적대 입력으로 거부한다. 이 조합 증거는 전체 target/plugin 조합이나 #4819/#6193 완료를 뜻하지 않는다.
 
 Arrow의 cover-grammar 기본값은 `.assignment_expression`에서 일반 formal-parameter default로 변환된다. 이 경로도 strict synchronous arrow, 단순 parameter identifier, primitive literal default에 한해 허용한다. 전체 parameter 목록의 exact SID/name/scope와 parameter/body scope 연결을 확인하고 direct eval/`with` 및 나머지 expression/pattern은 거부한다. 회귀 테스트는 합성된 parameter read/write가 원본 arrow parameter SID를 유지하고 exact output audit를 통과하는지 확인한다.
 
