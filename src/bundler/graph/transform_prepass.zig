@@ -20110,6 +20110,31 @@ test "generic prepass run publishes transformed output and preserves parser AST"
     if (module.alias_table) |*table| table.deinit();
     if (module.export_index_by_name) |*index| index.deinit(graph_allocator);
 
+    const object_shadow_source = "var Object; class Box { get value() { return this._value; } set value(value = 1) { this._value = value; } static get count() { return this._count; } static set count(next = 2) { this._count = next; } }";
+    var object_shadow_fixture = try genericPrepassTestFixture(allocator, object_shadow_source, true);
+    const object_shadow_owner = object_shadow_fixture.semantic.captureOwnerToken();
+    var object_shadow_module = Module.init(@fromBackingInt(@as(u32, 7)), "shadowed-object-accessors.js");
+    object_shadow_module.source = object_shadow_source;
+    object_shadow_module.module_type = .js;
+    object_shadow_module.state = .ready;
+    object_shadow_module.ast = object_shadow_fixture.ast;
+    object_shadow_module.semantic = object_shadow_fixture.semantic;
+    var object_shadow_context: TestGraph = .{
+        .allocator = graph_allocator,
+        .transform_options_base = .{
+            .strip_types = true,
+            .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+        },
+    };
+    run(&object_shadow_context, &object_shadow_module, allocator);
+    defer if (object_shadow_module.alias_table) |*table| table.deinit();
+    defer if (object_shadow_module.export_index_by_name) |*index| index.deinit(graph_allocator);
+    try std.testing.expectEqual(@as(usize, 0), object_shadow_context.diag_count);
+    try std.testing.expect(object_shadow_module.ast.?.transformed_root != null);
+    try std.testing.expect(object_shadow_module.transform_cache != null);
+    try std.testing.expectEqual(object_shadow_owner, object_shadow_module.semantic.?.owner_token);
+    try std.testing.expectEqual(@as(usize, 2), object_shadow_module.transform_cache.?.explicit_global_ref_nodes.len);
+
     const visitor_source = "const value = 1 + 2; value;";
     const visitor_fixture = try runtimeHelperReanalysisTestFixture(allocator, visitor_source);
     const visitor_owner = visitor_fixture.semantic.owner_token;
@@ -22806,6 +22831,50 @@ fn runtimeHelperReanalysisTestFixtureForSource(
 
     return .{
         .ast = parser.ast,
+        .semantic = .{
+            .symbols = analyzer.symbols,
+            .scopes = analyzer.scopes.items,
+            .scope_maps = analyzer.scope_maps.items,
+            .scope_owner_map = analyzer.scope_owner_map,
+            .node_scope_provenance = analyzer.node_scope_provenance,
+            .source_owned_retirements = analyzer.source_owned_retirements,
+            .scope_history = analyzer.scope_history,
+            .class_self_symbol_map = analyzer.class_self_symbol_map,
+            .namespace_member_owners = analyzer.namespace_member_owners,
+            .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+            .exported_names = analyzer.exported_names,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .unresolved_references = analyzer.unresolved_references,
+            .references = analyzer.references.items,
+            .numeric_const_texts = analyzer.numeric_const_texts,
+            .helper_scope_map = analyzer.helper_scope_map,
+        },
+    };
+}
+
+fn genericPrepassTestFixture(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    is_module: bool,
+) !RuntimeHelperReanalysisTestFixture {
+    var scanner = try Scanner.init(allocator, source);
+    scanner.is_module = is_module;
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.is_module = is_module;
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = is_module;
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+
+    return .{
+        .ast = parser.ast,
+        .unresolved_nodes = analyzer.unresolved_reference_nodes,
         .semantic = .{
             .symbols = analyzer.symbols,
             .scopes = analyzer.scopes.items,
@@ -27995,6 +28064,18 @@ test "retained graph admits only strict simple synchronous arrow literal default
 }
 
 fn expectRetainedMethodDefaultSymbolIdentityForTest(source: []const u8, parameter_name: []const u8) !void {
+    try expectRetainedMethodDefaultSymbolIdentityWithShadowPolicyForTest(source, parameter_name, false);
+}
+
+fn expectRetainedMethodDefaultSymbolIdentityWithShadowedExternalForTest(source: []const u8, parameter_name: []const u8) !void {
+    try expectRetainedMethodDefaultSymbolIdentityWithShadowPolicyForTest(source, parameter_name, true);
+}
+
+fn expectRetainedMethodDefaultSymbolIdentityWithShadowPolicyForTest(
+    source: []const u8,
+    parameter_name: []const u8,
+    allow_shadowed_external_before_names: bool,
+) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -28060,7 +28141,33 @@ fn expectRetainedMethodDefaultSymbolIdentityForTest(source: []const u8, paramete
     if (try transformer.finishSemanticEdit()) |edited| fixture.semantic.applyEdit(edited);
     module.ast = transformer.ast.*;
     module.semantic = fixture.semantic;
-    const exact = try exactPrepassReport(
+    const exact = if (allow_shadowed_external_before_names) blk: {
+        const coverage = @import("../../transformer/symbol_coverage.zig");
+        const semantic = &module.semantic.?;
+        break :blk try coverage.checkExactQuiet(
+            allocator,
+            &module.ast.?,
+            output_root,
+            parser_node_count,
+            semantic.symbol_ids,
+            semantic.symbols.items,
+            semantic.scopes,
+            semantic.scope_maps,
+            &semantic.scope_owner_map,
+            semantic.references,
+            &.{},
+            &semantic.helper_scope_map,
+            &fixture.unresolved_nodes,
+            &transformer.explicit_global_reference_nodes,
+            &transformer.reference_origin_map,
+            .{
+                .erased_const_enum_external_origins = &transformer.erased_const_enum_external_reference_origins,
+                .namespace_member_owners = &semantic.namespace_member_owners,
+                .namespace_declaration_owners = &semantic.namespace_declaration_owners,
+                .pre_transform_scope_count = pre_transform_scope_count,
+            },
+        );
+    } else try exactPrepassReport(
         allocator,
         &module,
         output_root,
@@ -28070,7 +28177,12 @@ fn expectRetainedMethodDefaultSymbolIdentityForTest(source: []const u8, paramete
         pre_transform_scope_count,
         true,
     );
-    try std.testing.expect(exact != null and exact.?.isClean());
+    if (allow_shadowed_external_before_names) {
+        try std.testing.expect(exact != null and exact.?.hasCompleteOutputIdentityBeforeNames());
+        try std.testing.expectEqual(@as(usize, 2), exact.?.shadowed_external_reference);
+    } else {
+        try std.testing.expect(exact != null and exact.?.isClean());
+    }
     var generated_parameter_edges: usize = 0;
     for (transformer.ast.nodes.items, 0..) |node, raw| {
         if (raw < parser_node_count or node.span.start != parameter_span.start or
@@ -28636,6 +28748,51 @@ test "retained graph preserves simple object setter defaults in an accessor pair
         null,
     ));
     try expectRetainedMethodDefaultSymbolIdentityForTest(source, "value");
+}
+
+test "retained graph preserves setter defaults across distinct accessors with a shadowed Object" {
+    const es5 = @import("../../transformer/compat.zig").fromESTarget(.es5);
+    const source = "var Object; class Box { get value() { return this._value; } set value(value = 1) { this._value = value; } static get count() { return this._count; } static set count(next = 2) { this._count = next; } }";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+    var get = false;
+    var set = false;
+    try std.testing.expect(canRetainGraphForAuditedSyntaxSubset(
+        allocator,
+        &fixture.ast,
+        &fixture.semantic,
+        .{ .unsupported = es5 },
+        &get,
+        &set,
+        null,
+        null,
+    ));
+    try expectRetainedMethodDefaultSymbolIdentityWithShadowedExternalForTest(source, "value");
+    try expectRetainedMethodDefaultSymbolIdentityWithShadowedExternalForTest(source, "next");
+
+    const hostile_sources = [_][]const u8{
+        "var Object; class Box { get value() { return this._value; } set value(value = next()) { this._value = value; } }",
+        "var Object; const key = 'value'; class Box { get [key]() { return this._value; } set [key](value = 1) { this._value = value; } }",
+    };
+    for (hostile_sources) |hostile_source| {
+        var hostile_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer hostile_arena.deinit();
+        const hostile_fixture = try runtimeHelperReanalysisTestFixture(hostile_arena.allocator(), hostile_source);
+        var hostile_get = false;
+        var hostile_set = false;
+        try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+            hostile_arena.allocator(),
+            &hostile_fixture.ast,
+            &hostile_fixture.semantic,
+            .{ .unsupported = es5 },
+            &hostile_get,
+            &hostile_set,
+            null,
+            null,
+        ));
+    }
 }
 
 test "retained graph preserves audited class constructor default parameter identities" {
