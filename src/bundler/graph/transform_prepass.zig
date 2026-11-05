@@ -8366,6 +8366,89 @@ fn isExactSimpleFunctionParameterBinding(
     return Scanner.identifierNamesEqual(ast.getText(ast.getNode(binding).span), ast.getText(symbol.name));
 }
 
+/// Arrow parameter defaults use cover-grammar assignments in the parser AST.
+/// Retain the graph only for strict synchronous arrows with a complete list of
+/// simple source parameter identities and primitive literal defaults. The
+/// arrow lowerer converts these assignments to ordinary parameter defaults,
+/// then the parameter lowerer copies references from their original SymbolIds.
+fn collectSimpleArrowDefaultParameterNodes(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    raw_arrow: u32,
+    arrow: ast_mod.Node,
+    defaults: *std.AutoHashMapUnmanaged(u32, void),
+) bool {
+    if (arrow.tag != .arrow_function_expression) return false;
+    const extra = arrow.data.extra;
+    const extras = ast.extra_data.items;
+    if (extra > extras.len or extras.len - extra <= ast_mod.ArrowExtra.flags or
+        extras.len - extra <= ast_mod.ArrowExtra.params or
+        (extras[extra + ast_mod.ArrowExtra.flags] & ast_mod.ArrowFlags.is_async) != 0) return false;
+
+    const arrow_scope = semantic.scope_owner_map.get(raw_arrow) orelse return false;
+    if (arrow_scope >= semantic.scopes.len) return false;
+    const arrow_frame = semantic.scopes[arrow_scope];
+    if (arrow_frame.kind != .function or !arrow_frame.is_strict or
+        arrow_frame.subtree_has_direct_eval or arrow_frame.subtree_has_with) return false;
+
+    const params_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + ast_mod.ArrowExtra.params]));
+    if (params_idx.isNone() or @backingInt(params_idx) >= ast.nodes.items.len or
+        ast.getNode(params_idx).tag != .formal_parameters) return false;
+    const parameter_scope = semantic.scope_owner_map.get(@backingInt(params_idx)) orelse return false;
+    if (parameter_scope >= semantic.scopes.len or @backingInt(arrow_frame.parent) != parameter_scope) return false;
+
+    const params = ast.getNode(params_idx).data.list;
+    if (params.start > extras.len or params.len > extras.len - params.start) return false;
+    var has_default = false;
+    for (extras[params.start .. params.start + params.len]) |raw_parameter| {
+        if (raw_parameter >= ast.nodes.items.len) return false;
+        const parameter_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_parameter));
+        const parameter = ast.getNode(parameter_idx);
+        var binding = parameter_idx;
+        var default_value: ast_mod.NodeIndex = .none;
+        if (parameter.tag == .assignment_expression) {
+            if (parameter.data.binary.flags != @backingInt(token_mod.Kind.eq)) return false;
+            binding = parameter.data.binary.left;
+            default_value = parameter.data.binary.right;
+        }
+        if (binding.isNone() or @backingInt(binding) >= ast.nodes.items.len) return false;
+        const binding_node = ast.getNode(binding);
+        if (binding_node.tag != .assignment_target_identifier and
+            binding_node.tag != .identifier_reference and binding_node.tag != .binding_identifier) return false;
+        if (!isExactSimpleArrowParameterBinding(ast, semantic, binding, parameter_scope)) return false;
+        if (!default_value.isNone()) {
+            if (@backingInt(default_value) >= ast.nodes.items.len) return false;
+            const default_tag = ast.getNode(default_value).tag;
+            if (default_tag != .boolean_literal and default_tag != .null_literal and
+                default_tag != .numeric_literal and default_tag != .string_literal) return false;
+            has_default = true;
+        }
+    }
+    if (!has_default) return false;
+
+    for (extras[params.start .. params.start + params.len]) |raw_parameter| {
+        if (raw_parameter >= ast.nodes.items.len) return false;
+        const parameter = ast.nodes.items[raw_parameter];
+        if (parameter.tag == .assignment_expression) defaults.put(ast.allocator, raw_parameter, {}) catch return false;
+    }
+    return true;
+}
+
+fn isExactSimpleArrowParameterBinding(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    binding: ast_mod.NodeIndex,
+    parameter_scope: u32,
+) bool {
+    const binding_tag = ast.getNode(binding).tag;
+    if (!hasValidSourceSymbol(ast, semantic, binding, binding_tag)) return false;
+    const symbol_raw = semantic.symbol_ids[@backingInt(binding)] orelse return false;
+    const symbol = semantic.symbols.items[symbol_raw];
+    if (symbol.kind != .parameter or @backingInt(symbol.scope_id) != parameter_scope or
+        symbol.synthetic_name.len != 0) return false;
+    return Scanner.identifierNamesEqual(ast.getText(ast.getNode(binding).span), ast.getText(symbol.name));
+}
+
 fn collectRetainedPreflightParents(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -9843,8 +9926,8 @@ test "using state-machine predicate follows syntax and target support" {
 /// Async-arrow captures must pass their own preflight.
 /// Simple literal defaults on strict ordinary synchronous functions use their
 /// original parameter SymbolIds. Direct eval, non-literal defaults, methods,
-/// async/generator functions, and parameter expressions on arrows remain
-/// outside this subset.
+/// async/generator functions, and unsupported arrow parameter expressions
+/// remain outside this subset.
 pub fn optionalNullishSource(allocator: std.mem.Allocator, ast: *const ast_mod.Ast, semantic: *const ModuleSemanticData, options: TransformOptions) !?@import("../../transformer/optional_nullish_composition.zig").Source {
     return @import("../../transformer/optional_nullish_composition.zig").sourcePlan(allocator, ast, semantic, options, isRetainableOptionalChainMemberAccess, isRetainableBoundSourceCallCalleeChain);
 }
@@ -10322,17 +10405,30 @@ fn canRetainGraphForAuditedSyntaxSubset(
     defer lowered_simple_constructor_default_nodes.deinit(ast.allocator);
     var lowered_simple_function_default_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer lowered_simple_function_default_nodes.deinit(ast.allocator);
+    var lowered_simple_arrow_owners: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer lowered_simple_arrow_owners.deinit(ast.allocator);
+    var lowered_simple_arrow_default_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer lowered_simple_arrow_default_nodes.deinit(ast.allocator);
     if (options.unsupported.default_params or options.unsupported.destructuring) {
         for (reachable_nodes) |raw_idx| {
             const function = ast.nodes.items[raw_idx];
-            if (function.tag != .function_declaration and function.tag != .function_expression) continue;
-            _ = collectSimpleFunctionDefaultParameterNodes(
-                ast,
-                semantic,
-                @intCast(raw_idx),
-                function,
-                &lowered_simple_function_default_nodes,
-            );
+            if (function.tag == .function_declaration or function.tag == .function_expression) {
+                _ = collectSimpleFunctionDefaultParameterNodes(
+                    ast,
+                    semantic,
+                    @intCast(raw_idx),
+                    function,
+                    &lowered_simple_function_default_nodes,
+                );
+            } else if (function.tag == .arrow_function_expression) {
+                if (options.unsupported.default_params and collectSimpleArrowDefaultParameterNodes(
+                    ast,
+                    semantic,
+                    @intCast(raw_idx),
+                    function,
+                    &lowered_simple_arrow_default_nodes,
+                )) lowered_simple_arrow_owners.put(ast.allocator, @intCast(raw_idx), {}) catch return false;
+            }
         }
     }
     var function_body_class_declarations: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -10492,6 +10588,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_lowered_parameter_destructuring = false;
     var found_lowered_async_generator_parameter_arguments_default = false;
     var found_lowered_simple_function_parameter_default = false;
+    var found_lowered_simple_arrow_parameter_default = false;
     var found_lowered_array_spread = false;
     var found_lowered_static_block = false;
     var found_lowered_exponentiation = false;
@@ -10527,7 +10624,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     if (params_idx.isNone() or @backingInt(params_idx) >= ast.nodes.items.len or
                         ast.nodes.items[@backingInt(params_idx)].tag != .formal_parameters) return false;
                     const params = ast.nodes.items[@backingInt(params_idx)].data.list;
-                    if (ast_walk.parameterListHasExpressions(allocator, ast, params) catch return false) return false;
+                    if (ast_walk.parameterListHasExpressions(allocator, ast, params) catch return false) {
+                        if (!lowered_simple_arrow_owners.contains(raw_idx)) return false;
+                        found_lowered_simple_arrow_parameter_default = true;
+                    }
                 }
                 const flags_at = node.data.extra + ast_mod.ArrowExtra.flags;
                 if (flags_at >= ast.extra_data.items.len) return false;
@@ -10786,6 +10886,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .assignment_expression => {
                 const operator: token_mod.Kind = @fromBackingInt(@intCast(node.data.binary.flags));
+                if (lowered_simple_arrow_default_nodes.contains(raw_idx)) {
+                    if (operator != .eq) return false;
+                    found_lowered_simple_arrow_parameter_default = true;
+                }
                 if (options.unsupported.exponentiation and operator == .star2_eq) {
                     // Ordinary member temps and direct super-property temps
                     // are registered by their respective semantic editors.
@@ -11242,6 +11346,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_lowered_simple_static_class_field or
         found_native_destructuring or
         found_lowered_simple_function_parameter_default or
+        found_lowered_simple_arrow_parameter_default or
         found_lowered_async_generator_parameter_arguments_default or
         found_lowered_var_destructuring or found_lowered_destructuring_assignment or found_lowered_parameter_destructuring or
         found_safe_template_literal or found_lowered_optional_chaining or found_object_shorthand or found_lowered_object_method or
@@ -27455,7 +27560,6 @@ test "retained graph admits only strict simple synchronous function literal defa
         "export function read({ value = 1 } = {}) { return value; }",
         "export async function read(value = 1) { return value; }",
         "export function* read(value = 1) { return value; }",
-        "export const read = (value = 1) => value;",
         "export function read(value = 1) { eval('value'); return value; }",
     };
     for (hostile_sources) |source| {
@@ -27584,6 +27688,262 @@ test "retained graph admits only strict simple synchronous function literal defa
         null,
         null,
     ));
+}
+
+test "retained graph admits only strict simple synchronous arrow literal defaults" {
+    const es5 = @import("../../transformer/compat.zig").fromESTarget(.es5);
+    const safe_sources = [_][]const u8{
+        "export const read = (value = 1) => value;",
+        "export const read = (first, value = 'text', last = null) => value;",
+        "export const read = (value = true) => /./.test(value);",
+    };
+    for (safe_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+        var get = false;
+        var set = false;
+        const admitted = canRetainGraphForAuditedSyntaxSubset(
+            allocator,
+            &fixture.ast,
+            &fixture.semantic,
+            .{ .unsupported = es5 },
+            &get,
+            &set,
+            null,
+            null,
+        );
+        try std.testing.expect(admitted);
+    }
+
+    for ([_]TransformOptions{
+        .{ .unsupported = .{ .arrow = true } },
+        .{ .unsupported = .{ .default_params = true } },
+    }) |options| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var fixture = try runtimeHelperReanalysisTestFixture(
+            allocator,
+            "export const read = (value = 1) => value;",
+        );
+        var get = false;
+        var set = false;
+        try std.testing.expect(canRetainGraphForAuditedSyntaxSubset(
+            allocator,
+            &fixture.ast,
+            &fixture.semantic,
+            options,
+            &get,
+            &set,
+            null,
+            null,
+        ));
+    }
+
+    var output_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer output_arena.deinit();
+    const output_allocator = output_arena.allocator();
+    var output_fixture = try runtimeHelperReanalysisTestFixture(
+        output_allocator,
+        "export const read = (value = 1) => /./.test(value);",
+    );
+    const parser_node_count: u32 = @intCast(output_fixture.ast.nodes.items.len);
+    const pre_transform_scope_count = output_fixture.semantic.scopes.len;
+    var source_parameter_binding: ?usize = null;
+    for (output_fixture.ast.nodes.items) |node| {
+        if (node.tag != .arrow_function_expression) continue;
+        const params = output_fixture.ast.functionParamsList(node);
+        for (output_fixture.ast.extra_data.items[params.start .. params.start + params.len]) |raw_param| {
+            const parameter = output_fixture.ast.nodes.items[raw_param];
+            if (parameter.tag != .assignment_expression) continue;
+            const binding = parameter.data.binary.left;
+            if (Scanner.identifierNamesEqual(output_fixture.ast.getText(output_fixture.ast.getNode(binding).span), "value")) {
+                source_parameter_binding = @backingInt(binding);
+            }
+        }
+    }
+    const parameter_binding_raw = source_parameter_binding orelse return error.MissingArrowDefaultParameterBinding;
+    const parameter_binding_span = output_fixture.ast.nodes.items[parameter_binding_raw].span;
+    const parameter_symbol_id = output_fixture.semantic.symbol_ids[parameter_binding_raw] orelse
+        return error.MissingArrowDefaultParameterSymbol;
+    var output_module = Module.init(@fromBackingInt(0), "arrow-default-parameter.js");
+    output_module.ast = output_fixture.ast;
+    output_module.semantic = output_fixture.semantic;
+    const Plugin = @import("../plugin.zig").Plugin;
+    const context = .{ .allocator = output_allocator, .flow = false, .worklet_transform = false, .plugins = &[_]Plugin{}, .styled_components = false, .emotion = false };
+    var admission_get = false;
+    var admission_set = false;
+    try std.testing.expect(canKeepPrepassSemanticGraph(
+        &context,
+        &output_module,
+        .{ .strip_types = true, .unsupported = es5 },
+        context.plugins,
+        &admission_get,
+        &admission_set,
+        null,
+    ));
+    var output_transformer = try Transformer.init(
+        output_allocator,
+        &output_fixture.ast,
+        .{ .strip_types = true, .unsupported = es5 },
+    );
+    try output_transformer.initSymbolIds(output_fixture.semantic.symbol_ids);
+    output_transformer.symbols = output_fixture.semantic.symbols.items;
+    output_transformer.references = output_fixture.semantic.references;
+    output_transformer.scopes = output_fixture.semantic.scopes;
+    output_transformer.scope_maps = output_fixture.semantic.scope_maps;
+    output_transformer.scope_owner_map = output_fixture.semantic.scope_owner_map;
+    output_transformer.node_scope_provenance = output_fixture.semantic.node_scope_provenance;
+    output_transformer.source_owned_retirements = output_fixture.semantic.source_owned_retirements;
+    output_transformer.scope_history = output_fixture.semantic.scope_history;
+    output_transformer.class_self_symbol_map = output_fixture.semantic.class_self_symbol_map;
+    output_transformer.helper_scope_map = output_fixture.semantic.helper_scope_map;
+    output_transformer.unresolved_references = &output_fixture.semantic.unresolved_references;
+    output_transformer.semantic_edit_enabled = true;
+    const output_root = try output_transformer.transform();
+    if (try output_transformer.finishSemanticEdit()) |edited| output_fixture.semantic.applyEdit(edited);
+    output_module.ast = output_transformer.ast.*;
+    output_module.semantic = output_fixture.semantic;
+    const output_exact = try exactPrepassReport(
+        output_allocator,
+        &output_module,
+        output_root,
+        parser_node_count,
+        &output_transformer,
+        &output_fixture.unresolved_nodes,
+        pre_transform_scope_count,
+        true,
+    );
+    try std.testing.expect(output_exact != null and output_exact.?.isClean());
+    var generated_parameter_edges: usize = 0;
+    for (output_transformer.ast.nodes.items, 0..) |node, raw| {
+        if (raw < parser_node_count or node.span.start != parameter_binding_span.start or
+            node.span.end != parameter_binding_span.end or
+            (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) or
+            !Scanner.identifierNamesEqual(output_transformer.ast.getText(node.span), "value")) continue;
+        const output_sid = output_transformer.getSymbolIdAt(@fromBackingInt(@intCast(raw))) orelse
+            return error.MissingLoweredArrowDefaultReferenceSymbol;
+        try std.testing.expectEqual(parameter_symbol_id, output_sid);
+        generated_parameter_edges += 1;
+    }
+    try std.testing.expect(generated_parameter_edges >= 3);
+
+    const hostile_sources = [_][]const u8{
+        "export const read = (value = seed) => value;",
+        "export const read = (value = next()) => value;",
+        "export const read = (value = 1 + 2) => value;",
+        "export const read = (value = -1) => value;",
+        "export const read = (value = [1]) => value;",
+        "export const read = (value = {}) => value;",
+        "export const read = ({ value } = {}) => value;",
+        "export const read = (value = 1, ...rest) => value;",
+        "export const read = async (value = 1) => value;",
+        "export const read = (value = 1) => { eval('value'); return value; };",
+    };
+    for (hostile_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+        var get = false;
+        var set = false;
+        try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+            allocator,
+            &fixture.ast,
+            &fixture.semantic,
+            .{ .unsupported = es5 },
+            &get,
+            &set,
+            null,
+            null,
+        ));
+    }
+
+    var poisoned_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer poisoned_arena.deinit();
+    const poisoned_allocator = poisoned_arena.allocator();
+    var poisoned = try runtimeHelperReanalysisTestFixture(
+        poisoned_allocator,
+        "export const read = (value = 1, other) => value + other;",
+    );
+    var arrow_raw: ?u32 = null;
+    var value_raw: ?usize = null;
+    var other_raw: ?usize = null;
+    var params_raw: ?u32 = null;
+    for (poisoned.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .arrow_function_expression) {
+            arrow_raw = @intCast(raw);
+            const params_idx = poisoned.ast.readExtraNode(node.data.extra, ast_mod.ArrowExtra.params);
+            params_raw = @backingInt(params_idx);
+        }
+    }
+    const raw_arrow = arrow_raw orelse return error.MissingArrowDefaultOwner;
+    const raw_params = params_raw orelse return error.MissingArrowDefaultParameterList;
+    const params_list = poisoned.ast.functionParamsList(poisoned.ast.nodes.items[raw_arrow]);
+    for (poisoned.ast.extra_data.items[params_list.start .. params_list.start + params_list.len]) |raw_parameter| {
+        const parameter_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_parameter));
+        const parameter = poisoned.ast.getNode(parameter_idx);
+        const binding = if (parameter.tag == .assignment_expression) parameter.data.binary.left else parameter_idx;
+        const name = poisoned.ast.getText(poisoned.ast.getNode(binding).span);
+        if (std.mem.eql(u8, name, "value")) value_raw = @backingInt(binding);
+        if (std.mem.eql(u8, name, "other")) other_raw = @backingInt(binding);
+    }
+    const value_binding = value_raw orelse return error.MissingArrowDefaultParameterBinding;
+    const other_binding = other_raw orelse return error.MissingOtherArrowParameterBinding;
+    const arrow_scope = poisoned.semantic.scope_owner_map.get(raw_arrow) orelse return error.MissingArrowDefaultScope;
+    const parameter_scope = poisoned.semantic.scope_owner_map.get(raw_params) orelse return error.MissingArrowParameterScope;
+    const parameter_sid = poisoned.semantic.symbol_ids[value_binding] orelse return error.MissingArrowParameterSymbol;
+    const other_sid = poisoned.semantic.symbol_ids[other_binding] orelse return error.MissingOtherArrowParameterSymbol;
+    const original_arrow = poisoned.ast.nodes.items[raw_arrow];
+    const default_raw = poisoned.ast.extra_data.items[poisoned.ast.functionParamsList(original_arrow).start];
+    const original_assignment = poisoned.ast.nodes.items[default_raw];
+    const original_parent = poisoned.semantic.scopes[arrow_scope].parent;
+    const original_strict = poisoned.semantic.scopes[arrow_scope].is_strict;
+    var get = false;
+    var set = false;
+
+    @constCast(poisoned.semantic.symbol_ids)[value_binding] = other_sid;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    @constCast(poisoned.semantic.symbol_ids)[value_binding] = parameter_sid;
+
+    @constCast(poisoned.semantic.scopes)[arrow_scope].is_strict = false;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    @constCast(poisoned.semantic.scopes)[arrow_scope].is_strict = original_strict;
+
+    @constCast(poisoned.semantic.scopes)[arrow_scope].parent = .none;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    @constCast(poisoned.semantic.scopes)[arrow_scope].parent = original_parent;
+
+    try poisoned.semantic.scope_owner_map.put(poisoned_allocator, raw_params, arrow_scope);
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    try poisoned.semantic.scope_owner_map.put(poisoned_allocator, raw_params, parameter_scope);
+
+    @constCast(poisoned.semantic.scopes)[arrow_scope].subtree_has_direct_eval = true;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    @constCast(poisoned.semantic.scopes)[arrow_scope].subtree_has_direct_eval = false;
+
+    @constCast(poisoned.semantic.scopes)[arrow_scope].subtree_has_with = true;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    @constCast(poisoned.semantic.scopes)[arrow_scope].subtree_has_with = false;
+
+    const arrow_flags_index = original_arrow.data.extra + ast_mod.ArrowExtra.flags;
+    const original_arrow_flags = poisoned.ast.extra_data.items[arrow_flags_index];
+    poisoned.ast.extra_data.items[arrow_flags_index] |= ast_mod.ArrowFlags.is_async;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    poisoned.ast.extra_data.items[arrow_flags_index] = original_arrow_flags;
+
+    poisoned.ast.nodes.items[default_raw].data.binary.flags = @backingInt(token_mod.Kind.plus);
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    poisoned.ast.nodes.items[default_raw] = original_assignment;
+
+    poisoned.ast.nodes.items[default_raw].data.binary.right = @fromBackingInt(std.math.maxInt(u32));
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    poisoned.ast.nodes.items[default_raw] = original_assignment;
+
+    try std.testing.expect(poisoned.semantic.scope_owner_map.remove(raw_params));
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
 }
 
 test "ES5 legacy assignment fields retain only primitive literal instance fields" {
