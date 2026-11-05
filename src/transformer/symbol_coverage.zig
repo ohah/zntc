@@ -3327,6 +3327,7 @@ pub fn hasExactReachableReferenceResolution(
             if (helper_scope_map.get(name)) |helper_id| break :blk @intCast(helper_id);
             break :blk null;
         } else if (ctx.isEnumMemberReference(raw, name, symbol_id, reference.scope_id)) symbol_id else resolveInExactScopes(&ctx, name, reference.scope_id);
+        if (ctx.oom) return error.OutOfMemory;
         if (expected == null or expected.? != symbol_id) return false;
     }
 
@@ -3350,9 +3351,11 @@ pub fn hasExactReachableReferenceResolution(
         }
         for (symbols, 0..) |symbol, symbol_raw| {
             if (symbol.synthetic_kind != .enum_iife_member) continue;
-            if (ctx.isEnumMemberReference(raw, name, @intCast(symbol_raw), use_scope)) return false;
+            const is_enum_member = ctx.isEnumMemberReference(raw, name, @intCast(symbol_raw), use_scope);
+            if (ctx.oom) return error.OutOfMemory;
+            if (is_enum_member) return false;
         }
-        if (ctx.oom) return false;
+        if (ctx.oom) return error.OutOfMemory;
     }
     return true;
 }
