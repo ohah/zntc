@@ -8297,9 +8297,12 @@ fn collectSimpleFunctionDefaultParameterNodes(
         // remain outside this bounded default-lowering proof.
         const flags = extras[extra + flags_slot];
         if ((flags & ~(ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_setter)) != 0 or
-            extras.len - extra <= ast_mod.MethodExtra.deco_len or
-            extras[extra + ast_mod.MethodExtra.deco_start] != 0 or
-            extras[extra + ast_mod.MethodExtra.deco_len] != 0) return false;
+            extras.len - extra <= ast_mod.MethodExtra.deco_len) return false;
+        const decorator_start = extras[extra + ast_mod.MethodExtra.deco_start];
+        const decorator_len = extras[extra + ast_mod.MethodExtra.deco_len];
+        // `deco_start` is an offset and may be nonzero for an empty list when
+        // earlier members already used the shared extras array.
+        if (decorator_start > extras.len or decorator_len != 0) return false;
         // Plain instance methods do not need a parent-list scan. Setter and
         // static admission depends on the unique direct owner, so validate it
         // only for those method forms.
@@ -28531,7 +28534,18 @@ test "retained graph admits only strict simple synchronous setter literal defaul
     ));
     poisoned.ast.extra_data.items[decorator_len_index] = 0;
     poisoned.ast.extra_data.items[decorator_start_index] = 1;
+    poisoned.ast.extra_data.items[decorator_len_index] = 1;
     try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    try std.testing.expect(!collectSimpleFunctionDefaultParameterNodes(
+        &poisoned.ast,
+        &poisoned.semantic,
+        @intCast(raw_method),
+        method_node,
+        &poisoned_method_defaults,
+    ));
+    poisoned.ast.extra_data.items[decorator_len_index] = 0;
+    poisoned.ast.extra_data.items[decorator_start_index] = 0;
+    poisoned.ast.extra_data.items[decorator_start_index] = @intCast(poisoned.ast.extra_data.items.len + 1);
     try std.testing.expect(!collectSimpleFunctionDefaultParameterNodes(
         &poisoned.ast,
         &poisoned.semantic,
@@ -28561,6 +28575,45 @@ test "retained graph admits only strict simple synchronous setter literal defaul
 
     try std.testing.expect(poisoned.semantic.scope_owner_map.remove(raw_params));
     try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+}
+
+test "retained graph preserves simple setter defaults in an accessor pair" {
+    const es5 = @import("../../transformer/compat.zig").fromESTarget(.es5);
+    const source = "class Box { get value() { return this._value; } set value(value = 1) { this._value = value; } }";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+    var setter_defaults: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer setter_defaults.deinit(allocator);
+    var collected_setter_defaults = false;
+    for (fixture.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .method_definition) continue;
+        const flags = fixture.ast.extra_data.items[node.data.extra + ast_mod.MethodExtra.flags];
+        if ((flags & ast_mod.MethodFlags.is_setter) == 0) continue;
+        collected_setter_defaults = collectSimpleFunctionDefaultParameterNodes(
+            &fixture.ast,
+            &fixture.semantic,
+            @intCast(raw),
+            node,
+            &setter_defaults,
+        );
+        break;
+    }
+    try std.testing.expect(collected_setter_defaults);
+    var get = false;
+    var set = false;
+    try std.testing.expect(canRetainGraphForAuditedSyntaxSubset(
+        allocator,
+        &fixture.ast,
+        &fixture.semantic,
+        .{ .unsupported = es5 },
+        &get,
+        &set,
+        null,
+        null,
+    ));
+    try expectRetainedMethodDefaultSymbolIdentityForTest(source, "value");
 }
 
 test "retained graph preserves audited class constructor default parameter identities" {
