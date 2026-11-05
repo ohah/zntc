@@ -117,17 +117,21 @@ const EXACT_MATRIX_REPORT_PREFIX_BY_KIND = {
   post: 'zntc: symbol-identity-post-minify ',
 } as const;
 const EXACT_MATRIX_OBSERVATION_FINGERPRINT =
-  '734d888b4d4a6d4df07c7cba964b288497df201ef083b2178cdc82867ae4e1a5';
+  '8c9c6651c8f1e6b942e586534bb91a335471fb7c3592b0870639979ed1431dca';
+// The 4730 using-module fixture now has a separate class-self binding leaf
+// when using lowering copies its named class declaration into an expression.
+// This exact identity contributes one generated binding across four lowered
+// targets and three minify modes, without changing emitted output.
 const EXACT_MATRIX_OBSERVATION_TOTALS = {
-  'exact.generated_bindings': 15318,
+  'exact.generated_bindings': 15330,
   'exact.generated_references': 48396,
   'exact.generated_scope_owners_checked': 13413,
   'exact.external': 15147,
   'exact.declaration_anchors_checked': 49458,
   'exact.namespace_iife_params': 270,
   'exact.enum_iife_params': 36,
-  'coverage.new_user_idents': 8187,
-  'strict.bound': 61479,
+  'coverage.new_user_idents': 8199,
+  'strict.bound': 61491,
   'strict.external': 2067,
   'strict.marked_synthetic': 53514,
   'post.bindings': 50931,
