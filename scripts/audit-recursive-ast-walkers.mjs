@@ -47,6 +47,14 @@ const ALLOWLIST = {
     class: 'iterative_safe',
     note: 'explicit source-owner stack records scope and actual enclosing lowering mode',
   },
+  'src/transformer/generator_native_lexical.zig::publishSameCaseClasses': {
+    class: 'iterative_safe',
+    note: 'explicit heap Work stack selects actual retained class declarations without recursive descent',
+  },
+  'src/transformer/generator_native_lexical.zig::classCases': {
+    class: 'iterative_safe',
+    note: 'explicit heap Work stack tracks actual generated state-case ownership without recursive descent',
+  },
   // Exact main1f417 audit: actual function bodies reviewed; inline tests tracked separately.
   'src/bundler/graph/transform_prepass.zig::methodSuperUsesOnlyBodyOrSyncArrowChain': {
     class: 'iterative_safe',

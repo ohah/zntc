@@ -75,6 +75,10 @@ fn buildWorkerThread(async_data: *BuildAsyncData) void {
     async_data.result = bundler.bundle(common.io()) catch |err| {
         async_data.err_msg = if (err == error.LoopDynamicScope)
             "ZNTC1509: direct eval observes a loop lexical environment requiring lowering"
+        else if (err == error.GeneratorNativeLexicalResume)
+            "ZNTC1510: retained class lexical cell cannot be preserved in the generated state callback"
+        else if (err == error.GeneratorNativeLexicalNesting)
+            "ZNTC1511: distinct source lexical cells collide in generated state storage"
         else if (err == error.ArrowPrivateDynamicScope)
             "ZNTC1506: retained dynamic capture contains private syntax requiring lowering for the target"
         else if (err == error.StaticInitializerDynamicScope)

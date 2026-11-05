@@ -1643,3 +1643,72 @@ test "#6004 callback temp hoist carries its producer binding by allocator slot" 
     try std.testing.expectEqual(second_binding, second_hoisted.items[0].binding);
     try std.testing.expect(second_binding != first_binding);
 }
+
+test "native lexical state machine catch storage follows actual lowering demand" {
+    const Case = struct { source: []const u8, lowered: bool };
+    const cases = [_]Case{
+        .{ .source = "function* run(){let value=0;try{throw 41}catch(e){value=e}yield 0;return value}", .lowered = false },
+        .{ .source = "function* run(){try{throw 41}catch(e){yield e;return e+1}}", .lowered = true },
+    };
+    for (cases) |case| for ([_]bool{ false, true }) |es5| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, case.source);
+        var parser = Parser.init(a, &scanner);
+        _ = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        var source_catch: ast_mod.NodeIndex = .none;
+        var source_function: ast_mod.NodeIndex = .none;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag == .catch_clause) source_catch = @fromBackingInt(@intCast(raw));
+            if (node.tag == .function_declaration) source_function = @fromBackingInt(@intCast(raw));
+        }
+        const source_binding = parser.ast.getNode(source_catch).data.binary.left;
+        const sid = analyzer.symbol_ids.items[@backingInt(source_binding)].?;
+        const source_scope = analyzer.symbols.items[sid].scope_id;
+        var unsupported = TransformOptions.compat.fromESTarget(if (es5) .es5 else .es2015);
+        unsupported.generator = true;
+        var t = try Transformer.init(a, &parser.ast, .{ .unsupported = unsupported, .emit_runtime_helper_imports = true });
+        try t.initSymbolIds(analyzer.symbol_ids.items);
+        t.symbols = analyzer.symbols.items;
+        t.references = analyzer.references.items;
+        t.scopes = analyzer.scopes.items;
+        t.scope_maps = analyzer.scope_maps.items;
+        t.scope_owner_map = analyzer.scope_owner_map;
+        t.class_self_symbol_map = analyzer.class_self_symbol_map;
+        t.node_scope_provenance = analyzer.node_scope_provenance;
+        t.unresolved_references = &analyzer.unresolved_references;
+        t.semantic_edit_enabled = true;
+        const wrapper_scope = t.originalFunctionScope(source_function);
+        const output = try t.transform();
+        const edited = (try t.finishSemanticEdit()).?;
+        const reachable = try ast_walk.collectReachableNodeIndicesFrom(a, t.ast, output);
+        var actual_binding: ast_mod.NodeIndex = .none;
+        var declarations: usize = 0;
+        for (edited.references) |row| {
+            if (!row.flags.declare or @backingInt(row.symbol_id) != sid) continue;
+            actual_binding = row.declaration_node_index;
+            try std.testing.expectEqual(edited.symbols.items[sid].scope_id, row.scope_id);
+            declarations += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), declarations);
+        try std.testing.expect(!actual_binding.isNone());
+        try std.testing.expectEqual(@as(?u32, sid), edited.symbol_ids[@backingInt(actual_binding)]);
+        var parent_edges: usize = 0;
+        var native_catches: usize = 0;
+        for (reachable) |raw| {
+            const node = t.ast.nodes.items[raw];
+            if (node.tag == .catch_clause and node.data.binary.left == actual_binding) native_catches += 1;
+            var children = ast_walk.children(t.ast, node);
+            while (children.next()) |child| if (child == actual_binding) {
+                parent_edges += 1;
+            };
+        }
+        try std.testing.expectEqual(@as(usize, 1), parent_edges);
+        try std.testing.expectEqual(@as(usize, if (case.lowered) 0 else 1), native_catches);
+        try std.testing.expectEqual(if (case.lowered) wrapper_scope else source_scope, edited.symbols.items[sid].scope_id);
+    };
+}

@@ -21062,6 +21062,12 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     }
 
     const root = transformer.transform() catch return;
+    if (transformer.unsupported_generator_native_lexical) |finding| {
+        const is_resume = finding.reason == .across_resume;
+        self.addDiag(if (is_resume) .generator_native_lexical_resume else .generator_native_lexical_nesting, .@"error", module.path, finding.span, .parse, if (is_resume) TransformOptions.generator_native_lexical_resume_msg else TransformOptions.generator_native_lexical_nesting_msg, null);
+        candidate_diagnosed.* = true;
+        return;
+    }
     // The exact identity gate below can validate existing SymbolIds, but it
     // cannot infer that an AST plugin moved references under a new dynamic
     // object environment. This applies even when the plugin has no graph

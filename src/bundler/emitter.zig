@@ -2253,6 +2253,14 @@ pub fn emitModuleWithHolderReservations(
         }
         return error.LoopDynamicScope;
     }
+    if (transformer.unsupported_generator_native_lexical) |finding| {
+        const code: types.BundlerDiagnostic.ErrorCode = if (finding.reason == .across_resume) .generator_native_lexical_resume else .generator_native_lexical_nesting;
+        if (linker) |l| for (l.graph.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == code and diagnostic.severity == .@"error" and std.mem.eql(u8, diagnostic.file_path, module.path)) return null;
+        };
+        if (finding.reason == .across_resume) return error.GeneratorNativeLexicalResume;
+        return error.GeneratorNativeLexicalNesting;
+    }
     if (transformer.unsupported_arrow_private_scope_span != null) {
         if (linker) |l| {
             for (l.graph.diagnostics.items) |diagnostic| {

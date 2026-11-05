@@ -261,6 +261,7 @@ pub fn Methods(comptime Transformer: type) type {
                     defer GenMod.leaveStateMachineTemps(self, &saved_sm_temps);
                     var sm_result = try GenMod.buildStateMachine(self, body_idx, span, state_parent_scope);
                     defer sm_result.hoisted_temps.deinit(self.allocator);
+                    if (self.unsupported_generator_native_lexical != null) return .none;
                     // body == none 은 buildStateMachine 의 empty-body 조기반환뿐
                     // (temp 미할당) → counter 복원 불필요, non-generator 경로로
                     // fall-through 안전. hoist+복원은 if 안에서만 수행.
@@ -269,6 +270,7 @@ pub fn Methods(comptime Transformer: type) type {
                         const gen = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
                         const gen_wrapper = try es_helpers.wrapInFunction(self, gen.call, span);
                         try GenMod.bindWrappedStateMachine(self, info.source_member_idx, gen_wrapper, gen, &saved_sm_temps, sm_result.hoisted_temps.items, span, generator_source);
+                        if (self.unsupported_generator_native_lexical != null) return .none;
                         const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper, span);
                         const func_expr = try buildWrappedFunc(
                             self,

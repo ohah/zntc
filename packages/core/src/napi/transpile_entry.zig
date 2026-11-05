@@ -79,6 +79,8 @@ pub fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c
             error.TransformError => "TransformError",
             error.StaticInitializerDynamicScope => "ZNTC1505: class initializer or extracted private method cannot preserve its dynamic class lexical environment",
             error.LoopDynamicScope => "ZNTC1509: direct eval observes a loop lexical environment requiring lowering",
+            error.GeneratorNativeLexicalResume => "ZNTC1510: retained class lexical cell cannot be preserved in the generated state callback",
+            error.GeneratorNativeLexicalNesting => "ZNTC1511: distinct source lexical cells collide in generated state storage",
             error.ArrowPrivateDynamicScope => "ZNTC1506: retained dynamic capture contains private syntax requiring lowering for the target",
             error.CodegenError => "CodegenError",
             error.OutOfMemory => "OutOfMemory",

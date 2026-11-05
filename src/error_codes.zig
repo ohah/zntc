@@ -273,6 +273,8 @@ pub const Code = enum(u16) {
     object_accessor_eval_scope = 1508,
     /// Direct eval observes a loop lexical environment requiring lowering.
     loop_dynamic_scope = 1509,
+    generator_native_lexical_resume = 1510,
+    generator_native_lexical_nesting = 1511,
 
     /// 에러 코드를 "ZNTC0001" 형식의 문자열로 반환한다.
     pub fn format(self: Code) []const u8 {
@@ -505,6 +507,8 @@ pub const Code = enum(u16) {
             .codegen_duplicate_component => "Duplicate component name in schema",
             .codegen_inheritance_too_deep => "Inheritance / intersection chain exceeds depth limit",
             // 트랜스포머
+            .generator_native_lexical_resume => "State-machine lowering cannot preserve this retained class lexical environment in its generated callback",
+            .generator_native_lexical_nesting => "State-machine lowering cannot merge distinct source lexical cells into generated callback storage",
             .jsx_pragma_ignored => "@jsx / @jsxFrag pragma ignored under the automatic JSX runtime",
             .regex_modifier_unsupported => "Regular expression inline modifier group is an ES2025 feature not supported by the target",
             .exponentiation_dynamic_scope => "Exponentiation is preserved because a dynamic scope makes Math downleveling unsafe",

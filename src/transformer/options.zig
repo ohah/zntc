@@ -812,6 +812,9 @@ pub const TransformOptions = struct {
 
     /// Moving an initializer loses its class lexical environment and inherited
     /// strictness; a bounded safe eval expression is the only admitted exception.
+    pub const generator_native_lexical_resume_msg = "state-machine lowering cannot preserve this retained class lexical environment in its generated callback; select a target with native generators or lower class/block syntax.";
+    pub const generator_native_lexical_nesting_msg = "state-machine lowering cannot merge these distinct source lexical cells into generated callback storage; select a target with native generators or lower block-scoped syntax.";
+
     pub const static_initializer_dynamic_scope_msg =
         "class initializer or extracted private method cannot be lowered because direct eval or with can observe a class lexical environment that the selected target cannot preserve; select a target and class-field options that retain that class code natively.";
 

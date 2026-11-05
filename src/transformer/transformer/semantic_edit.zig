@@ -655,6 +655,7 @@ pub fn stateMachineOwnerScope(self: *Transformer, owner: NodeIndex) ScopeId {
 
 /// Register one state machine callback and its exact pending `_state` uses.
 pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: ScopeId, callback: NodeIndex, parameter: NodeIndex, ref_start: usize, wrapper_temps: []const @import("lists.zig").HoistedStateTemp, callback_temps: []const @import("lists.zig").HoistedStateTemp, span: Span) Transformer.Error!void {
+    if (self.unsupported_generator_native_lexical != null) return;
     if (ref_start > self.generator_state_refs.items.len) std.debug.panic("invalid state machine frame", .{});
     if (self.semantic_edit_enabled) {
         if (parent.isNone() or source_scope.isNone() or callback.isNone() or parameter.isNone())
@@ -703,6 +704,7 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: Sco
             if (!scopeWithin(editor.scopes.items, temp.owner_scope, source_scope))
                 std.debug.panic("generated wrapper temp owner is outside its source function", .{});
             try bindStateCallbackTemp(self, temp, span, source_scope, temp.owner_scope, scope, &seen, &live_scopes, &callback_traces);
+            if (self.unsupported_generator_native_lexical != null) return;
         }
         for (self.generator_state_bindings.items) |temp| {
             const binding_scope = if (temp.callback_local)
@@ -717,6 +719,7 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: Sco
                 std.debug.panic("generated wrapper temp owner is outside its source function", .{});
             if (temp.symbol_id != null) {
                 try bindStateCallbackTemp(self, temp, span, source_scope, binding_scope, scope, &seen, &live_scopes, &callback_traces);
+                if (self.unsupported_generator_native_lexical != null) return;
             } else if (temp.callback_local) {
                 try bindTrackedCallbackTemp(self, temp, span, source_scope, scope, &seen, &live_scopes);
             } else {
@@ -725,6 +728,7 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: Sco
         }
         for (callback_temps) |temp| {
             try bindStateCallbackTemp(self, temp, span, source_scope, scope, scope, &seen, &live_scopes, &callback_traces);
+            if (self.unsupported_generator_native_lexical != null) return;
         }
         try bindGeneratorStateReferences(self, source_scope, scope, callback, &seen, &live_scopes);
         var migrations = self.deferred_generator_loop_migrations.iterator();
@@ -2306,6 +2310,24 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
     }
     const id: SymbolId = if (exact_id) |raw_id| blk: {
         const existing: SymbolId = @fromBackingInt(@intCast(raw_id));
+        if (try @import("../generator_native_lexical.zig").storageCollision(self, temp.binding, raw_id, binding_scope)) |finding| {
+            self.unsupported_generator_native_lexical = finding;
+            return;
+        }
+        // synthetic_name is an identifier StringValue, not source spelling.
+        // Keep the exact binding/SID, but cook an escaped source name before
+        // this producer publishes its emitted storage name through the editor.
+        const binding_node = self.ast.getNode(temp.binding);
+        if (binding_node.tag == .binding_identifier and
+            binding_node.data.string_ref.start & ast_mod.Ast.STRING_TABLE_BIT == 0)
+        {
+            const raw_name = self.ast.getText(binding_node.data.string_ref);
+            const logical_name = try self.decodedName(raw_name);
+            if (!std.mem.eql(u8, raw_name, logical_name)) {
+                const cooked_span = try self.ast.addString(logical_name);
+                self.ast.nodes.items[@backingInt(temp.binding)].data.string_ref = cooked_span;
+            }
+        }
         editor.relocateSymbolAs(existing, binding_scope, temp.binding) catch |err| return editError(err);
         break :blk existing;
     } else blk: {

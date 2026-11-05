@@ -85,6 +85,10 @@ pub fn napiBuildSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c
     var result = bundler.bundle(common.io()) catch |err| {
         if (err == error.LoopDynamicScope)
             return throwError(env, "ZNTC1509: direct eval observes a loop lexical environment requiring lowering");
+        if (err == error.GeneratorNativeLexicalResume)
+            return throwError(env, "ZNTC1510: retained class lexical cell cannot be preserved in the generated state callback");
+        if (err == error.GeneratorNativeLexicalNesting)
+            return throwError(env, "ZNTC1511: distinct source lexical cells collide in generated state storage");
         if (err == error.ArrowPrivateDynamicScope)
             return throwError(env, "ZNTC1506: retained dynamic capture contains private syntax requiring lowering for the target");
         if (err == error.StaticInitializerDynamicScope)

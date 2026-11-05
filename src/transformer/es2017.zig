@@ -850,14 +850,17 @@ pub fn ES2017(comptime Transformer: type) type {
             // body 가 안쪽 function 으로 옮겨진다 → `arguments` 캡처 필요 (arrow 경로는 제외 —
             // arrow 의 arguments 는 바깥 함수 것이고 arrow_this_depth 가 따로 처리한다).
             const saved_ext_sm = self.in_extracted_fn_body;
+            defer self.in_extracted_fn_body = saved_ext_sm;
             self.in_extracted_fn_body = true;
             var saved_sm_temps = try GenMod.enterStateMachineTempsForScope(self, state_parent_scope);
             defer GenMod.leaveStateMachineTemps(self, &saved_sm_temps);
             const saved_async_gen_body = self.in_async_generator_body;
+            defer self.in_async_generator_body = saved_async_gen_body;
             self.in_async_generator_body = false;
             var sm_result = try GenMod.buildStateMachine(self, body_idx, span, state_parent_scope);
-            self.in_async_generator_body = saved_async_gen_body;
             defer sm_result.hoisted_temps.deinit(self.allocator);
+            if (self.unsupported_generator_native_lexical != null) return source_owner;
+            self.in_async_generator_body = saved_async_gen_body;
             self.in_extracted_fn_body = saved_ext_sm;
             if (sm_result.body.isNone()) return .none;
             sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span, &saved_sm_temps.callback_temps);
@@ -867,6 +870,7 @@ pub fn ES2017(comptime Transformer: type) type {
             // function() { return __generator(cb); } 로 감싸야 함.
             const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen.call, span);
             try GenMod.bindWrappedStateMachine(self, source_owner, gen_wrapper_func, gen, &saved_sm_temps, sm_result.hoisted_temps.items, span, source_boundary);
+            if (self.unsupported_generator_native_lexical != null) return source_owner;
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper_func, span);
 
             const return_stmt = try self.ast.addNode(.{
@@ -993,8 +997,13 @@ pub fn ES2017(comptime Transformer: type) type {
                 self.native_parameter_list_retained_for_dynamic_lookup = saved_native_parameter_list_retained;
                 const saved_temp_counter = parameter_visit.after_parameter_temps;
                 const saved_async_gen_body = self.in_async_generator_body;
+                defer self.in_async_generator_body = saved_async_gen_body;
                 self.in_async_generator_body = false;
-                const sm_result = try GenMod.buildStateMachine(self, body_idx, span, state_parent_scope);
+                var sm_result = try GenMod.buildStateMachine(self, body_idx, span, state_parent_scope);
+                if (self.unsupported_generator_native_lexical != null) {
+                    sm_result.hoisted_temps.deinit(self.allocator);
+                    return source_owner;
+                }
                 self.in_async_generator_body = saved_async_gen_body;
                 break :blk .{
                     .params_list = parameter_visit.params_list,
@@ -1018,6 +1027,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const gen = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
             const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen.call, span);
             try GenMod.bindWrappedStateMachine(self, source_owner, gen_wrapper_func, gen, &saved_sm_temps, sm_result.hoisted_temps.items, span, source_boundary);
+            if (self.unsupported_generator_native_lexical != null) return source_owner;
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper_func, span);
 
             // function body 구성: return __async(...)
