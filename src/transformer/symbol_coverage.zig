@@ -2145,6 +2145,174 @@ fn canonicalNamespaceBodyOwner(
     return primary;
 }
 
+fn isCanonicalScopeOwnerAlias(
+    ast: *const Ast,
+    parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    scopes: []const Scope,
+    owner_node: u32,
+    scope_id: u32,
+) bool {
+    if (enumPreludeOwner(ast, parent_by_node, owner_node)) |owner| {
+        if (scope_owner_map.get(owner) == scope_id and scopes[scope_id].kind == .function) return true;
+    }
+    if (staticBlockBodyOwner(ast, parent_by_node, owner_node)) |owner| {
+        if (scope_owner_map.get(owner) == scope_id and scopes[scope_id].kind == .class_static_block) return true;
+    }
+    return canonicalNamespaceBodyOwner(ast, parent_by_node, scope_owner_map, scopes, owner_node) != null;
+}
+
+/// Check reachable scope-owner identities and their exact reference scopes.
+/// Enum/static-block/namespace body nodes are aliases of their declaration
+/// owners by construction; every other live scope must have one owner. This
+/// strict form is suitable for syntax minification, where an unprovable
+/// retained source-scope bridge can conservatively fall back to reanalysis.
+pub fn hasExactReachableScopeOwnership(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    reachable: []const u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
+) std.mem.Allocator.Error!bool {
+    var parent_by_node: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer parent_by_node.deinit(allocator);
+    for (reachable) |raw| {
+        if (raw >= ast.nodes.items.len) return false;
+        var children = ast_walk.children(ast, ast.nodes.items[raw]);
+        while (children.next()) |child| {
+            if (child.isNone()) continue;
+            const child_raw = @backingInt(child);
+            if (child_raw >= ast.nodes.items.len) return false;
+            const parent = try parent_by_node.getOrPut(allocator, child_raw);
+            if (!parent.found_existing) parent.value_ptr.* = raw;
+        }
+    }
+
+    var first_owner_by_scope: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer first_owner_by_scope.deinit(allocator);
+    for (reachable) |raw| {
+        const scope_id = scope_owner_map.get(raw) orelse continue;
+        if (scope_id >= scopes.len or raw >= ast.nodes.items.len) continue;
+        if (!scopeOwnerKindMatches(ast.nodes.items[raw].tag, scopes[scope_id].kind)) return false;
+        if (isCanonicalScopeOwnerAlias(ast, &parent_by_node, scope_owner_map, scopes, raw, scope_id)) continue;
+        const owner = try first_owner_by_scope.getOrPut(allocator, scope_id);
+        if (owner.found_existing and owner.value_ptr.* != raw) return false;
+        if (!owner.found_existing) owner.value_ptr.* = raw;
+    }
+
+    for (references) |reference| {
+        if (reference.flags.declare) {
+            if (reference.declaration_node_index.isNone()) continue;
+            const node = @backingInt(reference.declaration_node_index);
+            const symbol_id = @backingInt(reference.symbol_id);
+            if (node >= ast.nodes.items.len or symbol_id >= symbols.len or node >= symbol_ids.len or
+                symbol_ids[node] != symbol_id) return false;
+            const expected = expectedGraphBindingScope(
+                ast,
+                root,
+                &parent_by_node,
+                scope_owner_map,
+                scopes,
+                node,
+                symbols[symbol_id].kind,
+            ) orelse return false;
+            if (symbols[symbol_id].scope_id.isNone() or @backingInt(symbols[symbol_id].scope_id) != expected)
+                return false;
+            continue;
+        }
+        if (reference.node_index.isNone()) continue;
+        const raw = @backingInt(reference.node_index);
+        if (raw >= ast.nodes.items.len) return false;
+        const expected = expectedReferenceScope(ast, root, &parent_by_node, scope_owner_map, raw) orelse return false;
+        if (reference.scope_id.isNone() or @backingInt(reference.scope_id) != expected.scope) return false;
+    }
+    return true;
+}
+
+fn expectedGraphBindingScope(
+    ast: *const Ast,
+    root: NodeIndex,
+    parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    scopes: []const Scope,
+    node: u32,
+    kind: SymbolKind,
+) ?u32 {
+    if (node >= ast.nodes.items.len) return null;
+    if (ast.nodes.items[node].tag != .binding_identifier) {
+        var child = node;
+        var parent = parent_by_node.get(child);
+        var hops: usize = 0;
+        while (parent) |raw| : (hops += 1) {
+            if (hops >= ast.nodes.items.len or raw >= ast.nodes.items.len) return null;
+            if (ast.nodes.items[raw].tag == .flow_match_arm) return scope_owner_map.get(raw);
+            child = raw;
+            parent = parent_by_node.get(child);
+        }
+        return if (expectedReferenceScope(ast, root, parent_by_node, scope_owner_map, node)) |expected|
+            expected.scope
+        else
+            null;
+    }
+
+    var child = node;
+    var parent = parent_by_node.get(child);
+    var hops: usize = 0;
+    while (parent) |raw| : (hops += 1) {
+        if (hops >= ast.nodes.items.len or raw >= ast.nodes.items.len) return null;
+        const ancestor = ast.nodes.items[raw];
+        if (ancestor.tag == .function_expression and ancestor.data.extra < ast.extra_data.items.len and
+            ast.extra_data.items[ancestor.data.extra] == child)
+        {
+            const function_scope = scope_owner_map.get(raw) orelse return null;
+            if (function_scope >= scopes.len or scopes[function_scope].parent.isNone()) return null;
+            const name_scope = scopes[function_scope].parent;
+            return if (@backingInt(name_scope) < scopes.len) @backingInt(name_scope) else null;
+        }
+        child = raw;
+        parent = parent_by_node.get(child);
+    }
+
+    const lexical = expectedReferenceScope(ast, root, parent_by_node, scope_owner_map, node) orelse return null;
+    if (kind == .variable_var or graphBindingOutputIsVar(ast, parent_by_node, node))
+        return nearestVarScope(lexical.scope, scopes);
+    return lexical.scope;
+}
+
+fn graphBindingOutputIsVar(
+    ast: *const Ast,
+    parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
+    node: u32,
+) bool {
+    var child = node;
+    var parent = parent_by_node.get(child);
+    var hops: usize = 0;
+    while (parent) |raw| : (hops += 1) {
+        if (hops >= ast.nodes.items.len or raw >= ast.nodes.items.len) return false;
+        const ancestor = ast.nodes.items[raw];
+        if (ancestor.tag == .variable_declaration)
+            return ast.variableDeclarationKind(ancestor) == .@"var";
+        switch (ancestor.tag) {
+            .function_declaration,
+            .function_expression,
+            .function,
+            .arrow_function_expression,
+            .class_declaration,
+            .class_expression,
+            .catch_clause,
+            => return false,
+            else => {},
+        }
+        child = raw;
+        parent = parent_by_node.get(child);
+    }
+    return false;
+}
+
 fn staticBlockBodyOwner(ast: *const Ast, parents: *const std.AutoHashMapUnmanaged(u32, u32), block: u32) ?u32 {
     const owner = parents.get(block) orelse return null;
     if (owner >= ast.nodes.items.len or ast.nodes.items[block].tag != .block_statement) return null;
@@ -4065,13 +4233,7 @@ fn checkExactImpl(
         if (scope_id >= scopes.len) continue;
         const tag = ast.nodes.items[raw].tag;
         if (!scopeOwnerKindMatches(tag, scopes[scope_id].kind)) continue;
-        if (enumPreludeOwner(ast, &parent_by_node, raw)) |owner| {
-            if (scope_owner_map.get(owner) == scope_id and scopes[scope_id].kind == .function) continue;
-        }
-        if (staticBlockBodyOwner(ast, &parent_by_node, raw)) |owner| {
-            if (scope_owner_map.get(owner) == scope_id and scopes[scope_id].kind == .class_static_block) continue;
-        }
-        if (canonicalNamespaceBodyOwner(ast, &parent_by_node, scope_owner_map, scopes, raw) != null) continue;
+        if (isCanonicalScopeOwnerAlias(ast, &parent_by_node, scope_owner_map, scopes, raw, scope_id)) continue;
         const first_owner = try first_owner_by_scope.getOrPut(allocator, scope_id);
         if (first_owner.found_existing) {
             if (first_owner.value_ptr.* != raw) {
