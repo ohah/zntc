@@ -315,6 +315,16 @@ fn collectDirectNamespaceExportSymbols(
         const decl_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[extra]));
         if (decl_idx.isNone() or @backingInt(decl_idx) >= self.ast.nodes.items.len) continue;
         const declaration = self.ast.getNode(decl_idx);
+        if (declaration.tag == .ts_import_equals_declaration) {
+            // Its export wrapper is visible before import-equals lowering, so
+            // register the source binding now for references visited later.
+            const binding_idx = declaration.data.binary.left;
+            if (binding_idx.isNone() or @backingInt(binding_idx) >= self.ast.nodes.items.len or
+                self.ast.getNode(binding_idx).tag != .identifier_reference) continue;
+            const sid = self.getSymbolIdAt(binding_idx) orelse continue;
+            try exported_symbols.put(self.allocator, sid, {});
+            continue;
+        }
         if (declaration.tag != .variable_declaration) continue;
         const decl_extra: usize = declaration.data.extra;
         if (decl_extra > self.ast.extra_data.items.len or self.ast.extra_data.items.len - decl_extra <= 2) continue;
