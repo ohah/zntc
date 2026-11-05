@@ -3655,10 +3655,12 @@ test "graph TypeScript caller: namespace local require import-equals keeps captu
     defer std.testing.allocator.free(dp);
     defer profile.resetForTest();
     const targets = [_]@import("../transformer/compat.zig").ESTarget{
-        .es5, .es2015, .es2017, .es2020, .es2022, .esnext,
+        .es5,    .es2015, .es2016, .es2017, .es2018, .es2019, .es2020,
+        .es2021, .es2022, .es2023, .es2024, .es2025, .esnext,
     };
     const expected_targets = [_]@import("../transformer/compat.zig").ESTarget{
-        .es5, .es2015, .es2017, .es2020, .es2022, .esnext,
+        .es5,    .es2015, .es2016, .es2017, .es2018, .es2019, .es2020,
+        .es2021, .es2022, .es2023, .es2024, .es2025, .esnext,
     };
     try std.testing.expectEqualSlices(@TypeOf(targets[0]), &expected_targets, &targets);
     const MinifyMode = struct {
@@ -3754,7 +3756,7 @@ test "graph TypeScript caller: namespace local require import-equals keeps captu
             matrix_cases += 1;
         }
     }
-    try std.testing.expectEqual(@as(usize, 48), matrix_cases);
+    try std.testing.expectEqual(@as(usize, 104), matrix_cases);
 }
 
 test "graph visitor caller: cold parse runs every hook and retains its semantic graph" {

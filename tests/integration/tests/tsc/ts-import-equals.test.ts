@@ -205,35 +205,66 @@ describe('TSC: import-equals declaration (#1802 follow-up)', () => {
     }
   });
 
-  test('namespace local require import-equals preserves runtime across target and minify modes', async () => {
-    const targets = ['es5', 'es2015', 'es2017', 'es2020', 'es2022', 'esnext'] as const;
-    const modes = [
-      { name: 'plain', args: [] },
-      { name: 'whitespace', args: ['--minify-whitespace'] },
-      { name: 'syntax', args: ['--minify-syntax'] },
-      { name: 'syntax-whitespace', args: ['--minify-syntax', '--minify-whitespace'] },
-      { name: 'identifiers', args: ['--minify-identifiers'] },
-      { name: 'identifiers-whitespace', args: ['--minify-identifiers', '--minify-whitespace'] },
-      { name: 'syntax-identifiers', args: ['--minify-identifiers', '--minify-syntax'] },
-      { name: 'full', args: ['--minify'] },
-    ] as const;
-    expect(targets).toEqual(['es5', 'es2015', 'es2017', 'es2020', 'es2022', 'esnext']);
-    expect(modes.map(({ args }) => args)).toEqual([
-      [],
-      ['--minify-whitespace'],
-      ['--minify-syntax'],
-      ['--minify-syntax', '--minify-whitespace'],
-      ['--minify-identifiers'],
-      ['--minify-identifiers', '--minify-whitespace'],
-      ['--minify-identifiers', '--minify-syntax'],
-      ['--minify'],
-    ]);
-    let matrixCases = 0;
+  test(
+    'namespace local require import-equals preserves runtime across target and minify modes',
+    { timeout: 60_000 },
+    async () => {
+      const targets = [
+        'es5',
+        'es2015',
+        'es2016',
+        'es2017',
+        'es2018',
+        'es2019',
+        'es2020',
+        'es2021',
+        'es2022',
+        'es2023',
+        'es2024',
+        'es2025',
+        'esnext',
+      ] as const;
+      const modes = [
+        { name: 'plain', args: [] },
+        { name: 'whitespace', args: ['--minify-whitespace'] },
+        { name: 'syntax', args: ['--minify-syntax'] },
+        { name: 'syntax-whitespace', args: ['--minify-syntax', '--minify-whitespace'] },
+        { name: 'identifiers', args: ['--minify-identifiers'] },
+        { name: 'identifiers-whitespace', args: ['--minify-identifiers', '--minify-whitespace'] },
+        { name: 'syntax-identifiers', args: ['--minify-identifiers', '--minify-syntax'] },
+        { name: 'full', args: ['--minify'] },
+      ] as const;
+      expect(targets).toEqual([
+        'es5',
+        'es2015',
+        'es2016',
+        'es2017',
+        'es2018',
+        'es2019',
+        'es2020',
+        'es2021',
+        'es2022',
+        'es2023',
+        'es2024',
+        'es2025',
+        'esnext',
+      ]);
+      expect(modes.map(({ args }) => args)).toEqual([
+        [],
+        ['--minify-whitespace'],
+        ['--minify-syntax'],
+        ['--minify-syntax', '--minify-whitespace'],
+        ['--minify-identifiers'],
+        ['--minify-identifiers', '--minify-whitespace'],
+        ['--minify-identifiers', '--minify-syntax'],
+        ['--minify'],
+      ]);
+      let matrixCases = 0;
 
-    for (const target of targets) {
-      for (const mode of modes) {
-        const { dir, cleanup } = await createFixture({
-          'index.ts': `
+      for (const target of targets) {
+        for (const mode of modes) {
+          const { dir, cleanup } = await createFixture({
+            'index.ts': `
             namespace Container {
               import Assert = require('node:assert/strict');
               export function check() {
@@ -244,33 +275,34 @@ describe('TSC: import-equals declaration (#1802 follow-up)', () => {
             }
             console.log(Container.check());
           `,
-        });
-        const input = join(dir, 'index.ts');
-        const outFile = join(dir, 'out.js');
-        try {
-          const built = await runZntc([
-            '--bundle',
-            input,
-            '--platform=node',
-            `--target=${target}`,
-            ...mode.args,
-            '-o',
-            outFile,
-          ]);
-          expect(built.exitCode, `${target}/${mode.name}: ${built.stderr}`).toBe(0);
+          });
+          const input = join(dir, 'index.ts');
+          const outFile = join(dir, 'out.js');
+          try {
+            const built = await runZntc([
+              '--bundle',
+              input,
+              '--platform=node',
+              `--target=${target}`,
+              ...mode.args,
+              '-o',
+              outFile,
+            ]);
+            expect(built.exitCode, `${target}/${mode.name}: ${built.stderr}`).toBe(0);
 
-          const actual = spawnSync('node', [outFile], { encoding: 'utf8' });
-          expect(actual.status, `${target}/${mode.name}: ${actual.stderr}`).toBe(0);
-          expect(actual.stdout, `${target}/${mode.name}`).toBe('42\n');
-          expect(actual.stderr, `${target}/${mode.name}`).toBe('');
-          matrixCases += 1;
-        } finally {
-          await cleanup();
+            const actual = spawnSync('node', [outFile], { encoding: 'utf8' });
+            expect(actual.status, `${target}/${mode.name}: ${actual.stderr}`).toBe(0);
+            expect(actual.stdout, `${target}/${mode.name}`).toBe('42\n');
+            expect(actual.stderr, `${target}/${mode.name}`).toBe('');
+            matrixCases += 1;
+          } finally {
+            await cleanup();
+          }
         }
       }
-    }
-    expect(matrixCases, 'all target/minify runtime combinations executed').toBe(48);
-  });
+      expect(matrixCases, 'all target/minify runtime combinations executed').toBe(104);
+    },
+  );
 
   test("import X = require('fs') 가 ESM import 가 아닌 const 로 emit", async () => {
     const { dir, cleanup } = await createFixture({
