@@ -1051,7 +1051,7 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
   );
 
   test(
-    'buildSync onTransform erases declaration-level type imports and retains runtime imports',
+    'buildSync onTransform erases type imports and namespace marker but retains runtime imports',
     { timeout: 30_000 },
     () => {
       const dir = mkdtempSync(join(tmpdir(), 'zntc-buildsync-ontransform-import-type-'));
@@ -1059,6 +1059,7 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
       const dependency = join(dir, 'dependency.js');
       const types = join(dir, 'types.ts');
       const source = [
+        'export as namespace Api;',
         "import { value as _value } from './dependency.js';",
         "import { tag as _tag } from './types.ts';",
         "import type { Shape as _Shape } from './types.ts';",
@@ -1101,6 +1102,7 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
         expect(result.outputs[0]).not.toContain('=>');
         expect(result.outputs[0]).not.toMatch(/1\s*\+\s*2/);
         expect(result.outputs[0]).not.toContain('interface Shape');
+        expect(result.outputs[0]).not.toContain('Api');
         expect(result.outputs[0]).not.toContain('unused');
         const output = join(dir, 'out.cjs');
         writeFileSync(output, result.outputs[0]);
