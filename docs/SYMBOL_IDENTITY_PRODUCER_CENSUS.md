@@ -122,4 +122,4 @@ The exact new and retired function-level census entries since the historical bas
 | transformer/semantic_edit.zig::ensureAnnexBVariableStorage | +1 makeExactSyntheticBindingFromSpan |
 | transformer/tagged_template.zig::lowerTaggedTemplate / lowerTaggedTemplateImpl | -1/+1 makeExactSyntheticBinding (implementation split) |
 
-This refresh pins callsite inventory only. The historical 112/112 semantic identity classification does not automatically extend to the 37 added expressions; their owner, exact SID handoff, final-name consumer, and fallback still need row-level review. Keep #4819 and #6193 open until that review and the broader retained-graph/output-consumer matrix are complete.
+This refresh pins callsite inventory only. The 37 added expressions now have a row-by-row owner, exact SID handoff, final-name consumer, and fallback review in the [current-main delta audit](./SYMBOL_IDENTITY_PRODUCER_DELTA_AUDIT.md); that review found no missing exact-ID handoff among those rows on supported semantic-graph paths. This bounded result does not classify other producer families or close the broader retained-graph/output-consumer matrix. Keep #4819 and #6193 open.
