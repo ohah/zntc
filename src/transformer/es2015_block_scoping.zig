@@ -245,10 +245,11 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             if (body_idx.isNone()) return;
             var ctx: LoopBodyScan = .{ .self = self, .include_catch = include_catch_params };
             defer ctx.found.deinit(self.allocator);
+            defer ctx.class_names.deinit(self.allocator);
             try ast_walk.walkPreorderIterative(self.allocator, self.ast, body_idx, &ctx, LoopBodyScan.lexicalVisit);
+            if (ctx.oom) return error.OutOfMemory;
             for (ctx.found.items) |idx| try collectBindingNames(self, idx, out);
             for (ctx.class_names.items) |name| try out.append(self.allocator, name);
-            ctx.class_names.deinit(self.allocator);
         }
 
         /// 루프 본문의 **원래** `var` 선언 이름 (#4743). 본문을 `_loop` 함수로 뽑으면 이 이름들이
@@ -277,6 +278,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             defer ctx.found.deinit(self.allocator);
             defer ctx.class_names.deinit(self.allocator);
             try ast_walk.walkPreorderIterative(self.allocator, self.ast, body_idx, &ctx, LoopBodyScan.varVisit);
+            if (ctx.oom) return error.OutOfMemory;
             for (ctx.found.items) |idx| try collectBindingNodes(self, idx, out);
         }
 

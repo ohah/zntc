@@ -4889,3 +4889,91 @@ test "N4 temp reservation heap OOM does not publish a partial collision cache" {
     try std.testing.expect(failures > 0);
     try std.testing.expect(completed);
 }
+
+test "loop capture collectors propagate callback OOM without partial success" {
+    const Block = @import("es2015_block_scoping.zig").ES2015BlockScoping(Transformer);
+    inline for (.{ true, false }) |lexical| {
+        var observed_callback_failure = false;
+        for (0..8) |failure_index| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            var scanner = try Scanner.init(a, if (lexical) "{let value=1;}" else "{var value=1;}");
+            var parser = Parser.init(a, &scanner);
+            _ = try parser.parse();
+            var transformer = try Transformer.init(a, &parser.ast, .{});
+            var body: NodeIndex = .none;
+            for (transformer.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag == .block_statement) {
+                    body = @fromBackingInt(@intCast(raw));
+                    break;
+                }
+            }
+            try std.testing.expect(!body.isNone());
+            // Only collector-owned lists use this non-arena allocator. AST and
+            // Transformer backing remain owned by the outer arena.
+            var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = failure_index });
+            transformer.allocator = failing.allocator();
+            var names: std.ArrayList([]const u8) = .empty;
+            defer names.deinit(std.testing.allocator);
+            var bindings: std.ArrayList(NodeIndex) = .empty;
+            defer bindings.deinit(std.testing.allocator);
+            try names.ensureTotalCapacity(std.testing.allocator, 8);
+            try bindings.ensureTotalCapacity(std.testing.allocator, 8);
+            const result = if (lexical)
+                Block.collectLoopBodyLexicalNames(&transformer, body, false, &names)
+            else
+                Block.collectLoopBodyVarBindings(&transformer, body, &bindings);
+            if (result) |_| {
+                try std.testing.expect(!failing.has_induced_failure);
+                try std.testing.expectEqual(@as(usize, 1), if (lexical) names.items.len else bindings.items.len);
+            } else |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                if (failure_index == 2) observed_callback_failure = true;
+            }
+        }
+        try std.testing.expect(observed_callback_failure);
+    }
+}
+
+test "loop capture init releases partial collector storage on OOM" {
+    const Capture = @import("transformer/control_flow.zig").LoopCapture;
+    // Class names exercise the separate temporary name list; the final var
+    // list exercises init failure after lexical/head storage already exists.
+    for ([_][]const u8{ "{class Local{}let captured=1;var lifted=2;}", "{let captured=1;var lifted=2;}" }) |source| {
+        var completed = false;
+        var failures: usize = 0;
+        for (0..64) |failure_index| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            var scanner = try Scanner.init(a, source);
+            var parser = Parser.init(a, &scanner);
+            _ = try parser.parse();
+            var transformer = try Transformer.init(a, &parser.ast, .{});
+            var body: NodeIndex = .none;
+            for (transformer.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag == .block_statement) {
+                    body = @fromBackingInt(@intCast(raw));
+                    break;
+                }
+            }
+            try std.testing.expect(!body.isNone());
+            var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = failure_index });
+            transformer.allocator = failing.allocator();
+            var capture = Capture.init(&transformer, &.{"header"}, body) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                failures += 1;
+                continue;
+            };
+            defer capture.deinit(&transformer);
+            try std.testing.expect(!failing.has_induced_failure);
+            try std.testing.expect(capture.names.items.len >= 2);
+            try std.testing.expectEqual(@as(usize, 1), capture.var_bindings.items.len);
+            completed = true;
+            break;
+        }
+        try std.testing.expect(failures > 2);
+        try std.testing.expect(completed);
+    }
+}
