@@ -12316,10 +12316,10 @@ fn canKeepPrepassSemanticGraphPrepared(
     }
     if ((ast.has_jsx and !graph_editable_jsx) or
         (ast.has_decorator and !retained_stage3_decorators and !retained_legacy_decorators)) return false;
-    // Syntax minification is admitted provisionally. After it runs, the caller
-    // retains this graph only if every reachable binding/reference still has
-    // its exact identity and the reference counts still match. A minify edit
-    // that removes or relocates semantic nodes falls back to the analyzer.
+    // Syntax minification is admitted provisionally. Its private journal must
+    // account for every reachable binding/reference and preserve exact owner
+    // identity. A refused optional minify transaction restores this candidate's
+    // pre-minify AST/graph snapshot; it does not invoke an analyzer.
     // Whitespace minification changes emission and helper spellings, but the
     // transformer records those helper identities in the edited graph.
     // Metadata options alone are a no-op without decorators. Legacy options
@@ -20970,8 +20970,9 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
             retained_console_object_references = references;
         } else {
             // The graph gate should make this collection infallible apart from
-            // allocation failure. Keep the analyzer fallback as the recovery
-            // path if its preflight evidence cannot be reproduced here.
+            // allocation failure. If its preflight evidence cannot be
+            // reproduced, fail closed and let the enclosing candidate
+            // transaction discard this staged module.
             can_keep_semantic_graph = false;
         }
     }
@@ -20982,8 +20983,9 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
         (downlevel_static_public_class_field_scan orelse
             (opts.unsupported.class or opts.unsupported.class_field));
     const flow_match_generated_globals = flowMatchGeneratedGlobals(ast_ptr);
-    // If reachability allocation fails, reanalysis is already forced above.
-    // Still record any generated Object reference conservatively in that path.
+    // If reachability allocation fails, retained-graph admission is already
+    // closed. Still record any generated Object reference conservatively in
+    // the staged candidate; it will not publish without a complete graph proof.
     const has_lowered_object_spread = object_spread_scan orelse opts.unsupported.object_spread;
     const lowered_object_spread_global = can_keep_semantic_graph and has_lowered_object_spread;
     const has_lowered_exponentiation = exponentiation_scan orelse false;
@@ -21298,7 +21300,8 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     // import, can shift statement indices and detach declarations or scopes. Reindex the surviving graph,
     // then retain it only when the exact gate proves live bindings, references,
     // owners, counts, and statement coordinates still agree. Any uncertain
-    // case uses the analyzer below.
+    // case leaves the prepared candidate incomplete, so the enclosing
+    // transaction discards it instead of publishing replacement identities.
     if (can_keep_semantic_graph and
         (hasDroppedLabeledStatement(ast_ptr, opts.drop_labels) or retained_simple_console_drops or has_mapped_import_split))
     {
@@ -25398,7 +25401,8 @@ fn prepareConstMaterializationMinifiedGraph(
 /// Retain the semantic graph after the narrow CJS Buffer fold. The caller gives
 /// the complete pre-mutation node set removed by the fold. Dead block scopes
 /// are only elided when removing their exact references leaves them empty;
-/// other graph owners remain ineligible and use the full analyzer fallback.
+/// other graph owners remain ineligible, so the caller keeps both runtime
+/// branches. This value optimization has no analyzer fallback.
 const NodeBufferCapabilityWrapperReference = enum { exports, module };
 
 fn nodeBufferCapabilityWrapperReference(
