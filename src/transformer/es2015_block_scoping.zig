@@ -35,6 +35,7 @@ const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
+const isDirectEvalCall = @import("static_class_capture.zig").isDirectEvalCall;
 const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const SymbolId = @import("../semantic/symbol.zig").SymbolId;
@@ -221,10 +222,18 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             const ctx = Ctx{ .self = self, .names = lexical_names };
             return anyMatchInsideClosure(self, body_idx, ctx, struct {
                 fn visit(c: Ctx, node: Node, in_closure: bool) bool {
-                    if (!in_closure or node.tag != .identifier_reference) return false;
-                    const name = c.self.ast.getText(node.span);
-                    for (c.names) |ln| {
-                        if (Scanner.identifierNamesEqual(name, ln)) return true;
+                    if (!in_closure) return false;
+                    // Direct eval can read any visible loop binding by name even
+                    // when the source identifier does not appear in the closure:
+                    // `function () { return eval("index"); }`. Treat that closure
+                    // as capturing the iteration environment so extraction gives
+                    // each invocation its own loop-parameter environment.
+                    if (isDirectEvalCall(c.self, node)) return true;
+                    if (node.tag == .identifier_reference) {
+                        const name = c.self.ast.getText(node.span);
+                        for (c.names) |ln| {
+                            if (Scanner.identifierNamesEqual(name, ln)) return true;
+                        }
                     }
                     return false;
                 }
