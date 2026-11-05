@@ -26,7 +26,7 @@ Arrow의 cover-grammar 기본값은 `.assignment_expression`에서 일반 formal
 
 Class constructor 기본값은 별도의 `isSimpleParamsConstructorBodyGraphSafe` 증명을 따른다. 단순 identifier 매개변수와 primitive/operator allowlist, 앞선 단순 매개변수의 exact SID reference만 허용하며, constructor body와 derived `super()` 순서도 함께 검사한다. 회귀 테스트는 base/derived constructor 및 앞선 매개변수 기본값에서 생성된 참조가 각 원본 parameter SID를 유지하는지 exact output audit로 확인한다.
 
-클래스 계산형 accessor 키는 strict 동기 getter/setter 쌍에서 이스케이프 없는 정적 문자열 리터럴만 추가 허용한다. 키 이름은 파싱 시 확정되고 양쪽 accessor가 같은 키를 써야 한다. 동적 키, 식별자 참조, 템플릿, 이스케이프 문자열, 단일 accessor, 또는 클래스 위치에서 `Object` helper가 섀도잉되는 경우는 계속 preflight에서 거부한다. ES5 번들 회귀 테스트는 생성된 key temp와 setter 기본값의 exact identity 및 Node 실행 결과를 원본과 비교한다. 이 제한은 다른 계산형 클래스 멤버나 전체 target/plugin/minify 조합으로 확장되지 않는다.
+클래스 계산형 accessor 키는 strict 동기 getter/setter 쌍에서 JS `StringValue`로 디코드 가능한 정적 문자열 리터럴을 허용한다. 키 이름은 파싱 시 확정되고, 표기가 달라도 디코드한 양쪽 키 값이 같아야 한다. 동적 키, 식별자 참조, 템플릿, 디코드할 수 없는 문자열, 단일 accessor, 또는 클래스 위치에서 `Object` helper가 섀도잉되는 경우는 계속 preflight에서 거부한다. ES5 번들 회귀 테스트는 생성된 key temp와 setter 기본값의 exact identity 및 Node 실행 결과를 원본과 비교한다. 이 제한은 다른 계산형 클래스 멤버나 전체 target/plugin/minify 조합으로 확장되지 않는다.
 
 ## 분석 호출 경계
 
