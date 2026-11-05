@@ -209,16 +209,24 @@ describe('TSC: import-equals declaration (#1802 follow-up)', () => {
     const targets = ['es5', 'es2015', 'es2017', 'es2020', 'es2022', 'esnext'] as const;
     const modes = [
       { name: 'plain', args: [] },
+      { name: 'whitespace', args: ['--minify-whitespace'] },
       { name: 'syntax', args: ['--minify-syntax'] },
+      { name: 'syntax-whitespace', args: ['--minify-syntax', '--minify-whitespace'] },
       { name: 'identifiers', args: ['--minify-identifiers'] },
-      { name: 'full', args: ['--minify-identifiers', '--minify-syntax'] },
+      { name: 'identifiers-whitespace', args: ['--minify-identifiers', '--minify-whitespace'] },
+      { name: 'syntax-identifiers', args: ['--minify-identifiers', '--minify-syntax'] },
+      { name: 'full', args: ['--minify'] },
     ] as const;
     expect(targets).toEqual(['es5', 'es2015', 'es2017', 'es2020', 'es2022', 'esnext']);
     expect(modes.map(({ args }) => args)).toEqual([
       [],
+      ['--minify-whitespace'],
       ['--minify-syntax'],
+      ['--minify-syntax', '--minify-whitespace'],
       ['--minify-identifiers'],
+      ['--minify-identifiers', '--minify-whitespace'],
       ['--minify-identifiers', '--minify-syntax'],
+      ['--minify'],
     ]);
     let matrixCases = 0;
 
@@ -261,7 +269,7 @@ describe('TSC: import-equals declaration (#1802 follow-up)', () => {
         }
       }
     }
-    expect(matrixCases, 'all target/minify runtime combinations executed').toBe(24);
+    expect(matrixCases, 'all target/minify runtime combinations executed').toBe(48);
   });
 
   test("import X = require('fs') 가 ESM import 가 아닌 const 로 emit", async () => {
