@@ -1556,6 +1556,182 @@ fn expectTypeScriptEnumModuleGraph(
     for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
 }
 
+const TypeScriptNamespaceGraphIdentity = struct {
+    namespace_symbol: u32,
+    member_a_symbol: u32,
+    member_b_symbol: u32,
+    destructuring_temp_symbol: u32,
+    first_namespace_scope: u32,
+    second_namespace_scope: u32,
+};
+
+fn expectMergedTypeScriptNamespaceGraphModule(
+    graph: *const ModuleGraph,
+    entry: []const u8,
+) !TypeScriptNamespaceGraphIdentity {
+    const module = graph.findModuleByPath(entry) orelse return error.MissingTypeScriptNamespaceGraphModule;
+    try std.testing.expectEqual(Module.State.ready, module.state);
+    const ast = &(module.ast orelse return error.MissingTypeScriptNamespaceGraphAst);
+    const semantic = &(module.semantic orelse return error.MissingTypeScriptNamespaceGraphSemantic);
+    const transformed = module.transform_cache orelse return error.MissingTypeScriptNamespaceGraphTransform;
+    const root = ast.transformed_root orelse return error.MissingTypeScriptNamespaceGraphRoot;
+    try std.testing.expectEqual(ast.nodes.items.len, semantic.symbol_ids.len);
+    try std.testing.expectEqualSlices(?u32, semantic.symbol_ids, transformed.symbol_ids);
+
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
+    defer std.testing.allocator.free(reachable);
+    var namespace_symbols: [2]u32 = undefined;
+    var namespace_scopes: [2]u32 = undefined;
+    var namespace_parameter_symbols: [2]u32 = undefined;
+    var namespace_count: usize = 0;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag != .ts_module_declaration or node.data.binary.flags != 0) continue;
+        const name_node = node.data.binary.left;
+        if (name_node.isNone() or @backingInt(name_node) >= ast.nodes.items.len) continue;
+        if (!std.mem.eql(u8, ast.identifierNameText(ast.getNode(name_node)), "N")) continue;
+        try std.testing.expect(namespace_count < namespace_symbols.len);
+        const symbol_id = semantic.symbol_ids[@backingInt(name_node)] orelse return error.MissingTypeScriptNamespaceSymbol;
+        try std.testing.expect(symbol_id < semantic.symbols.items.len);
+        try std.testing.expectEqualStrings("N", semantic.symbols.items[symbol_id].nameText(ast.source));
+        namespace_symbols[namespace_count] = symbol_id;
+        namespace_scopes[namespace_count] = semantic.scope_owner_map.get(@intCast(raw)) orelse return error.MissingTypeScriptNamespaceScope;
+
+        var iife_parameters: usize = 0;
+        for (semantic.symbols.items, 0..) |symbol, symbol_index| {
+            if (symbol.scope_id != @as(ScopeId, @fromBackingInt(namespace_scopes[namespace_count])) or
+                symbol.synthetic_kind != .namespace_iife_parameter) continue;
+            try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.parameter, symbol.kind);
+            namespace_parameter_symbols[namespace_count] = @intCast(symbol_index);
+            iife_parameters += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), iife_parameters);
+        namespace_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), namespace_count);
+    try std.testing.expectEqual(namespace_symbols[0], namespace_symbols[1]);
+    // The merged output nodes share one source owner and therefore one
+    // canonical declaration row, whose anchor may differ from either emitted
+    // node's name index.
+    var canonical_namespace_declarations: usize = 0;
+    for (semantic.references) |reference| {
+        if (!reference.flags.declare or @backingInt(reference.symbol_id) != namespace_symbols[0]) continue;
+        const anchor = reference.declaration_node_index;
+        if (anchor.isNone() or @backingInt(anchor) >= ast.nodes.items.len) return error.MissingCanonicalTypeScriptNamespaceBinding;
+        const anchor_raw = @backingInt(anchor);
+        const anchor_node = ast.nodes.items[anchor_raw];
+        try std.testing.expectEqual(.binding_identifier, anchor_node.tag);
+        try std.testing.expectEqual(namespace_symbols[0], semantic.symbol_ids[anchor_raw] orelse return error.MissingCanonicalTypeScriptNamespaceBindingSymbol);
+        try std.testing.expectEqualStrings("N", ast.identifierNameText(anchor_node));
+        canonical_namespace_declarations += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), canonical_namespace_declarations);
+
+    const runtime_references = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(
+        std.testing.allocator,
+        ast,
+        root,
+    );
+    defer std.testing.allocator.free(runtime_references);
+    var member_a_symbol: ?u32 = null;
+    var member_b_symbol: ?u32 = null;
+    var members = semantic.namespace_member_owners.iterator();
+    while (members.next()) |entry_pair| {
+        if (entry_pair.value_ptr.* != namespace_symbols[0]) continue;
+        const symbol_id = entry_pair.key_ptr.*;
+        try std.testing.expect(symbol_id < semantic.symbols.items.len);
+        const name = semantic.symbols.items[symbol_id].nameText(ast.source);
+        if (std.mem.eql(u8, name, "a")) member_a_symbol = symbol_id;
+        if (std.mem.eql(u8, name, "b")) member_b_symbol = symbol_id;
+    }
+    const member_a = member_a_symbol orelse return error.MissingTypeScriptNamespaceMemberA;
+    const member_b = member_b_symbol orelse return error.MissingTypeScriptNamespaceMemberB;
+
+    // These are namespace export proxies, not source declaration rows. Their
+    // owner and source spelling are the retained identity witnesses.
+    for ([_]struct { symbol_id: u32, name: []const u8 }{
+        .{ .symbol_id = member_a, .name = "a" },
+        .{ .symbol_id = member_b, .name = "b" },
+    }) |member| {
+        const proxy = semantic.symbols.items[member.symbol_id];
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, proxy.kind);
+        try std.testing.expect(proxy.decl_flags.is_exported);
+        try std.testing.expectEqualStrings(member.name, proxy.nameText(ast.source));
+    }
+
+    var second_namespace_parameter_reads: usize = 0;
+    for (runtime_references) |reference_node| {
+        const raw = @backingInt(reference_node);
+        if (raw >= ast.nodes.items.len or ast.nodes.items[raw].tag != .identifier_reference) continue;
+        const sid = semantic.symbol_ids[raw] orelse continue;
+        var exact_rows: usize = 0;
+        for (semantic.references) |reference| {
+            if (reference.node_index != reference_node) continue;
+            try std.testing.expect(!reference.flags.declare);
+            try std.testing.expectEqual(sid, @backingInt(reference.symbol_id));
+            exact_rows += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), exact_rows);
+        if (sid == member_a) return error.NamespaceProxyReferenceSurvivedLowering;
+        if (sid == namespace_parameter_symbols[1]) second_namespace_parameter_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), second_namespace_parameter_reads);
+
+    // Export reads lower from `a` to `N.a`; the object reference is owned by
+    // the second IIFE parameter while `b` remains an external namespace read.
+    var member_a_accesses: usize = 0;
+    var namespace_owner_member_b_reads: usize = 0;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag != .static_member_expression or node.data.extra + 1 >= ast.extra_data.items.len) continue;
+        const object_raw = ast.extra_data.items[node.data.extra];
+        const property_raw = ast.extra_data.items[node.data.extra + 1];
+        if (property_raw >= ast.nodes.items.len) continue;
+        const property_name = ast.getText(ast.nodes.items[property_raw].span);
+        if (object_raw < semantic.symbol_ids.len and semantic.symbol_ids[object_raw] == namespace_parameter_symbols[1] and
+            std.mem.eql(u8, property_name, "a")) member_a_accesses += 1;
+        if (object_raw < semantic.symbol_ids.len and semantic.symbol_ids[object_raw] == namespace_symbols[0] and
+            std.mem.eql(u8, property_name, "b")) namespace_owner_member_b_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), member_a_accesses);
+    try std.testing.expectEqual(@as(usize, 1), namespace_owner_member_b_reads);
+
+    try std.testing.expectEqual(@as(usize, 1), transformed.destructuring_temp_bindings.count());
+    var temp_keys = transformed.destructuring_temp_bindings.keyIterator();
+    const temp_raw = temp_keys.next().?.*;
+    try std.testing.expect(temp_keys.next() == null);
+    try std.testing.expect(temp_raw < ast.nodes.items.len);
+    var temp_is_reachable = false;
+    for (reachable) |raw| if (raw == temp_raw) {
+        temp_is_reachable = true;
+        break;
+    };
+    try std.testing.expect(temp_is_reachable);
+    const temp_node = ast.nodes.items[temp_raw];
+    try std.testing.expectEqual(.binding_identifier, temp_node.tag);
+    try std.testing.expect((temp_node.span.start & ast_mod.Ast.STRING_TABLE_BIT) != 0);
+    const temp_symbol = semantic.symbol_ids[temp_raw] orelse return error.MissingTypeScriptNamespaceTempSymbol;
+    try std.testing.expect(temp_symbol < semantic.symbols.items.len);
+    try std.testing.expect(semantic.symbols.items[temp_symbol].scope_id == @as(ScopeId, @fromBackingInt(namespace_scopes[0])));
+    var temp_declaration_rows: usize = 0;
+    for (semantic.references) |reference| {
+        if (!reference.flags.declare or reference.declaration_node_index != @as(ast_mod.NodeIndex, @fromBackingInt(temp_raw))) continue;
+        try std.testing.expectEqual(temp_symbol, @backingInt(reference.symbol_id));
+        temp_declaration_rows += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), temp_declaration_rows);
+
+    for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+    return .{
+        .namespace_symbol = namespace_symbols[0],
+        .member_a_symbol = member_a,
+        .member_b_symbol = member_b,
+        .destructuring_temp_symbol = temp_symbol,
+        .first_namespace_scope = namespace_scopes[0],
+        .second_namespace_scope = namespace_scopes[1],
+    };
+}
+
 fn expectAutomaticJsxModuleGraph(
     entries: []const []const u8,
     jsx_entries: []const []const u8,
@@ -2128,6 +2304,57 @@ test "graph TypeScript caller: runtime enums keep exact symbol references on col
 
     try expectTypeScriptEnumModuleGraph(&entries, &enum_names, &disk, 0);
     try expectTypeScriptEnumModuleGraph(&entries, &enum_names, &disk, entries.len);
+}
+
+test "graph TypeScript caller: merged namespace keeps exact identities on cold/cache" {
+    const profile = @import("../profile.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const source = "namespace N{export const {a}={a:1}}namespace N{export const b=a}console.log(N.b);";
+    try writeFile(tmp.dir, "entry.ts", source);
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    defer profile.resetForTest();
+    var cold_identity: ?TypeScriptNamespaceGraphIdentity = null;
+    for ([_]usize{ 0, 1 }) |expected_load_hits| {
+        profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+        var cache = ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.disk_cache = &disk;
+        graph.disk_load_enabled = true;
+        graph.disk_options_hash = 0x6193_4819;
+        graph.disk_compiler_build_id = 0x4819;
+        graph.max_threads = 1;
+        graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es5);
+
+        try graph.build(std.testing.io, &.{entry});
+
+        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+        try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+        try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+        const identity = try expectMergedTypeScriptNamespaceGraphModule(&graph, entry);
+        if (cold_identity) |cold| {
+            try std.testing.expectEqual(cold.namespace_symbol, identity.namespace_symbol);
+            try std.testing.expectEqual(cold.member_a_symbol, identity.member_a_symbol);
+            try std.testing.expectEqual(cold.member_b_symbol, identity.member_b_symbol);
+            try std.testing.expectEqual(cold.destructuring_temp_symbol, identity.destructuring_temp_symbol);
+            try std.testing.expectEqual(cold.first_namespace_scope, identity.first_namespace_scope);
+            try std.testing.expectEqual(cold.second_namespace_scope, identity.second_namespace_scope);
+        } else {
+            cold_identity = identity;
+        }
+    }
 }
 
 test "graph visitor caller: cold parse runs every hook and retains its semantic graph" {
