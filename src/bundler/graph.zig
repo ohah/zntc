@@ -2448,6 +2448,195 @@ fn expectNestedImportEqualsGraphColdAndCached(
     return cold_identity orelse error.MissingNestedImportEqualsColdIdentity;
 }
 
+const TypeScriptNamespaceExternalImportEqualsGraphIdentity = struct {
+    alias_symbol: u32,
+    namespace_symbol: u32,
+    namespace_parameter_symbol: u32,
+    namespace_scope: u32,
+    alias_scope: u32,
+    capture_scope: u32,
+};
+
+fn expectNamespaceExternalImportEqualsGraphModule(
+    graph: *const ModuleGraph,
+    entry: []const u8,
+    specifier: []const u8,
+) !TypeScriptNamespaceExternalImportEqualsGraphIdentity {
+    const module = graph.findModuleByPath(entry) orelse return error.MissingNamespaceExternalImportEqualsModule;
+    try std.testing.expectEqual(Module.State.ready, module.state);
+    try std.testing.expectEqual(@as(usize, 1), module.import_records.len);
+    const record = module.import_records[0];
+    try std.testing.expectEqual(types.ImportKind.require, record.kind);
+    try std.testing.expectEqualStrings(specifier, record.specifier);
+    try std.testing.expect(record.is_external);
+    try std.testing.expect(record.resolved.isNone());
+    try std.testing.expect(!record.resolve_failed);
+
+    const ast = &(module.ast orelse return error.MissingNamespaceExternalImportEqualsAst);
+    const semantic = &(module.semantic orelse return error.MissingNamespaceExternalImportEqualsSemantic);
+    const transformed = module.transform_cache orelse return error.MissingNamespaceExternalImportEqualsTransform;
+    const root = ast.transformed_root orelse return error.MissingNamespaceExternalImportEqualsRoot;
+    try std.testing.expectEqual(ast.nodes.items.len, semantic.symbol_ids.len);
+    try std.testing.expectEqualSlices(?u32, semantic.symbol_ids, transformed.symbol_ids);
+
+    var source_local: ast_mod.NodeIndex = .none;
+    var source_value: ast_mod.NodeIndex = .none;
+    var source_import_span: @import("../lexer/token.zig").Span = .EMPTY;
+    var source_import_count: usize = 0;
+    for (ast.nodes.items) |node| {
+        if (node.tag != .ts_import_equals_declaration) continue;
+        source_import_count += 1;
+        source_import_span = node.span;
+        source_local = node.data.binary.left;
+        source_value = node.data.binary.right;
+    }
+    try std.testing.expectEqual(@as(usize, 1), source_import_count);
+    try std.testing.expect(!source_local.isNone() and @backingInt(source_local) < ast.nodes.items.len);
+    try std.testing.expectEqual(.identifier_reference, ast.getNode(source_local).tag);
+    try std.testing.expectEqualStrings("Assert", ast.identifierNameText(ast.getNode(source_local)));
+    try expectStaticRequireExpression(ast, source_value, specifier);
+
+    const alias_symbol = semantic.symbol_ids[@backingInt(source_local)] orelse return error.MissingNamespaceExternalImportEqualsAliasSymbol;
+    try std.testing.expect(alias_symbol < semantic.symbols.items.len);
+    const alias_data = semantic.symbols.items[alias_symbol];
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_const, alias_data.kind);
+    try std.testing.expectEqualStrings("Assert", alias_data.nameText(ast.source));
+    try std.testing.expect(std.meta.eql(ast.getNode(source_local).span, alias_data.name));
+    try std.testing.expect(std.meta.eql(source_import_span, alias_data.declaration_span));
+
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
+    defer std.testing.allocator.free(reachable);
+    var namespace_symbol: ?u32 = null;
+    var namespace_scope: ?u32 = null;
+    var alias_binding_count: usize = 0;
+    var alias_export_count: usize = 0;
+    var alias_initializer: ast_mod.NodeIndex = .none;
+    var alias_declarator_count: usize = 0;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag == .ts_import_equals_declaration) return error.NamespaceExternalImportEqualsSurvivedLowering;
+        if (node.tag == .ts_module_declaration and node.data.binary.flags == 0) {
+            const name = node.data.binary.left;
+            if (!name.isNone() and @backingInt(name) < ast.nodes.items.len and ast.getNode(name).tag == .binding_identifier and
+                std.mem.eql(u8, ast.identifierNameText(ast.getNode(name)), "Container"))
+            {
+                namespace_symbol = semantic.symbol_ids[@backingInt(name)] orelse return error.MissingNamespaceExternalImportEqualsNamespaceSymbol;
+                namespace_scope = semantic.scope_owner_map.get(@intCast(raw)) orelse return error.MissingNamespaceExternalImportEqualsNamespaceScope;
+            }
+        }
+        if (node.tag == .binding_identifier and std.mem.eql(u8, ast.identifierNameText(node), "Assert") and
+            semantic.symbol_ids[raw] == alias_symbol)
+        {
+            alias_binding_count += 1;
+        }
+        if (node.tag != .variable_declarator or !ast.hasExtra(node.data.extra, 2)) continue;
+        const binding = ast.readExtraNode(node.data.extra, 0);
+        if (binding.isNone() or @backingInt(binding) >= ast.nodes.items.len or ast.getNode(binding).tag != .binding_identifier or
+            !std.mem.eql(u8, ast.identifierNameText(ast.getNode(binding)), "Assert") or semantic.symbol_ids[@backingInt(binding)] != alias_symbol) continue;
+        alias_initializer = ast.readExtraNode(node.data.extra, 2);
+        alias_declarator_count += 1;
+    }
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag != .export_named_declaration or !ast.hasExtra(node.data.extra, 1)) continue;
+        const declaration_idx = ast.readExtraNode(node.data.extra, 0);
+        if (declaration_idx.isNone() or @backingInt(declaration_idx) >= ast.nodes.items.len) continue;
+        const declaration = ast.getNode(declaration_idx);
+        if (declaration.tag != .variable_declaration) continue;
+        const extra: usize = declaration.data.extra;
+        if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2) continue;
+        const start = ast.extra_data.items[extra + 1];
+        const len = ast.extra_data.items[extra + 2];
+        if (start > ast.extra_data.items.len or len > ast.extra_data.items.len - start) continue;
+        for (ast.extra_data.items[start .. start + len]) |raw_declarator| {
+            const declarator_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_declarator));
+            if (declarator_idx.isNone() or @backingInt(declarator_idx) >= ast.nodes.items.len) continue;
+            const declarator = ast.getNode(declarator_idx);
+            if (declarator.tag != .variable_declarator or !ast.hasExtra(declarator.data.extra, 1)) continue;
+            const binding = ast.readExtraNode(declarator.data.extra, 0);
+            if (!binding.isNone() and @backingInt(binding) < ast.nodes.items.len and
+                semantic.symbol_ids[@backingInt(binding)] == alias_symbol)
+            {
+                alias_export_count += 1;
+            }
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), alias_binding_count);
+    try std.testing.expectEqual(@as(usize, 1), alias_export_count);
+    try std.testing.expectEqual(@as(usize, 1), alias_declarator_count);
+    const emitted_namespace_symbol = namespace_symbol orelse return error.MissingNamespaceExternalImportEqualsNamespaceSymbol;
+    const emitted_namespace_scope = namespace_scope orelse return error.MissingNamespaceExternalImportEqualsNamespaceScope;
+    try std.testing.expect(!alias_initializer.isNone());
+    try expectStaticRequireExpression(ast, alias_initializer, specifier);
+    try std.testing.expect(std.meta.eql(ast.getNode(alias_initializer).span, ast.getNode(source_value).span));
+
+    const alias_scope = @backingInt(alias_data.scope_id);
+    try std.testing.expectEqual(emitted_namespace_scope, alias_scope);
+    try std.testing.expect(alias_scope < semantic.scope_maps.len);
+    try std.testing.expectEqual(@as(?usize, alias_symbol), semantic.scope_maps[alias_scope].get("Assert"));
+
+    var namespace_parameter_symbol: ?u32 = null;
+    var namespace_parameter_count: usize = 0;
+    for (semantic.symbols.items, 0..) |symbol, index| {
+        if (symbol.synthetic_kind != .namespace_iife_parameter or @backingInt(symbol.scope_id) != emitted_namespace_scope) continue;
+        namespace_parameter_symbol = @intCast(index);
+        namespace_parameter_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), namespace_parameter_count);
+    const expected_parameter = namespace_parameter_symbol orelse return error.MissingNamespaceExternalImportEqualsParameter;
+
+    var alias_identifier_references: usize = 0;
+    var namespace_member_accesses: usize = 0;
+    var capture_scope: ?u32 = null;
+    const runtime_references = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(std.testing.allocator, ast, root);
+    defer std.testing.allocator.free(runtime_references);
+    for (runtime_references) |reference_node| {
+        const raw = @backingInt(reference_node);
+        if (raw < ast.nodes.items.len and ast.nodes.items[raw].tag == .identifier_reference and
+            std.mem.eql(u8, ast.identifierNameText(ast.nodes.items[raw]), "Assert"))
+        {
+            try std.testing.expectEqual(alias_symbol, semantic.symbol_ids[raw] orelse return error.MissingNamespaceExternalImportEqualsAliasReference);
+            alias_identifier_references += 1;
+        }
+    }
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag != .static_member_expression or !ast.hasExtra(node.data.extra, 2)) continue;
+        const property = ast.readExtraNode(node.data.extra, 1);
+        if (property.isNone() or @backingInt(property) >= ast.nodes.items.len or
+            !std.mem.eql(u8, ast.identifierNameText(ast.getNode(property)), "Assert")) continue;
+        const object = ast.readExtraNode(node.data.extra, 0);
+        try std.testing.expect(!object.isNone() and @backingInt(object) < ast.nodes.items.len);
+        try std.testing.expectEqual(.identifier_reference, ast.getNode(object).tag);
+        try std.testing.expectEqual(expected_parameter, semantic.symbol_ids[@backingInt(object)] orelse return error.MissingNamespaceExternalImportEqualsParameterReference);
+        var rows: usize = 0;
+        for (semantic.references) |reference| {
+            if (reference.node_index != object) continue;
+            try std.testing.expect(!reference.flags.declare);
+            try std.testing.expectEqual(expected_parameter, @backingInt(reference.symbol_id));
+            try std.testing.expect(semanticScopeContains(semantic, @as(ScopeId, @fromBackingInt(alias_scope)), reference.scope_id));
+            try std.testing.expect(reference.scope_id != @as(ScopeId, @fromBackingInt(alias_scope)));
+            capture_scope = @backingInt(reference.scope_id);
+            rows += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), rows);
+        namespace_member_accesses += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), alias_identifier_references);
+    try std.testing.expectEqual(@as(usize, 1), namespace_member_accesses);
+    try std.testing.expect(capture_scope != null);
+    for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+
+    return .{
+        .alias_symbol = alias_symbol,
+        .namespace_symbol = emitted_namespace_symbol,
+        .namespace_parameter_symbol = expected_parameter,
+        .namespace_scope = emitted_namespace_scope,
+        .alias_scope = alias_scope,
+        .capture_scope = capture_scope.?,
+    };
+}
+
 fn expectAutomaticJsxModuleGraph(
     entries: []const []const u8,
     jsx_entries: []const []const u8,
@@ -3233,6 +3422,64 @@ test "graph TypeScript caller: nested import-equals alias keeps its capture scop
 test "graph TypeScript caller: exported namespace import-equals keeps its export identity on cold/cache" {
     const source = "namespace Container { export namespace Nested { export const value = 43; } export import NestedAlias = Nested; export function read() { return NestedAlias.value; } } export const result = Container.read();";
     _ = try expectNestedImportEqualsGraphColdAndCached(source, true);
+}
+
+test "graph TypeScript caller: exported namespace require import-equals keeps identities on cold/cache" {
+    const profile = @import("../profile.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const specifier = "node:assert/strict";
+    const source = "namespace Container { export import Assert = require('node:assert/strict'); export function read() { return Assert.equal(40 + 2, 42); } } console.log(Container.read());";
+    try writeFile(tmp.dir, "entry.ts", source);
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    defer profile.resetForTest();
+    var cold_identity: ?TypeScriptNamespaceExternalImportEqualsGraphIdentity = null;
+    for ([_]usize{ 0, 1 }) |expected_load_hits| {
+        profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+        var cache = ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.disk_cache = &disk;
+        graph.disk_load_enabled = true;
+        graph.disk_options_hash = 0x6193_4819;
+        graph.disk_compiler_build_id = 0x4819;
+        graph.max_threads = 1;
+        graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es5);
+
+        try graph.build(std.testing.io, &.{entry});
+
+        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+        try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
+        const external = graph.findModuleByPath(specifier) orelse return error.MissingNamespaceExternalImportEqualsPhantomModule;
+        try std.testing.expect(external.is_external);
+        try std.testing.expectEqual(Module.State.ready, external.state);
+        const importer = graph.findModuleByPath(entry) orelse return error.MissingNamespaceExternalImportEqualsImporter;
+        try std.testing.expectEqual(@as(usize, 1), importer.dependencies.items.len);
+        try std.testing.expectEqual(external.index, importer.dependencies.items[0]);
+        try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+        const identity = try expectNamespaceExternalImportEqualsGraphModule(&graph, entry, specifier);
+        if (cold_identity) |cold| {
+            try std.testing.expectEqual(cold.alias_symbol, identity.alias_symbol);
+            try std.testing.expectEqual(cold.namespace_symbol, identity.namespace_symbol);
+            try std.testing.expectEqual(cold.namespace_parameter_symbol, identity.namespace_parameter_symbol);
+            try std.testing.expectEqual(cold.namespace_scope, identity.namespace_scope);
+            try std.testing.expectEqual(cold.alias_scope, identity.alias_scope);
+            try std.testing.expectEqual(cold.capture_scope, identity.capture_scope);
+        } else {
+            cold_identity = identity;
+        }
+    }
 }
 
 test "graph visitor caller: cold parse runs every hook and retains its semantic graph" {
