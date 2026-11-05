@@ -16,6 +16,12 @@ Zig bundler AST Visitor는 기본적으로 graph 보존 계약이 없다. plain 
 
 `scope_frame_history.zig`의 초기 scope/owner와 생성·이동 기록은 graph와 같은 생명주기를 가진다. Worklet class lowerer, computed class key, enum 및 명시적 statement drop 같은 역할은 각 생성자의 실제 사건으로 증명한다. History의 copy-on-write, 해제, codec 및 새 AST domain 복원에서도 역할과 소유권을 함께 보존해야 한다. 증명은 임의의 동형 AST나 다른 graph에서 재사용할 수 없다.
 
+### 일반 함수 기본 매개변수의 제한 admission
+
+Bundler retained-graph preflight는 strict 일반 동기 `function` 선언/표현식의 단순 식별자 매개변수만 검사한다. 기본값은 boolean/null/number/string literal이어야 하고, 전체 매개변수 목록의 각 바인딩 SID·이름·parameter scope가 일치해야 하며, parameter scope가 실제 함수 scope의 부모여야 한다. 함수 scope subtree의 direct eval/`with`, async/generator, method, arrow, destructuring, 비리터럴 기본값은 거부한다. 특히 arrow의 cover-grammar `assignment_expression` 기본값은 일반 expression으로 오인하지 않도록 `parameterListHasExpressions`에서 별도 거부한다.
+
+허용된 기본값 lower는 기존 parameter binding의 `SymbolId`로 읽기/쓰기 참조를 복사한다. 회귀 테스트는 bundler preflight admission과 변환 뒤 exact output audit를 함께 확인하며, 생성된 기본값 참조가 원본 parameter SID를 유지하는지 검사한다. 비리터럴·복합 패턴·async/generator/arrow·sloppy 함수·direct eval, 손상된 parameter SID 및 잘못된 strictness를 적대 입력으로 거부한다. 이 조합 증거는 전체 target/plugin 조합이나 #4819/#6193 완료를 뜻하지 않는다.
+
 ## 분석 호출 경계
 
 ### Production admission / abort 경계 (`main` `844985161`, 2026-11-05)
