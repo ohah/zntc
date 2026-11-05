@@ -6,6 +6,106 @@ const SemanticReference = @import("../semantic/symbol.zig").Reference;
 pub const Context = @import("../semantic/statement_coordinates.zig").Context;
 pub const collect = @import("../semantic/statement_coordinates.zig").collect;
 
+// Native Annex B creates a var-entry declaration without a source binding leaf.
+// Only a reachable declaration's existing typed alias can select that entry.
+fn projectNativeAnnexBEntries(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    contexts: []const ?Context,
+    semantic: anytype,
+    anchorless: *std.AutoHashMapUnmanaged(u32, ?Context),
+) !bool {
+    // Most anchorless entries are class/engine roles already handled above.
+    // Avoid another AST scan unless an existing native alias needs coordinates.
+    const has_native_alias = blk: {
+        for (semantic.symbols.items) |symbol| {
+            if (!symbol.annex_b_alias.variable.isNone() and symbol.annex_b_alias.state == .native and
+                anchorless.contains(@backingInt(symbol.annex_b_alias.variable))) break :blk true;
+        }
+        break :blk false;
+    };
+    if (!has_native_alias) return true;
+    const ScopeId = @import("../semantic/scope.zig").ScopeId;
+    const Binding = struct { lexical: u32, scope: ScopeId, rows: usize = 0 };
+    var bindings: std.AutoHashMapUnmanaged(u32, Binding) = .empty;
+    defer bindings.deinit(allocator);
+    var aliases: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty;
+    defer aliases.deinit(allocator);
+    var wanted: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer wanted.deinit(allocator);
+    for (contexts, 0..) |context, raw| {
+        if (context == null or ast.nodes.items[raw].tag != .function_declaration) continue;
+        const declaration: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+        const name = ast.readExtraNode(ast.getNode(declaration).data.extra, ast_mod.FunctionExtra.name);
+        if (name.isNone()) continue; // Anonymous default declarations have their own role.
+        const role = (try @import("../semantic/annex_b_function.zig").forDeclaration(ast, semantic.symbol_ids, semantic.symbols.items, declaration)) orelse continue;
+        const variable = @backingInt(role.variable);
+        if (role.state != .native or !anchorless.contains(variable)) continue;
+        const lexical = @backingInt(role.lexical);
+        if (!@import("../lexer/scanner.zig").Scanner.identifierNamesEqual(
+            ast.getText(semantic.symbols.items[lexical].name),
+            ast.getText(semantic.symbols.items[variable].name),
+        )) return false;
+        const variable_scope = semantic.symbols.items[variable].scope_id;
+        if (variable_scope.isNone() or variable_scope.toIndex() >= semantic.scopes.len or semantic.scopes[variable_scope.toIndex()].kind != .function) return false;
+        var owner = semantic.symbols.items[lexical].scope_id;
+        var hops: usize = 0;
+        while (!owner.isNone() and hops < semantic.scopes.len) : (hops += 1) {
+            if (owner.toIndex() >= semantic.scopes.len) return false;
+            if (semantic.scopes[owner.toIndex()].kind.isVarScope()) break;
+            owner = semantic.scopes[owner.toIndex()].parent;
+        }
+        if (owner != variable_scope) return false;
+        const binding = ast.readExtraNode(ast.getNode(declaration).data.extra, ast_mod.FunctionExtra.name);
+        const slot = try bindings.getOrPut(allocator, @backingInt(binding));
+        if (slot.found_existing) return false;
+        slot.value_ptr.* = .{ .lexical = lexical, .scope = semantic.symbols.items[lexical].scope_id };
+        const alias = try aliases.getOrPut(allocator, variable);
+        if (alias.found_existing and alias.value_ptr.* != variable_scope) return false;
+        alias.value_ptr.* = variable_scope;
+        try wanted.put(allocator, @backingInt(variable_scope), {});
+    }
+    if (aliases.count() == 0) return true;
+    for (semantic.references) |reference| {
+        const sid = @backingInt(reference.symbol_id);
+        if (!reference.flags.declare) continue;
+        if (reference.declaration_node_index.isNone()) {
+            if (aliases.get(sid)) |scope| if (reference.scope_id != scope) return false;
+            continue;
+        }
+        const binding = bindings.getPtr(@backingInt(reference.declaration_node_index)) orelse continue;
+        if (sid != binding.lexical or reference.scope_id != binding.scope) return false;
+        binding.rows += 1;
+    }
+    var declared = bindings.valueIterator();
+    while (declared.next()) |binding| if (binding.rows != 1) return false;
+    const Owner = struct { node: u32, context: Context };
+    var actual: std.AutoHashMapUnmanaged(u32, Owner) = .empty;
+    defer actual.deinit(allocator);
+    var owners = semantic.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        if (!wanted.contains(entry.value_ptr.*)) continue;
+        const raw = entry.key_ptr.*;
+        if (raw >= contexts.len) return false;
+        const context = contexts[raw] orelse continue;
+        switch (ast.nodes.items[raw].tag) {
+            .function_declaration, .function_expression, .arrow_function_expression, .method_definition, .function => {},
+            else => continue,
+        }
+        const owner = try actual.getOrPut(allocator, entry.value_ptr.*);
+        if (owner.found_existing and owner.value_ptr.node != raw) return false;
+        owner.value_ptr.* = .{ .node = raw, .context = context };
+    }
+    var entries = aliases.iterator();
+    while (entries.next()) |entry| {
+        const context = (actual.get(@backingInt(entry.value_ptr.*)) orelse return false).context;
+        const slot = anchorless.getPtr(entry.key_ptr.*) orelse return false;
+        if (slot.*) |previous| if (!std.meta.eql(previous, context)) return false;
+        slot.* = context;
+    }
+    return true;
+}
+
 /// Path splits keep every source binding/reference identity, but can move
 /// statement buckets. Native class-self and anonymous default-facade
 /// declarations and native/IIFE entry roles use their exact producers instead of a leaf.
@@ -98,6 +198,7 @@ pub fn project(
             slot.* = entry.value_ptr.*;
         }
     }
+    if (anchorless_contexts.count() != 0 and !try projectNativeAnnexBEntries(allocator, ast, contexts, semantic, &anchorless_contexts)) return null;
     for (updated) |*reference| {
         const node = if (reference.flags.declare) reference.declaration_node_index else reference.node_index;
         const context = if (node.isNone() and reference.flags.declare)
@@ -232,4 +333,127 @@ pub fn refresh(module: *@import("module.zig").Module, shaker: ?*@import("tree_sh
     s.module_stmt_infos[index] = rebuilt;
     module.reachable_stmts = &s.reachable_stmts[index].?;
     module.symbol_to_stmt = rebuilt.symbol_to_stmt;
+}
+
+test "native Annex B alias entry projection requires exact declaration scope and unique owner" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "function run(flag){const values=[];for(let index=0;index<2;index++){function local(){let eval=value=>value+4;return eval(index);}values.push(local());}return values;}console.log(JSON.stringify([run(false),run(true)]));function sibling(){var local=9;return local}";
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".cjs");
+    const root = try parser.parse();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var lexical: ?u32 = null;
+    var variable: ?u32 = null;
+    var foreign: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, id| {
+        if (!symbol.annex_b_alias.variable.isNone()) {
+            lexical = @intCast(id);
+            variable = @backingInt(symbol.annex_b_alias.variable);
+        } else if (symbol.kind == .variable_var and std.mem.eql(u8, parser.ast.getText(symbol.name), "local")) foreign = @intCast(id);
+    }
+    const local = lexical orelse return error.MissingNativeAnnexBRole;
+    const alias = variable.?;
+    const scope = analyzer.symbols.items[alias].scope_id;
+    try std.testing.expect(scope != analyzer.symbols.items[local].scope_id);
+    var alias_row: ?usize = null;
+    for (analyzer.references.items, 0..) |reference, index| {
+        if (reference.flags.declare and @backingInt(reference.symbol_id) == alias and reference.declaration_node_index.isNone()) alias_row = index;
+    }
+    const row = alias_row orelse return error.MissingNativeAnnexBEntry;
+    const references = try a.dupe(SemanticReference, analyzer.references.items);
+    var semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .references = references,
+    };
+    const projected = (try project(a, &parser.ast, root, &semantic)) orelse return error.NativeAnnexBEntryRejected;
+    try std.testing.expectEqualDeep(references[row].scope_id, projected[row].scope_id);
+    try std.testing.expectEqual(references[row].symbol_id, projected[row].symbol_id);
+    try std.testing.expect(projected[row].declaration_node_index.isNone());
+    var original_owner: ?u32 = null;
+    var other_owner: ?u32 = null;
+    var owners = analyzer.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        if (parser.ast.nodes.items[entry.key_ptr.*].tag != .function_declaration) continue;
+        if (entry.value_ptr.* == @backingInt(scope)) original_owner = entry.key_ptr.*;
+        if (entry.value_ptr.* == @backingInt(analyzer.symbols.items[foreign.?].scope_id)) other_owner = entry.key_ptr.*;
+    }
+    const contexts = try collect(a, &parser.ast, root);
+    try std.testing.expectEqualDeep(contexts[original_owner.?].?, Context{ .stmt_idx = projected[row].stmt_idx, .scope_stmt_idx = projected[row].scope_stmt_idx });
+    var explicit_parameter_row: ?usize = null;
+    for (references, 0..) |reference, index| {
+        const symbol = semantic.symbols.items[@backingInt(reference.symbol_id)];
+        if (reference.flags.declare and !reference.declaration_node_index.isNone() and symbol.kind == .parameter and symbol.synthetic_kind == null) {
+            explicit_parameter_row = index;
+            break;
+        }
+    }
+    const parameter_row = explicit_parameter_row orelse return error.MissingActualFormal;
+    const original_parameter = references[parameter_row];
+    references[parameter_row].declaration_node_index = .none;
+    try std.testing.expect((try project(a, &parser.ast, root, &semantic)) == null);
+    references[parameter_row] = original_parameter;
+    try std.testing.expect(foreign.? != alias);
+    try std.testing.expect(analyzer.symbols.items[foreign.?].scope_id != scope);
+    const old_role = semantic.symbols.items[local].annex_b_alias;
+    semantic.symbols.items[local].annex_b_alias.variable = @fromBackingInt(foreign.?);
+    try std.testing.expect((try project(a, &parser.ast, root, &semantic)) == null);
+    semantic.symbols.items[local].annex_b_alias = old_role;
+    references[row].scope_id = semantic.symbols.items[local].scope_id;
+    try std.testing.expect((try project(a, &parser.ast, root, &semantic)) == null);
+    references[row] = analyzer.references.items[row];
+    const old_other_scope = semantic.scope_owner_map.get(other_owner.?).?;
+    try semantic.scope_owner_map.put(a, other_owner.?, @backingInt(scope));
+    try std.testing.expect((try project(a, &parser.ast, root, &semantic)) == null);
+    try semantic.scope_owner_map.put(a, other_owner.?, old_other_scope);
+    try std.testing.expect((try project(a, &parser.ast, root, &semantic)) != null);
+}
+
+test "native Annex B shadow eval CJS full minify preserves original runtime" {
+    const helpers = @import("test_helpers.zig");
+    const compat = @import("../transformer/compat.zig");
+    const source = "function run(flag){const values=[];for(let index=0;index<2;index++){function local(){let eval=value=>value+4;return eval(index);}values.push(local());}return values;}\nconsole.log(JSON.stringify([run(false),run(true)]));";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("[[4,5],[4,5]]\n", native.stdout);
+    for ([_]compat.UnsupportedFeatures{ compat.fromESTarget(.es5), compat.unsupportedFeatures(&.{.{ .engine = .chrome, .major = 49, .minor = 0 }}) }) |unsupported| {
+        for ([_]bool{ false, true }) |minify| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try helpers.writeFile(tmp.dir, "input.cjs", source);
+            const entry = try helpers.absPath(&tmp, "input.cjs");
+            defer std.testing.allocator.free(entry);
+            var bundler = @import("bundler.zig").Bundler.init(std.testing.allocator, .{
+                .entry_points = &.{entry},
+                .format = .cjs,
+                .platform = .node,
+                .unsupported = unsupported,
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+                .minify_whitespace = minify,
+            });
+            defer bundler.deinit();
+            const result = try bundler.bundle(std.testing.io);
+            defer result.deinit(std.testing.allocator);
+            try std.testing.expect(!result.hasErrors());
+            try helpers.writeFile(tmp.dir, "output.cjs", result.output);
+            const output = try helpers.absPath(&tmp, "output.cjs");
+            defer std.testing.allocator.free(output);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output } });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+            try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+        }
+    }
 }
