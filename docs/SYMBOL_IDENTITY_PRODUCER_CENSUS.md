@@ -74,3 +74,52 @@
 ## Post-census producer addition (2026-10-25)
 
 The historical 112-callsite index above remains a snapshot of its stated base. `src/transformer/static_class_capture.zig::ensureCapture` adds one reachable `makeExactSyntheticBindingFromSpan` callsite for immutable moved-static-initializer captures. Its exact SID/owner, declaration/reference handoff, dynamic-environment boundary, and late output-name consumer are documented in the [producer audit delta](./SYMBOL_IDENTITY_PRODUCER_AUDIT.md#static-initializer-immutable-capture-delta-2026-10-25). This is an explicit addition to the bounded inventory, not evidence that every output-graph producer has been migrated.
+
+## Current source census (2026-11-06; a33381d4)
+
+The source index and the 112-row identity review above remain snapshots of their stated base. The current-main constructor inventory is now pinned by the [audit script](../scripts/audit-symbol-identity-producer-census.mjs).
+
+| Measure | Historical base 7346fc2 | Current main a33381d4 |
+| --- | ---: | ---: |
+| Constructor call expressions | 112 | 138 |
+| Source files | 35 | 45 |
+| Enclosing functions | 70 | 89 |
+| Reachable production callsites | 111 | 137 |
+| Constructor helper with no production caller | 1 | 1 |
+
+Current callsite totals are makeSyntheticBinding 52, makeExactSyntheticBinding 42, makeExactSyntheticBindingFromSpan 29, createSyntheticTempBinding 9, makeUsingBinding 4, and createSyntheticTempBindingWithIdentity 2. The one unreachable expression remains es2015_for_of.zig::makeVarDeclFromSpan; its current location is L706.
+
+The pinned SHA-256 fingerprint is 246344339d6250038c5dc248cd41d3fdeaebe9b265dcdc7e77dd6e68ebccddb8. The current total is a source inventory, not a count of missing symbols. Compared with the historical 112-site base, the source has 37 added production expressions and 11 removed expressions, for a net increase of 26. Some rows moved between enclosing functions during refactors; the pinned fingerprint covers normalized call expressions and their source function so ordinary additions or removals cannot hide behind equal totals.
+
+The scanner excludes constructor definitions and their internal delegation, _test.zig files, inline test { } bodies, and three test-only helper functions. native_constructor_function_cells.zig::runControl is the additional helper discovered during this refresh; it is called only from that file's inline test. The scanner self-test checks nested test blocks, comments and strings, helper delegation, test-only helpers, an added producer call, a removed producer call, and an unclassified helper.
+
+The exact new and retired function-level census entries since the historical base are:
+
+| Source function | Callsite delta |
+| --- | --- |
+| class_strict_context.zig::visitInitializer | +1 makeExactSyntheticBinding |
+| es2015_arrow.zig::prepareNativeParameterArrow / wrapNativeParameterArrow | +1 / -1 makeExactSyntheticBinding (identity creation moved before wrapper visitation) |
+| es2015_block_scoping.zig::annexCatch | +2 makeExactSyntheticBinding |
+| es2015_block_scoping.zig::annexEmptyCompletion | +1 makeExactSyntheticBinding |
+| es2015_block_scoping.zig::annexSetter | +2 makeExactSyntheticBinding |
+| es2015_block_scoping.zig::lowerExtractedNativeAnnexB | +1 makeExactSyntheticBinding |
+| es2015_class/private_fields.zig::PrivateFields.init | +1 makeExactSyntheticBinding |
+| es2015_class/super_props.zig::beginSuperTemp | -1 createSyntheticTempBinding |
+| es2015_generator.zig::registeredClassAssignment | +1 makeExactSyntheticBindingFromSpan |
+| es2015_params.zig::lowerParamsImpl | +2 makeExactSyntheticBindingFromSpan |
+| es2025_using.zig::rewriteUsingStatements / rewriteUsingStatementsWithOwner | -3/+3 makeUsingBinding, -1/+1 makeSyntheticBinding (owner-aware refactor) |
+| es_helpers.zig::buildWeakCollectionDecl | +1 makeExactSyntheticBinding |
+| loop_await_driver.zig::slot, build | +1 each makeExactSyntheticBinding |
+| native_constructor_function_cells.zig::prepareImpl | +1 makeExactSyntheticBindingFromSpan |
+| native_constructor_guard.zig::binding | +1 makeExactSyntheticBinding |
+| native_parameter_cells.zig::normalize | +2 makeSyntheticBinding |
+| object_super.zig::wrapWithHome / wrapWithHomeAndPrefixRoots | -3/+4 makeExactSyntheticBindingFromSpan |
+| retained_class_keys.zig::prepareLoopBody, maybeWrap | +1 makeExactSyntheticBinding; +1 each exact and exact-from-span in maybeWrap |
+| retained_field_arrow.zig::prepareOwnedArrow | +2 makeExactSyntheticBinding |
+| static_class_capture.zig::ensureCapture | +1 makeExactSyntheticBindingFromSpan |
+| transformer/class_member_helpers.zig::buildSuperSpreadArgsShell / buildSuperSpreadArgsShellInScope | -1/+1 makeSyntheticBinding (scope-aware refactor) |
+| transformer/driver.zig::appendImplicitArgumentsBodyCopy | +1 makeExactSyntheticBindingFromSpan |
+| transformer/semantic_edit.zig::ensureAnnexBVariableStorage | +1 makeExactSyntheticBindingFromSpan |
+| transformer/tagged_template.zig::lowerTaggedTemplate / lowerTaggedTemplateImpl | -1/+1 makeExactSyntheticBinding (implementation split) |
+
+This refresh pins callsite inventory only. The historical 112/112 semantic identity classification does not automatically extend to the 37 added expressions; their owner, exact SID handoff, final-name consumer, and fallback still need row-level review. Keep #4819 and #6193 open until that review and the broader retained-graph/output-consumer matrix are complete.
