@@ -11,12 +11,12 @@ describe('retained computed class accessor symbols (#4819)', () => {
     cleanup = undefined;
   });
 
-  test('static string accessor keys retain exact setter identity and runtime behavior', async () => {
+  test('escaped static string accessor values retain exact setter identity and runtime behavior', async () => {
     const fixture = await createFixture({
       'input.js': `var _key = 'source-key';
 class Box {
   get ['value']() { return this._stored + ':' + _key; }
-  set ["value"](value = 1) { this._stored = value; }
+  set ["v\\u0061lue"](value = 1) { this._stored = value; }
 }
 const box = new Box();
 box.value = undefined;

@@ -55,6 +55,7 @@ const Transformer = @import("../../transformer/transformer.zig").Transformer;
 const TransformOptions = @import("../../transformer/transformer.zig").TransformOptions;
 const class_assign_ops = @import("../../transformer/es2015_class/assign_ops.zig");
 const builtin_plugins = @import("../../transformer/plugins/builtin.zig");
+const string_escape = @import("../../string_escape.zig");
 const Span = @import("../../lexer/token.zig").Span;
 const parse_helpers = @import("parse_helpers.zig");
 const injectFlowEnumRuntimeImport = @import("synthetic_imports.zig").injectFlowEnumRuntimeImport;
@@ -7474,10 +7475,12 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
     return false;
 }
 
-/// Class computed keys are admitted here only for unescaped string literals on
-/// ordinary synchronous accessors. Their property name is fixed at parse time,
-/// so class lowering cannot select a different key or descriptor.
+/// Class computed keys are admitted here only for string literals that can be
+/// decoded to a fixed JS StringValue on ordinary synchronous accessors. Their
+/// property name is fixed at parse time, so class lowering cannot select a
+/// different key or descriptor.
 fn retainableSimpleComputedClassAccessorKeyText(
+    allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     key_idx: ast_mod.NodeIndex,
 ) ?[]const u8 {
@@ -7489,13 +7492,18 @@ fn retainableSimpleComputedClassAccessorKeyText(
     const value = ast.getNode(value_idx);
     if (value.tag != .string_literal) return null;
     const raw = ast.getText(value.span);
-    if (raw.len < 2 or (raw[0] != '"' and raw[0] != '\'') or raw[raw.len - 1] != raw[0] or
-        std.mem.indexOfScalar(u8, raw, '\\') != null) return null;
-    return raw[1 .. raw.len - 1];
+    if (raw.len < 2 or (raw[0] != '"' and raw[0] != '\'') or raw[raw.len - 1] != raw[0]) return null;
+    return string_escape.decodeJsStringLiteral(allocator, raw) catch null;
 }
 
-fn isRetainableSimpleComputedClassAccessorKey(ast: *const ast_mod.Ast, key_idx: ast_mod.NodeIndex) bool {
-    return retainableSimpleComputedClassAccessorKeyText(ast, key_idx) != null;
+fn isRetainableSimpleComputedClassAccessorKey(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    key_idx: ast_mod.NodeIndex,
+) bool {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    return retainableSimpleComputedClassAccessorKeyText(arena.allocator(), ast, key_idx) != null;
 }
 
 /// A downleveled class preserves its graph when it has no base or a simple
@@ -7518,7 +7526,7 @@ fn isRetainableSimpleComputedClassAccessorKey(ast: *const ast_mod.Ast, key_idx: 
 /// constructor self binding and call-check reference in the exact output
 /// function scope. Static fields must pass `isRetainableSimpleStaticClassField`;
 /// instance fields must pass the primitive legacy-assignment subset above.
-/// Dynamic or escaped computed keys outside the literal accessor subset,
+/// Dynamic or undecodable computed keys outside the literal accessor subset,
 /// class-self heritage reads, and nested lexical
 /// `super` outside the audited async class-method shapes stay excluded. Direct
 /// `super` in synchronous methods and async
@@ -7539,6 +7547,9 @@ fn isSimpleClass(
     allow_es5_generator_class_methods: bool,
 ) bool {
     if (node.tag != .class_declaration and node.tag != .class_expression) return false;
+    var key_text_arena = std.heap.ArenaAllocator.init(allocator);
+    defer key_text_arena.deinit();
+    const key_text_allocator = key_text_arena.allocator();
     const extra = node.data.extra;
     const extras = ast.extra_data.items;
     if (extra > extras.len or extras.len - extra <= ast_mod.ClassExtra.body) return false;
@@ -7632,7 +7643,7 @@ fn isSimpleClass(
             if (std.mem.indexOfScalar(u8, text, '\\') != null) return false;
             break :blk text;
         } else if (is_plain_accessor and !source_object_shadows_class)
-            retainableSimpleComputedClassAccessorKeyText(ast, key_idx) orelse return false
+            retainableSimpleComputedClassAccessorKeyText(key_text_allocator, ast, key_idx) orelse return false
         else
             return false;
         if (key.tag == .computed_property_key) has_computed_accessor_key = true;
@@ -10593,7 +10604,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     const key: ast_mod.NodeIndex = @fromBackingInt(@intCast(
                         ast.extra_data.items[method_extra + ast_mod.MethodExtra.key],
                     ));
-                    if (isRetainableSimpleComputedClassAccessorKey(ast, key))
+                    if (isRetainableSimpleComputedClassAccessorKey(allocator, ast, key))
                         computed_object_keys.put(ast.allocator, @backingInt(key), .accessor) catch return false;
                 }
             }
@@ -29033,6 +29044,38 @@ test "retained graph preserves simple setter defaults in a computed class access
     ));
     try expectRetainedMethodDefaultSymbolIdentityForTest(source, "value");
 
+    const escaped_source = "class Box { get ['value']() { return this._value; } set [\"v\\u0061lue\"](value = 1) { this._value = value; } }";
+    var escaped_fixture = try runtimeHelperReanalysisTestFixture(allocator, escaped_source);
+    var escaped_get = false;
+    var escaped_set = false;
+    try std.testing.expect(canRetainGraphForAuditedSyntaxSubset(
+        allocator,
+        &escaped_fixture.ast,
+        &escaped_fixture.semantic,
+        .{ .unsupported = es5 },
+        &escaped_get,
+        &escaped_set,
+        null,
+        null,
+    ));
+    try expectRetainedMethodDefaultSymbolIdentityForTest(escaped_source, "value");
+
+    const escaped_getter_source = "class Box { get ['va\\u006cue']() { return this._value; } set ['value'](value = 1) { this._value = value; } }";
+    var escaped_getter_fixture = try runtimeHelperReanalysisTestFixture(allocator, escaped_getter_source);
+    var escaped_getter_get = false;
+    var escaped_getter_set = false;
+    try std.testing.expect(canRetainGraphForAuditedSyntaxSubset(
+        allocator,
+        &escaped_getter_fixture.ast,
+        &escaped_getter_fixture.semantic,
+        .{ .unsupported = es5 },
+        &escaped_getter_get,
+        &escaped_getter_set,
+        null,
+        null,
+    ));
+    try expectRetainedMethodDefaultSymbolIdentityForTest(escaped_getter_source, "value");
+
     const hostile_sources = [_][]const u8{
         "function nextKey() { return 'value'; } class Box { get [nextKey()]() { return this._value; } set [nextKey()](value = 1) { this._value = value; } }",
         "function nextDefault() { return 1; } class Box { get ['value']() { return this._value; } set ['value'](value = nextDefault()) { this._value = value; } }",
@@ -29057,10 +29100,43 @@ test "retained graph preserves simple setter defaults in a computed class access
         "class Box { set ['value'](value = 1) { this._value = value; } }",
         "const key = 'value'; class Box { get [key]() { return this._value; } set [key](value = 1) { this._value = value; } }",
         "class Box { get [`value`]() { return this._value; } set [`value`](value = 1) { this._value = value; } }",
-        "class Box { get ['va\\u006cue']() { return this._value; } set ['value'](value = 1) { this._value = value; } }",
         "var Object; class Box { get ['value']() { return this._value; } set ['value'](value = 1) { this._value = value; } }",
     };
     for (hostile_sources) |hostile_source| {
+        var hostile_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer hostile_arena.deinit();
+        const hostile_allocator = hostile_arena.allocator();
+        const hostile_fixture = try runtimeHelperReanalysisTestFixture(hostile_allocator, hostile_source);
+        var hostile_get = false;
+        var hostile_set = false;
+        try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+            hostile_allocator,
+            &hostile_fixture.ast,
+            &hostile_fixture.semantic,
+            .{ .unsupported = es5 },
+            &hostile_get,
+            &hostile_set,
+            null,
+            null,
+        ));
+    }
+
+    const escaped_hostile_sources = [_][]const u8{
+        "class Box { get ['value']() { return this._value; } set ['v\\u0061lueX'](value = 1) { this._value = value; } }",
+        "class Box { get ['value']() { return this._value; } set ['\\x76alueX'](value = 1) { this._value = value; } }",
+        "function nextKey() { return 'value'; } class Box { get ['\\u0076alue']() { return this._value; } set [nextKey()](value = 1) { this._value = value; } }",
+        "function nextKey() { return 'value'; } class Box { get [nextKey()]() { return this._value; } set ['\\u0076alue'](value = 1) { this._value = value; } }",
+        "const key = 'value'; class Box { get [key]() { return this._value; } set ['\\u0076alue'](value = 1) { this._value = value; } }",
+        "class Box { get [`value`]() { return this._value; } set ['\\u0076alue'](value = 1) { this._value = value; } }",
+        "class Box { get ['\\u0076alue']() { return this._value; } }",
+        "class Box { set ['\\u0076alue'](value = 1) { this._value = value; } }",
+        "class Box { get ['value']() { return this._value; } set ['\\u0076alue'](value = 1) { this._value = value; } read() { return this._value; } }",
+        "function nextDefault() { return 1; } class Box { get ['value']() { return this._value; } set ['\\u0076alue'](value = nextDefault()) { this._value = value; } }",
+        "var Object; class Box { get ['value']() { return this._value; } set ['\\u0076alue'](value = 1) { this._value = value; } }",
+        "class Box { static get ['\\u0076alue']() { return this._value; } set ['value'](value = 1) { this._value = value; } }",
+        "class Box { get ['value']() { return this._value; } get ['\\u0076alue']() { return this._value; } set ['value'](value = 1) { this._value = value; } }",
+    };
+    for (escaped_hostile_sources) |hostile_source| {
         var hostile_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer hostile_arena.deinit();
         const hostile_allocator = hostile_arena.allocator();
