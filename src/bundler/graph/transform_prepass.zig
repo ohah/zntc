@@ -28616,6 +28616,28 @@ test "retained graph preserves simple setter defaults in an accessor pair" {
     try expectRetainedMethodDefaultSymbolIdentityForTest(source, "value");
 }
 
+test "retained graph preserves simple object setter defaults in an accessor pair" {
+    const es5 = @import("../../transformer/compat.zig").fromESTarget(.es5);
+    const source = "export const box = { get value() { return this._value; }, set value(value = 1) { this._value = value; } };";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+    var get = false;
+    var set = false;
+    try std.testing.expect(canRetainGraphForAuditedSyntaxSubset(
+        allocator,
+        &fixture.ast,
+        &fixture.semantic,
+        .{ .unsupported = es5 },
+        &get,
+        &set,
+        null,
+        null,
+    ));
+    try expectRetainedMethodDefaultSymbolIdentityForTest(source, "value");
+}
+
 test "retained graph preserves audited class constructor default parameter identities" {
     const es5 = @import("../../transformer/compat.zig").fromESTarget(.es5);
     const safe_sources = [_][]const u8{
