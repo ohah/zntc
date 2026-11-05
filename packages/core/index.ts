@@ -2959,6 +2959,7 @@ export function resolveOutputPath(
  * write/outdir/outfile 옵션에 따라 빌드 결과를 디스크에 기록한다.
  */
 function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
+  if (result.errors.length > 0) return;
   const shouldWrite = options.write ?? (options.outdir != null || options.outfile != null);
   if (!shouldWrite) return;
 

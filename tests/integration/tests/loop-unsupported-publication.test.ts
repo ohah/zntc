@@ -55,3 +55,33 @@ for (const api of ['sync', 'async'] as const)
             await cleanup();
           }
         });
+
+for (const api of ['sync', 'async'] as const)
+  for (const existing of [false, true])
+    test(`parse_error ${api} write:true preserves filesystem existing=${existing}`, async () => {
+      const { dir, cleanup } = await createFixture({
+        'entry.cjs': "new Worker(new URL('./worker.cjs', import.meta.url));",
+        'worker.cjs': 'console.log(42);',
+      });
+      try {
+        if (!process.env.ZNTC_LOOP_CAPTURE_NAPI) init();
+        const outfile = join(dir, 'output.cjs');
+        const sentinel = 'untouched parse-error sentinel\n';
+        if (existing) writeFileSync(outfile, sentinel);
+        const options: BuildOptions = {
+          entryPoints: [join(dir, 'entry.cjs')],
+          outfile,
+          format: 'cjs',
+          write: true,
+        };
+        // Generic native diagnostic results remain results, with the actual
+        // parser diagnostic intact. They must not enter filesystem publication.
+        const result = api === 'sync' ? buildSync(options) : await build(options);
+        expect(result.errors.some((diagnostic) => diagnostic.code === 'parse_error')).toBe(true);
+        expect(existsSync(outfile)).toBe(existing);
+        if (existing) expect(readFileSync(outfile, 'utf8')).toBe(sentinel);
+        expect(existsSync(`${outfile}.map`)).toBe(false);
+      } finally {
+        await cleanup();
+      }
+    });
