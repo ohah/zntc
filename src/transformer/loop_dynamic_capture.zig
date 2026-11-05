@@ -226,6 +226,7 @@ fn safeImmediateHeaderRead(self: anytype, loop: ast.NodeIndex, eval_call: ast.No
     const declarator = self.ast.readExtraNode(self.ast.readExtra(declaration.data.extra, 1), 0);
     const binding = self.ast.readExtraNode(self.ast.getNode(declarator).data.extra, 0);
     if (self.ast.getNode(binding).tag != .binding_identifier or self.getSymbolIdAt(binding) != id or self.ast.readExtraNode(self.ast.getNode(declarator).data.extra, 2).isNone()) return false;
+    if (directSourceBody(self, loop, eval_call, parents)) return true;
     var function = parents[@backingInt(eval_call)];
     if (function.isNone()) return false;
     // A direct expression body, or a sole return statement, cannot store an
@@ -262,6 +263,46 @@ fn safeImmediateHeaderRead(self: anytype, loop: ast.NodeIndex, eval_call: ast.No
     var cursor = if (immediate) parent else function;
     var hops: usize = 0;
     while (hops < parents.len) : (hops += 1) {
+        if (cursor == body) return true;
+        cursor = parents[@backingInt(cursor)];
+        if (cursor.isNone()) return false;
+        const tag = self.ast.getNode(cursor).tag;
+        if (isFunction(tag) or isLoop(tag) or tag == .class_body or tag == .static_block) return false;
+    }
+    return false;
+}
+
+const ReadonlyEval = struct { kind: enum { read, type_of, call }, name: @import("../lexer/token.zig").Span };
+fn readonlyEval(self: anytype, text: []const u8) !?ReadonlyEval {
+    var scanner = try Scanner.init(self.allocator, text);
+    defer scanner.deinit();
+    try scanner.next();
+    const type_of = scanner.token.kind == .kw_typeof;
+    if (type_of) try scanner.next();
+    if (scanner.token.kind != .identifier) return null;
+    const name = scanner.token.span;
+    try scanner.next();
+    var kind: @FieldType(ReadonlyEval, "kind") = if (type_of) .type_of else .read;
+    if (!type_of and scanner.token.kind == .l_paren) {
+        try scanner.next();
+        if (scanner.token.kind != .r_paren) return null;
+        try scanner.next();
+        kind = .call;
+    }
+    if (scanner.token.kind != .eof) return null;
+    return .{ .kind = kind, .name = name };
+}
+
+fn directSourceBody(self: anytype, loop: ast.NodeIndex, call: ast.NodeIndex, parents: []const ast.NodeIndex) bool {
+    const node = self.ast.getNode(loop);
+    const body = switch (node.tag) {
+        .for_statement => self.ast.readExtraNode(node.data.extra, 3),
+        .for_in_statement, .for_of_statement, .for_await_of_statement => node.data.ternary.c,
+        .while_statement, .do_while_statement => node.data.binary.right,
+        else => return false,
+    };
+    var cursor = call;
+    for (0..parents.len) |_| {
         if (cursor == body) return true;
         cursor = parents[@backingInt(cursor)];
         if (cursor.isNone()) return false;
@@ -351,6 +392,22 @@ fn checkLoop(self: anytype, loop: ast.NodeIndex, state_machine: bool, scopes: []
         defer if (text.owned) self.allocator.free(text.value.?);
         const trimmed = if (text.value) |known| std.mem.trim(u8, known, " \t\r\n") else null;
         if (trimmed) |known| if (independent(known)) continue;
+        const readonly = if (trimmed) |known| try readonlyEval(self, known) else null;
+        if (!unknown_binding and readonly != null and !scope.isNone()) {
+            const known = trimmed.?;
+            const span = readonly.?.name;
+            const raw_name = known[span.start..span.end];
+            var buffer: [256]u8 = undefined;
+            const name = Scanner.decodeIdentifierEscapesInto(raw_name, &buffer) orelse raw_name;
+            switch (firstSourceBinding(self, name, scope)) {
+                .found => |id| if (!selected.contains(id)) continue,
+                .absent => continue,
+                .unproven => {
+                    self.unsupported_loop_dynamic_scope_span = node.span;
+                    return true;
+                },
+            }
+        }
         if (unknown_binding or scope.isNone() or self.scopes.len == 0 or self.scope_maps.len == 0) {
             self.unsupported_loop_dynamic_scope_span = node.span;
             return true;
@@ -363,15 +420,12 @@ fn checkLoop(self: anytype, loop: ast.NodeIndex, state_machine: bool, scopes: []
             const name = Scanner.decodeIdentifierEscapesInto(raw_name, &buffer) orelse raw_name;
             // A statically known bare identifier can only observe its own first
             // source binding. Opaque source may observe any visible selected SID.
-            if (trimmed) |known| {
-                var scanner = try Scanner.init(self.allocator, known);
-                defer scanner.deinit();
-                try scanner.next();
-                if (scanner.token.kind == .identifier and scanner.token.span.end == known.len) {
-                    var decoded: [256]u8 = undefined;
-                    const eval_name = Scanner.decodeIdentifierEscapesInto(known, &decoded) orelse known;
-                    if (!std.mem.eql(u8, name, eval_name)) continue;
-                }
+            if (readonly) |role| {
+                const known = trimmed.?;
+                const eval_raw = known[role.name.start..role.name.end];
+                var decoded: [256]u8 = undefined;
+                const eval_name = Scanner.decodeIdentifierEscapesInto(eval_raw, &decoded) orelse eval_raw;
+                if (!std.mem.eql(u8, name, eval_name)) continue;
             }
             switch (firstSourceBinding(self, name, scope)) {
                 .found => |actual| if (actual != id.*) continue,
@@ -386,7 +440,13 @@ fn checkLoop(self: anytype, loop: ast.NodeIndex, state_machine: bool, scopes: []
             var hops: usize = 0;
             while (!owner.isNone() and hops < self.scopes.len) : (hops += 1) {
                 if (owner == symbol.scope_id) {
-                    if (trimmed) |known| if (safeImmediateHeaderRead(self, loop, @fromBackingInt(@intCast(raw)), id.*, known, parents, allow_escaping)) break;
+                    if (readonly) |role| if (role.kind != .call) {
+                        const call: ast.NodeIndex = @fromBackingInt(@intCast(raw));
+                        if (!std.mem.eql(u8, name, "arguments") and !std.mem.eql(u8, name, "eval") and
+                            directSourceBody(self, loop, call, parents) and knownInitializer(self, id.*, call, parents, false) != null) break;
+                        const text_name = trimmed.?[role.name.start..role.name.end];
+                        if (safeImmediateHeaderRead(self, loop, call, id.*, text_name, parents, allow_escaping)) break;
+                    };
                     self.unsupported_loop_dynamic_scope_span = node.span;
                     return true;
                 }

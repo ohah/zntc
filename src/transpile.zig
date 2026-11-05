@@ -16593,8 +16593,6 @@ test "loop dynamic eval bounded initialized values and synchronous reads preserv
         "function run(){let eval=function(x){return x};var realEval=globalThis.eval,readers=[];var bridge={get eval(){delete this.eval;return realEval}};with(bridge){eval(\"eval = realEval\")};for(let index=0;index<3;index++){eval(\"readers.push(function(){return index})\")};return readers.map(function(f){return f()})}console.log(JSON.stringify(run()));",
         "for(let index=0;index<2;index++){let value=1;(()=>eval('value'))()}",
         "for(let value=0;value<2;value++){(async()=>eval('value'))()}",
-        "function run(eval){for(let value=0;value<2;value++){eval('value')}}",
-        "function run(){let eval=value=>value;eval=globalThis.eval;for(let value=0;value<2;value++){eval('value')}}",
         "for(let value=0;value<2;value++){const item=readCode();eval(item)}",
         "for(let arguments=0;arguments<2;arguments++){(()=>eval('arguments'))()}",
     };
@@ -16636,4 +16634,55 @@ test "loop dynamic eval preserves main ordinary readonly closure capture support
         }
     }
     try std.testing.expectError(error.LoopDynamicScope, transpile(a, "var readers=[];for(let index=0;index<3;index++){eval('readers.push(function(){return index})')}", "loop-eval.cjs", .{ .unsupported = @import("transformer/compat.zig").fromESTarget(.es5) }));
+}
+
+test "loop dynamic eval readonly demand excludes unrelated names and respects initialization" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const good = [_][]const u8{
+        "function run(){const out=[];for(let index=0;index<2;index++){out.push(eval('typeof missing'),eval('index'));}return out}console.log(JSON.stringify(run()));",
+        "function run(){const out=[];for(let index=0;index<2;index++){function local(){return index}out.push(eval('typeof local'),eval('local()'));}return out}console.log(JSON.stringify(run()));",
+        "function run(){let index=0;const readers=[];while(index<2){const local=index;eval('local');readers.push(()=>local);index++}return readers.map(read=>read())}console.log(JSON.stringify(run()));",
+    };
+    for (good) |source| {
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        const result = try transpile(a, source, "loop-eval.cjs", .{ .unsupported = @import("transformer/compat.zig").fromESTarget(.es5) });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+    }
+    try std.testing.expectError(error.LoopDynamicScope, transpile(a, "for(let index=eval('index');index<2;index++){}", "loop-eval.cjs", .{ .unsupported = @import("transformer/compat.zig").fromESTarget(.es5) }));
+    try std.testing.expectError(error.LoopDynamicScope, transpile(a, "for(let index=0;index<2;index++){eval('index=9')}", "loop-eval.cjs", .{ .unsupported = @import("transformer/compat.zig").fromESTarget(.es5) }));
+}
+
+test "loop dynamic eval readonly header preserves builtin parameter and reassigned callee values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The original parameter/reassignment eval calls are retained. Invoke the
+    // actual builtin and collect their values instead of expecting rejection.
+    const sources = [_][]const u8{
+        "function run(eval){const values=[];for(let value=0;value<2;value++){values.push(eval('value'))}return values}console.log(JSON.stringify(run(globalThis.eval)));",
+        "function run(){const values=[];let eval=value=>value;eval=globalThis.eval;for(let value=0;value<2;value++){values.push(eval('value'))}return values}console.log(JSON.stringify(run()));",
+    };
+    for (sources) |source| {
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings("[0,1]\n", native.stdout);
+        try std.testing.expectEqualStrings("", native.stderr);
+        for ([_]bool{ false, true }) |minify| {
+            const result = try transpile(a, source, "loop-eval.cjs", .{
+                .unsupported = @import("transformer/compat.zig").fromESTarget(.es5),
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+            });
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+            try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+        }
+    }
 }
