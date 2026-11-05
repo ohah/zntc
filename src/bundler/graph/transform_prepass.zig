@@ -7474,6 +7474,30 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
     return false;
 }
 
+/// Class computed keys are admitted here only for unescaped string literals on
+/// ordinary synchronous accessors. Their property name is fixed at parse time,
+/// so class lowering cannot select a different key or descriptor.
+fn retainableSimpleComputedClassAccessorKeyText(
+    ast: *const ast_mod.Ast,
+    key_idx: ast_mod.NodeIndex,
+) ?[]const u8 {
+    if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return null;
+    const key = ast.getNode(key_idx);
+    if (key.tag != .computed_property_key) return null;
+    const value_idx = key.data.unary.operand;
+    if (value_idx.isNone() or @backingInt(value_idx) >= ast.nodes.items.len) return null;
+    const value = ast.getNode(value_idx);
+    if (value.tag != .string_literal) return null;
+    const raw = ast.getText(value.span);
+    if (raw.len < 2 or (raw[0] != '"' and raw[0] != '\'') or raw[raw.len - 1] != raw[0] or
+        std.mem.indexOfScalar(u8, raw, '\\') != null) return null;
+    return raw[1 .. raw.len - 1];
+}
+
+fn isRetainableSimpleComputedClassAccessorKey(ast: *const ast_mod.Ast, key_idx: ast_mod.NodeIndex) bool {
+    return retainableSimpleComputedClassAccessorKeyText(ast, key_idx) != null;
+}
+
 /// A downleveled class preserves its graph when it has no base or a simple
 /// bound identifier base, and contains supported plain methods, optionally
 /// followed by one accessor or a compatible getter/setter pair. Under a source
@@ -7494,7 +7518,8 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
 /// constructor self binding and call-check reference in the exact output
 /// function scope. Static fields must pass `isRetainableSimpleStaticClassField`;
 /// instance fields must pass the primitive legacy-assignment subset above.
-/// Unsafe computed/escaped keys, class-self heritage reads, and nested lexical
+/// Dynamic or escaped computed keys outside the literal accessor subset,
+/// class-self heritage reads, and nested lexical
 /// `super` outside the audited async class-method shapes stay excluded. Direct
 /// `super` in synchronous methods and async
 /// instance/static methods stays tied to the owning class home; one synchronous
@@ -7547,6 +7572,7 @@ fn isSimpleClass(
 
     var accessor_pair: ?struct { flags: u32, key_text: []const u8 } = null;
     var accessor_count: usize = 0;
+    var has_computed_accessor_key = false;
     var accessors_started = false;
     var has_empty_explicit_constructor = false;
     for (extras[members.start .. members.start + members.len], 0..) |raw_member_idx, member_offset| {
@@ -7600,8 +7626,17 @@ fn isSimpleClass(
         if ((is_es5_generator_method or is_es5_async_generator_method) and
             (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.deco_len or
                 extras[method_extra + ast_mod.MethodExtra.deco_len] != 0)) return false;
-        if (key.tag != .identifier_reference or (!is_plain_method and !is_plain_accessor)) return false;
-        const key_text = ast.getText(key.span);
+        if (!is_plain_method and !is_plain_accessor) return false;
+        const key_text = if (key.tag == .identifier_reference) blk: {
+            const text = ast.getText(key.span);
+            if (std.mem.indexOfScalar(u8, text, '\\') != null) return false;
+            break :blk text;
+        } else if (is_plain_accessor and !source_object_shadows_class)
+            retainableSimpleComputedClassAccessorKeyText(ast, key_idx) orelse return false
+        else
+            return false;
+        if (key.tag == .computed_property_key) has_computed_accessor_key = true;
+        if (source_object_shadows_class and key.tag == .computed_property_key) return false;
         if (std.mem.eql(u8, key_text, "constructor")) {
             if (has_empty_explicit_constructor or flags != 0 or
                 !isSimpleParamsConstructorBodyGraphSafe(ast, semantic, method_extra, super.isNone())) return false;
@@ -7684,6 +7719,7 @@ fn isSimpleClass(
                 !retains_async_class_method_sync_arrow_super and
                 !retains_async_class_method_arrow_super and !retains_sync_class_method_super)) return false;
     }
+    if (has_computed_accessor_key and accessor_count != 2) return false;
     if (source_object_shadows_class) {
         for (extras[members.start .. members.start + members.len]) |raw_accessor_idx| {
             const accessor_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_accessor_idx));
@@ -10532,6 +10568,35 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 options.unsupported.generator,
             )) continue;
             retained_simple_class_nodes.put(ast.allocator, raw_idx, {}) catch return false;
+            if (options.unsupported.object_extensions) {
+                const class_body_idx = ast.readExtraNode(class_node.data.extra, ast_mod.ClassExtra.body);
+                if (class_body_idx.isNone() or @backingInt(class_body_idx) >= ast.nodes.items.len or
+                    ast.getNode(class_body_idx).tag != .class_body) return false;
+                const members = ast.getNode(class_body_idx).data.list;
+                if (members.start > ast.extra_data.items.len or
+                    members.len > ast.extra_data.items.len - members.start) return false;
+                for (ast.extra_data.items[members.start .. members.start + members.len]) |raw_member| {
+                    if (raw_member >= ast.nodes.items.len) return false;
+                    const member = ast.nodes.items[raw_member];
+                    if (member.tag != .method_definition) continue;
+                    const method_extra = member.data.extra;
+                    if (method_extra > ast.extra_data.items.len or
+                        ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.flags) return false;
+                    const flags = ast.extra_data.items[method_extra + ast_mod.MethodExtra.flags];
+                    const is_accessor = flags == ast_mod.MethodFlags.is_getter or
+                        flags == ast_mod.MethodFlags.is_setter or
+                        flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_getter) or
+                        flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_setter);
+                    if (!is_accessor) continue;
+                    if (method_extra > ast.extra_data.items.len or
+                        ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.key) return false;
+                    const key: ast_mod.NodeIndex = @fromBackingInt(@intCast(
+                        ast.extra_data.items[method_extra + ast_mod.MethodExtra.key],
+                    ));
+                    if (isRetainableSimpleComputedClassAccessorKey(ast, key))
+                        computed_object_keys.put(ast.allocator, @backingInt(key), .accessor) catch return false;
+                }
+            }
             if (!registerRetainableSyncClassSuperMethods(
                 ast,
                 class_node,
@@ -11024,7 +11089,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 }
             },
             .computed_property_key => {
-                // Computed data properties and synchronous methods have exact
+                // Computed data properties, object methods, literal-key class
+                // accessors, and audited static class fields have exact
                 // generated-temp and output-function-scope tracking. Other
                 // computed-key owners remain on semantic reanalysis.
                 if (options.unsupported.object_extensions) {
@@ -28935,6 +29001,74 @@ test "retained graph preserves computed object accessor defaults with Object sha
         var hostile_set = false;
         try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
             hostile_arena.allocator(),
+            &hostile_fixture.ast,
+            &hostile_fixture.semantic,
+            .{ .unsupported = es5 },
+            &hostile_get,
+            &hostile_set,
+            null,
+            null,
+        ));
+    }
+}
+
+test "retained graph preserves simple setter defaults in a computed class accessor pair" {
+    const es5 = @import("../../transformer/compat.zig").fromESTarget(.es5);
+    const source = "class Box { get ['value']() { return this._value; } set [\"value\"](value = 1) { this._value = value; } }";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+    var get = false;
+    var set = false;
+    try std.testing.expect(canRetainGraphForAuditedSyntaxSubset(
+        allocator,
+        &fixture.ast,
+        &fixture.semantic,
+        .{ .unsupported = es5 },
+        &get,
+        &set,
+        null,
+        null,
+    ));
+    try expectRetainedMethodDefaultSymbolIdentityForTest(source, "value");
+
+    const hostile_sources = [_][]const u8{
+        "function nextKey() { return 'value'; } class Box { get [nextKey()]() { return this._value; } set [nextKey()](value = 1) { this._value = value; } }",
+        "function nextDefault() { return 1; } class Box { get ['value']() { return this._value; } set ['value'](value = nextDefault()) { this._value = value; } }",
+        "class Box { get ['value']() { return this._value; } set ['value'](value = 1 + 2) { this._value = value; } }",
+        "class Box { get ['value']() { return this._value; } set ['value'](value = -1) { this._value = value; } }",
+        "class Box { get ['value']() { return this._value; } set ['value'](value = 1) { eval('value'); this._value = value; } }",
+        "class Box { get ['value']() { return this._value; } set ['value'](value = eval('1')) { this._value = value; } }",
+        "class Box { get ['value']() { return this._value; } set ['value']({ current } = {}) { this._value = current; } }",
+        "function nextKey() { return 'value'; } class Box { get [nextKey()]() { return this._value; } set [nextKey()](value = seed) { this._value = value; } }",
+        "function nextKey() { return 'value'; } function nextDefault() { return 1; } class Box { get [nextKey()]() { return this._value; } set [nextKey()](value = nextDefault()) { this._value = value; } }",
+        "function nextKey() { return 'value'; } class Box { get [nextKey()]() { return this._value; } set [nextKey()](value = 1 + 2) { this._value = value; } }",
+        "function nextKey() { return 'value'; } class Box { get [nextKey()]() { return this._value; } set [nextKey()](value = -1) { this._value = value; } }",
+        "function nextKey() { return 'value'; } class Box { get [nextKey()]() { return this._value; } set [nextKey()](value = [1]) { this._value = value; } }",
+        "function nextKey() { return 'value'; } class Box { get [nextKey()]() { return this._value; } set [nextKey()](value = {}) { this._value = value; } }",
+        "function nextKey() { return 'value'; } class Box { get [nextKey()]() { return this._value; } set [nextKey()]({ current } = {}) { this._value = current; } }",
+        "function nextKey() { return 'value'; } class Box { get [nextKey()]() { return this._value; } set [nextKey()](value = 1) { eval('value'); this._value = value; } }",
+        "function nextKey() { return eval('\"value\"'); } class Box { get [nextKey()]() { return this._value; } set [nextKey()](value = 1) { this._value = value; } }",
+        "function nextKey() { return 'value'; } class Box { get [nextKey()]() { return this._value; } set [nextKey()](value = eval('1')) { this._value = value; } }",
+        "class Box { get ['value']() { return this._value; } set ['other'](value = 1) { this._value = value; } }",
+        "class Box { get ['value']() { return this._value; } set ['value'](value = 1) { this._value = value; } get ['value']() { return this._value; } }",
+        "class Box { get ['value']() { return this._value; } set ['value'](value = 1) { this._value = value; } read() { return this._value; } }",
+        "class Box { set ['value'](value = 1) { this._value = value; } }",
+        "const key = 'value'; class Box { get [key]() { return this._value; } set [key](value = 1) { this._value = value; } }",
+        "class Box { get [`value`]() { return this._value; } set [`value`](value = 1) { this._value = value; } }",
+        "class Box { get ['va\\u006cue']() { return this._value; } set ['value'](value = 1) { this._value = value; } }",
+        "var Object; class Box { get ['value']() { return this._value; } set ['value'](value = 1) { this._value = value; } }",
+    };
+    for (hostile_sources) |hostile_source| {
+        var hostile_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer hostile_arena.deinit();
+        const hostile_allocator = hostile_arena.allocator();
+        const hostile_fixture = try runtimeHelperReanalysisTestFixture(hostile_allocator, hostile_source);
+        var hostile_get = false;
+        var hostile_set = false;
+        try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+            hostile_allocator,
             &hostile_fixture.ast,
             &hostile_fixture.semantic,
             .{ .unsupported = es5 },
