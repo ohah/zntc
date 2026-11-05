@@ -1213,4 +1213,80 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
       }
     },
   );
+
+  test(
+    'buildSync onTransform Flow match keeps generated callbacks and outer captures exact',
+    { timeout: 30_000 },
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-buildsync-ontransform-flow-match-'));
+      const entry = join(dir, 'entry.js');
+      const source = [
+        "const _fallback = 'outer';",
+        "const _m = 'user-m';",
+        "const _m2 = 'user-m2';",
+        'function classify(value) {',
+        '  return match (value) {',
+        '    { kind: 1, payload: const payload } if (payload > 0) => payload,',
+        "    0 => 'zero',",
+        '    _ => _fallback,',
+        '  };',
+        '}',
+        'console.log(classify({ kind: 1, payload: 4 }), classify(0), classify(9), _m, _m2);',
+      ].join('\n');
+      writeFileSync(entry, '// buildSync onTransform supplies Flow source');
+      const reportedEntry = realpathSync(entry);
+      const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+      const runner = [
+        `import {buildSync} from ${JSON.stringify(coreEntry)};`,
+        `const entry=${JSON.stringify(entry)}; const source=${JSON.stringify(source)}; const calls=[];`,
+        `const result=buildSync({entryPoints:[entry],platform:'node',format:'cjs',target:'es5',flow:true,minifyWhitespace:true,minifySyntax:true,minifyIdentifiers:true,write:false,plugins:[{name:'buildsync-ontransform-flow-match',setup(api){api.onTransform({filter:/entry\\.js$/},args=>{calls.push(args.path);return {code:source};});}}]});`,
+        `if(result.errors.length){console.error(JSON.stringify(result.errors));process.exit(1);}`,
+        `process.stdout.write(JSON.stringify({calls,outputs:result.outputFiles.map(file=>file.text)}));`,
+      ].join('\n');
+      try {
+        const run = Bun.spawnSync(['bun', '-e', runner], {
+          cwd: join(import.meta.dir, '../../..'),
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        });
+        const stderr = run.stderr.toString();
+        expect(run.exitCode, stderr).toBe(0);
+        const result = JSON.parse(run.stdout.toString()) as {
+          calls: string[];
+          outputs: string[];
+        };
+        expect(result.calls).toEqual([reportedEntry]);
+        expect(result.outputs).toHaveLength(1);
+        expect(result.outputs[0]).not.toContain('match (');
+        expect(result.outputs[0]).not.toContain('=>');
+        const output = join(dir, 'out.cjs');
+        writeFileSync(output, result.outputs[0]);
+        const execution = Bun.spawnSync(['node', output]);
+        expect(execution.exitCode, execution.stderr.toString()).toBe(0);
+        expect(execution.stdout.toString()).toBe('4 zero outer user-m user-m2\n');
+
+        const lines = stderr.split(/\r?\n/);
+        const identity = lines.filter(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass ') && line.includes(reportedEntry),
+        );
+        expect(identity, stderr).toHaveLength(1);
+        expect(identity[0]).toMatch(/generated_bindings=[1-9]\d* generated_references=[1-9]\d*/);
+        for (const field of [...zeroCounters, 'clean']) {
+          const values = [
+            ...identity[0].matchAll(new RegExp(`(?:^| )${field}=(\\d+)(?= |$)`, 'g')),
+          ];
+          expect(values, `${field}: ${identity[0]}`).toHaveLength(1);
+          expect(Number(values[0][1]), field).toBe(field === 'clean' ? 1 : 0);
+        }
+        const mode = lines.filter(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(reportedEntry),
+        );
+        expect(mode, stderr).toHaveLength(1);
+        expect(mode[0]).toContain('semantic_graph=retained');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
