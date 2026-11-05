@@ -209,9 +209,18 @@ describe('TSC: import-equals declaration (#1802 follow-up)', () => {
     const targets = ['es5', 'es2015', 'es2017', 'es2020', 'es2022', 'esnext'] as const;
     const modes = [
       { name: 'plain', args: [] },
+      { name: 'syntax', args: ['--minify-syntax'] },
       { name: 'identifiers', args: ['--minify-identifiers'] },
       { name: 'full', args: ['--minify-identifiers', '--minify-syntax'] },
     ] as const;
+    expect(targets).toEqual(['es5', 'es2015', 'es2017', 'es2020', 'es2022', 'esnext']);
+    expect(modes.map(({ args }) => args)).toEqual([
+      [],
+      ['--minify-syntax'],
+      ['--minify-identifiers'],
+      ['--minify-identifiers', '--minify-syntax'],
+    ]);
+    let matrixCases = 0;
 
     for (const target of targets) {
       for (const mode of modes) {
@@ -246,11 +255,13 @@ describe('TSC: import-equals declaration (#1802 follow-up)', () => {
           expect(actual.status, `${target}/${mode.name}: ${actual.stderr}`).toBe(0);
           expect(actual.stdout, `${target}/${mode.name}`).toBe('42\n');
           expect(actual.stderr, `${target}/${mode.name}`).toBe('');
+          matrixCases += 1;
         } finally {
           await cleanup();
         }
       }
     }
+    expect(matrixCases, 'all target/minify runtime combinations executed').toBe(24);
   });
 
   test("import X = require('fs') 가 ESM import 가 아닌 const 로 emit", async () => {
