@@ -13440,6 +13440,7 @@ const MinifiedGraphMutation = enum {
     visible_but_wrong_shadowed_symbol,
     missing_shadowed_symbol_identity,
     scope_map_redirects_shadowed_name,
+    scope_map_drops_unreferenced_binding,
 };
 
 const MinifiedGraphMutationResult = struct {
@@ -13714,6 +13715,20 @@ fn minifiedGraphMutationIsRejected(mutation: MinifiedGraphMutation) !MinifiedGra
             const inner_scope = symbols[inner].scope_id.toIndex();
             if (inner_scope >= analyzer.scope_maps.items.len) return error.MissingInnerScopeMap;
             try analyzer.scope_maps.items[inner_scope].put(allocator, "shared", outer);
+        },
+        .scope_map_drops_unreferenced_binding => {
+            var outer_symbol: ?u32 = null;
+            for (parser.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag != .binding_identifier or
+                    !std.mem.eql(u8, parser.ast.getText(node.span), "shared") or raw >= symbol_ids.len) continue;
+                const symbol_id = symbol_ids[raw] orelse continue;
+                outer_symbol = symbol_id;
+                break;
+            }
+            const outer = outer_symbol orelse return error.MissingOuterShadowSymbol;
+            const outer_scope = symbols[outer].scope_id.toIndex();
+            if (outer_scope >= analyzer.scope_maps.items.len or
+                !analyzer.scope_maps.items[outer_scope].remove("shared")) return error.MissingOuterScopeMapEntry;
         },
     }
 
@@ -14481,14 +14496,14 @@ test "syntax minification repairs statement coordinates without changing identit
     ));
 }
 
-test "syntax minify graph gate rejects twenty-five hostile identity and statement corruptions" {
+test "syntax minify graph gate rejects twenty-six hostile identity and statement corruptions" {
     inline for (std.meta.tags(MinifiedGraphMutation)) |mutation| {
         const result = try minifiedGraphMutationIsRejected(mutation);
         if (result.retained) std.debug.print("minify graph mutation accepted: {s}\n", .{@tagName(mutation)});
         try std.testing.expect(!result.retained);
         try std.testing.expect(result.failure != .allocation);
         if (mutation == .visible_but_wrong_shadowed_symbol or mutation == .missing_shadowed_symbol_identity or
-            mutation == .scope_map_redirects_shadowed_name)
+            mutation == .scope_map_redirects_shadowed_name or mutation == .scope_map_drops_unreferenced_binding)
             try std.testing.expectEqual(MinifiedGraphGateFailure.scope_resolution, result.failure);
         if (mutation == .duplicate_scope_owner or mutation == .wrong_scope_owner_kind or
             mutation == .swapped_scope_owners or mutation == .valid_but_wrong_binding_scope)
