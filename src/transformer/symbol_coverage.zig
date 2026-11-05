@@ -3184,7 +3184,6 @@ pub fn hasExactReachableReferenceResolution(
                     !isAnnexBBlockFunctionAlias(scopes, &symbol, @intCast(scope_raw)))) return false;
         }
     }
-
     var parent_by_node: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer parent_by_node.deinit(allocator);
     var reachable_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -3200,6 +3199,29 @@ pub fn hasExactReachableReferenceResolution(
             const parent = try parent_by_node.getOrPut(allocator, child_raw);
             if (!parent.found_existing) parent.value_ptr.* = raw;
         }
+    }
+
+    // Check the reverse direction for declarations that remain in the live
+    // AST. Dead declarations may leave stale Symbol entries after tree-shaker
+    // mutation and must not prevent the rest of the retained graph from being
+    // reused.
+    for (references) |reference| {
+        if (!reference.flags.declare or reference.declaration_node_index.isNone()) continue;
+        const declaration_raw = @backingInt(reference.declaration_node_index);
+        if (!reachable_nodes.contains(declaration_raw)) continue;
+        const symbol_raw = @backingInt(reference.symbol_id);
+        if (symbol_raw >= symbols.len) return false;
+        const symbol = symbols[symbol_raw];
+        if (!exactValidScope(scopes, symbol.scope_id)) continue;
+        if (symbol.decl_flags.is_default_export and std.mem.eql(u8, symbol.synthetic_name, "_default")) continue;
+        if (symbol.synthetic_kind == .enum_iife_member) continue;
+        if (symbol_raw <= std.math.maxInt(u32) and namespace_member_owners.contains(@intCast(symbol_raw))) continue;
+
+        const name = exactSymbolName(ast, &symbol);
+        const owner_scope = scope_maps[symbol.scope_id.toIndex()];
+        const normal = owner_scope.get(name);
+        const helper = helper_scope_map.get(name);
+        if ((normal == null or normal.? != symbol_raw) and (helper == null or helper.? != symbol_raw)) return false;
     }
 
     var namespace_scope_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
