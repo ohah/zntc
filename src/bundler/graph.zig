@@ -2156,6 +2156,175 @@ fn expectQualifiedLocalImportEqualsGraphModule(
     };
 }
 
+const TypeScriptNestedImportEqualsGraphIdentity = struct {
+    alias_symbol: u32,
+    nested_symbol: u32,
+    container_scope: u32,
+    nested_scope: u32,
+    alias_scope: u32,
+    capture_scope: u32,
+};
+
+fn semanticScopeContains(semantic: anytype, ancestor: ScopeId, descendant: ScopeId) bool {
+    if (ancestor.isNone() or descendant.isNone()) return false;
+    var current = descendant;
+    for (0..semantic.scopes.len) |_| {
+        if (current == ancestor) return true;
+        if (current.isNone() or @backingInt(current) >= semantic.scopes.len) return false;
+        current = semantic.scopes[@backingInt(current)].parent;
+    }
+    return false;
+}
+
+fn expectNestedImportEqualsGraphModule(
+    graph: *const ModuleGraph,
+    entry: []const u8,
+) !TypeScriptNestedImportEqualsGraphIdentity {
+    const module = graph.findModuleByPath(entry) orelse return error.MissingNestedImportEqualsGraphModule;
+    try std.testing.expectEqual(Module.State.ready, module.state);
+    try std.testing.expectEqual(@as(usize, 0), module.import_records.len);
+    const ast = &(module.ast orelse return error.MissingNestedImportEqualsGraphAst);
+    const semantic = &(module.semantic orelse return error.MissingNestedImportEqualsGraphSemantic);
+    const transformed = module.transform_cache orelse return error.MissingNestedImportEqualsGraphTransform;
+    const root = ast.transformed_root orelse return error.MissingNestedImportEqualsGraphRoot;
+    try std.testing.expectEqual(ast.nodes.items.len, semantic.symbol_ids.len);
+    try std.testing.expectEqualSlices(?u32, semantic.symbol_ids, transformed.symbol_ids);
+
+    var source_local: ast_mod.NodeIndex = .none;
+    var source_value: ast_mod.NodeIndex = .none;
+    var source_import_span: @import("../lexer/token.zig").Span = .EMPTY;
+    var source_import_count: usize = 0;
+    for (ast.nodes.items) |node| {
+        if (node.tag != .ts_import_equals_declaration) continue;
+        source_import_count += 1;
+        source_import_span = node.span;
+        source_local = node.data.binary.left;
+        source_value = node.data.binary.right;
+    }
+    try std.testing.expectEqual(@as(usize, 1), source_import_count);
+    try std.testing.expect(!source_local.isNone() and @backingInt(source_local) < ast.nodes.items.len);
+    try std.testing.expectEqual(.identifier_reference, ast.getNode(source_local).tag);
+    try std.testing.expectEqualStrings("NestedAlias", ast.identifierNameText(ast.getNode(source_local)));
+    try std.testing.expect(!source_value.isNone() and @backingInt(source_value) < ast.nodes.items.len);
+    try std.testing.expectEqual(.identifier_reference, ast.getNode(source_value).tag);
+    try std.testing.expectEqualStrings("Nested", ast.identifierNameText(ast.getNode(source_value)));
+
+    const alias_symbol = semantic.symbol_ids[@backingInt(source_local)] orelse return error.MissingNestedImportEqualsAliasSymbol;
+    try std.testing.expect(alias_symbol < semantic.symbols.items.len);
+    const alias_symbol_data = semantic.symbols.items[alias_symbol];
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_const, alias_symbol_data.kind);
+    try std.testing.expectEqualStrings("NestedAlias", alias_symbol_data.nameText(ast.source));
+    try std.testing.expect(std.meta.eql(ast.getNode(source_local).span, alias_symbol_data.name));
+    try std.testing.expect(std.meta.eql(source_import_span, alias_symbol_data.declaration_span));
+    try std.testing.expect(!alias_symbol_data.scope_id.isNone());
+
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
+    defer std.testing.allocator.free(reachable);
+    var container_scope: ?u32 = null;
+    var container_count: usize = 0;
+    var nested_symbol: ?u32 = null;
+    var nested_scope: ?u32 = null;
+    var nested_count: usize = 0;
+    var alias_binding: ast_mod.NodeIndex = .none;
+    var alias_binding_count: usize = 0;
+    var alias_initializer: ast_mod.NodeIndex = .none;
+    var alias_declarator_count: usize = 0;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag == .ts_import_equals_declaration) return error.NestedImportEqualsSurvivedLowering;
+        if (node.tag == .ts_module_declaration and node.data.binary.flags == 0) {
+            const name = node.data.binary.left;
+            if (!name.isNone() and @backingInt(name) < ast.nodes.items.len and
+                ast.getNode(name).tag == .binding_identifier)
+            {
+                const name_text = ast.identifierNameText(ast.getNode(name));
+                if (std.mem.eql(u8, name_text, "Container")) {
+                    container_scope = semantic.scope_owner_map.get(@intCast(raw)) orelse return error.MissingNestedImportEqualsContainerScope;
+                    container_count += 1;
+                } else if (std.mem.eql(u8, name_text, "Nested")) {
+                    nested_symbol = semantic.symbol_ids[@backingInt(name)] orelse return error.MissingNestedImportEqualsNamespaceSymbol;
+                    nested_scope = semantic.scope_owner_map.get(@intCast(raw)) orelse return error.MissingNestedImportEqualsNamespaceScope;
+                    nested_count += 1;
+                }
+            }
+        }
+        if (node.tag == .binding_identifier and std.mem.eql(u8, ast.identifierNameText(node), "NestedAlias") and
+            semantic.symbol_ids[raw] == alias_symbol)
+        {
+            alias_binding = @fromBackingInt(@intCast(raw));
+            alias_binding_count += 1;
+        }
+        if (node.tag != .variable_declarator or !ast.hasExtra(node.data.extra, 2)) continue;
+        const binding = ast.readExtraNode(node.data.extra, 0);
+        if (binding.isNone() or @backingInt(binding) >= ast.nodes.items.len or ast.getNode(binding).tag != .binding_identifier or
+            !std.mem.eql(u8, ast.identifierNameText(ast.getNode(binding)), "NestedAlias") or semantic.symbol_ids[@backingInt(binding)] != alias_symbol) continue;
+        alias_initializer = ast.readExtraNode(node.data.extra, 2);
+        alias_declarator_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), container_count);
+    try std.testing.expectEqual(@as(usize, 1), nested_count);
+    try std.testing.expectEqual(@as(usize, 1), alias_binding_count);
+    try std.testing.expectEqual(@as(usize, 1), alias_declarator_count);
+    const container_owner_scope = container_scope orelse return error.MissingNestedImportEqualsContainerScope;
+    const nested_owner_scope = nested_scope orelse return error.MissingNestedImportEqualsNamespaceScope;
+    const nested_namespace_symbol = nested_symbol orelse return error.MissingNestedImportEqualsNamespaceSymbol;
+    const alias_scope = @backingInt(alias_symbol_data.scope_id);
+    try std.testing.expectEqual(container_owner_scope, alias_scope);
+    try std.testing.expect(alias_scope < semantic.scope_maps.len);
+    try std.testing.expectEqual(nested_namespace_symbol, semantic.symbol_ids[@backingInt(source_value)] orelse return error.MissingNestedImportEqualsSourceSymbol);
+    try std.testing.expectEqual(@as(?usize, alias_symbol), semantic.scope_maps[alias_scope].get("NestedAlias"));
+    try std.testing.expect(!alias_binding.isNone());
+    try std.testing.expect(std.meta.eql(ast.getNode(alias_binding).span, ast.getNode(source_local).span));
+
+    try std.testing.expect(!alias_initializer.isNone() and @backingInt(alias_initializer) < ast.nodes.items.len);
+    try std.testing.expectEqual(.identifier_reference, ast.getNode(alias_initializer).tag);
+    try std.testing.expectEqualStrings("Nested", ast.identifierNameText(ast.getNode(alias_initializer)));
+    try std.testing.expect(std.meta.eql(ast.getNode(alias_initializer).span, ast.getNode(source_value).span));
+    try std.testing.expectEqual(nested_namespace_symbol, semantic.symbol_ids[@backingInt(alias_initializer)] orelse return error.MissingNestedImportEqualsOutputSymbol);
+    try expectImportEqualsReferenceRow(semantic, source_value, nested_namespace_symbol);
+    try expectImportEqualsReferenceRow(semantic, alias_initializer, nested_namespace_symbol);
+
+    const runtime_references = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(
+        std.testing.allocator,
+        ast,
+        root,
+    );
+    defer std.testing.allocator.free(runtime_references);
+    var alias_runtime_references: usize = 0;
+    var capture_scope: ?u32 = null;
+    for (runtime_references) |reference_node| {
+        const raw = @backingInt(reference_node);
+        if (raw >= ast.nodes.items.len or ast.nodes.items[raw].tag != .identifier_reference or
+            !std.mem.eql(u8, ast.identifierNameText(ast.nodes.items[raw]), "NestedAlias")) continue;
+        try std.testing.expectEqual(alias_symbol, semantic.symbol_ids[raw] orelse return error.MissingNestedImportEqualsOutputReferenceSymbol);
+        var reference_rows: usize = 0;
+        for (semantic.references) |reference| {
+            if (reference.node_index != reference_node) continue;
+            try std.testing.expect(!reference.flags.declare);
+            try std.testing.expectEqual(alias_symbol, @backingInt(reference.symbol_id));
+            try std.testing.expect(semanticScopeContains(semantic, @as(ScopeId, @fromBackingInt(alias_scope)), reference.scope_id));
+            try std.testing.expect(reference.scope_id != @as(ScopeId, @fromBackingInt(alias_scope)));
+            capture_scope = @backingInt(reference.scope_id);
+            reference_rows += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), reference_rows);
+        alias_runtime_references += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), alias_runtime_references);
+    try std.testing.expect(capture_scope != null);
+    try std.testing.expect(nested_owner_scope != container_owner_scope);
+
+    for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+    return .{
+        .alias_symbol = alias_symbol,
+        .nested_symbol = nested_namespace_symbol,
+        .container_scope = container_owner_scope,
+        .nested_scope = nested_owner_scope,
+        .alias_scope = alias_scope,
+        .capture_scope = capture_scope.?,
+    };
+}
+
 fn expectAutomaticJsxModuleGraph(
     entries: []const []const u8,
     jsx_entries: []const []const u8,
@@ -2927,6 +3096,57 @@ test "graph TypeScript caller: qualified local import-equals keeps exact identit
             try std.testing.expectEqual(cold.alias_symbol, identity.alias_symbol);
             try std.testing.expectEqual(cold.namespace_scope, identity.namespace_scope);
             try std.testing.expectEqual(cold.alias_scope, identity.alias_scope);
+        } else {
+            cold_identity = identity;
+        }
+    }
+}
+
+test "graph TypeScript caller: nested import-equals alias keeps its capture scope on cold/cache" {
+    const profile = @import("../profile.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const source = "namespace Container { export namespace Nested { export const value = 43; } import NestedAlias = Nested; export function read() { return NestedAlias.value; } } export const result = Container.read();";
+    try writeFile(tmp.dir, "entry.ts", source);
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    defer profile.resetForTest();
+    var cold_identity: ?TypeScriptNestedImportEqualsGraphIdentity = null;
+    for ([_]usize{ 0, 1 }) |expected_load_hits| {
+        profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+        var cache = ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.disk_cache = &disk;
+        graph.disk_load_enabled = true;
+        graph.disk_options_hash = 0x6193_4819;
+        graph.disk_compiler_build_id = 0x4819;
+        graph.max_threads = 1;
+        graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es5);
+
+        try graph.build(std.testing.io, &.{entry});
+
+        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+        try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+        try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+        const identity = try expectNestedImportEqualsGraphModule(&graph, entry);
+        if (cold_identity) |cold| {
+            try std.testing.expectEqual(cold.alias_symbol, identity.alias_symbol);
+            try std.testing.expectEqual(cold.nested_symbol, identity.nested_symbol);
+            try std.testing.expectEqual(cold.container_scope, identity.container_scope);
+            try std.testing.expectEqual(cold.nested_scope, identity.nested_scope);
+            try std.testing.expectEqual(cold.alias_scope, identity.alias_scope);
+            try std.testing.expectEqual(cold.capture_scope, identity.capture_scope);
         } else {
             cold_identity = identity;
         }
