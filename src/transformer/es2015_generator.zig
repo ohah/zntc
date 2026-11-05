@@ -4042,12 +4042,20 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try selected.append(self.allocator, reference);
                 try indices.append(self.allocator, index);
             }
+            // Copied owners are recorded by their producer before the editor's
+            // final owner-map publication. Project current AST containment
+            // against that same exact ownership snapshot.
+            var output_owners = try editor.scope_owner_map.clone(self.allocator);
+            defer output_owners.deinit(self.allocator);
+            var copied_owners = self.transformed_scope_owner_map.iterator();
+            while (copied_owners.next()) |entry|
+                try output_owners.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
             const view = .{
                 .references = selected.items,
                 .symbols = editor.symbols,
                 .scopes = editor.scopes.items,
                 .symbol_ids = editor.symbol_ids.items,
-                .scope_owner_map = editor.scope_owner_map,
+                .scope_owner_map = output_owners,
                 .class_self_symbol_map = self.class_self_symbol_map,
             };
             const projected = (projection.project(self.allocator, self.ast, root, &view) catch |err| {

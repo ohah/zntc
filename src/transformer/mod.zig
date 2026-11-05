@@ -202,3 +202,7 @@ test {
 test {
     _ = @import("drop_statement_retirement.zig");
 }
+
+test {
+    _ = @import("generator_class_coordinate_test.zig");
+}
