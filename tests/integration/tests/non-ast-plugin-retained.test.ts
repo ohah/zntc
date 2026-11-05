@@ -893,7 +893,7 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
   );
 
   test(
-    'buildSync onTransform-provided TypeScript import-equals retains exact captures',
+    'buildSync onTransform TypeScript import-equals and export assignment retain exact captures',
     { timeout: 30_000 },
     () => {
       const dir = mkdtempSync(join(tmpdir(), 'zntc-buildsync-ontransform-import-equals-'));
@@ -907,6 +907,7 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
         '    return invoke();',
         '  }',
         '}',
+        'export = Container;',
         'Container.finish();',
         'console.log(Container.check());',
       ].join('\n');
@@ -938,9 +939,13 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
         expect(result.outputs[0]).not.toMatch(/\breturn\s*;/);
         const output = join(dir, 'out.cjs');
         writeFileSync(output, result.outputs[0]);
-        const execution = Bun.spawnSync(['node', output]);
+        const execution = Bun.spawnSync([
+          'node',
+          '-e',
+          `const api=require(${JSON.stringify(output)});if(typeof api.check!=='function'||api.check()!==42)process.exit(1);console.log('exports-ok');`,
+        ]);
         expect(execution.exitCode, execution.stderr.toString()).toBe(0);
-        expect(execution.stdout.toString()).toBe('done\n42\n');
+        expect(execution.stdout.toString()).toBe('done\n42\nexports-ok\n');
 
         const lines = stderr.split(/\r?\n/);
         const identity = lines.filter(
