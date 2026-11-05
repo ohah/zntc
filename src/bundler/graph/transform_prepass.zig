@@ -28563,6 +28563,84 @@ test "retained graph admits only strict simple synchronous setter literal defaul
     try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
 }
 
+test "retained graph preserves audited class constructor default parameter identities" {
+    const es5 = @import("../../transformer/compat.zig").fromESTarget(.es5);
+    const safe_sources = [_][]const u8{
+        "class Box { constructor(value = 1) { this.value = value; } }",
+        "class Base {} class Box extends Base { constructor(value = 'text') { super(); this.value = value; } }",
+        "class Box { constructor(seed = 1, value = seed) { this.value = value; } }",
+    };
+    for (safe_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+        var get = false;
+        var set = false;
+        try std.testing.expect(canRetainGraphForAuditedSyntaxSubset(
+            allocator,
+            &fixture.ast,
+            &fixture.semantic,
+            .{ .unsupported = es5 },
+            &get,
+            &set,
+            null,
+            null,
+        ));
+    }
+
+    try expectRetainedMethodDefaultSymbolIdentityForTest(
+        "class Box { constructor(value = 1) { this.value = value; } }",
+        "value",
+    );
+    try expectRetainedMethodDefaultSymbolIdentityForTest(
+        "class Base {} class Box extends Base { constructor(value = 'text') { super(); this.value = value; } }",
+        "value",
+    );
+    try expectRetainedMethodDefaultSymbolIdentityForTest(
+        "class Box { constructor(seed = 1, value = seed) { this.value = value; } }",
+        "seed",
+    );
+    try expectRetainedMethodDefaultSymbolIdentityForTest(
+        "class Box { constructor(seed = 1, value = seed) { this.value = value; } }",
+        "value",
+    );
+
+    const hostile_sources = [_][]const u8{
+        "class Box { constructor(value = seed) { this.value = value; } }",
+        "class Box { constructor(value = next()) { this.value = value; } }",
+        "class Box { constructor(value = [1]) { this.value = value; } }",
+        "class Box { constructor(value = {}) { this.value = value; } }",
+        "class Box { constructor({ current } = {}) { this.value = current; } }",
+        "class Box { constructor(value = value) { this.value = value; } }",
+        "class Box { constructor(first = later, later = 1) { this.value = first; } }",
+        "class Box { constructor(value = eval('1')) { this.value = value; } }",
+        "class Box { constructor(value = 1) { eval('value'); this.value = value; } }",
+        "class Box { constructor(...value) { this.value = value; } }",
+        "class Box { static constructor(value = 1) { return value; } }",
+    };
+    for (hostile_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+        var get = false;
+        var set = false;
+        const admitted = canRetainGraphForAuditedSyntaxSubset(
+            allocator,
+            &fixture.ast,
+            &fixture.semantic,
+            .{ .unsupported = es5 },
+            &get,
+            &set,
+            null,
+            null,
+        );
+        if (admitted) std.debug.print("unexpectedly retained constructor hostile source: {s}\n", .{source});
+        try std.testing.expect(!admitted);
+    }
+}
+
 test "ES5 legacy assignment fields retain only primitive literal instance fields" {
     {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

@@ -24,6 +24,8 @@ Bundler retained-graph preflight는 strict 동기 일반 `function` 선언/표�
 
 Arrow의 cover-grammar 기본값은 `.assignment_expression`에서 일반 formal-parameter default로 변환된다. 이 경로도 strict synchronous arrow, 단순 parameter identifier, primitive literal default에 한해 허용한다. 전체 parameter 목록의 exact SID/name/scope와 parameter/body scope 연결을 확인하고 direct eval/`with` 및 나머지 expression/pattern은 거부한다. 회귀 테스트는 합성된 parameter read/write가 원본 arrow parameter SID를 유지하고 exact output audit를 통과하는지 확인한다.
 
+Class constructor 기본값은 별도의 `isSimpleParamsConstructorBodyGraphSafe` 증명을 따른다. 단순 identifier 매개변수와 primitive/operator allowlist, 앞선 단순 매개변수의 exact SID reference만 허용하며, constructor body와 derived `super()` 순서도 함께 검사한다. 회귀 테스트는 base/derived constructor 및 앞선 매개변수 기본값에서 생성된 참조가 각 원본 parameter SID를 유지하는지 exact output audit로 확인한다.
+
 ## 분석 호출 경계
 
 ### Production admission / abort 경계 (`main` `844985161`, 2026-11-05)
