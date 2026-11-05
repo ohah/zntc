@@ -120,7 +120,11 @@ function runCase(
   }
 }
 
-function runPluginLoadedImportEqualsDependency(useVirtualId: boolean, useSyncBuild = false) {
+function runPluginLoadedImportEqualsDependency(
+  useVirtualId: boolean,
+  useSyncBuild = false,
+  useAsyncHooks = false,
+) {
   const dir = mkdtempSync(join(tmpdir(), 'zntc-import-equals-plugin-dependency-'));
   const entry = join(dir, 'entry.ts');
   const dependency = useVirtualId ? 'virtual:container.ts?plugin' : join(dir, 'dep.ts');
@@ -143,11 +147,20 @@ function runPluginLoadedImportEqualsDependency(useVirtualId: boolean, useSyncBui
   if (!useVirtualId) {
     writeFileSync(dependency, '// onLoad supplies the dependency TypeScript source');
   }
+  if (useSyncBuild && useAsyncHooks) {
+    throw new Error('buildSync cannot run asynchronous plugin hooks');
+  }
   const reportedEntry = realpathSync(entry);
   const reportedDependency = useVirtualId ? dependency : realpathSync(dependency);
+  const resolveCallback = useAsyncHooks
+    ? `async args=>{await Promise.resolve();calls.push('resolve:'+args.path);return {path:dependency};}`
+    : `args=>{calls.push('resolve:'+args.path);return {path:dependency};}`;
   const resolveHook = useVirtualId
-    ? `api.onResolve({filter:/^virtual:container$/},args=>{calls.push('resolve:'+args.path);return {path:dependency};});`
+    ? `api.onResolve({filter:/^virtual:container$/},${resolveCallback});`
     : '';
+  const loadCallback = useAsyncHooks
+    ? `async args=>{await Promise.resolve();calls.push('load:'+args.path);return {contents:source,loader:'ts'};}`
+    : `args=>{calls.push('load:'+args.path);return {contents:source,loader:'ts'};}`;
   const loadFilter = useVirtualId ? '/virtual:container\\.ts\\?plugin$/' : '/dep\\.ts$/';
   const expectedCalls = useVirtualId
     ? ['resolve:virtual:container', `load:${reportedDependency}`]
@@ -161,7 +174,7 @@ function runPluginLoadedImportEqualsDependency(useVirtualId: boolean, useSyncBui
   const runner = [
     buildImport,
     `const entry=${JSON.stringify(entry)}; const dependency=${JSON.stringify(dependency)}; const source=${JSON.stringify(source)}; const calls=[];`,
-    `const result=${buildCall}({entryPoints:[entry],platform:'node',format:'cjs',target:'es5',minifyWhitespace:true,minifySyntax:true,minifyIdentifiers:true,write:false,plugins:[{name:'import-equals-plugin-dependency',setup(api){${resolveHook}api.onLoad({filter:${loadFilter}},args=>{calls.push('load:'+args.path);return {contents:source,loader:'ts'};});}}]});`,
+    `const result=${buildCall}({entryPoints:[entry],platform:'node',format:'cjs',target:'es5',minifyWhitespace:true,minifySyntax:true,minifyIdentifiers:true,write:false,plugins:[{name:'import-equals-plugin-dependency',setup(api){${resolveHook}api.onLoad({filter:${loadFilter}},${loadCallback});}}]});`,
     `if(result.errors.length){console.error(JSON.stringify(result.errors));process.exit(1);}`,
     `process.stdout.write(JSON.stringify({calls,outputs:result.outputFiles.map(file=>file.text)}));${closeCall}`,
   ].join('\n');
@@ -378,6 +391,11 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
     'onResolve and onLoad virtual import-equals dependency retain both module graphs',
     { timeout: 30_000 },
     () => runPluginLoadedImportEqualsDependency(true),
+  );
+  test(
+    'async onResolve/onLoad virtual import-equals callbacks retain both module graphs',
+    { timeout: 30_000 },
+    () => runPluginLoadedImportEqualsDependency(true, false, true),
   );
   test(
     'buildSync onResolve/onLoad virtual import-equals dependency retains both graphs',
