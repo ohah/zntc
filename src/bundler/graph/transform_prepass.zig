@@ -12922,6 +12922,7 @@ fn canRetainMinifiedSemanticGraph(
         ast,
         root,
         reachable,
+        live_reference_nodes,
         symbol_ids,
         symbols,
         scopes,
@@ -13437,6 +13438,7 @@ const MinifiedGraphMutation = enum {
     swapped_scope_owners,
     valid_but_wrong_binding_scope,
     visible_but_wrong_shadowed_symbol,
+    missing_shadowed_symbol_identity,
 };
 
 const MinifiedGraphMutationResult = struct {
@@ -13631,6 +13633,44 @@ fn minifiedGraphMutationIsRejected(mutation: MinifiedGraphMutation) !MinifiedGra
             if (symbols[inner].reference_count == 0) return error.MissingInnerReferenceCount;
             symbols[inner].reference_count -= 1;
             symbols[outer].reference_count +|= 1;
+        },
+        .missing_shadowed_symbol_identity => {
+            var inner_symbol: ?u32 = null;
+            var shared_binding_count: usize = 0;
+            var shadowed_reference_node: ?u32 = null;
+            for (parser.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag != .binding_identifier or
+                    !std.mem.eql(u8, parser.ast.getText(node.span), "shared") or raw >= symbol_ids.len) continue;
+                const symbol_id = symbol_ids[raw] orelse continue;
+                if (shared_binding_count == 1) {
+                    inner_symbol = symbol_id;
+                    break;
+                }
+                shared_binding_count += 1;
+            }
+            const inner = inner_symbol orelse return error.MissingInnerShadowSymbol;
+            for (parser.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag != .identifier_reference or
+                    !std.mem.eql(u8, parser.ast.getText(node.span), "shared") or raw >= symbol_ids.len or
+                    symbol_ids[raw] != inner) continue;
+                shadowed_reference_node = @intCast(raw);
+                break;
+            }
+            const reference_node = shadowed_reference_node orelse return error.MissingShadowedReference;
+            var row_to_remove: ?usize = null;
+            for (references.items, 0..) |reference, index| {
+                if (reference.flags.declare or reference.node_index.isNone() or
+                    @backingInt(reference.node_index) != reference_node or
+                    @backingInt(reference.symbol_id) != inner) continue;
+                row_to_remove = index;
+                break;
+            }
+            const row = row_to_remove orelse return error.MissingShadowedReferenceRow;
+            _ = references.orderedRemove(row);
+            symbol_ids[reference_node] = null;
+            if (symbols[inner].reference_count == 0) return error.MissingInnerReferenceCount;
+            symbols[inner].reference_count -= 1;
+            try analyzer.unresolved_references.put(allocator, try allocator.dupe(u8, "shared"), {});
         },
     }
 
@@ -14398,13 +14438,13 @@ test "syntax minification repairs statement coordinates without changing identit
     ));
 }
 
-test "syntax minify graph gate rejects twenty-three hostile identity and statement corruptions" {
+test "syntax minify graph gate rejects twenty-four hostile identity and statement corruptions" {
     inline for (std.meta.tags(MinifiedGraphMutation)) |mutation| {
         const result = try minifiedGraphMutationIsRejected(mutation);
         if (result.retained) std.debug.print("minify graph mutation accepted: {s}\n", .{@tagName(mutation)});
         try std.testing.expect(!result.retained);
         try std.testing.expect(result.failure != .allocation);
-        if (mutation == .visible_but_wrong_shadowed_symbol)
+        if (mutation == .visible_but_wrong_shadowed_symbol or mutation == .missing_shadowed_symbol_identity)
             try std.testing.expectEqual(MinifiedGraphGateFailure.scope_resolution, result.failure);
         if (mutation == .duplicate_scope_owner or mutation == .wrong_scope_owner_kind or
             mutation == .swapped_scope_owners or mutation == .valid_but_wrong_binding_scope)
