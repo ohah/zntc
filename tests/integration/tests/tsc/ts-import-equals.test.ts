@@ -177,6 +177,34 @@ describe('TSC: import-equals declaration (#1802 follow-up)', () => {
     }
   });
 
+  test('namespace local require import-equals references keep their lexical alias', async () => {
+    const { dir, cleanup } = await createFixture({
+      'index.ts': `
+        namespace Container {
+          import Assert = require('node:assert/strict');
+          export function check() {
+            Assert.equal(40 + 2, 42);
+            return 42;
+          }
+        }
+        console.log(Container.check());
+      `,
+    });
+    const input = join(dir, 'index.ts');
+    const outFile = join(dir, 'out.js');
+    try {
+      const transpile = await runZntc([input, '--target=es5', '-o', outFile]);
+      expect(transpile.exitCode).toBe(0);
+
+      const actual = spawnSync('node', [outFile], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42\n');
+      expect(actual.stderr).toBe('');
+    } finally {
+      await cleanup();
+    }
+  });
+
   test("import X = require('fs') 가 ESM import 가 아닌 const 로 emit", async () => {
     const { dir, cleanup } = await createFixture({
       'index.ts': `
