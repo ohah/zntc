@@ -28569,6 +28569,7 @@ test "retained graph preserves audited class constructor default parameter ident
         "class Box { constructor(value = 1) { this.value = value; } }",
         "class Base {} class Box extends Base { constructor(value = 'text') { super(); this.value = value; } }",
         "class Box { constructor(seed = 1, value = seed) { this.value = value; } }",
+        "class Base {} class Box extends Base { constructor(value = 1) { this.value = value; } }",
     };
     for (safe_sources) |source| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -28603,6 +28604,10 @@ test "retained graph preserves audited class constructor default parameter ident
     );
     try expectRetainedMethodDefaultSymbolIdentityForTest(
         "class Box { constructor(seed = 1, value = seed) { this.value = value; } }",
+        "value",
+    );
+    try expectRetainedMethodDefaultSymbolIdentityForTest(
+        "class Base {} class Box extends Base { constructor(value = 1) { this.value = value; } }",
         "value",
     );
 
