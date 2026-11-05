@@ -5,13 +5,16 @@ const walk = @import("../parser/ast_walk.zig");
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 
-fn functionStateMachine(self: anytype, node: ast.Node) bool {
-    const flags: u32 = switch (node.tag) {
+fn functionFlags(self: anytype, node: ast.Node) u32 {
+    return switch (node.tag) {
         .function_declaration, .function_expression => self.ast.readExtra(node.data.extra, ast.FunctionExtra.flags),
         .arrow_function_expression => self.ast.readExtra(node.data.extra, 2) & ast.ArrowFlags.is_async,
         .method_definition => ast.methodFlagsToFunctionFlags(self.ast.readExtra(node.data.extra, 3)),
-        else => return false,
+        else => 0,
     };
+}
+fn functionStateMachine(self: anytype, node: ast.Node) bool {
+    const flags = functionFlags(self, node);
     return self.options.unsupported.generator and
         ((flags & ast.FunctionFlags.is_generator) != 0 or
             ((flags & ast.FunctionFlags.is_async) != 0 and self.options.unsupported.async_await));
@@ -204,7 +207,7 @@ fn safeKnownValueCall(self: anytype, node: ast.Node, scope: ScopeId, parents: []
     };
 }
 
-fn safeImmediateHeaderRead(self: anytype, loop: ast.NodeIndex, eval_call: ast.NodeIndex, id: u32, text: []const u8, parents: []const ast.NodeIndex) bool {
+fn safeImmediateHeaderRead(self: anytype, loop: ast.NodeIndex, eval_call: ast.NodeIndex, id: u32, text: []const u8, parents: []const ast.NodeIndex, allow_escaping: bool) bool {
     var text_buffer: [256]u8 = undefined;
     const cooked = Scanner.decodeIdentifierEscapesInto(text, &text_buffer) orelse return false;
     if (std.mem.eql(u8, cooked, "arguments") or std.mem.eql(u8, cooked, "eval") or
@@ -246,11 +249,17 @@ fn safeImmediateHeaderRead(self: anytype, loop: ast.NodeIndex, eval_call: ast.No
         callee = parent;
         parent = parents[@backingInt(parent)];
     }
-    if (parent.isNone()) return false;
-    const call = self.ast.getNode(parent);
-    if (call.tag != .call_expression or self.ast.readExtraNode(call.data.extra, 0) != callee or (self.ast.readExtra(call.data.extra, 3) & ast.CallFlags.optional_chain) != 0) return false;
+    const immediate = if (!parent.isNone()) blk: {
+        const call = self.ast.getNode(parent);
+        break :blk call.tag == .call_expression and self.ast.readExtraNode(call.data.extra, 0) == callee and
+            (self.ast.readExtra(call.data.extra, 3) & ast.CallFlags.optional_chain) == 0;
+    } else false;
+    // Main's ordinary capture producer now extracts direct eval inside an
+    // actual closure. Admit only this readonly source role, never opaque code
+    // that can mutate a copied parameter or expose generated names.
+    if (!immediate and (!allow_escaping or !self.scopes[symbol.scope_id.toIndex()].blocksMangling())) return false;
     const body = self.ast.readExtraNode(loop_node.data.extra, 3);
-    var cursor = parent;
+    var cursor = if (immediate) parent else function;
     var hops: usize = 0;
     while (hops < parents.len) : (hops += 1) {
         if (cursor == body) return true;
@@ -262,7 +271,7 @@ fn safeImmediateHeaderRead(self: anytype, loop: ast.NodeIndex, eval_call: ast.No
     return false;
 }
 
-fn checkLoop(self: anytype, loop: ast.NodeIndex, state_machine: bool, scopes: []const ScopeId, parents: []const ast.NodeIndex) !bool {
+fn checkLoop(self: anytype, loop: ast.NodeIndex, state_machine: bool, scopes: []const ScopeId, parents: []const ast.NodeIndex, allow_escaping: bool) !bool {
     var selected: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer selected.deinit(self.allocator);
     const BindingWork = struct { node: ast.NodeIndex, lexical: bool = false };
@@ -377,7 +386,7 @@ fn checkLoop(self: anytype, loop: ast.NodeIndex, state_machine: bool, scopes: []
             var hops: usize = 0;
             while (!owner.isNone() and hops < self.scopes.len) : (hops += 1) {
                 if (owner == symbol.scope_id) {
-                    if (trimmed) |known| if (safeImmediateHeaderRead(self, loop, @fromBackingInt(@intCast(raw)), id.*, known, parents)) break;
+                    if (trimmed) |known| if (safeImmediateHeaderRead(self, loop, @fromBackingInt(@intCast(raw)), id.*, known, parents, allow_escaping)) break;
                     self.unsupported_loop_dynamic_scope_span = node.span;
                     return true;
                 }
@@ -396,7 +405,7 @@ pub fn preflight(self: anytype, root: ast.NodeIndex) !bool {
     if (self.scope_owner_map.get(@backingInt(root))) |owner| {
         if (owner < self.scopes.len and !self.scopes[owner].subtree_has_direct_eval) return false;
     }
-    const Work = struct { node: ast.NodeIndex, scope: ScopeId, state_machine: bool };
+    const Work = struct { node: ast.NodeIndex, scope: ScopeId, state_machine: bool, suspending: bool = false };
     const scopes = try self.allocator.alloc(ScopeId, self.ast.nodes.items.len);
     defer self.allocator.free(scopes);
     @memset(scopes, .none);
@@ -416,17 +425,21 @@ pub fn preflight(self: anytype, root: ast.NodeIndex) !bool {
         const scope: ScopeId = if (self.scope_owner_map.get(@backingInt(work.node))) |id| @fromBackingInt(id) else work.scope;
         scopes[@backingInt(work.node)] = scope;
         const state_machine = if (node.tag == .static_block) false else if (isFunction(node.tag)) functionStateMachine(self, node) else work.state_machine;
-        if (isLoop(node.tag) and (self.options.unsupported.block_scoping or state_machine)) try loops.append(self.allocator, .{ .node = work.node, .scope = scope, .state_machine = state_machine });
+        const suspending = if (node.tag == .static_block) false else if (isFunction(node.tag))
+            (functionFlags(self, node) & (ast.FunctionFlags.is_async | ast.FunctionFlags.is_generator)) != 0
+        else
+            work.suspending;
+        if (isLoop(node.tag) and (self.options.unsupported.block_scoping or state_machine)) try loops.append(self.allocator, .{ .node = work.node, .scope = scope, .state_machine = state_machine, .suspending = suspending });
         var children = walk.children(self.ast, node);
         while (children.next()) |child| if (!child.isNone()) {
             const raw = @backingInt(child);
             parent_counts[raw] +|= 1;
             parents[raw] = if (parent_counts[raw] == 1) work.node else .none;
             const outer = @import("transformer/semantic_edit.zig").childSkipsOutputScope(self.ast, @backingInt(work.node), @backingInt(child));
-            try stack.append(self.allocator, .{ .node = child, .scope = if (outer) work.scope else scope, .state_machine = if (outer) work.state_machine else state_machine });
+            try stack.append(self.allocator, .{ .node = child, .scope = if (outer) work.scope else scope, .state_machine = if (outer) work.state_machine else state_machine, .suspending = if (outer) work.suspending else suspending });
         };
     }
-    for (loops.items) |loop| if (try checkLoop(self, loop.node, loop.state_machine, scopes, parents)) return true;
+    for (loops.items) |loop| if (try checkLoop(self, loop.node, loop.state_machine, scopes, parents, self.options.unsupported.block_scoping and !loop.suspending)) return true;
     return false;
 }
 
