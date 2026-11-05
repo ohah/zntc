@@ -640,4 +640,85 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
       }
     },
   );
+
+  test(
+    'buildSync vitePlugin resolveId/load import-equals retains both module graphs',
+    { timeout: 30_000 },
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-buildsync-rollup-import-equals-'));
+      const entry = join(dir, 'entry.ts');
+      const dependency = 'virtual:container.ts?rollup';
+      const source = [
+        'namespace Container {',
+        "  import Assert = require('node:assert/strict');",
+        '  export function finish() { console.log("done"); return; }',
+        '  export function check() {',
+        '    const invoke = () => { Assert.equal(40 + 2, 42); return 42; };',
+        '    return invoke();',
+        '  }',
+        '}',
+        'export = Container;',
+      ].join('\n');
+      writeFileSync(
+        entry,
+        "import Container = require('virtual:container');\nContainer.finish();\nconsole.log(Container.check());",
+      );
+      const reportedEntry = realpathSync(entry);
+      const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+      const runner = [
+        `import {buildSync,vitePlugin} from ${JSON.stringify(coreEntry)};`,
+        `const entry=${JSON.stringify(entry)}; const dependency=${JSON.stringify(dependency)}; const source=${JSON.stringify(source)}; const calls=[];`,
+        `const plugin=vitePlugin({name:'buildsync-rollup-import-equals',resolveId(id){if(id==='virtual:container'){calls.push('resolve:'+id);return dependency;}return null;},load(id){if(id===dependency){calls.push('load:'+id);return source;}return null;}});`,
+        `const result=buildSync({entryPoints:[entry],platform:'node',format:'cjs',target:'es5',minifyWhitespace:true,minifySyntax:true,minifyIdentifiers:true,write:false,plugins:[plugin]});`,
+        `if(result.errors.length){console.error(JSON.stringify(result.errors));process.exit(1);}`,
+        `process.stdout.write(JSON.stringify({calls,outputs:result.outputFiles.map(file=>file.text)}));`,
+      ].join('\n');
+      try {
+        const run = Bun.spawnSync(['bun', '-e', runner], {
+          cwd: join(import.meta.dir, '../../..'),
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        });
+        const stderr = run.stderr.toString();
+        expect(run.exitCode, stderr).toBe(0);
+        const result = JSON.parse(run.stdout.toString()) as {
+          calls: string[];
+          outputs: string[];
+        };
+        expect(result.calls).toEqual(['resolve:virtual:container', `load:${dependency}`]);
+        expect(result.outputs).toHaveLength(1);
+        expect(result.outputs[0]).not.toContain('Container');
+        expect(result.outputs[0]).not.toContain('=>');
+        expect(result.outputs[0]).not.toMatch(/\breturn\s*;/);
+        const output = join(dir, 'out.cjs');
+        writeFileSync(output, result.outputs[0]);
+        const execution = Bun.spawnSync(['node', output]);
+        expect(execution.exitCode, execution.stderr.toString()).toBe(0);
+        expect(execution.stdout.toString()).toBe('done\n42\n');
+
+        const lines = stderr.split(/\r?\n/);
+        for (const modulePath of [reportedEntry, dependency]) {
+          const identity = lines.filter(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes(modulePath),
+          );
+          expect(identity, `${modulePath}: ${stderr}`).toHaveLength(1);
+          for (const field of [...zeroCounters, 'clean']) {
+            const values = [
+              ...identity[0].matchAll(new RegExp(`(?:^| )${field}=(\\d+)(?= |$)`, 'g')),
+            ];
+            expect(values, `${modulePath}: ${field}: ${identity[0]}`).toHaveLength(1);
+            expect(Number(values[0][1]), `${modulePath}: ${field}`).toBe(field === 'clean' ? 1 : 0);
+          }
+          const mode = lines.filter(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(modulePath),
+          );
+          expect(mode, `${modulePath}: ${stderr}`).toHaveLength(1);
+          expect(mode[0], `${modulePath}: ${mode[0]}`).toContain('semantic_graph=retained');
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
