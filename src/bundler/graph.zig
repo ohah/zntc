@@ -3647,57 +3647,95 @@ test "graph TypeScript caller: namespace local require import-equals keeps captu
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const specifier = "node:assert/strict";
-    const source = "namespace Container { import Assert = require('node:assert/strict'); export function read() { return Assert.equal(40 + 2, 42); } } console.log(Container.read());";
+    const source = "namespace Container { import Assert = require('node:assert/strict'); export function read() { const invoke = () => Assert.equal(40 + 2, 42); return invoke(); } } console.log(Container.read());";
     try writeFile(tmp.dir, "entry.ts", source);
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
     const dp = try absPath(&tmp, ".");
     defer std.testing.allocator.free(dp);
-    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
-    defer std.testing.allocator.free(cache_root);
-    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
-    defer disk.deinit();
-
     defer profile.resetForTest();
-    var cold_identity: ?TypeScriptNamespaceLocalExternalImportEqualsGraphIdentity = null;
-    for ([_]usize{ 0, 1 }) |expected_load_hits| {
-        profile.resetForTest();
-        profile.setIoForTest(std.testing.io);
-        profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
-        var cache = ResolveCache.init(std.testing.allocator, .{ .platform = .node });
-        defer cache.deinit();
-        var graph = ModuleGraph.init(std.testing.allocator, &cache);
-        defer graph.deinit();
-        graph.disk_cache = &disk;
-        graph.disk_load_enabled = true;
-        graph.disk_options_hash = 0x6193_4819;
-        graph.disk_compiler_build_id = 0x4819;
-        graph.max_threads = 1;
-        graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es5);
+    const targets = [_]@import("../transformer/compat.zig").ESTarget{
+        .es5, .es2015, .es2017, .es2020, .es2022, .esnext,
+    };
+    const MinifyMode = struct {
+        name: []const u8,
+        syntax: bool,
+        identifiers: bool,
+    };
+    const minify_modes = [_]MinifyMode{
+        .{ .name = "plain", .syntax = false, .identifiers = false },
+        .{ .name = "identifiers", .syntax = false, .identifiers = true },
+        .{ .name = "full", .syntax = true, .identifiers = true },
+    };
+    var matrix_cases: usize = 0;
+    for (targets, 0..) |target, target_index| {
+        for (minify_modes, 0..) |mode, mode_index| {
+            const cache_component = try std.fmt.allocPrint(
+                std.testing.allocator,
+                "cache-{s}-{s}",
+                .{ @tagName(target), mode.name },
+            );
+            defer std.testing.allocator.free(cache_component);
+            const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, cache_component });
+            defer std.testing.allocator.free(cache_root);
+            var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+            defer disk.deinit();
 
-        try graph.build(std.testing.io, &.{entry});
+            var cold_identity: ?TypeScriptNamespaceLocalExternalImportEqualsGraphIdentity = null;
+            for ([_]usize{ 0, 1 }) |expected_load_hits| {
+                profile.resetForTest();
+                profile.setIoForTest(std.testing.io);
+                profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+                var cache = ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+                defer cache.deinit();
+                var graph = ModuleGraph.init(std.testing.allocator, &cache);
+                defer graph.deinit();
+                graph.disk_cache = &disk;
+                graph.disk_load_enabled = true;
+                graph.disk_options_hash = 0x6193_4819 ^ (@as(u64, @intCast(target_index)) << 8) ^ @as(u64, @intCast(mode_index));
+                graph.disk_compiler_build_id = 0x4819;
+                graph.max_threads = 1;
+                graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(target);
+                graph.transform_options_base.minify_syntax = mode.syntax;
+                graph.minify_identifiers = mode.identifiers;
 
-        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
-        try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
-        const external = graph.findModuleByPath(specifier) orelse return error.MissingNamespaceLocalExternalImportEqualsPhantomModule;
-        try std.testing.expect(external.is_external);
-        try std.testing.expectEqual(Module.State.ready, external.state);
-        const importer = graph.findModuleByPath(entry) orelse return error.MissingNamespaceLocalExternalImportEqualsImporter;
-        try std.testing.expectEqual(@as(usize, 1), importer.dependencies.items.len);
-        try std.testing.expectEqual(external.index, importer.dependencies.items[0]);
-        try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
-        const identity = try expectNamespaceLocalExternalImportEqualsGraphModule(&graph, entry, specifier);
-        if (cold_identity) |cold| {
-            try std.testing.expectEqual(cold.alias_symbol, identity.alias_symbol);
-            try std.testing.expectEqual(cold.namespace_symbol, identity.namespace_symbol);
-            try std.testing.expectEqual(cold.namespace_parameter_symbol, identity.namespace_parameter_symbol);
-            try std.testing.expectEqual(cold.namespace_scope, identity.namespace_scope);
-            try std.testing.expectEqual(cold.alias_scope, identity.alias_scope);
-            try std.testing.expectEqual(cold.reference_scope, identity.reference_scope);
-        } else {
-            cold_identity = identity;
+                try graph.build(std.testing.io, &.{entry});
+
+                try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+                try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
+                const external = graph.findModuleByPath(specifier) orelse return error.MissingNamespaceLocalExternalImportEqualsPhantomModule;
+                try std.testing.expect(external.is_external);
+                try std.testing.expectEqual(Module.State.ready, external.state);
+                const importer = graph.findModuleByPath(entry) orelse return error.MissingNamespaceLocalExternalImportEqualsImporter;
+                try std.testing.expectEqual(@as(usize, 1), importer.dependencies.items.len);
+                try std.testing.expectEqual(external.index, importer.dependencies.items[0]);
+                try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+                const identity = try expectNamespaceLocalExternalImportEqualsGraphModule(&graph, entry, specifier);
+                const importer_ast = &(importer.ast orelse return error.MissingNamespaceLocalExternalImportEqualsAst);
+                const transformed_root = importer_ast.transformed_root orelse return error.MissingNamespaceLocalExternalImportEqualsRoot;
+                const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, importer_ast, transformed_root);
+                defer std.testing.allocator.free(reachable);
+                var arrow_count: usize = 0;
+                for (reachable) |raw| {
+                    if (importer_ast.nodes.items[raw].tag == .arrow_function_expression) arrow_count += 1;
+                }
+                const expected_arrow_count: usize = if (target == .es5) 0 else 1;
+                try std.testing.expectEqual(expected_arrow_count, arrow_count);
+                if (cold_identity) |cold| {
+                    try std.testing.expectEqual(cold.alias_symbol, identity.alias_symbol);
+                    try std.testing.expectEqual(cold.namespace_symbol, identity.namespace_symbol);
+                    try std.testing.expectEqual(cold.namespace_parameter_symbol, identity.namespace_parameter_symbol);
+                    try std.testing.expectEqual(cold.namespace_scope, identity.namespace_scope);
+                    try std.testing.expectEqual(cold.alias_scope, identity.alias_scope);
+                    try std.testing.expectEqual(cold.reference_scope, identity.reference_scope);
+                } else {
+                    cold_identity = identity;
+                }
+            }
+            matrix_cases += 1;
         }
     }
+    try std.testing.expectEqual(@as(usize, 18), matrix_cases);
 }
 
 test "graph visitor caller: cold parse runs every hook and retains its semantic graph" {

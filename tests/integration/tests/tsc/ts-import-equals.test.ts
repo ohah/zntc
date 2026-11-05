@@ -205,6 +205,54 @@ describe('TSC: import-equals declaration (#1802 follow-up)', () => {
     }
   });
 
+  test('namespace local require import-equals preserves runtime across target and minify modes', async () => {
+    const targets = ['es5', 'es2015', 'es2017', 'es2020', 'es2022', 'esnext'] as const;
+    const modes = [
+      { name: 'plain', args: [] },
+      { name: 'identifiers', args: ['--minify-identifiers'] },
+      { name: 'full', args: ['--minify-identifiers', '--minify-syntax'] },
+    ] as const;
+
+    for (const target of targets) {
+      for (const mode of modes) {
+        const { dir, cleanup } = await createFixture({
+          'index.ts': `
+            namespace Container {
+              import Assert = require('node:assert/strict');
+              export function check() {
+                const invoke = () => Assert.equal(40 + 2, 42);
+                invoke();
+                return 42;
+              }
+            }
+            console.log(Container.check());
+          `,
+        });
+        const input = join(dir, 'index.ts');
+        const outFile = join(dir, 'out.js');
+        try {
+          const built = await runZntc([
+            '--bundle',
+            input,
+            '--platform=node',
+            `--target=${target}`,
+            ...mode.args,
+            '-o',
+            outFile,
+          ]);
+          expect(built.exitCode, `${target}/${mode.name}: ${built.stderr}`).toBe(0);
+
+          const actual = spawnSync('node', [outFile], { encoding: 'utf8' });
+          expect(actual.status, `${target}/${mode.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${target}/${mode.name}`).toBe('42\n');
+          expect(actual.stderr, `${target}/${mode.name}`).toBe('');
+        } finally {
+          await cleanup();
+        }
+      }
+    }
+  });
+
   test("import X = require('fs') 가 ESM import 가 아닌 const 로 emit", async () => {
     const { dir, cleanup } = await createFixture({
       'index.ts': `
