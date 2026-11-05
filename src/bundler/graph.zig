@@ -3663,21 +3663,28 @@ test "graph TypeScript caller: namespace local require import-equals keeps captu
     try std.testing.expectEqualSlices(@TypeOf(targets[0]), &expected_targets, &targets);
     const MinifyMode = struct {
         name: []const u8,
+        whitespace: bool,
         syntax: bool,
         identifiers: bool,
     };
     const minify_modes = [_]MinifyMode{
-        .{ .name = "plain", .syntax = false, .identifiers = false },
-        .{ .name = "syntax", .syntax = true, .identifiers = false },
-        .{ .name = "identifiers", .syntax = false, .identifiers = true },
-        .{ .name = "full", .syntax = true, .identifiers = true },
+        .{ .name = "plain", .whitespace = false, .syntax = false, .identifiers = false },
+        .{ .name = "whitespace", .whitespace = true, .syntax = false, .identifiers = false },
+        .{ .name = "syntax", .whitespace = false, .syntax = true, .identifiers = false },
+        .{ .name = "syntax-whitespace", .whitespace = true, .syntax = true, .identifiers = false },
+        .{ .name = "identifiers", .whitespace = false, .syntax = false, .identifiers = true },
+        .{ .name = "identifiers-whitespace", .whitespace = true, .syntax = false, .identifiers = true },
+        .{ .name = "syntax-identifiers", .whitespace = false, .syntax = true, .identifiers = true },
+        .{ .name = "full", .whitespace = true, .syntax = true, .identifiers = true },
     };
-    var minify_mode_mask: u4 = 0;
+    var minify_mode_mask: u8 = 0;
     for (minify_modes) |mode| {
-        const mode_index: u2 = (@as(u2, @intFromBool(mode.syntax)) << 1) | @as(u2, @intFromBool(mode.identifiers));
-        minify_mode_mask |= @as(u4, 1) << mode_index;
+        const mode_index: u3 = (@as(u3, @intFromBool(mode.whitespace)) << 2) |
+            (@as(u3, @intFromBool(mode.syntax)) << 1) |
+            @as(u3, @intFromBool(mode.identifiers));
+        minify_mode_mask |= @as(u8, 1) << mode_index;
     }
-    try std.testing.expectEqual(@as(u4, 0b1111), minify_mode_mask);
+    try std.testing.expectEqual(@as(u8, 0b1111_1111), minify_mode_mask);
     var matrix_cases: usize = 0;
     for (targets, 0..) |target, target_index| {
         for (minify_modes, 0..) |mode, mode_index| {
@@ -3707,6 +3714,7 @@ test "graph TypeScript caller: namespace local require import-equals keeps captu
                 graph.disk_compiler_build_id = 0x4819;
                 graph.max_threads = 1;
                 graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(target);
+                graph.transform_options_base.minify_whitespace = mode.whitespace;
                 graph.transform_options_base.minify_syntax = mode.syntax;
                 graph.minify_identifiers = mode.identifiers;
 
@@ -3746,7 +3754,7 @@ test "graph TypeScript caller: namespace local require import-equals keeps captu
             matrix_cases += 1;
         }
     }
-    try std.testing.expectEqual(@as(usize, 24), matrix_cases);
+    try std.testing.expectEqual(@as(usize, 48), matrix_cases);
 }
 
 test "graph visitor caller: cold parse runs every hook and retains its semantic graph" {
