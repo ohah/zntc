@@ -123,6 +123,12 @@ jobs:
         if: ${{ !cancelled() && steps.plan.outputs.core == 'true' }}
         run: bun scripts/audit-recursive-ast-walkers.mjs
 
+      # Output reanalysis must stay out of production source-to-output paths;
+      # only the guarded standalone diagnostic oracle and test oracle are allowed.
+      - name: Audit semantic reanalysis boundaries (#6193)
+        if: ${{ !cancelled() && steps.plan.outputs.core == 'true' }}
+        run: bun scripts/audit-semantic-reanalysis-boundaries.mjs
+
       # 트랜스포머가 식별자를 만들 때 "어느 변수인지"(사용자/합성/전역/속성)를 고르는 생성 함수만
       # 쓰게 한다 — 노드 직접 생성은 심볼 누락을 조용히 재유입시킨다 (#4760).
       - name: Audit transformer identifier constructors (#4760)

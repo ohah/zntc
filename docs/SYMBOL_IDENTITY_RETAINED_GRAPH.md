@@ -18,6 +18,28 @@ Zig bundler AST Visitor는 기본적으로 graph 보존 계약이 없다. plain 
 
 ## 분석 호출 경계
 
+### Production admission / abort 경계 (`main` `844985161`, 2026-11-05)
+
+| 경로 | 첫 분석과 admission | 실패 결과 | 재분석 분류 |
+| --- | --- | --- | --- |
+| standalone `transpile` | [입력 parser AST](../src/transpile.zig)에 `SemanticAnalyzer`가 최초 graph를 만든다. 변환기가 이 graph를 편집하고 `requireStandaloneOutputNormalForm`가 output identity를 이름 결정 전에 확인한다. | 불완전한 producer identity는 output gate에서 거부한다. | `ZNTC_DEBUG_SYMBOL_COVERAGE`와 minify가 함께 켜졌을 때만 output AST를 별도 분석하는 post-minify oracle이 돈다. 그 결과는 비교/진단에만 쓰고 producer SID/ScopeId를 대체하지 않는다. |
+| bundler source module | [`parseModule`](../src/bundler/graph/parse_module.zig)은 해당 입력 AST의 첫 graph를 만든다. [`runCandidate`](../src/bundler/graph/transform_prepass.zig)는 옵션·target·syntax·plugin 조건을 사전 검사한 뒤 제한된 lowerer를 실행하고, producer-owned graph를 exact output normal form으로 검사한다. | 준비된 후보에서 검사 실패는 `candidate_completed=false`로 끝나고 transaction이 후보 AST·semantic graph·module metadata를 게시하지 않는다. 입력 module snapshot은 유지된다. 명시적 증명 실패는 diagnostic과 함께 abort한다. | 같은 output AST를 재분석해 identity를 복구하는 production 경로는 없다. `resyncModuleGraphMetadataAfterAstMutation`은 import/export/module metadata를 재계산하며 `SemanticAnalyzer`를 다시 실행하지 않는다. |
+| JSON source module | [`parse`](../src/bundler/graph/json_module.zig)은 JSON module AST의 최초 graph를 만든다. | 해당 module domain 안에서만 사용한다. | 다른 AST에 대한 첫 분석이지 변환 output graph 복구가 아니다. |
+| AST mutation oracle | [`resyncAfterAstMutationForTest`](../src/bundler/graph/transform_prepass.zig)는 테스트 전용이며 non-test 빌드의 `compileError`로 막혀 있다. | 제품 호출은 컴파일되지 않는다. | 테스트 비교용 fresh graph다. |
+
+Standalone의 `post_minify_analyzer`와 bundler의 test-only resync만 이 주요 source-to-output 경로에서 후행 분석을 한다. 앞의 것은 진단 oracle이고 뒤의 것은 테스트 oracle이다. 둘 다 output identity를 게시하지 않는다. 독립적으로 생성된 runtime wrapper/import/helper AST와 Worklet serialized payload는 각각 별도 AST domain이며 해당 AST의 최초 분석으로 분류한다.
+
+`runCandidate`의 admission 축은 아래처럼 서로 독립적으로 확인한다. 통과한 하나의 syntax/target 조합을 전체 지원 조합의 증거로 확대하지 않는다.
+
+| 축 | 실제 판단 | exact output 단계 |
+| --- | --- | --- |
+| syntax / target | `canKeepPrepassSemanticGraphPrepared`가 `unsupported` feature, audited syntax subset, declaration/import/export 형태와 target-specific certificates를 확인한다. | 실행된 lowerer의 generated binding/reference/scope와 source identity는 candidate output proof에서 다시 확인한다. |
+| AST plugin | graph contract 또는 tracked semantic edit API를 확인한다. output `with`와 scope 사실이 없는 direct `eval`은 candidate를 abort한다. | untracked edit가 기존 SymbolId를 보존해 보이더라도 dynamic lookup 사실이 다르면 게시하지 않는다. |
+| syntax minify / statement deletion | statement list가 변하는 경우 reference statement coordinates를 재구성하고 exact minified graph gate를 적용한다. | counts, declaration anchors, scope maps, reachable resolution이 함께 맞아야 후보를 유지한다. |
+| graph ownership | parser owner token, scope history, retained source scope prefix와 각 certificate owner를 같은 transaction에서 확인한다. | `completeGenericPrepassCandidate`의 output normal form 통과 뒤에만 prepared module을 publish한다. |
+
+이 표는 current production boundary의 code review map이다. 모든 syntax × target × plugin × minify 조합의 실행 증거는 아니며, 각 bounded feature의 hostile inputs와 compileable mutations는 해당 PR 기록에서 별도로 센다.
+
 | 호출 | 역할 | 유지 이유 / 종료 조건 |
 | --- | --- | --- |
 | standalone source, graph source parse, JSON module | 각 입력 domain의 첫 분석 | 아직 graph가 없는 입력의 최초 identity 생성이다. 같은 입력의 transform 후 복구 분석이 아니다. |
