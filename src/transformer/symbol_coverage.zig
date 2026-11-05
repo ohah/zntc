@@ -3164,6 +3164,27 @@ pub fn hasExactReachableReferenceResolution(
     helper_reference_nodes: []const u32,
     helper_scope_map: *const std.StringHashMapUnmanaged(usize),
 ) std.mem.Allocator.Error!bool {
+    if (scope_maps.len != scopes.len) return false;
+    const cjs_wrapper = exactCjsWrapperBindings(ast, root, symbols, scopes, scope_maps, scope_owner_map);
+    for (scope_maps, 0..) |scope_map, scope_raw| {
+        var bindings = scope_map.iterator();
+        while (bindings.next()) |entry| {
+            const symbol_raw = entry.value_ptr.*;
+            if (symbol_raw >= symbols.len) return false;
+            const symbol = symbols[symbol_raw];
+            const scope_id: ScopeId = @fromBackingInt(@intCast(scope_raw));
+            const is_cjs_root_alias = if (cjs_wrapper) |wrapper| blk: {
+                if (scope_raw != 0) break :blk false;
+                break :blk (std.mem.eql(u8, entry.key_ptr.*, "exports") and symbol_raw == wrapper.exports_symbol_id) or
+                    (std.mem.eql(u8, entry.key_ptr.*, "module") and symbol_raw == wrapper.module_symbol_id);
+            } else false;
+            if (namespace_member_owners.contains(@intCast(symbol_raw)) or
+                !exactScopeMapKeyMatchesSymbol(ast, &symbol, entry.key_ptr.*) or
+                (symbol.scope_id != scope_id and !is_cjs_root_alias and
+                    !isAnnexBBlockFunctionAlias(scopes, &symbol, @intCast(scope_raw)))) return false;
+        }
+    }
+
     var parent_by_node: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer parent_by_node.deinit(allocator);
     var reachable_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
