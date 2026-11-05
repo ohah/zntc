@@ -53,6 +53,7 @@ pub const LoopCapture = struct {
     pub fn init(self: *Transformer, head_names: []const []const u8, body: NodeIndex) Error!LoopCapture {
         const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
         var c: LoopCapture = .{};
+        errdefer c.deinit(self);
         c.retained_key_cells = try @import("../retained_class_keys.zig").prepareLoopBody(self, body);
         try c.names.appendSlice(self.allocator, head_names);
         try BlockScoping.collectLoopBodyLexicalNames(self, body, false, &c.names);
