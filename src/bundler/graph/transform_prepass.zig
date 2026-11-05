@@ -7583,6 +7583,8 @@ fn isSimpleClass(
 
     var accessor_pair: ?struct { flags: u32, key_text: []const u8 } = null;
     var accessor_count: usize = 0;
+    var computed_accessor_count: usize = 0;
+    var has_shadowed_identifier_accessor = false;
     var has_computed_accessor_key = false;
     var accessors_started = false;
     var has_empty_explicit_constructor = false;
@@ -7642,12 +7644,14 @@ fn isSimpleClass(
             const text = ast.getText(key.span);
             if (std.mem.indexOfScalar(u8, text, '\\') != null) return false;
             break :blk text;
-        } else if (is_plain_accessor and !source_object_shadows_class)
+        } else if (is_plain_accessor)
             retainableSimpleComputedClassAccessorKeyText(key_text_allocator, ast, key_idx) orelse return false
         else
             return false;
-        if (key.tag == .computed_property_key) has_computed_accessor_key = true;
-        if (source_object_shadows_class and key.tag == .computed_property_key) return false;
+        if (key.tag == .computed_property_key) {
+            has_computed_accessor_key = true;
+            if (is_plain_accessor) computed_accessor_count += 1;
+        }
         if (std.mem.eql(u8, key_text, "constructor")) {
             if (has_empty_explicit_constructor or flags != 0 or
                 !isSimpleParamsConstructorBodyGraphSafe(ast, semantic, method_extra, super.isNone())) return false;
@@ -7657,34 +7661,49 @@ fn isSimpleClass(
         if (is_plain_accessor) {
             accessors_started = true;
             if (source_object_shadows_class) {
-                const current_is_static = (flags & ast_mod.MethodFlags.is_static) != 0;
-                const current_is_getter = (flags & ast_mod.MethodFlags.is_getter) != 0;
-                var found_pair = false;
-                for (extras[members.start .. members.start + member_offset]) |raw_previous_idx| {
-                    const previous_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_previous_idx));
-                    if (previous_idx.isNone() or @backingInt(previous_idx) >= ast.nodes.items.len) return false;
-                    const previous = ast.getNode(previous_idx);
-                    if (previous.tag != .method_definition) continue;
-                    const previous_extra = previous.data.extra;
-                    if (previous_extra > extras.len or
-                        extras.len - previous_extra <= ast_mod.MethodExtra.flags) return false;
-                    const previous_flags = extras[previous_extra + ast_mod.MethodExtra.flags];
-                    const previous_is_accessor = previous_flags == ast_mod.MethodFlags.is_getter or
-                        previous_flags == ast_mod.MethodFlags.is_setter or
-                        previous_flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_getter) or
-                        previous_flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_setter);
-                    if (!previous_is_accessor or
-                        ((previous_flags & ast_mod.MethodFlags.is_static) != 0) != current_is_static) continue;
-                    const previous_key_idx: ast_mod.NodeIndex = @fromBackingInt(
-                        @intCast(extras[previous_extra + ast_mod.MethodExtra.key]),
-                    );
-                    if (previous_key_idx.isNone() or @backingInt(previous_key_idx) >= ast.nodes.items.len) return false;
-                    const previous_key = ast.getNode(previous_key_idx);
-                    if (previous_key.tag != .identifier_reference or
-                        !std.mem.eql(u8, ast.getText(previous_key.span), key_text)) continue;
-                    if (found_pair or
-                        ((previous_flags & ast_mod.MethodFlags.is_getter) != 0) == current_is_getter) return false;
-                    found_pair = true;
+                if (key.tag == .computed_property_key) {
+                    if (accessor_pair) |previous| {
+                        const same_staticness =
+                            (previous.flags & ast_mod.MethodFlags.is_static) ==
+                            (flags & ast_mod.MethodFlags.is_static);
+                        const previous_is_getter = (previous.flags & ast_mod.MethodFlags.is_getter) != 0;
+                        const current_is_getter = (flags & ast_mod.MethodFlags.is_getter) != 0;
+                        if (!same_staticness or previous_is_getter == current_is_getter or
+                            !std.mem.eql(u8, previous.key_text, key_text)) return false;
+                    } else {
+                        accessor_pair = .{ .flags = flags, .key_text = key_text };
+                    }
+                } else {
+                    has_shadowed_identifier_accessor = true;
+                    const current_is_static = (flags & ast_mod.MethodFlags.is_static) != 0;
+                    const current_is_getter = (flags & ast_mod.MethodFlags.is_getter) != 0;
+                    var found_pair = false;
+                    for (extras[members.start .. members.start + member_offset]) |raw_previous_idx| {
+                        const previous_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_previous_idx));
+                        if (previous_idx.isNone() or @backingInt(previous_idx) >= ast.nodes.items.len) return false;
+                        const previous = ast.getNode(previous_idx);
+                        if (previous.tag != .method_definition) continue;
+                        const previous_extra = previous.data.extra;
+                        if (previous_extra > extras.len or
+                            extras.len - previous_extra <= ast_mod.MethodExtra.flags) return false;
+                        const previous_flags = extras[previous_extra + ast_mod.MethodExtra.flags];
+                        const previous_is_accessor = previous_flags == ast_mod.MethodFlags.is_getter or
+                            previous_flags == ast_mod.MethodFlags.is_setter or
+                            previous_flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_getter) or
+                            previous_flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_setter);
+                        if (!previous_is_accessor or
+                            ((previous_flags & ast_mod.MethodFlags.is_static) != 0) != current_is_static) continue;
+                        const previous_key_idx: ast_mod.NodeIndex = @fromBackingInt(
+                            @intCast(extras[previous_extra + ast_mod.MethodExtra.key]),
+                        );
+                        if (previous_key_idx.isNone() or @backingInt(previous_key_idx) >= ast.nodes.items.len) return false;
+                        const previous_key = ast.getNode(previous_key_idx);
+                        if (previous_key.tag != .identifier_reference or
+                            !std.mem.eql(u8, ast.getText(previous_key.span), key_text)) continue;
+                        if (found_pair or
+                            ((previous_flags & ast_mod.MethodFlags.is_getter) != 0) == current_is_getter) return false;
+                        found_pair = true;
+                    }
                 }
             } else {
                 if (accessor_pair) |previous| {
@@ -7730,7 +7749,10 @@ fn isSimpleClass(
                 !retains_async_class_method_sync_arrow_super and
                 !retains_async_class_method_arrow_super and !retains_sync_class_method_super)) return false;
     }
-    if (has_computed_accessor_key and accessor_count != 2) return false;
+    if (has_computed_accessor_key and
+        (computed_accessor_count != 2 or
+            (source_object_shadows_class and has_shadowed_identifier_accessor) or
+            (!source_object_shadows_class and accessor_count != 2))) return false;
     if (source_object_shadows_class) {
         for (extras[members.start .. members.start + members.len]) |raw_accessor_idx| {
             const accessor_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_accessor_idx));
@@ -7751,9 +7773,13 @@ fn isSimpleClass(
             );
             if (accessor_key_idx.isNone() or @backingInt(accessor_key_idx) >= ast.nodes.items.len) return false;
             const accessor_key = ast.getNode(accessor_key_idx);
-            if (accessor_key.tag != .identifier_reference) return false;
+            const accessor_key_text = if (accessor_key.tag == .identifier_reference)
+                ast.getText(accessor_key.span)
+            else if (accessor_key.tag == .computed_property_key)
+                retainableSimpleComputedClassAccessorKeyText(key_text_allocator, ast, accessor_key_idx) orelse return false
+            else
+                return false;
             const accessor_is_static = (accessor_flags & ast_mod.MethodFlags.is_static) != 0;
-            const accessor_key_text = ast.getText(accessor_key.span);
             for (extras[members.start .. members.start + members.len]) |raw_candidate_idx| {
                 const candidate_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_candidate_idx));
                 if (candidate_idx.isNone() or @backingInt(candidate_idx) >= ast.nodes.items.len) return false;
@@ -29076,6 +29102,38 @@ test "retained graph preserves simple setter defaults in a computed class access
     ));
     try expectRetainedMethodDefaultSymbolIdentityForTest(escaped_getter_source, "value");
 
+    const shadowed_source = "var Object; class Box { get ['value']() { return this._value; } set ['value'](value = 1) { this._value = value; } }";
+    var shadowed_fixture = try runtimeHelperReanalysisTestFixture(allocator, shadowed_source);
+    var shadowed_get = false;
+    var shadowed_set = false;
+    try std.testing.expect(canRetainGraphForAuditedSyntaxSubset(
+        allocator,
+        &shadowed_fixture.ast,
+        &shadowed_fixture.semantic,
+        .{ .unsupported = es5 },
+        &shadowed_get,
+        &shadowed_set,
+        null,
+        null,
+    ));
+    try expectRetainedMethodDefaultSymbolIdentityWithShadowedExternalForTest(shadowed_source, "value");
+
+    const escaped_shadowed_source = "var Object; class Box { get ['value']() { return this._value; } set ['\\u0076alue'](value = 1) { this._value = value; } }";
+    var escaped_shadowed_fixture = try runtimeHelperReanalysisTestFixture(allocator, escaped_shadowed_source);
+    var escaped_shadowed_get = false;
+    var escaped_shadowed_set = false;
+    try std.testing.expect(canRetainGraphForAuditedSyntaxSubset(
+        allocator,
+        &escaped_shadowed_fixture.ast,
+        &escaped_shadowed_fixture.semantic,
+        .{ .unsupported = es5 },
+        &escaped_shadowed_get,
+        &escaped_shadowed_set,
+        null,
+        null,
+    ));
+    try expectRetainedMethodDefaultSymbolIdentityWithShadowedExternalForTest(escaped_shadowed_source, "value");
+
     const hostile_sources = [_][]const u8{
         "function nextKey() { return 'value'; } class Box { get [nextKey()]() { return this._value; } set [nextKey()](value = 1) { this._value = value; } }",
         "function nextDefault() { return 1; } class Box { get ['value']() { return this._value; } set ['value'](value = nextDefault()) { this._value = value; } }",
@@ -29100,7 +29158,6 @@ test "retained graph preserves simple setter defaults in a computed class access
         "class Box { set ['value'](value = 1) { this._value = value; } }",
         "const key = 'value'; class Box { get [key]() { return this._value; } set [key](value = 1) { this._value = value; } }",
         "class Box { get [`value`]() { return this._value; } set [`value`](value = 1) { this._value = value; } }",
-        "var Object; class Box { get ['value']() { return this._value; } set ['value'](value = 1) { this._value = value; } }",
     };
     for (hostile_sources) |hostile_source| {
         var hostile_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -29132,9 +29189,18 @@ test "retained graph preserves simple setter defaults in a computed class access
         "class Box { set ['\\u0076alue'](value = 1) { this._value = value; } }",
         "class Box { get ['value']() { return this._value; } set ['\\u0076alue'](value = 1) { this._value = value; } read() { return this._value; } }",
         "function nextDefault() { return 1; } class Box { get ['value']() { return this._value; } set ['\\u0076alue'](value = nextDefault()) { this._value = value; } }",
-        "var Object; class Box { get ['value']() { return this._value; } set ['\\u0076alue'](value = 1) { this._value = value; } }",
         "class Box { static get ['\\u0076alue']() { return this._value; } set ['value'](value = 1) { this._value = value; } }",
         "class Box { get ['value']() { return this._value; } get ['\\u0076alue']() { return this._value; } set ['value'](value = 1) { this._value = value; } }",
+        "var Object; class Box { get ['value']() { return this._value; } set ['other'](value = 1) { this._value = value; } }",
+        "var Object; class Box { get value() { return this._value; } set ['value'](value = 1) { this._value = value; } }",
+        "var Object; class Box { get other() { return this._other; } set other(value = 1) { this._other = value; } get ['value']() { return this._value; } set ['value'](value = 1) { this._value = value; } }",
+        "var Object; class Box { value() { return this._value; } get ['value']() { return this._value; } set ['value'](value = 1) { this._value = value; } }",
+        "var Object; class Box { static get ['value']() { return this._value; } set ['value'](value = 1) { this._value = value; } }",
+        "class Base {} var Object; class Box extends Base { get ['value']() { return this._value; } set ['value'](value = 1) { this._value = value; } }",
+        "var Object; class Box { get ['value']() { return this._value; } }",
+        "var Object; class Box { get ['value']() { return this._value; } set ['value'](value = 1) { this._value = value; } get ['other']() { return this._other; } }",
+        "var Object; class Box { get ['value']() { return this._value; } get ['\\u0076alue']() { return this._value; } set ['value'](value = 1) { this._value = value; } }",
+        "var Object; class Box { get ['value']() { return this._value; } get ['\\u0076alue']() { return this._value; } }",
     };
     for (escaped_hostile_sources) |hostile_source| {
         var hostile_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
