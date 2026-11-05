@@ -966,4 +966,87 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
       }
     },
   );
+
+  test(
+    'buildSync onTransform erases declaration-level type imports and retains runtime imports',
+    { timeout: 30_000 },
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-buildsync-ontransform-import-type-'));
+      const entry = join(dir, 'entry.ts');
+      const dependency = join(dir, 'dependency.js');
+      const types = join(dir, 'types.ts');
+      const source = [
+        "import { value as _value } from './dependency.js';",
+        "import { tag as _tag } from './types.ts';",
+        "import type { Shape as _Shape } from './types.ts';",
+        'type Alias = _Shape;',
+        'const result: Alias = { amount: _value + _tag - 1 };',
+        'const read = () => result.amount + (1 + 2);',
+        'console.log(read() - 3);',
+      ].join('\n');
+      writeFileSync(entry, '// buildSync onTransform supplies TypeScript source');
+      writeFileSync(dependency, 'export const value = 42; export const unused = 1;');
+      writeFileSync(types, 'export const tag = 1; export interface Shape { amount: number }');
+      const reportedEntry = realpathSync(entry);
+      const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+      const runner = [
+        `import {buildSync} from ${JSON.stringify(coreEntry)};`,
+        `const entry=${JSON.stringify(entry)}; const source=${JSON.stringify(source)}; const calls=[];`,
+        `const result=buildSync({entryPoints:[entry],platform:'node',format:'cjs',target:'es5',minifyWhitespace:true,minifySyntax:true,minifyIdentifiers:true,verbatimModuleSyntax:true,write:false,plugins:[{name:'buildsync-ontransform-import-type',setup(api){api.onTransform({filter:/entry\\.ts$/},args=>{calls.push(args.path);return {code:source};});}}]});`,
+        `if(result.errors.length){console.error(JSON.stringify(result.errors));process.exit(1);}`,
+        `process.stdout.write(JSON.stringify({calls,outputs:result.outputFiles.map(file=>file.text)}));`,
+      ].join('\n');
+      try {
+        const run = Bun.spawnSync(['bun', '-e', runner], {
+          cwd: join(import.meta.dir, '../../..'),
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        });
+        const stderr = run.stderr.toString();
+        expect(run.exitCode, stderr).toBe(0);
+        const result = JSON.parse(run.stdout.toString()) as {
+          calls: string[];
+          outputs: string[];
+        };
+        expect(result.calls).toEqual([reportedEntry]);
+        expect(result.outputs).toHaveLength(1);
+        expect(result.outputs[0]).not.toContain('_Shape');
+        expect(result.outputs[0]).not.toContain('_value');
+        expect(result.outputs[0]).not.toContain('Alias');
+        expect(result.outputs[0]).not.toContain('Shape');
+        expect(result.outputs[0]).not.toContain('result');
+        expect(result.outputs[0]).not.toContain('read');
+        expect(result.outputs[0]).not.toContain('=>');
+        expect(result.outputs[0]).not.toMatch(/1\s*\+\s*2/);
+        expect(result.outputs[0]).not.toContain('interface Shape');
+        expect(result.outputs[0]).not.toContain('unused');
+        const output = join(dir, 'out.cjs');
+        writeFileSync(output, result.outputs[0]);
+        const execution = Bun.spawnSync(['node', output]);
+        expect(execution.exitCode, execution.stderr.toString()).toBe(0);
+        expect(execution.stdout.toString()).toBe('42\n');
+
+        const lines = stderr.split(/\r?\n/);
+        const identity = lines.filter(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass ') && line.includes(reportedEntry),
+        );
+        expect(identity, stderr).toHaveLength(1);
+        for (const field of [...zeroCounters, 'clean']) {
+          const values = [
+            ...identity[0].matchAll(new RegExp(`(?:^| )${field}=(\\d+)(?= |$)`, 'g')),
+          ];
+          expect(values, `${field}: ${identity[0]}`).toHaveLength(1);
+          expect(Number(values[0][1]), field).toBe(field === 'clean' ? 1 : 0);
+        }
+        const mode = lines.filter(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(reportedEntry),
+        );
+        expect(mode, stderr).toHaveLength(1);
+        expect(mode[0]).toContain('semantic_graph=retained');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
