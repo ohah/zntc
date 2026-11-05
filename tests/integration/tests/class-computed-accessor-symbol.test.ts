@@ -93,4 +93,70 @@ console.log(calls, box.value);`,
     expect(actual.status, actual.stderr).toBe(0);
     expect(actual.stdout).toBe(native.stdout);
   });
+
+  test('a shadowed Object binding does not capture class accessor helpers', async () => {
+    const fixture = await createFixture({
+      'input.js': `var Object;
+var _key = 'source-key';
+class Box {
+  get ['value']() { return this._stored + ':' + _key; }
+  set ["v\\u0061lue"](value = 1) { this._stored = value; }
+}
+const box = new Box();
+box.value = undefined;
+console.log(typeof Object, box.value, _key);`,
+    });
+    cleanup = fixture.cleanup;
+
+    const native = spawnSync('node', ['input.js'], { cwd: fixture.dir, encoding: 'utf8' });
+    expect(native.status, native.stderr).toBe(0);
+
+    const output = join(fixture.dir, 'out.cjs');
+    const transformed = spawnSync(
+      ZNTC_BIN,
+      ['--bundle', 'input.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+      {
+        cwd: fixture.dir,
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      },
+    );
+    expect(transformed.status, transformed.stderr).toBe(0);
+    const mode = transformed.stderr
+      .split(/\r?\n/)
+      .find(
+        (line) =>
+          line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('input.js'),
+      );
+    expect(mode, transformed.stderr).toContain('semantic_graph=retained');
+    const report = transformed.stderr
+      .split(/\r?\n/)
+      .find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('input.js'),
+      );
+    expect(report, transformed.stderr).toContain('shadowed_external_reference=2');
+    expect(report, transformed.stderr).toMatch(/clean=0(?:\s|$)/);
+    const observationFields = new Set([
+      'generated_bindings',
+      'generated_references',
+      'generated_scope_owners_checked',
+      'external',
+      'declaration_anchors_checked',
+      'invariant_counter_count',
+      'observation_field_count',
+      'diagnostic_field_count',
+      'shadowed_external_reference',
+      'clean',
+    ]);
+    const nonzeroInvariantFields = Array.from(
+      report?.matchAll(/(?:^|\s)([a-z_]+)=([0-9]+)(?=\s|$)/g) ?? [],
+    )
+      .filter(([, name, value]) => !observationFields.has(name) && Number(value) !== 0)
+      .map(([, name, value]) => `${name}=${value}`);
+    expect(nonzeroInvariantFields, report).toEqual([]);
+
+    const actual = spawnSync('node', [output], { cwd: fixture.dir, encoding: 'utf8' });
+    expect(actual.status, actual.stderr).toBe(0);
+    expect(actual.stdout).toBe(native.stdout);
+  });
 });
