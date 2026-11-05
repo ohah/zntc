@@ -116,7 +116,10 @@ pub fn project(
     semantic: anytype,
 ) !?[]SemanticReference {
     const contexts = collect(allocator, ast, root) catch return null;
+    defer allocator.free(contexts);
     const updated = try allocator.dupe(SemanticReference, semantic.references);
+    var updated_transferred = false;
+    defer if (!updated_transferred) allocator.free(updated);
     var entry_contexts = (try @import("implicit_arguments_statement_owner.zig").collect(
         allocator,
         ast,
@@ -212,6 +215,7 @@ pub fn project(
         reference.stmt_idx = context.stmt_idx;
         reference.scope_stmt_idx = context.scope_stmt_idx;
     }
+    updated_transferred = true;
     return updated;
 }
 
@@ -286,7 +290,8 @@ test "anchorless class self follows the exact current class body owner" {
         .references = references,
     };
 
-    const projected = (try project(allocator, &parser.ast, output_root, &semantic)) orelse return error.ClassSelfProjectionRejected;
+    const projected = (try project(std.testing.allocator, &parser.ast, output_root, &semantic)) orelse return error.ClassSelfProjectionRejected;
+    defer std.testing.allocator.free(projected);
     try std.testing.expectEqual(references.len, projected.len);
     var found_inner_declaration = false;
     for (projected) |reference| {
@@ -297,9 +302,28 @@ test "anchorless class self follows the exact current class body owner" {
     }
     try std.testing.expect(found_inner_declaration);
 
+    var allocation_failures: usize = 0;
+    var completed_without_failure = false;
+    for (0..256) |fail_index| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        const candidate = project(failing.allocator(), &parser.ast, output_root, &semantic) catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            allocation_failures += 1;
+            continue;
+        };
+        if (candidate) |references_out| {
+            failing.allocator().free(references_out);
+            completed_without_failure = true;
+            break;
+        }
+        allocation_failures += 1;
+    }
+    try std.testing.expect(allocation_failures > 0);
+    try std.testing.expect(completed_without_failure);
+
     // A missing output class-scope owner must still fail closed.
     semantic.scope_owner_map = .empty;
-    try std.testing.expect((try project(allocator, &parser.ast, output_root, &semantic)) == null);
+    try std.testing.expect((try project(std.testing.allocator, &parser.ast, output_root, &semantic)) == null);
 }
 
 /// Statement metadata may change; SymbolId/ScopeId and source read identities do not.
