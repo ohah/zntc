@@ -3080,19 +3080,27 @@ test "unsupported loop publication returns typed errors before bundle results" {
             defer tmp.cleanup();
             const entry_name = if (worker) "entry.mjs" else "entry.cjs";
             try helpers.writeFile(tmp.dir, entry_name, if (worker)
-                "new Worker(new URL('./worker.cjs', import.meta.url));"
+                "new Worker(new URL('./good-worker.cjs', import.meta.url));new Worker(new URL('./worker.cjs', import.meta.url));"
             else
                 case[0]);
-            if (worker) try helpers.writeFile(tmp.dir, "worker.cjs", case[0]);
+            if (worker) {
+                try helpers.writeFile(tmp.dir, "good-worker.cjs", "console.log('completed worker output');");
+                try helpers.writeFile(tmp.dir, "worker.cjs", case[0]);
+            }
             const entry = try helpers.absPath(&tmp, entry_name);
             defer std.testing.allocator.free(entry);
             var unsupported = compat.fromESTarget(if (case[2]) .es5 else .es2015);
             unsupported.generator = true;
-            var bundler = Bundler.init(std.testing.allocator, .{
+            const options: BundleOptions = .{
                 .entry_points = &.{entry},
                 .format = .cjs,
                 .unsupported = unsupported,
-            });
+            };
+            var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+            defer cache.deinit();
+            var graph = ModuleGraph.init(std.testing.allocator, &cache);
+            defer graph.deinit();
+            var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
             defer bundler.deinit();
             // No BundleResult (including an empty or partially emitted output) may
             // escape to a caller's write:true filesystem publication path.
@@ -3105,6 +3113,28 @@ test "unsupported loop publication returns typed errors before bundle results" {
                 return error.TestExpectedError;
             } else |err| {
                 try std.testing.expectEqual(case[1], err);
+            }
+            if (worker) {
+                // bundle consumes this exact ordered ledger: the first worker
+                // output is already owned when the second worker aborts. The
+                // testing allocator checks the abort-path output cleanup.
+                const expected_paths = [_][]const u8{ "good-worker.cjs", "worker.cjs" };
+                var unique_paths: std.StringHashMapUnmanaged(void) = .empty;
+                defer unique_paths.deinit(std.testing.allocator);
+                for (graph.worker_entries.items) |worker_entry| {
+                    const source = graph.getModule(worker_entry.source_module) orelse return error.MissingWorkerSource;
+                    try std.testing.expect(worker_entry.record_index < source.import_records.len);
+                    const record = source.import_records[worker_entry.record_index];
+                    try std.testing.expectEqual(types.ImportKind.worker, record.kind);
+                    try std.testing.expectEqualStrings(std.fs.path.basename(worker_entry.resolved_path), std.fs.path.basename(record.specifier));
+                    if (unique_paths.contains(worker_entry.resolved_path)) continue;
+                    // Discovery/prepass may replay the same edge. The build
+                    // loop deduplicates exact resolved paths in first-seen order.
+                    try std.testing.expect(unique_paths.count() < expected_paths.len);
+                    try std.testing.expectEqualStrings(expected_paths[unique_paths.count()], std.fs.path.basename(worker_entry.resolved_path));
+                    try unique_paths.put(std.testing.allocator, worker_entry.resolved_path, {});
+                }
+                try std.testing.expectEqual(@as(usize, 2), unique_paths.count());
             }
         }
     }
