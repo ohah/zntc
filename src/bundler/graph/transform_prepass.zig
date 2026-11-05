@@ -28479,6 +28479,8 @@ test "retained graph admits only strict simple synchronous setter literal defaul
     const original_default_value = poisoned.ast.extra_data.items[default_value_index];
     const original_parent = poisoned.semantic.scopes[method_scope].parent;
     const original_strict = poisoned.semantic.scopes[method_scope].is_strict;
+    var poisoned_method_defaults: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer poisoned_method_defaults.deinit(poisoned_allocator);
     get = false;
     set = false;
 
@@ -28514,19 +28516,37 @@ test "retained graph admits only strict simple synchronous setter literal defaul
 
     poisoned.ast.extra_data.items[method_flags_index] |= ast_mod.MethodFlags.is_static;
     try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
-    const forged_class_member_list = try poisoned.ast.addNodeList(&.{@fromBackingInt(@intCast(raw_method))});
-    _ = try poisoned.ast.addNode(.{ .tag = .class_body, .span = .EMPTY, .data = .{ .list = forged_class_member_list } });
-    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
     poisoned.ast.extra_data.items[method_flags_index] = original_method_flags;
 
     const decorator_start_index = method_node.data.extra + ast_mod.MethodExtra.deco_start;
     const decorator_len_index = method_node.data.extra + ast_mod.MethodExtra.deco_len;
     poisoned.ast.extra_data.items[decorator_len_index] = 1;
     try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    try std.testing.expect(!collectSimpleFunctionDefaultParameterNodes(
+        &poisoned.ast,
+        &poisoned.semantic,
+        @intCast(raw_method),
+        method_node,
+        &poisoned_method_defaults,
+    ));
     poisoned.ast.extra_data.items[decorator_len_index] = 0;
     poisoned.ast.extra_data.items[decorator_start_index] = 1;
     try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    try std.testing.expect(!collectSimpleFunctionDefaultParameterNodes(
+        &poisoned.ast,
+        &poisoned.semantic,
+        @intCast(raw_method),
+        method_node,
+        &poisoned_method_defaults,
+    ));
     poisoned.ast.extra_data.items[decorator_start_index] = 0;
+
+    poisoned.ast.extra_data.items[method_flags_index] |= ast_mod.MethodFlags.is_static;
+    const forged_class_member_list = try poisoned.ast.addNodeList(&.{@fromBackingInt(@intCast(raw_method))});
+    _ = try poisoned.ast.addNode(.{ .tag = .class_body, .span = .EMPTY, .data = .{ .list = forged_class_member_list } });
+    try std.testing.expect(directMethodDefinitionOwner(&poisoned.ast, @intCast(raw_method)) == null);
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    poisoned.ast.extra_data.items[method_flags_index] = original_method_flags;
 
     poisoned.ast.extra_data.items[parameter_type_index] = @intCast(raw_other);
     try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
