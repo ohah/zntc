@@ -14353,6 +14353,118 @@ test "syntax minification retains only an exact semantic graph" {
     }
 }
 
+test "minified graph gate classifies enum member key decoding OOM as allocation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "enum Outer { A=1, Seed=A, B=(()=>{ enum Inner { \"\\u0041\"=2, C=A+1 } return Inner.C; })() }";
+    var scanner = try Scanner.init(a, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".ts");
+    defer parser.deinit();
+    const root = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_ts = true;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+
+    var injected_failures: usize = 0;
+    var completed_without_failure = false;
+    for (0..512) |fail_index| {
+        var trial_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer trial_arena.deinit();
+        var failing = std.testing.FailingAllocator.init(trial_arena.allocator(), .{ .fail_index = fail_index });
+        var failure: MinifiedGraphGateFailure = .scope_resolution;
+        const retained = canRetainMinifiedSemanticGraph(
+            failing.allocator(),
+            &parser.ast,
+            root,
+            analyzer.symbols.items,
+            analyzer.scopes.items,
+            analyzer.references.items,
+            analyzer.symbol_ids.items,
+            &analyzer.unresolved_references,
+            &analyzer.scope_owner_map,
+            minifiedGraphResolutionForAnalyzer(&analyzer),
+            null,
+            &failure,
+        );
+        if (failing.has_induced_failure) {
+            injected_failures += 1;
+            if (failure != .allocation) {
+                std.debug.print("OOM misclassified by graph gate: fail_index={d} reason={s} retained={}\n", .{
+                    fail_index,
+                    @tagName(failure),
+                    retained,
+                });
+            }
+            try std.testing.expectEqual(MinifiedGraphGateFailure.allocation, failure);
+            try std.testing.expect(!retained);
+            continue;
+        }
+
+        try std.testing.expect(retained);
+        completed_without_failure = true;
+        break;
+    }
+    try std.testing.expect(injected_failures > 0);
+    try std.testing.expect(completed_without_failure);
+
+    var target_node: ?usize = null;
+    var target_symbol: ?u32 = null;
+    for (analyzer.references.items) |reference| {
+        if (reference.flags.declare or reference.node_index.isNone()) continue;
+        const node = parser.ast.getNode(reference.node_index);
+        if (node.tag != .identifier_reference or
+            !std.mem.eql(u8, parser.ast.identifierNameText(node), "A")) continue;
+        const symbol_id = @backingInt(reference.symbol_id);
+        if (symbol_id >= analyzer.symbols.items.len or
+            analyzer.symbols.items[symbol_id].synthetic_kind != .enum_iife_member) continue;
+        target_node = @backingInt(reference.node_index);
+        target_symbol = symbol_id;
+        break;
+    }
+    const raw = target_node orelse return error.MissingEnumMemberRead;
+    const actual_symbol = target_symbol orelse return error.MissingEnumMemberSymbol;
+    var replacement_symbol: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |_, symbol_raw| {
+        if (symbol_raw != actual_symbol) {
+            replacement_symbol = @intCast(symbol_raw);
+            break;
+        }
+    }
+    const wrong_symbol = replacement_symbol orelse return error.MissingAlternateSymbol;
+    const saved_symbol = analyzer.symbol_ids.items[raw];
+    analyzer.symbol_ids.items[raw] = wrong_symbol;
+    defer analyzer.symbol_ids.items[raw] = saved_symbol;
+
+    var rejection_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer rejection_arena.deinit();
+    var rejection_reason: MinifiedGraphGateFailure = .allocation;
+    try std.testing.expect(!canRetainMinifiedSemanticGraph(
+        rejection_arena.allocator(),
+        &parser.ast,
+        root,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.references.items,
+        analyzer.symbol_ids.items,
+        &analyzer.unresolved_references,
+        &analyzer.scope_owner_map,
+        minifiedGraphResolutionForAnalyzer(&analyzer),
+        null,
+        &rejection_reason,
+    ));
+    try std.testing.expectEqual(MinifiedGraphGateFailure.scope_resolution, rejection_reason);
+}
+
 test "implicit arguments minified graph requires an exact engine declaration" {
     const sources = [_][]const u8{
         "function read(){return arguments[0]}",
