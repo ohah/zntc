@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -69,6 +69,7 @@ function runCase(
       ? 'export function read() { "worklet"; return 42; } console.log(read());'
       : `import { seed } from './dep'; var delta: number = ${selected.includes('transform') ? 1 : 2}; var read = (value: number) => value + delta; ${context ? "var ctx = require.context('./pages', false, /\\.ts$/); console.log(read(seed), ctx('./x.ts').seed);" : 'console.log(read(seed));'}`;
   writeFileSync(entry, source);
+  const reportedEntry = realpathSync(entry);
   writeFileSync(dep, 'export const seed: number = 40;');
   mkdirSync(join(dir, 'pages'));
   writeFileSync(join(dir, 'pages/x.ts'), 'export const seed: number = 40;');
@@ -76,7 +77,7 @@ function runCase(
   const runner = [
     `import {build,close} from ${JSON.stringify(coreEntry)};`,
     `const calls=[]; const dep=${JSON.stringify(dep)};`,
-    `const result=await build({entryPoints:[${JSON.stringify(entry)}],platform:'node',format:'cjs',target:${JSON.stringify(options.downlevel ? 'es5' : 'esnext')},minifyIdentifiers:true,verbatimModuleSyntax:true,workletTransform:${!!options.worklet},write:false,plugins:[{name:${JSON.stringify(options.spoof ? 'reanimated-worklet' : name)},setup(api){${selected.map((hook) => hooks[hook]).join('\n')}${options.ast ? 'api.onAstFunction({filter:/.*/},()=>null);' : ''}}}]});`,
+    `const result=await build({entryPoints:[${JSON.stringify(entry)}],platform:'node',format:'cjs',target:${JSON.stringify(options.downlevel ? 'es5' : 'esnext')},minifyIdentifiers:true,verbatimModuleSyntax:true,workletTransform:${!!options.worklet},write:false,plugins:[{name:${JSON.stringify(options.spoof ? 'reanimated-worklet' : name)},setup(api){${selected.map((hook) => hooks[hook]).join('\n')}${options.ast ? "api.onAstFunction({filter:/.*/},()=>{calls.push('ast');return null;});" : ''}}}]});`,
     `if(result.errors.length){console.error(JSON.stringify(result.errors));process.exit(1);}`,
     `process.stdout.write(JSON.stringify({calls,outputs:result.outputFiles.map(file=>file.text)}));close();`,
   ].join('\n');
@@ -89,6 +90,7 @@ function runCase(
     expect(run.exitCode, stderr).toBe(0);
     const result = JSON.parse(run.stdout.toString()) as { calls: string[]; outputs: string[] };
     for (const hook of selected) expect(result.calls, name).toContain(hook);
+    if (options.ast) expect(result.calls, name).toContain('ast');
     expect(result.outputs).toHaveLength(1);
     writeFileSync(output, result.outputs[0]);
     const execution = Bun.spawnSync(['node', output]);
@@ -96,7 +98,9 @@ function runCase(
     expect(execution.stdout.toString()).toBe(context && !options.worklet ? '42 40\n' : '42\n');
     const identity = stderr
       .split(/\r?\n/)
-      .filter((line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry));
+      .filter(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(reportedEntry),
+      );
     expect(identity, stderr).toHaveLength(1);
     for (const field of [...zeroCounters, 'clean']) {
       const values = [...identity[0].matchAll(new RegExp(`(?:^| )${field}=(\\d+)(?= |$)`, 'g'))];
@@ -106,10 +110,11 @@ function runCase(
     const mode = stderr
       .split(/\r?\n/)
       .filter(
-        (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
+        (line) =>
+          line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(reportedEntry),
       );
     expect(mode, stderr).toHaveLength(1);
-    expect(mode[0]).toContain(`semantic_graph=${options.ast ? 'reanalyzed' : 'retained'}`);
+    expect(mode[0]).toContain('semantic_graph=retained');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -127,8 +132,75 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
     runCase('worklet-observer', ['transform', 'render', 'start', 'end', 'close'], {
       worklet: true,
     }));
-  test('custom AST hooks retain the reanalysis boundary', () =>
+  test('a no-op custom AST hook preserves exact output identity', () =>
     runCase('ast-plugin', [], { ast: true }));
   test('a user AST plugin cannot impersonate the builtin by name', () =>
     runCase('spoof', [], { ast: true, worklet: true, spoof: true }));
+
+  test(
+    'onLoad TypeScript import-equals preserves exact captures through ES5 full minification',
+    { timeout: 30_000 },
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-import-equals-onload-'));
+      const entry = join(dir, 'entry.ts');
+      const output = join(dir, 'out.cjs');
+      const source = [
+        'namespace Container {',
+        "  import Assert = require('node:assert/strict');",
+        '  export function check() {',
+        '    const invoke = () => { Assert.equal(40 + 2, 42); return 42; };',
+        '    return invoke();',
+        '  }',
+        '}',
+        'console.log(Container.check());',
+      ].join('\n');
+      writeFileSync(entry, '// onLoad supplies the TypeScript source');
+      const reportedEntry = realpathSync(entry);
+      const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+      const runner = [
+        `import {build,close} from ${JSON.stringify(coreEntry)};`,
+        `const entry=${JSON.stringify(entry)}; const source=${JSON.stringify(source)}; const calls=[];`,
+        `const result=await build({entryPoints:[entry],platform:'node',format:'cjs',target:'es5',minify:true,write:false,plugins:[{name:'import-equals-onload',setup(api){api.onLoad({filter:/entry\\.ts$/},args=>{calls.push(args.path);return {contents:source,loader:'ts'};});}}]});`,
+        `if(result.errors.length){console.error(JSON.stringify(result.errors));process.exit(1);}`,
+        `process.stdout.write(JSON.stringify({calls,outputs:result.outputFiles.map(file=>file.text)}));close();`,
+      ].join('\n');
+      try {
+        const run = Bun.spawnSync(['bun', '-e', runner], {
+          cwd: join(import.meta.dir, '../../..'),
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        });
+        const stderr = run.stderr.toString();
+        expect(run.exitCode, stderr).toBe(0);
+        const result = JSON.parse(run.stdout.toString()) as { calls: string[]; outputs: string[] };
+        expect(result.calls).toEqual([reportedEntry]);
+        expect(result.outputs).toHaveLength(1);
+        writeFileSync(output, result.outputs[0]);
+        const execution = Bun.spawnSync(['node', output]);
+        expect(execution.exitCode, execution.stderr.toString()).toBe(0);
+        expect(execution.stdout.toString()).toBe('42\n');
+
+        const lines = stderr.split(/\r?\n/);
+        const identity = lines.filter(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass ') && line.includes(reportedEntry),
+        );
+        expect(identity, stderr).toHaveLength(1);
+        for (const field of [...zeroCounters, 'clean']) {
+          const values = [
+            ...identity[0].matchAll(new RegExp(`(?:^| )${field}=(\\d+)(?= |$)`, 'g')),
+          ];
+          expect(values, `${field}: ${identity[0]}`).toHaveLength(1);
+          expect(Number(values[0][1]), field).toBe(field === 'clean' ? 1 : 0);
+        }
+        const mode = lines.filter(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(reportedEntry),
+        );
+        expect(mode, stderr).toHaveLength(1);
+        expect(mode[0]).toContain('semantic_graph=retained');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
