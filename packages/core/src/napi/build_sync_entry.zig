@@ -83,6 +83,8 @@ pub fn napiBuildSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c
     var bundler = Bundler.init(native_alloc, bundle_opts);
     defer bundler.deinit();
     var result = bundler.bundle(common.io()) catch |err| {
+        if (err == error.LoopDynamicScope)
+            return throwError(env, "ZNTC1509: direct eval observes a loop lexical environment requiring lowering");
         if (err == error.ArrowPrivateDynamicScope)
             return throwError(env, "ZNTC1506: retained dynamic capture contains private syntax requiring lowering for the target");
         if (err == error.StaticInitializerDynamicScope)

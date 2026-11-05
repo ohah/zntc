@@ -815,6 +815,9 @@ pub const TransformOptions = struct {
     pub const static_initializer_dynamic_scope_msg =
         "class initializer or extracted private method cannot be lowered because direct eval or with can observe a class lexical environment that the selected target cannot preserve; select a target and class-field options that retain that class code natively.";
 
+    pub const loop_dynamic_scope_msg =
+        "loop lexical environment cannot be lowered because direct eval can observe per-iteration bindings; select a target retaining this loop environment natively or remove the dynamic eval dependency.";
+
     pub const arrow_private_dynamic_scope_msg =
         "native syntax retained to preserve dynamic lexical capture contains private class syntax that the configured target requires to lower; select a target supporting native private classes or remove the dynamic with/eval capture.";
 

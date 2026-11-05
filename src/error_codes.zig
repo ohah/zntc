@@ -271,6 +271,8 @@ pub const Code = enum(u16) {
     /// An actual with environment intercepts generated accessor builtin bindings.
     object_accessor_with_scope = 1507,
     object_accessor_eval_scope = 1508,
+    /// Direct eval observes a loop lexical environment requiring lowering.
+    loop_dynamic_scope = 1509,
 
     /// 에러 코드를 "ZNTC0001" 형식의 문자열로 반환한다.
     pub fn format(self: Code) []const u8 {
@@ -510,6 +512,7 @@ pub const Code = enum(u16) {
             .object_accessor_with_scope => "Computed accessor object is retained in its with environment; the configured target may not support retained syntax",
             .arrow_dynamic_scope => "Arrow or containing class/object literal is preserved because a dynamic scope makes lexical capture downleveling unsafe; the target may not support syntax retained inside it",
             .static_initializer_dynamic_scope => "Class initializer or extracted private method cannot preserve its dynamic class lexical environment",
+            .loop_dynamic_scope => "Direct eval observes a loop lexical environment that cannot be lowered safely",
             .arrow_private_dynamic_scope => "Retained dynamic capture contains private class syntax that requires lowering for the configured target",
             .arrow_dynamic_eval => "Arrow is preserved because a dynamic direct eval can observe generated lexical capture bindings; the target may not support retained arrow syntax",
         };
