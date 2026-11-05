@@ -3221,7 +3221,14 @@ pub fn hasExactReachableReferenceResolution(
         const owner_scope = scope_maps[symbol.scope_id.toIndex()];
         const normal = owner_scope.get(name);
         const helper = helper_scope_map.get(name);
-        if ((normal == null or normal.? != symbol_raw) and (helper == null or helper.? != symbol_raw)) return false;
+        const isolated_helper_binding = symbol.kind == .import_binding and helper == symbol_raw and
+            if (normal) |mapped_id|
+                mapped_id != symbol_raw and mapped_id < symbols.len and
+                    symbols[mapped_id].scope_id == symbol.scope_id and
+                    std.mem.eql(u8, exactSymbolName(ast, &symbols[mapped_id]), name)
+            else
+                false;
+        if ((normal == null or normal.? != symbol_raw) and !isolated_helper_binding) return false;
     }
 
     var namespace_scope_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -3280,6 +3287,32 @@ pub fn hasExactReachableReferenceResolution(
     };
     defer ctx.name_positions.deinit(allocator);
     defer ctx.jsx_variable_roots.deinit(allocator);
+
+    for (helper_reference_nodes) |raw| {
+        if (raw >= ast.nodes.items.len) return false;
+        if (!reachable_nodes.contains(raw)) continue;
+        if (parent_by_node.get(raw)) |parent_raw| {
+            if (parent_raw < ast.nodes.items.len) {
+                const parent = ast.nodes.items[parent_raw];
+                if (parent.tag == .import_specifier) {
+                    const is_imported_slot = @backingInt(parent.data.binary.left) == raw;
+                    const is_local_slot = @backingInt(parent.data.binary.right) == raw;
+                    if (is_imported_slot and !is_local_slot) continue;
+                    if (!is_imported_slot and !is_local_slot) return false;
+                }
+            }
+        }
+        const node = ast.nodes.items[raw];
+        if (node.tag != .identifier_reference and node.tag != .jsx_identifier and
+            node.tag != .import_default_specifier) return false;
+        if (raw >= symbol_ids.len or symbol_ids[raw] == null or symbol_ids[raw].? >= symbols.len) return false;
+        const symbol_raw = symbol_ids[raw].?;
+        const name = ast.getText(node.data.string_ref);
+        const helper_id = helper_scope_map.get(name) orelse return false;
+        const symbol = symbols[symbol_raw];
+        if (helper_id != symbol_raw or symbol.kind != .import_binding or
+            !std.mem.eql(u8, exactSymbolName(ast, &symbol), name)) return false;
+    }
 
     for (references) |reference| {
         if (reference.flags.declare or reference.node_index.isNone()) continue;
