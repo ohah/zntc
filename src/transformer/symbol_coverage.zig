@@ -3630,16 +3630,93 @@ pub const OutputNormalFormReport = struct {
     }
 };
 
-test "output scope boundary mismatch alone rejects admission" {
-    var report: OutputNormalFormReport = .{
+test "output normal form gate rejects every aggregate invariant counter" {
+    var healthy: OutputNormalFormReport = .{
         .exact = .{},
         .strict = .{},
-        .scope_boundary_mismatch = 1,
     };
-    defer report.deinit(std.testing.allocator);
-    try std.testing.expect(report.exact.hasCompleteOutputIdentityBeforeNames());
-    try std.testing.expect(report.strict.hasCompleteSymbolIdentity());
-    try std.testing.expect(!report.hasCompleteOutputIdentityBeforeNames());
+    defer healthy.deinit(std.testing.allocator);
+    try std.testing.expect(healthy.exact.hasCompleteOutputIdentityBeforeNames());
+    try std.testing.expect(healthy.strict.hasCompleteSymbolIdentity());
+    try std.testing.expect(healthy.hasCompleteOutputIdentityBeforeNames());
+
+    var invariant_counters: usize = 0;
+    const info = @typeInfo(OutputNormalFormReport).@"struct";
+    inline for (info.field_names, info.field_types) |name, field_type| {
+        if (comptime field_type == usize) {
+            invariant_counters += 1;
+            var report: OutputNormalFormReport = .{ .exact = .{}, .strict = .{} };
+            defer report.deinit(std.testing.allocator);
+            @field(report, name) = 1;
+            try std.testing.expect(!report.hasCompleteOutputIdentityBeforeNames());
+        } else if (comptime field_type != ExactReport and field_type != StrictReport) {
+            @compileError("unclassified OutputNormalFormReport field");
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 3), invariant_counters);
+
+    const exact_info = @typeInfo(ExactReport).@"struct";
+    inline for (exact_info.field_names, exact_info.field_types) |name, field_type| {
+        if (comptime ExactReport.isObservationField(name) or ExactReport.isDiagnosticField(name)) continue;
+        if (comptime field_type != usize) @compileError("unclassified ExactReport invariant field");
+        var incomplete_exact: OutputNormalFormReport = .{ .exact = .{}, .strict = .{} };
+        defer incomplete_exact.deinit(std.testing.allocator);
+        @field(incomplete_exact.exact, name) = 1;
+        try std.testing.expect(!incomplete_exact.exact.hasCompleteOutputIdentityBeforeNames());
+        try std.testing.expect(incomplete_exact.strict.hasCompleteSymbolIdentity());
+        try std.testing.expect(!incomplete_exact.hasCompleteOutputIdentityBeforeNames());
+    }
+
+    for (std.meta.tags(StrictStatus)) |status| {
+        if (strictStatusPolicy(status) != .must_be_zero) continue;
+        var incomplete_strict: OutputNormalFormReport = .{ .exact = .{}, .strict = .{} };
+        defer incomplete_strict.deinit(std.testing.allocator);
+        incomplete_strict.strict.counts[@intCast(@backingInt(status))] = 1;
+        try incomplete_strict.strict.findings.append(std.testing.allocator, .{
+            .node = 1,
+            .name = "x",
+            .tag = .identifier_reference,
+            .status = status,
+            .marked_synthetic = false,
+        });
+        try std.testing.expect(incomplete_strict.strict.isConsistent());
+        try std.testing.expect(!incomplete_strict.strict.hasCompleteSymbolIdentity());
+        try std.testing.expect(incomplete_strict.exact.hasCompleteOutputIdentityBeforeNames());
+        try std.testing.expect(!incomplete_strict.hasCompleteOutputIdentityBeforeNames());
+    }
+
+    const shadowed_external: ExactFinding = .{
+        .name = "externalName",
+        .tag = .identifier_reference,
+        .node_index = 1,
+        .span_start = 0,
+    };
+    var allowed_shadowed_external: OutputNormalFormReport = .{
+        .exact = .{
+            .shadowed_external_reference = 1,
+            .first_shadowed_external_reference = shadowed_external,
+        },
+        .strict = .{},
+    };
+    defer allowed_shadowed_external.deinit(std.testing.allocator);
+    try std.testing.expect(!allowed_shadowed_external.exact.isClean());
+    try std.testing.expect(allowed_shadowed_external.exact.hasCompleteOutputIdentityBeforeNames());
+    try std.testing.expect(allowed_shadowed_external.hasCompleteOutputIdentityBeforeNames());
+
+    var allowed_binding_scope_delegation: OutputNormalFormReport = .{ .exact = .{}, .strict = .{} };
+    defer allowed_binding_scope_delegation.deinit(std.testing.allocator);
+    allowed_binding_scope_delegation.strict.counts[@intCast(@backingInt(StrictStatus.scope_mismatch))] = 1;
+    try allowed_binding_scope_delegation.strict.findings.append(std.testing.allocator, .{
+        .node = 2,
+        .name = "generated",
+        .tag = .binding_identifier,
+        .status = .scope_mismatch,
+        .marked_synthetic = false,
+    });
+    try std.testing.expect(allowed_binding_scope_delegation.strict.isConsistent());
+    try std.testing.expect(!allowed_binding_scope_delegation.strict.hasCompleteExactCoverage());
+    try std.testing.expect(allowed_binding_scope_delegation.strict.hasCompleteSymbolIdentity());
+    try std.testing.expect(allowed_binding_scope_delegation.hasCompleteOutputIdentityBeforeNames());
 }
 
 pub fn checkOutputNormalFormQuiet(
