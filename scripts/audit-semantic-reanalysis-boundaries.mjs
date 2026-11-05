@@ -210,6 +210,8 @@ function auditTranspile(source, label = 'src/transpile.zig') {
     'analyzer_storage = SemanticAnalyzer.init(arena_alloc, &parser.ast);',
   );
   const sourceGraphGate = body.indexOf('requireStandaloneOutputNormalForm(', sourceCall);
+  const lateNameSelection = body.indexOf('buildStandaloneLateOutputNameOverrides(');
+  const codegen = body.indexOf('Codegen.initWithOptions(');
   const guard =
     'if (symbol_coverage_env.enabled() and (options.minify_syntax or options.minify_identifiers))';
   const guardStart = body.indexOf(guard);
@@ -221,8 +223,12 @@ function auditTranspile(source, label = 'src/transpile.zig') {
   const oraclePrint = body.indexOf('post_minify_coverage.printPostMinify(', oracleCall);
 
   requireCondition(
-    sourceCall >= 0 && sourceCall < sourceGraphGate,
+    sourceCall >= 0 && sourceGraphGate > sourceCall,
     `${label}: source graph must be analyzed before output identity validation`,
+  );
+  requireCondition(
+    lateNameSelection > sourceGraphGate && codegen > sourceGraphGate,
+    `${label}: exact output identity must pass before final-name selection and codegen`,
   );
   requireCondition(
     guardStart >= 0 && guardClose > guardOpen,
@@ -266,6 +272,10 @@ function auditSingleInitialAnalysis(source, file, expectedCall, root) {
 function auditPrepass(source, label = 'src/bundler/graph/transform_prepass.zig') {
   const code = maskZigNonCode(source);
   const productionSites = analyzerSitesReachableFrom(source, ['run'], label);
+  const run = functionBody(code, 'run', label);
+  const runCandidate = functionBody(code, 'runCandidate', label);
+  const normalForm = functionBody(code, 'genericPreparedOutputHasNormalForm', label);
+  const completeCandidate = functionBody(code, 'completeGenericPrepassCandidate', label);
   const oracle = functionBody(code, 'refreshSemanticAndStmtInfoAfterAstMutation', label);
   const wrapper = functionBody(code, 'resyncAfterAstMutationForTest', label);
   const allSites = analyzerInitSites(source, true).sites;
@@ -284,6 +294,58 @@ function auditPrepass(source, label = 'src/bundler/graph/transform_prepass.zig')
   requireCondition(
     productionSites.length === 0 && oracleSites.length === 1,
     `${label}: the production prepass call graph must not initialize an analyzer; only its test oracle may do so`,
+  );
+  const identityGate = normalForm.body.indexOf('report.hasCompleteOutputIdentityBeforeNames()');
+  const candidateGate = completeCandidate.body.indexOf('genericPreparedOutputHasNormalForm(');
+  const candidateFailure = completeCandidate.body.indexOf('if (!has_normal_form)');
+  const failureOpen =
+    candidateFailure < 0 ? -1 : completeCandidate.body.indexOf('{', candidateFailure);
+  const failureClose = failureOpen < 0 ? -1 : matchingBrace(completeCandidate.body, failureOpen);
+  const candidateSuccess = completeCandidate.body.indexOf('candidate_completed.* = true;');
+  const candidateSuccessSites = [...code.matchAll(/candidate_completed\.\*\s*=\s*true\s*;/g)];
+  const runCandidateCall = run.body.indexOf('runCandidate(');
+  const runFailure = run.body.indexOf('if (!candidate_completed)');
+  const runFailureOpen = runFailure < 0 ? -1 : run.body.indexOf('{', runFailure);
+  const runFailureClose = runFailureOpen < 0 ? -1 : matchingBrace(run.body, runFailureOpen);
+  const publish = run.body.indexOf('prepared.publish(');
+
+  requireCondition(
+    identityGate >= 0 &&
+      /const\s+valid\s*=\s*report\.hasCompleteOutputIdentityBeforeNames\s*\(\s*\)\s*;/.test(
+        normalForm.body,
+      ) &&
+      normalForm.body.indexOf('return valid;') > identityGate &&
+      !/\breturn\s+true\s*;/.test(normalForm.body),
+    `${label}: generic prepass must return the exact output normal-form result`,
+  );
+  requireCondition(
+    candidateGate >= 0 &&
+      /const\s+has_normal_form\s*=\s*genericPreparedOutputHasNormalForm\s*\(/.test(
+        completeCandidate.body,
+      ) &&
+      candidateFailure > candidateGate &&
+      failureClose > failureOpen &&
+      /\breturn\s*;/.test(completeCandidate.body.slice(failureOpen, failureClose)) &&
+      candidateSuccess > failureClose &&
+      [...completeCandidate.body.matchAll(/candidate_completed\.\*\s*=\s*true\s*;/g)].length ===
+        1 &&
+      candidateSuccessSites.length === 1 &&
+      candidateSuccessSites[0].index >= completeCandidate.start &&
+      candidateSuccessSites[0].index < completeCandidate.end,
+    `${label}: a failed exact output gate must abort before candidate completion`,
+  );
+  requireCondition(
+    runCandidate.body.includes('completeGenericPrepassCandidate('),
+    `${label}: production candidate preparation must run the exact output gate`,
+  );
+  requireCondition(
+    runCandidateCall >= 0 &&
+      runFailure > runCandidateCall &&
+      runFailureClose > runFailureOpen &&
+      /\breturn\s*;/.test(run.body.slice(runFailureOpen, runFailureClose)) &&
+      publish > runFailureClose &&
+      !/candidate_completed\s*=\s*true/.test(run.body),
+    `${label}: the staged module must publish only after a completed candidate`,
   );
   requireCondition(
     wrapperCallSites.length === 1 &&
@@ -320,6 +382,8 @@ function selfTest() {
     `    checkPostMinifyWithNativeOwners();\n` +
     `    post_minify_coverage.printPostMinify(file_path, report);\n` +
     `  }\n` +
+    `  buildStandaloneLateOutputNameOverrides();\n` +
+    `  Codegen.initWithOptions();\n` +
     `}\n` +
     `test "test-only analyzer" { var a = SemanticAnalyzer.init(alloc, ast); }\n`;
   auditTranspile(transpile, 'fixture/transpile.zig');
@@ -329,14 +393,16 @@ function selfTest() {
     'SemanticAnalyzer.init(arena_alloc, &parser.ast)',
     'parseModule',
   );
-  auditPrepass(
-    'pub fn run() { runCandidate(); }\n' +
-      'fn runCandidate() {}\n' +
-      'test "earlier unit test" { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
-      'fn refreshSemanticAndStmtInfoAfterAstMutation() { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
-      'pub fn resyncAfterAstMutationForTest() { if (!@import("builtin").is_test) @compileError("test only"); refreshSemanticAndStmtInfoAfterAstMutation(); }\n' +
-      'test "later unit test" { var a = SemanticAnalyzer.init(alloc, ast); }',
-  );
+  const prepass =
+    'pub fn run() { var candidate_completed = false; runCandidate(&candidate_completed); if (!candidate_completed) { return; } prepared.publish(self.allocator); }\n' +
+    'fn runCandidate(candidate_completed: *bool) { completeGenericPrepassCandidate(candidate_completed); }\n' +
+    'fn genericPreparedOutputHasNormalForm() { const valid = report.hasCompleteOutputIdentityBeforeNames(); return valid; }\n' +
+    'fn completeGenericPrepassCandidate(candidate_completed: *bool) { const has_normal_form = genericPreparedOutputHasNormalForm(); if (!has_normal_form) { return; } candidate_completed.* = true; }\n' +
+    'test "earlier unit test" { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
+    'fn refreshSemanticAndStmtInfoAfterAstMutation() { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
+    'pub fn resyncAfterAstMutationForTest() { if (!@import("builtin").is_test) @compileError("test only"); refreshSemanticAndStmtInfoAfterAstMutation(); }\n' +
+    'test "later unit test" { var a = SemanticAnalyzer.init(alloc, ast); }';
+  auditPrepass(prepass);
   auditAnalyzerFreePath(
     'fn productionRoot() { safeHelper(); }\n' +
       'fn safeHelper() {}\n' +
@@ -397,6 +463,26 @@ function selfTest() {
   );
   tryReject(
     () =>
+      auditTranspile(
+        transpile.replace(
+          'requireStandaloneOutputNormalForm();',
+          'buildStandaloneLateOutputNameOverrides(); requireStandaloneOutputNormalForm();',
+        ),
+      ),
+    'standalone output gate moved after late-name selection',
+  );
+  tryReject(
+    () =>
+      auditTranspile(
+        transpile.replace(
+          'requireStandaloneOutputNormalForm();',
+          'Codegen.initWithOptions(); requireStandaloneOutputNormalForm();',
+        ),
+      ),
+    'standalone output gate moved after codegen setup',
+  );
+  tryReject(
+    () =>
       auditSingleInitialAnalysis(
         'fn parseModule() { var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast); var replacement = Analyzer.init(a, ast); }',
         'fixture/parse_module.zig',
@@ -445,6 +531,70 @@ function selfTest() {
           'test "test helper" {}',
       ),
     'aliased production analyzer in prepass',
+  );
+  tryReject(
+    () =>
+      auditPrepass(
+        prepass.replace(
+          'const has_normal_form = genericPreparedOutputHasNormalForm();',
+          'const has_normal_form = true;',
+        ),
+      ),
+    'prepass candidate bypassed exact output normal-form call',
+  );
+  tryReject(
+    () => auditPrepass(prepass.replace('if (!has_normal_form)', 'if (has_normal_form)')),
+    'prepass candidate failure branch inverted',
+  );
+  tryReject(
+    () =>
+      auditPrepass(
+        prepass.replace(
+          'const has_normal_form = genericPreparedOutputHasNormalForm();',
+          'candidate_completed.* = true; const has_normal_form = genericPreparedOutputHasNormalForm();',
+        ),
+      ),
+    'prepass candidate marked complete before exact gate',
+  );
+  tryReject(
+    () =>
+      auditPrepass(
+        prepass.replace('report.hasCompleteOutputIdentityBeforeNames()', 'report.exact.isClean()'),
+      ),
+    'prepass normal-form gate reduced to exact counters only',
+  );
+  tryReject(
+    () => auditPrepass(prepass.replace('return valid;', 'return true;')),
+    'prepass normal-form result ignored',
+  );
+  tryReject(
+    () => auditPrepass(prepass.replace('if (!candidate_completed) { return; }', '')),
+    'prepass transaction published without failed-candidate abort',
+  );
+  tryReject(
+    () =>
+      auditPrepass(
+        prepass.replace(
+          'runCandidate(&candidate_completed);',
+          'prepared.publish(self.allocator); runCandidate(&candidate_completed);',
+        ),
+      ),
+    'prepass publication moved before candidate validation',
+  );
+  tryReject(
+    () =>
+      auditPrepass(
+        prepass.replace(
+          'completeGenericPrepassCandidate(candidate_completed); }',
+          'candidate_completed.* = true; completeGenericPrepassCandidate(candidate_completed); }',
+        ),
+      ),
+    'prepass marked an ungated candidate complete',
+  );
+  tryReject(
+    () =>
+      auditPrepass(prepass.replace('completeGenericPrepassCandidate(candidate_completed); }', '}')),
+    'prepass production candidate skipped exact completion gate',
   );
   tryReject(
     () =>
@@ -535,14 +685,16 @@ function selfTest() {
       ),
     'analyzer hidden behind a qualified same-file helper call',
   );
-  console.log('semantic reanalysis boundary audit self-test PASS (18 hostile mutations rejected)');
+  console.log(
+    'semantic reanalysis and output-gate audit self-test PASS (29 hostile mutations rejected)',
+  );
 }
 
 if (process.argv.includes('--self-test')) {
   try {
     selfTest();
   } catch (error) {
-    console.error(`semantic reanalysis boundary audit self-test FAIL: ${error.message}`);
+    console.error(`semantic reanalysis and output-gate audit self-test FAIL: ${error.message}`);
     process.exit(1);
   }
   process.exit(0);
@@ -593,8 +745,8 @@ try {
     ['applyNodeBufferCapabilityFacts'],
     'src/bundler/tree_shaker.zig',
   );
-  console.log('semantic reanalysis boundary audit PASS');
+  console.log('semantic reanalysis and output-gate audit PASS');
 } catch (error) {
-  console.error(`semantic reanalysis boundary audit FAIL: ${error.message}`);
+  console.error(`semantic reanalysis and output-gate audit FAIL: ${error.message}`);
   process.exit(1);
 }
