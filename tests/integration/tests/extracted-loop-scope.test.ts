@@ -46,6 +46,13 @@ function runNodeFile(file: string) {
   return runCommandWithCapturedOutput('node', [file]);
 }
 
+function classifyCompilerOutcome(result: { status: number | null; stderr: string }) {
+  if (/\bpanic\b|reached unreachable code|assertion failed/i.test(result.stderr)) return 'panic';
+  if (result.status === 0) return 'success';
+  if (result.status === 1 && /×|\[ZNTC\d{4}\]/.test(result.stderr)) return 'rejected';
+  return 'abnormal';
+}
+
 const cases = [
   {
     name: 'shadowed parameters, copied references and control flow',
@@ -97,6 +104,64 @@ do {
   readers.push(function () { return captured; });
 } while (count < 4);
 console.log(readers.map(read => read()).join(','));
+`,
+  },
+  {
+    name: 'direct eval in a closure retains each loop iteration binding',
+    extension: 'js',
+    source: `
+function collect() {
+  const readers = [];
+  for (let index = 0; index < 3; index++) {
+    readers.push(function () { return eval('index'); });
+  }
+  return readers.map(read => read()).join(',');
+}
+console.log(collect());
+`,
+  },
+  {
+    name: 'escaped direct eval in a closure retains each loop iteration binding',
+    extension: 'js',
+    source: `
+function collect() {
+  const readers = [];
+  for (let index = 0; index < 2; index++) {
+    readers.push(function () { return ev\\u0061l('index'); });
+  }
+  return readers.map(read => read()).join(',');
+}
+console.log(collect());
+`,
+  },
+  {
+    name: 'indirect eval calls do not capture a loop binding',
+    extension: 'js',
+    source: `
+function collect(marker) {
+  const readers = [];
+  for (let index = 0; index < 2; index++) {
+    readers.push(function () { return (0, eval)('typeof index'); });
+    readers.push(function () { return eval?.('typeof index'); });
+    readers.push(() => arguments[0]);
+  }
+  return readers.map(read => read()).join(',');
+}
+console.log(collect('source-argument'));
+`,
+  },
+  {
+    name: 'direct eval closure with a same-name inner lexical binding',
+    extension: 'js',
+    source: `
+function collect() {
+  const readers = [];
+  for (let index = 0; index < 2; index++) {
+    readers.push(function () { let index = 9; return eval('index'); });
+  }
+  return readers.map(read => read()).join(',');
+}
+console.log(collect());
 `,
   },
   {
@@ -380,7 +445,7 @@ describe('extracted loop scopes (#4819)', () => {
             ],
             { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
           );
-          expect(result.status, result.stderr).toBe(0);
+          expect(classifyCompilerOutcome(result), result.stderr).toBe('success');
           if (fixtureCase.extension === 'cjs' && minify) {
             const exactPrefix = bundled
               ? 'zntc: symbol-identity-prepass '
@@ -415,4 +480,20 @@ describe('extracted loop scopes (#4819)', () => {
       }
     }
   }
+
+  test('CLI outcome guard separates an explicit source rejection from a panic', async () => {
+    expect(
+      classifyCompilerOutcome({ status: 134, stderr: 'thread 1 panic: invalid semantic edit' }),
+    ).toBe('panic');
+    const fixture = await createFixture({ 'input.js': 'function {' });
+    cleanup = fixture.cleanup;
+    const result = runCommandWithCapturedOutput(ZNTC_BIN, [
+      join(fixture.dir, 'input.js'),
+      '--target=es5',
+      '-o',
+      join(fixture.dir, 'out.js'),
+    ]);
+    expect(classifyCompilerOutcome(result), result.stderr).toBe('rejected');
+    expect(result.stderr).toContain('Expected');
+  });
 });
