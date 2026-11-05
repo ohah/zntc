@@ -359,6 +359,7 @@ test "#4819 private reference creation generator switch owns native helper bindi
     var parser = Parser.init(allocator, &scanner);
     _ = try parser.parse();
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
     try analyzer.analyze();
     var options: TransformOptions = .{ .unsupported = TransformOptions.compat.fromESTarget(.es2021) };
     options.unsupported.generator = true;

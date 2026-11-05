@@ -4226,6 +4226,7 @@ fn expectSuperProtoAliasSymbolIdentity(source: []const u8, lower_generator: bool
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
     analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
     try analyzer.analyze();
     try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
 
