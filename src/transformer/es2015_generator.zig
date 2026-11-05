@@ -156,6 +156,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // body 가 `__generator(this, function(_state){…})` 안쪽으로 옮겨진다 →
             // `arguments` 가 그 안쪽 함수 것(= `[_state]`)을 가리키므로 캡처가 필요하다.
             const saved_ext = self.in_extracted_fn_body;
+            defer self.in_extracted_fn_body = saved_ext;
             self.in_extracted_fn_body = true;
             // ⚠️ 이 리스트는 **상태 기계 하나당** 쓰는 것이라 중첩 lowering 이 서로를
             // 덮으면 안 된다. 예전에는 끝에서 통째로 clear 했는데, 바깥 상태 기계를
@@ -169,6 +170,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             var sm_result = try buildStateMachine(self, body_idx, span, source_scope);
             defer sm_result.hoisted_temps.deinit(self.allocator);
+            if (self.unsupported_generator_native_lexical != null) return source_owner;
             self.in_extracted_fn_body = saved_ext;
             if (sm_result.body.isNone()) return .none;
             const sm_body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span, &frame.callback_temps);
@@ -186,6 +188,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             } else .none;
             const gen = try buildGeneratorHelperCallWithProto(self, sm_body, genFn_ref, span);
             try self.bindGeneratedState(source_scope, source_scope, gen.callback, gen.state_param, frame.state_ref_start, sm_result.hoisted_temps.items, frame.callback_temps.items, span);
+            if (self.unsupported_generator_native_lexical != null) return source_owner;
             if (self.semantic_edit_enabled) try moveCaseReferences(self, gen.callback, self.outputOwnedScope(gen.callback) orelse @panic("generator callback has no actual ScopeId"), generatorTransfer(self, source_boundary, gen));
             const gen_call = gen.call;
 
@@ -377,6 +380,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             while (i_stmts < stmts_len) : (i_stmts += 1) {
                 const raw_idx = self.ast.extra_data.items[stmts_start + i_stmts];
                 try collectRewrittenUsingStatement(self, @fromBackingInt(@intCast(raw_idx)), body_list.disposal_try, &ops, &next_label);
+                if (self.unsupported_generator_native_lexical != null) return .{ .body = .none, .var_decl = .none };
             }
 
             // 암시적 return (마지막에 return이 없으면 추가)
@@ -386,6 +390,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // Phase 2: 연산을 switch case로 변환
             const switch_node = try buildSwitchFromOps(self, ops.items, span, wrapper_scope, reserved_switch);
+            if (self.unsupported_generator_native_lexical != null) return .{ .body = .none, .var_decl = .none };
             if (self.semantic_edit_enabled) {
                 try self.bindDeferredGeneratorForInBodyReferences(
                     switch_node,
@@ -1434,6 +1439,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 next_label,
                 result.loop_binding,
             );
+            if (self.unsupported_generator_native_lexical != null) return .none;
             if (self.semantic_edit_enabled) {
                 const loop_symbol_id = result.loop_symbol_id orelse
                     std.debug.panic("extracted generator loop lost its producer SymbolId", .{});
@@ -2164,7 +2170,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // 이미 wrapper 에 등록한 바인딩의 정확한 노드/심볼만 재사용한다. 이름만 같다는
                 // 이유로 중첩 catch 둘을 하나의 상태 변수로 합치면 서로의 값을 덮는다.
                 if (param_bindings.items.len == 1 and isRegisteredGeneratorBinding(self, param_bindings.items[0])) param_bindings.clearRetainingCapacity();
-                try registerStateMachineBindings(self, param_bindings.items);
+                // This catch is actually split into state cases. Native-block
+                // targets need an explicit state cell too; a retained native
+                // catch must never share its physical leaf with wrapper storage.
+                try registerStateMachineBindingsWithHoisting(self, param_bindings.items, !stateMachineRenamesBlockScope(self));
 
                 const param_is_pattern = !catch_param.isNone() and self.ast.getNode(catch_param).tag != .binding_identifier;
                 if (param_is_pattern) {
@@ -2345,9 +2354,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // catch 파라미터는 블록 스코프다 — 여기서 원래 이름으로 올리면 바깥 동명
                 // 바인딩을 가린다(yield 없는 평범한 catch 까지). 상태 기계가 catch 를 수집할
                 // 때 고유 이름으로 바꿔 등록한다 (#4712).
-                if (!stateMachineRenamesBlockScope(self) and !node.data.binary.left.isNone()) {
-                    try collectBindingIdentifiers(self, node.data.binary.left, hoisted);
-                }
+                // Only collectTryOperations knows whether this catch becomes
+                // state cases. Retained native catches keep their own binding.
                 try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
             } else if (node.tag == .switch_statement or node.tag == .switch_case) {
                 // switch_statement: extra = [discriminant, cases.start, cases.len].
@@ -2516,6 +2524,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     // var x = expr (no yield) → x = expr
                     const new_binding = try bindingToAssignTarget(self, try self.visitNode(binding));
                     const new_init = try self.visitNode(init_idx);
+                    if (self.unsupported_generator_native_lexical != null) return null;
                     const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, new_init, stmt.span, self.generator_state_machine_scope);
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                 }
@@ -3402,6 +3411,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// and deferred loop/state-machine protocols keep their own migration.
         fn movePrivateCaseBindingsAndReferences(self: *Transformer, root: NodeIndex, source: ScopeId, target: ScopeId) Transformer.Error!void {
             if (!self.semantic_edit_enabled) return;
+            if (self.unsupported_generator_native_lexical != null) return;
             const editor = &self.semantic_editor.?;
             const Work = struct { node: NodeIndex, scope: ScopeId };
             var stack: std.ArrayList(Work) = .empty;
@@ -3441,6 +3451,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         }
 
         fn moveCaseReferences(self: *Transformer, root: NodeIndex, target: ScopeId, transfer: ?BoundGeneratorTransfer) Transformer.Error!void {
+            if (self.unsupported_generator_native_lexical != null) return;
             const editor = &self.semantic_editor.?;
             const Work = struct { node: NodeIndex, scope: ScopeId };
             var stack: std.ArrayList(Work) = .empty;
@@ -3493,6 +3504,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         else => std.debug.panic("generator case lost its reference row: {s}", .{@errorName(err)}),
                     };
                     if (reference) |ref| {
+                        if (!ref.flags.declare and ref.scope_id != scope) {
+                            if (@import("generator_native_lexical.zig").invisibleClass(self, work.node, scope)) |finding| {
+                                self.unsupported_generator_native_lexical = finding;
+                                return;
+                            }
+                        }
                         if (!ref.flags.declare and ref.scope_id != scope)
                             editor.moveReference(work.node, scope, ref.stmt_idx, ref.scope_stmt_idx) catch |err| switch (err) {
                                 error.OutOfMemory => return error.OutOfMemory,
@@ -3649,12 +3666,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 self.ast.nodes.items[@backingInt(reserved)] = completed;
                 break :blk reserved;
             };
+            if (try @import("generator_native_lexical.zig").classCases(self, result)) |finding| {
+                self.unsupported_generator_native_lexical = finding;
+                return result;
+            }
             if (self.semantic_edit_enabled) {
                 const scope = if (reserved.isNone()) try self.addGeneratedScope(wrapper_scope, result, .switch_block) else self.outputOwnedScope(reserved) orelse std.debug.panic("reserved generator switch lost its ScopeId", .{});
                 // Native lexical declarations and classes inside the cases
                 // belong to this switch environment, not its future callback
                 // parent. Claim it before callback assembly or finalization.
                 try self.reparentGeneratedBodyScopes(wrapper_scope, scope, result);
+                try @import("generator_native_lexical.zig").publishSameCaseClasses(self, result, scope);
+                if (self.unsupported_generator_native_lexical != null) return result;
                 try movePrivateCaseBindingsAndReferences(self, result, wrapper_scope, scope);
             }
             return result;
@@ -4389,6 +4412,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// The async helper receives a real function wrapper. Its body contains
         /// the `__generator` call, and its child callback owns `_state`.
         pub fn bindWrappedStateMachine(self: *Transformer, source_owner: NodeIndex, wrapper: NodeIndex, gen: GeneratorCall, frame: *const StateMachineFrame, wrapper_temps: []const HoistedStateTemp, span: Span, source_boundary: ?@import("../semantic/generator_environment_transfer.zig").Capture) Transformer.Error!void {
+            if (self.unsupported_generator_native_lexical != null) return;
             const parent = self.stateMachineOwnerScope(source_owner);
             if (parent.isNone()) {
                 try self.bindGeneratedState(.none, .none, gen.callback, gen.state_param, frame.state_ref_start, wrapper_temps, frame.callback_temps.items, span);

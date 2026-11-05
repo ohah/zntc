@@ -119,6 +119,8 @@ const AstFacts = struct {
 
 pub const TranspileError = error{
     StaticInitializerDynamicScope,
+    GeneratorNativeLexicalResume,
+    GeneratorNativeLexicalNesting,
     ArrowPrivateDynamicScope,
     LoopDynamicScope,
     ParseError,
@@ -5122,6 +5124,17 @@ fn transpileWithCallbackInternal(
             .kind = .semantic,
         }});
         return error.LoopDynamicScope;
+    }
+    if (transformer.unsupported_generator_native_lexical) |finding| {
+        const is_resume = finding.reason == .across_resume;
+        if (on_error) |cb| cb(source, file_path, &scanner, &.{.{
+            .code = if (is_resume) .generator_native_lexical_resume else .generator_native_lexical_nesting,
+            .span = finding.span,
+            .message = if (is_resume) TransformOptions.generator_native_lexical_resume_msg else TransformOptions.generator_native_lexical_nesting_msg,
+            .kind = .semantic,
+        }});
+        if (is_resume) return error.GeneratorNativeLexicalResume;
+        return error.GeneratorNativeLexicalNesting;
     }
     if (transformer.unsupported_arrow_private_scope_span) |span| {
         if (on_error) |cb| cb(source, file_path, &scanner, &.{.{
@@ -16685,4 +16698,88 @@ test "loop dynamic eval readonly header preserves builtin parameter and reassign
             try std.testing.expectEqualStrings(native.stderr, actual.stderr);
         }
     }
+}
+
+test "native lexical state machine diagnostics reject before unsafe callback publication" {
+    var unsupported = @import("transformer/compat.zig").fromESTarget(.es2015);
+    unsupported.generator = true;
+    for ([_]bool{ false, true }) |minify| {
+        try std.testing.expectError(error.GeneratorNativeLexicalResume, transpile(std.testing.allocator, "function* run(){for(var i=0;i<2;i++){class Cell{}yield 0;use(()=>Cell)}}", "resume.mjs", .{ .unsupported = unsupported, .minify_identifiers = minify, .minify_syntax = minify }));
+        try std.testing.expectError(error.GeneratorNativeLexicalNesting, transpile(std.testing.allocator, "function* run(){for(let i=0;i<2;i++){use(()=>i);for(let i=4;i<6;i++){yield 0;use(()=>i)}}}", "nested.mjs", .{ .unsupported = unsupported, .minify_identifiers = minify, .minify_syntax = minify }));
+    }
+}
+
+test "native lexical state machine same-case class runtime preserves initialization and TDZ" {
+    const sources = [_][]const u8{
+        "function* run(){const v=[];for(var i=0;i<2;i++){class Cell{}v.push(Cell.name);yield 0}return v}const it=run();let s;do{s=it.next()}while(!s.done);console.log(JSON.stringify(s.value));",
+        "async function run(){const v=[];for(var i=0;i<2;i++){await 0;class Cell{}v.push(Cell.name)}return v}run().then(v=>console.log(JSON.stringify(v)));",
+        "function* run(){const v=[];try{v.push(Cell)}catch(e){v.push(e instanceof ReferenceError)}class Cell{}v.push(Cell.name);yield 0;return v}const it=run();let s;do{s=it.next()}while(!s.done);console.log(JSON.stringify(s.value));",
+        "function* run(){const v=[];if(true){{class Cell{}v.push(Cell.name)}{class Cell{}v.push(Cell.name)}}yield 0;return v}const it=run();let s;do{s=it.next()}while(!s.done);console.log(JSON.stringify(s.value));",
+    };
+    var unsupported = @import("transformer/compat.zig").fromESTarget(.es2015);
+    unsupported.generator = true;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for (sources) |source| for ([_]bool{ false, true }) |minify| {
+        const output = try transpile(a, source, "same-case-class.mjs", .{ .unsupported = unsupported, .minify_identifiers = minify, .minify_syntax = minify, .keep_names = true });
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", output.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+    };
+}
+
+test "native lexical state machine native and yielding catches keep source values" {
+    const bodies = [_][]const u8{
+        "function* run(){let e='outer',v=[];try{throw 41}catch(e){v.push(e)}yield 0;v.push(e);return v}",
+        "function* run(){let e='outer',v=[];try{throw 41}catch(e){yield e;v.push(e)}v.push(e);return v}",
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for (bodies) |body| for ([_]bool{ false, true }) |es5| for ([_]bool{ false, true }) |minify| {
+        const source = try std.fmt.allocPrint(a, "{s};const it=run();let s;do{{s=it.next()}}while(!s.done);console.log(JSON.stringify(s.value));", .{body});
+        var unsupported = @import("transformer/compat.zig").fromESTarget(if (es5) .es5 else .es2015);
+        unsupported.generator = true;
+        const output = try transpile(a, source, "catch-demand.mjs", .{ .unsupported = unsupported, .minify_identifiers = minify, .minify_syntax = minify });
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", output.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+    };
+}
+
+test "native lexical state machine escaped noncolliding capture remains supported" {
+    const source = "function* run(){const out=[];for(let \\u0069ndex=0;index<2;index++){out.push(()=>index);yield 0}return out.map(f=>f())}const it=run();let s;do{s=it.next()}while(!s.done);console.log(JSON.stringify(s.value));";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for ([_]bool{ false, true }) |native_generator| for ([_]bool{ false, true }) |minify| {
+        var unsupported = @import("transformer/compat.zig").fromESTarget(.es2015);
+        unsupported.generator = !native_generator;
+        const output = try transpile(a, source, "escaped-single.mjs", .{ .unsupported = unsupported, .minify_identifiers = minify, .minify_syntax = minify });
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", output.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    };
+}
+
+test "native lexical state machine escaped collisions keep structured diagnostic" {
+    const sources = [_][]const u8{
+        "function* run(){for(let \\u0069ndex=0;index<2;index++){use(()=>index);for(let index=4;index<6;index++){yield 0;use(()=>index)}}}",
+        "function* run(){for(let index=0;index<2;index++){use(()=>index);for(let \\u0069ndex=4;index<6;index++){yield 0;use(()=>index)}}}",
+        "function* run(){for(let \\u0069ndex=0;index<2;index++){use(()=>index);for(let \\u0069ndex=4;index<6;index++){yield 0;use(()=>index)}}}",
+    };
+    var unsupported = @import("transformer/compat.zig").fromESTarget(.es2015);
+    unsupported.generator = true;
+    for (sources) |source| for ([_]bool{ false, true }) |minify| {
+        try std.testing.expectError(error.GeneratorNativeLexicalNesting, transpile(std.testing.allocator, source, "escaped-collision.mjs", .{ .unsupported = unsupported, .minify_identifiers = minify, .minify_syntax = minify }));
+    };
 }

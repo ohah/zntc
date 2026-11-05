@@ -939,6 +939,7 @@ pub const Transformer = struct {
     /// eval argument can observe any generated capture alias.
     used_unsupported_arrow_dynamic_eval: bool = false,
     used_unsupported_static_initializer_dynamic_scope: bool = false,
+    unsupported_generator_native_lexical: ?@import("generator_native_lexical.zig").Finding = null,
     /// Real source private span in an intentionally retained dynamic capture.
     unsupported_arrow_private_scope_span: ?Span = null,
     unsupported_loop_dynamic_scope_span: ?Span = null,
@@ -1178,6 +1179,7 @@ pub const Transformer = struct {
     }
 
     fn visitNodeWithSuperContext(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
+        if (self.unsupported_generator_native_lexical != null) return idx;
         const input_raw = @backingInt(idx);
         if (self.generated_class_copy_depth > 0 and input_raw < self.parser_node_count and
             !self.scope_owner_removed.contains(input_raw))

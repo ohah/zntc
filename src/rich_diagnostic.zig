@@ -168,6 +168,8 @@ pub fn bundlerErrorCode(code: BundlerDiagnostic.ErrorCode) ?error_codes.Code {
         .static_initializer_dynamic_scope => .static_initializer_dynamic_scope,
         .arrow_private_dynamic_scope => .arrow_private_dynamic_scope,
         .loop_dynamic_scope => .loop_dynamic_scope,
+        .generator_native_lexical_resume => .generator_native_lexical_resume,
+        .generator_native_lexical_nesting => .generator_native_lexical_nesting,
         .with_in_esm_output => .with_strict,
         .top_level_await_target => .top_level_await_target,
     };

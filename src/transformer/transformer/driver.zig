@@ -91,6 +91,7 @@ pub fn transform(self: anytype) Error!NodeIndex {
         defer visit_scope.end();
         root = try self.visitNode(root_idx);
     }
+    if (self.unsupported_generator_native_lexical != null) return root;
 
     // Pass 1 can create function nodes without attaching scopes until final
     // symbol completion. Register their output scopes now because parameter
