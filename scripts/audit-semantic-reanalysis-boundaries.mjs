@@ -174,7 +174,7 @@ function analyzerSitesReachableFrom(source, roots, label) {
     requireCondition(bodies, `${label}: production root/callee ${name} is missing`);
     for (const row of bodies) {
       ranges.push([row.start, row.end]);
-      for (const call of row.body.matchAll(/(?<![.\w])([A-Za-z_]\w*)\s*\(/g)) {
+      for (const call of row.body.matchAll(/(?<![.\w])(?:[A-Za-z_]\w+\.)?([A-Za-z_]\w*)\s*\(/g)) {
         if (definitions.has(call[1]) && !visited.has(call[1])) pending.push(call[1]);
       }
     }
@@ -525,7 +525,17 @@ function selfTest() {
       ),
     'aliased analyzer added in a reachable helper',
   );
-  console.log('semantic reanalysis boundary audit self-test PASS (17 hostile mutations rejected)');
+  tryReject(
+    () =>
+      auditAnalyzerFreePath(
+        'fn productionRoot() { dispatcher.unsafeHelper(); }\n' +
+          'fn unsafeHelper() { var a = SemanticAnalyzer.init(alloc, ast); }',
+        ['productionRoot'],
+        'fixture/qualified-call-graph.zig',
+      ),
+    'analyzer hidden behind a qualified same-file helper call',
+  );
+  console.log('semantic reanalysis boundary audit self-test PASS (18 hostile mutations rejected)');
 }
 
 if (process.argv.includes('--self-test')) {
