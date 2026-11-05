@@ -17874,11 +17874,11 @@ fn exactPrepassReport(
     );
 }
 
-test "reanalyzed exact prepass audit rejects a live scope without a reachable owner" {
+test "reanalyzed exact prepass audit rejects missing owners and wrong lexical parents" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const source = "function outer(){ const local = 1; return local; }";
+    const source = "function outer(){ { const local = 1; return local; } }";
 
     var scanner = try Scanner.init(allocator, source);
     var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
@@ -17924,11 +17924,33 @@ test "reanalyzed exact prepass audit rejects a live scope without a reachable ow
         false,
     )) orelse return error.MissingExactReport;
     try std.testing.expectEqual(@as(usize, 0), valid.scope_owner_mismatch);
+    try std.testing.expectEqual(@as(usize, 0), valid.scope_owner_parent_mismatch);
     try std.testing.expect(valid.generated_scope_owners_checked > 0);
 
     const live_scope = for (analyzer.symbols.items) |symbol| {
         if (std.mem.eql(u8, analyzer.ast.getText(symbol.name), "local")) break symbol.scope_id;
     } else return error.MissingLocalSymbol;
+    const root_scope_raw = module.semantic.?.scope_owner_map.get(@backingInt(root)) orelse return error.MissingRootScope;
+    const root_scope: ScopeId = @fromBackingInt(@intCast(root_scope_raw));
+    const local_scope_index = live_scope.toIndex();
+    const original_parent = analyzer.scopes.items[local_scope_index].parent;
+    try std.testing.expect(original_parent != root_scope);
+    analyzer.scopes.items[local_scope_index].parent = root_scope;
+
+    const wrong_parent = (try exactPrepassReport(
+        allocator,
+        &module,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        &transformer,
+        &analyzer.unresolved_reference_nodes,
+        analyzer.scopes.items.len,
+        false,
+    )) orelse return error.MissingExactReport;
+    try std.testing.expect(wrong_parent.scope_owner_parent_mismatch > 0);
+    try std.testing.expect(!wrong_parent.isClean());
+    analyzer.scopes.items[local_scope_index].parent = original_parent;
+
     var owner_nodes: std.ArrayListUnmanaged(u32) = .empty;
     var owners = module.semantic.?.scope_owner_map.iterator();
     while (owners.next()) |entry| {
