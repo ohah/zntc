@@ -973,6 +973,84 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
   );
 
   test(
+    'buildSync onTransform plain and namespace export-stars retain runtime exports',
+    { timeout: 30_000 },
+    () => {
+      const cases = [
+        { name: 'plain', statement: "export * from './dep.ts';", read: 'api.value' },
+        { name: 'namespace', statement: "export * as ns from './dep.ts';", read: 'api.ns.value' },
+      ];
+      for (const fixture of cases) {
+        const dir = mkdtempSync(
+          join(tmpdir(), `zntc-buildsync-ontransform-export-star-${fixture.name}-`),
+        );
+        const entry = join(dir, 'entry.ts');
+        const dependency = join(dir, 'dep.ts');
+        const source = `${fixture.statement}\ninterface Marker { value: number }`;
+        writeFileSync(entry, '// buildSync onTransform supplies TypeScript source');
+        writeFileSync(dependency, 'export const value = 42; export const unused = 1;');
+        const reportedEntry = realpathSync(entry);
+        const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+        const runner = [
+          `import {buildSync} from ${JSON.stringify(coreEntry)};`,
+          `const entry=${JSON.stringify(entry)}; const source=${JSON.stringify(source)}; const calls=[];`,
+          `const result=buildSync({entryPoints:[entry],platform:'node',format:'cjs',target:'esnext',minifyIdentifiers:true,write:false,plugins:[{name:'buildsync-ontransform-export-star',setup(api){api.onTransform({filter:/entry\\.ts$/},args=>{calls.push(args.path);return {code:source};});}}]});`,
+          `if(result.errors.length){console.error(JSON.stringify(result.errors));process.exit(1);}`,
+          `process.stdout.write(JSON.stringify({calls,outputs:result.outputFiles.map(file=>file.text)}));`,
+        ].join('\n');
+        try {
+          const run = Bun.spawnSync(['bun', '-e', runner], {
+            cwd: join(import.meta.dir, '../../..'),
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          });
+          const stderr = run.stderr.toString();
+          expect(run.exitCode, `${fixture.name}: ${stderr}`).toBe(0);
+          const result = JSON.parse(run.stdout.toString()) as {
+            calls: string[];
+            outputs: string[];
+          };
+          expect(result.calls, fixture.name).toEqual([reportedEntry]);
+          expect(result.outputs, fixture.name).toHaveLength(1);
+          const output = join(dir, 'out.cjs');
+          writeFileSync(output, result.outputs[0]);
+          const execution = Bun.spawnSync([
+            'node',
+            '-e',
+            `const api=require(${JSON.stringify(output)});console.log(${fixture.read});`,
+          ]);
+          expect(execution.exitCode, `${fixture.name}: ${execution.stderr.toString()}`).toBe(0);
+          expect(execution.stdout.toString(), fixture.name).toBe('42\n');
+
+          const lines = stderr.split(/\r?\n/);
+          const identity = lines.filter(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes(reportedEntry),
+          );
+          expect(identity, `${fixture.name}: ${stderr}`).toHaveLength(1);
+          for (const field of [...zeroCounters, 'clean']) {
+            const values = [
+              ...identity[0].matchAll(new RegExp(`(?:^| )${field}=(\\d+)(?= |$)`, 'g')),
+            ];
+            expect(values, `${fixture.name}: ${field}: ${identity[0]}`).toHaveLength(1);
+            expect(Number(values[0][1]), `${fixture.name}: ${field}`).toBe(
+              field === 'clean' ? 1 : 0,
+            );
+          }
+          const mode = lines.filter(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') &&
+              line.includes(reportedEntry),
+          );
+          expect(mode, `${fixture.name}: ${stderr}`).toHaveLength(1);
+          expect(mode[0], `${fixture.name}: ${mode[0]}`).toContain('semantic_graph=retained');
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+    },
+  );
+
+  test(
     'buildSync onTransform erases declaration-level type imports and retains runtime imports',
     { timeout: 30_000 },
     () => {
