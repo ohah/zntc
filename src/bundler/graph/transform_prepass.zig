@@ -12746,7 +12746,10 @@ fn reindexMinifiedSemanticReferences(
     references: []const SemanticReference,
 ) !?[]SemanticReference {
     const contexts = collectMinifiedStatementContexts(allocator, ast, root) catch return null;
+    defer allocator.free(contexts);
     const updated = try allocator.dupe(SemanticReference, references);
+    var updated_transferred = false;
+    defer if (!updated_transferred) allocator.free(updated);
     for (updated) |*reference| {
         const node_index = if (reference.flags.declare)
             reference.declaration_node_index
@@ -12763,6 +12766,7 @@ fn reindexMinifiedSemanticReferences(
         reference.stmt_idx = context.stmt_idx;
         reference.scope_stmt_idx = context.scope_stmt_idx;
     }
+    updated_transferred = true;
     return updated;
 }
 
@@ -14652,6 +14656,66 @@ test "syntax minification repairs statement coordinates without changing identit
         null,
         null,
     ));
+}
+
+test "minified reference reindex releases scratch on OOM and rejection" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "const seed = 1; function read(input) { const alias = input; return seed + alias; }");
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".js");
+    defer parser.deinit();
+    const root = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+
+    var allocation_failures: usize = 0;
+    var completed_without_failure = false;
+    for (0..32) |fail_index| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        const candidate = reindexMinifiedSemanticReferences(
+            failing.allocator(),
+            &parser.ast,
+            root,
+            analyzer.references.items,
+        ) catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            allocation_failures += 1;
+            continue;
+        };
+        if (candidate) |references| {
+            failing.allocator().free(references);
+            completed_without_failure = true;
+            break;
+        }
+        allocation_failures += 1;
+    }
+    try std.testing.expect(allocation_failures > 0);
+    try std.testing.expect(completed_without_failure);
+
+    const invalid_references = try a.dupe(SemanticReference, analyzer.references.items);
+    var invalid_read: ?usize = null;
+    for (invalid_references, 0..) |reference, index| {
+        if (!reference.flags.declare) {
+            invalid_read = index;
+            break;
+        }
+    }
+    const read_index = invalid_read orelse return error.MissingStatementReindexRead;
+    invalid_references[read_index].node_index = .none;
+    invalid_references[read_index].stmt_idx = SemanticReference.NO_STMT;
+    invalid_references[read_index].scope_stmt_idx = SemanticReference.NO_STMT;
+    try std.testing.expectEqual(
+        @as(?[]SemanticReference, null),
+        try reindexMinifiedSemanticReferences(std.testing.allocator, &parser.ast, root, invalid_references),
+    );
 }
 
 test "syntax minify graph gate rejects twenty-seven hostile identity and statement corruptions" {
