@@ -12778,6 +12778,7 @@ const MinifiedGraphGateFailure = enum {
     duplicate_declaration,
     missing_reference,
     invalid_reference_node,
+    scope_resolution,
     duplicate_reference,
     reference_counts,
     scope_owners,
@@ -12786,6 +12787,24 @@ const MinifiedGraphGateFailure = enum {
     missing_reference_identity,
     unresolved_reference,
 };
+
+const MinifiedGraphResolution = struct {
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    namespace_member_owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    namespace_declaration_owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    helper_reference_nodes: []const u32,
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+};
+
+fn minifiedGraphResolutionForAnalyzer(analyzer: *const SemanticAnalyzer) MinifiedGraphResolution {
+    return .{
+        .scope_maps = analyzer.scope_maps.items,
+        .namespace_member_owners = &analyzer.namespace_member_owners,
+        .namespace_declaration_owners = &analyzer.namespace_declaration_owners,
+        .helper_reference_nodes = analyzer.helper_ref_nodes,
+        .helper_scope_map = &analyzer.helper_scope_map,
+    };
+}
 
 fn rejectMinifiedGraphGate(
     failure: ?*MinifiedGraphGateFailure,
@@ -12850,6 +12869,7 @@ fn canRetainMinifiedSemanticGraph(
     symbol_ids: []const ?u32,
     unresolved_references: *const std.StringHashMapUnmanaged(void),
     scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    resolution: MinifiedGraphResolution,
     allowed_orphan_scopes: ?*const std.DynamicBitSet,
     failure: ?*MinifiedGraphGateFailure,
 ) bool {
@@ -12897,6 +12917,23 @@ fn canRetainMinifiedSemanticGraph(
         references,
     ) catch return rejectMinifiedGraphGate(failure, .allocation);
     if (!exact_scope_ownership) return rejectMinifiedGraphGate(failure, .scope_owners);
+    const exact_reference_resolution = symbol_coverage.hasExactReachableReferenceResolution(
+        allocator,
+        ast,
+        root,
+        reachable,
+        symbol_ids,
+        symbols,
+        scopes,
+        resolution.scope_maps,
+        scope_owner_map,
+        references,
+        resolution.namespace_member_owners,
+        resolution.namespace_declaration_owners,
+        resolution.helper_reference_nodes,
+        resolution.helper_scope_map,
+    ) catch return rejectMinifiedGraphGate(failure, .allocation);
+    if (!exact_reference_resolution) return rejectMinifiedGraphGate(failure, .scope_resolution);
     for (scopes_with_owner, 0..) |has_owner, scope_raw| {
         if (has_owner) continue;
         const allowed = allowed_orphan_scopes orelse
@@ -13131,6 +13168,7 @@ fn importDeclarationGraphRetainableForTest(mutation: ImportDeclarationGraphMutat
         symbol_ids,
         &analyzer.unresolved_references,
         &analyzer.scope_owner_map,
+        minifiedGraphResolutionForAnalyzer(&analyzer),
         null,
         null,
     );
@@ -13165,6 +13203,7 @@ fn syntaxMinifyGraphRetainableForTest(source: []const u8) !bool {
         analyzer.symbol_ids.items,
         &analyzer.unresolved_references,
         &analyzer.scope_owner_map,
+        minifiedGraphResolutionForAnalyzer(&analyzer),
         null,
         &pre_minify_failure,
     )) {
@@ -13199,6 +13238,7 @@ fn syntaxMinifyGraphRetainableForTest(source: []const u8) !bool {
         analyzer.symbol_ids.items,
         &analyzer.unresolved_references,
         &analyzer.scope_owner_map,
+        minifiedGraphResolutionForAnalyzer(&analyzer),
         null,
         null,
     );
@@ -13233,6 +13273,7 @@ fn preMinifiedGraphGateAcceptsForTest(source: []const u8, extension: []const u8)
         analyzer.symbol_ids.items,
         &analyzer.unresolved_references,
         &analyzer.scope_owner_map,
+        minifiedGraphResolutionForAnalyzer(&analyzer),
         null,
         &failure,
     );
@@ -13319,6 +13360,7 @@ test "minified graph gate requires explicit permission for an orphan block scope
         analyzer.symbol_ids.items,
         &analyzer.unresolved_references,
         &analyzer.scope_owner_map,
+        minifiedGraphResolutionForAnalyzer(&analyzer),
         &allowed_orphans,
         null,
     ));
@@ -13333,6 +13375,7 @@ test "minified graph gate requires explicit permission for an orphan block scope
         analyzer.symbol_ids.items,
         &analyzer.unresolved_references,
         &analyzer.scope_owner_map,
+        minifiedGraphResolutionForAnalyzer(&analyzer),
         &allowed_orphans,
         null,
     ));
@@ -13348,6 +13391,7 @@ test "minified graph gate requires explicit permission for an orphan block scope
         analyzer.symbol_ids.items,
         &analyzer.unresolved_references,
         &analyzer.scope_owner_map,
+        minifiedGraphResolutionForAnalyzer(&analyzer),
         &allowed_orphans,
         null,
     ));
@@ -13363,6 +13407,7 @@ test "minified graph gate requires explicit permission for an orphan block scope
         analyzer.symbol_ids.items,
         &analyzer.unresolved_references,
         &analyzer.scope_owner_map,
+        minifiedGraphResolutionForAnalyzer(&analyzer),
         &allowed_orphans,
         null,
     ));
@@ -13391,6 +13436,7 @@ const MinifiedGraphMutation = enum {
     wrong_scope_owner_kind,
     swapped_scope_owners,
     valid_but_wrong_binding_scope,
+    visible_but_wrong_shadowed_symbol,
 };
 
 const MinifiedGraphMutationResult = struct {
@@ -13402,7 +13448,7 @@ fn minifiedGraphMutationIsRejected(mutation: MinifiedGraphMutation) !MinifiedGra
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const source = "const externalValue = external; function read(input) { const alias = input; let count = 0; count = input; return alias + count + externalValue; } function other() {}";
+    const source = "const externalValue = external; function read(input) { const alias = input; let count = 0; count = input; return alias + count + externalValue; } function other() {} const shared = 7; function shadowed(shared) { return shared; }";
     var scanner = try Scanner.init(allocator, source);
     defer scanner.deinit();
     var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
@@ -13547,6 +13593,45 @@ fn minifiedGraphMutationIsRejected(mutation: MinifiedGraphMutation) !MinifiedGra
             }
             if (!changed_declaration) return error.MissingHostileDeclaration;
         },
+        .visible_but_wrong_shadowed_symbol => {
+            var outer_symbol: ?u32 = null;
+            var inner_symbol: ?u32 = null;
+            var shadowed_reference_node: ?u32 = null;
+            for (parser.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag != .binding_identifier or
+                    !std.mem.eql(u8, parser.ast.getText(node.span), "shared") or raw >= symbol_ids.len) continue;
+                const symbol_id = symbol_ids[raw] orelse continue;
+                if (outer_symbol == null) {
+                    outer_symbol = symbol_id;
+                } else {
+                    inner_symbol = symbol_id;
+                }
+            }
+            const outer = outer_symbol orelse return error.MissingOuterShadowSymbol;
+            const inner = inner_symbol orelse return error.MissingInnerShadowSymbol;
+            for (parser.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag != .identifier_reference or
+                    !std.mem.eql(u8, parser.ast.getText(node.span), "shared") or raw >= symbol_ids.len or
+                    symbol_ids[raw] != inner) continue;
+                shadowed_reference_node = @intCast(raw);
+                break;
+            }
+            const reference_node = shadowed_reference_node orelse return error.MissingShadowedReference;
+            var changed_reference = false;
+            for (references.items) |*reference| {
+                if (reference.flags.declare or reference.node_index.isNone() or
+                    @backingInt(reference.node_index) != reference_node or
+                    @backingInt(reference.symbol_id) != inner) continue;
+                reference.symbol_id = @fromBackingInt(outer);
+                changed_reference = true;
+                break;
+            }
+            if (!changed_reference) return error.MissingShadowedReferenceRow;
+            symbol_ids[reference_node] = outer;
+            if (symbols[inner].reference_count == 0) return error.MissingInnerReferenceCount;
+            symbols[inner].reference_count -= 1;
+            symbols[outer].reference_count +|= 1;
+        },
     }
 
     var failure: MinifiedGraphGateFailure = .allocation;
@@ -13560,6 +13645,7 @@ fn minifiedGraphMutationIsRejected(mutation: MinifiedGraphMutation) !MinifiedGra
         symbol_ids,
         &analyzer.unresolved_references,
         &scope_owner_map,
+        minifiedGraphResolutionForAnalyzer(&analyzer),
         null,
         &failure,
     );
@@ -14188,6 +14274,7 @@ test "implicit arguments minified graph requires an exact engine declaration" {
                 analyzer.symbol_ids.items,
                 &analyzer.unresolved_references,
                 &analyzer.scope_owner_map,
+                minifiedGraphResolutionForAnalyzer(&analyzer),
                 null,
                 &failure,
             );
@@ -14205,6 +14292,7 @@ test "implicit arguments minified graph requires an exact engine declaration" {
             analyzer.symbol_ids.items,
             &analyzer.unresolved_references,
             &analyzer.scope_owner_map,
+            minifiedGraphResolutionForAnalyzer(&analyzer),
             null,
             null,
         ));
@@ -14251,6 +14339,7 @@ test "syntax minification repairs statement coordinates without changing identit
         analyzer.symbol_ids.items,
         &analyzer.unresolved_references,
         &analyzer.scope_owner_map,
+        minifiedGraphResolutionForAnalyzer(&analyzer),
         null,
         &failure,
     ));
@@ -14303,27 +14392,43 @@ test "syntax minification repairs statement coordinates without changing identit
         analyzer.symbol_ids.items,
         &analyzer.unresolved_references,
         &analyzer.scope_owner_map,
+        minifiedGraphResolutionForAnalyzer(&analyzer),
         null,
         null,
     ));
 }
 
-test "syntax minify graph gate rejects twenty-two hostile identity and statement corruptions" {
+test "syntax minify graph gate rejects twenty-three hostile identity and statement corruptions" {
     inline for (std.meta.tags(MinifiedGraphMutation)) |mutation| {
         const result = try minifiedGraphMutationIsRejected(mutation);
         if (result.retained) std.debug.print("minify graph mutation accepted: {s}\n", .{@tagName(mutation)});
         try std.testing.expect(!result.retained);
         try std.testing.expect(result.failure != .allocation);
+        if (mutation == .visible_but_wrong_shadowed_symbol)
+            try std.testing.expectEqual(MinifiedGraphGateFailure.scope_resolution, result.failure);
         if (mutation == .duplicate_scope_owner or mutation == .wrong_scope_owner_kind or
             mutation == .swapped_scope_owners or mutation == .valid_but_wrong_binding_scope)
             try std.testing.expectEqual(MinifiedGraphGateFailure.scope_owners, result.failure);
     }
 }
 
-test "minified graph exact scope gate accepts valid nested bindings and canonical owner aliases" {
+test "minified graph exact scope gate accepts lexical shadowing and canonical owner aliases" {
+    const minified_sources = [_][]const u8{
+        "export const shared = 7; export function shadowed(shared) { function nested() { const shared = globalThis.value; console.log(shared); return shared; } console.log(shared); return nested(); }",
+        "export function escaped(\\u0073hared) { console.log(\\u0073hared); return \\u0073hared; }",
+    };
+    for (minified_sources) |source| {
+        const retained = try syntaxMinifyGraphRetainableForTest(source);
+        if (!retained) std.debug.print("valid minified shadow resolution rejected: {s}\n", .{source});
+        try std.testing.expect(retained);
+    }
+
     const sources = [_]struct { source: []const u8, extension: []const u8 }{
         .{ .source = "function outer() { if (condition) { var hoisted = 1; console.log(hoisted); } }", .extension = ".js" },
+        .{ .source = "const shared = 7; function shadowed(shared) { function nested() { const shared = 3; return shared; } return shared + nested(); }", .extension = ".js" },
+        .{ .source = "const shared = 7; function escaped(\\u0073hared) { return \\u0073hared; }", .extension = ".js" },
         .{ .source = "try { throw 1; } catch (error) { console.log(error); }", .extension = ".js" },
+        .{ .source = "namespace Values { export const value = 1; export function read() { return value; } } console.log(Values.value);", .extension = ".ts" },
     };
     for (sources) |case| {
         const retained = try preMinifiedGraphGateAcceptsForTest(case.source, case.extension);
@@ -20863,6 +20968,13 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
                         transformer.symbol_ids.items,
                         &semantic.unresolved_references,
                         &semantic.scope_owner_map,
+                        .{
+                            .scope_maps = semantic.scope_maps,
+                            .namespace_member_owners = &semantic.namespace_member_owners,
+                            .namespace_declaration_owners = &semantic.namespace_declaration_owners,
+                            .helper_reference_nodes = transformer.helper_ref_nodes.items,
+                            .helper_scope_map = &semantic.helper_scope_map,
+                        },
                         null,
                         null,
                     );
@@ -24889,6 +25001,13 @@ fn prepareConstMaterializationMinifiedGraph(
         editor.symbol_ids.items,
         &semantic.unresolved_references,
         &editor.scope_owner_map,
+        .{
+            .scope_maps = editor.scope_maps.items,
+            .namespace_member_owners = &semantic.namespace_member_owners,
+            .namespace_declaration_owners = &semantic.namespace_declaration_owners,
+            .helper_reference_nodes = if (module.transform_cache) |cache| cache.helper_ref_nodes else &.{},
+            .helper_scope_map = &semantic.helper_scope_map,
+        },
         &elided_scope_ids,
         null,
     )) return false;
