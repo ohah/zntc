@@ -233,3 +233,7 @@ ZNTC는 모든 에러에 고유 코드를 부여합니다. 에러 코드를 클�
 | [`ZNTC1502`](/zntc/reference/errors/zntc1502) | Exponentiation is preserved because a dynamic scope makes Math downleveling unsafe |
 | [`ZNTC1503`](/zntc/reference/errors/zntc1503) | Arrow or containing class/object literal is preserved because a dynamic scope makes lexical capture downleveling unsafe; the target may not support syntax retained inside it |
 | [`ZNTC1504`](/zntc/reference/errors/zntc1504) | Arrow is preserved because a dynamic direct eval can observe generated lexical capture bindings; the target may not support retained arrow syntax |
+| [`ZNTC1505`](/zntc/reference/errors/zntc1505) | Class initializer or extracted private method cannot preserve its dynamic class lexical environment |
+| [`ZNTC1506`](/zntc/reference/errors/zntc1506) | Retained dynamic capture contains private class syntax that requires lowering for the configured target |
+| [`ZNTC1507`](/zntc/reference/errors/zntc1507) | Computed accessor object is retained in its with environment; the configured target may not support retained syntax |
+| [`ZNTC1508`](/zntc/reference/errors/zntc1508) | Computed accessor object is retained because opaque eval can intercept generated bindings; the configured target may not support retained syntax |
