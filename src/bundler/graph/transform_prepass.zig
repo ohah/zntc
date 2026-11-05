@@ -20159,6 +20159,31 @@ test "generic prepass run publishes transformed output and preserves parser AST"
     try std.testing.expect(computed_object_module.transform_cache != null);
     try std.testing.expectEqual(computed_object_owner, computed_object_module.semantic.?.owner_token);
 
+    const shadowed_computed_object_source = "var Object; function nextKey() { return 'value'; } export const box = { get [nextKey()]() { return this._value; }, set [nextKey()](value = 1) { this._value = value; } };";
+    var shadowed_computed_fixture = try genericPrepassTestFixture(allocator, shadowed_computed_object_source, true);
+    const shadowed_computed_owner = shadowed_computed_fixture.semantic.captureOwnerToken();
+    var shadowed_computed_module = Module.init(@fromBackingInt(@as(u32, 9)), "shadowed-computed-object-accessors.js");
+    shadowed_computed_module.source = shadowed_computed_object_source;
+    shadowed_computed_module.module_type = .js;
+    shadowed_computed_module.state = .ready;
+    shadowed_computed_module.ast = shadowed_computed_fixture.ast;
+    shadowed_computed_module.semantic = shadowed_computed_fixture.semantic;
+    var shadowed_computed_context: TestGraph = .{
+        .allocator = graph_allocator,
+        .transform_options_base = .{
+            .strip_types = true,
+            .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+        },
+    };
+    run(&shadowed_computed_context, &shadowed_computed_module, allocator);
+    defer if (shadowed_computed_module.alias_table) |*table| table.deinit();
+    defer if (shadowed_computed_module.export_index_by_name) |*index| index.deinit(graph_allocator);
+    try std.testing.expectEqual(@as(usize, 0), shadowed_computed_context.diag_count);
+    try std.testing.expect(shadowed_computed_module.ast.?.transformed_root != null);
+    try std.testing.expect(shadowed_computed_module.transform_cache != null);
+    try std.testing.expectEqual(shadowed_computed_owner, shadowed_computed_module.semantic.?.owner_token);
+    try std.testing.expectEqual(@as(usize, 2), shadowed_computed_module.transform_cache.?.explicit_global_ref_nodes.len);
+
     const visitor_source = "const value = 1 + 2; value;";
     const visitor_fixture = try runtimeHelperReanalysisTestFixture(allocator, visitor_source);
     const visitor_owner = visitor_fixture.semantic.owner_token;
@@ -28088,17 +28113,31 @@ test "retained graph admits only strict simple synchronous arrow literal default
 }
 
 fn expectRetainedMethodDefaultSymbolIdentityForTest(source: []const u8, parameter_name: []const u8) !void {
-    try expectRetainedMethodDefaultSymbolIdentityWithShadowPolicyForTest(source, parameter_name, false);
+    try expectRetainedMethodDefaultSymbolIdentityWithShadowPolicyForTest(source, parameter_name, false, 0);
 }
 
 fn expectRetainedMethodDefaultSymbolIdentityWithShadowedExternalForTest(source: []const u8, parameter_name: []const u8) !void {
-    try expectRetainedMethodDefaultSymbolIdentityWithShadowPolicyForTest(source, parameter_name, true);
+    try expectRetainedMethodDefaultSymbolIdentityWithShadowPolicyForTest(source, parameter_name, true, 2);
+}
+
+fn expectRetainedMethodDefaultSymbolIdentityWithShadowedExternalCountForTest(
+    source: []const u8,
+    parameter_name: []const u8,
+    expected_shadowed_external_count: usize,
+) !void {
+    try expectRetainedMethodDefaultSymbolIdentityWithShadowPolicyForTest(
+        source,
+        parameter_name,
+        true,
+        expected_shadowed_external_count,
+    );
 }
 
 fn expectRetainedMethodDefaultSymbolIdentityWithShadowPolicyForTest(
     source: []const u8,
     parameter_name: []const u8,
     allow_shadowed_external_before_names: bool,
+    expected_shadowed_external_count: usize,
 ) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -28203,7 +28242,7 @@ fn expectRetainedMethodDefaultSymbolIdentityWithShadowPolicyForTest(
     );
     if (allow_shadowed_external_before_names) {
         try std.testing.expect(exact != null and exact.?.hasCompleteOutputIdentityBeforeNames());
-        try std.testing.expectEqual(@as(usize, 2), exact.?.shadowed_external_reference);
+        try std.testing.expectEqual(expected_shadowed_external_count, exact.?.shadowed_external_reference);
     } else {
         try std.testing.expect(exact != null and exact.?.isClean());
     }
@@ -28843,6 +28882,50 @@ test "retained graph preserves simple setter defaults in a computed object acces
     const hostile_sources = [_][]const u8{
         "function nextKey() { return 'value'; } function nextDefault() { return 1; } export const box = { get [nextKey()]() { return this._value; }, set [nextKey()](value = nextDefault()) { this._value = value; } };",
         "function nextKey() { return 'value'; } export const box = { get [nextKey()]() { return this._value; }, set [nextKey()](value = 1) { eval('value'); this._value = value; } };",
+    };
+    for (hostile_sources) |hostile_source| {
+        var hostile_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer hostile_arena.deinit();
+        const hostile_fixture = try runtimeHelperReanalysisTestFixture(hostile_arena.allocator(), hostile_source);
+        var hostile_get = false;
+        var hostile_set = false;
+        try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+            hostile_arena.allocator(),
+            &hostile_fixture.ast,
+            &hostile_fixture.semantic,
+            .{ .unsupported = es5 },
+            &hostile_get,
+            &hostile_set,
+            null,
+            null,
+        ));
+    }
+}
+
+test "retained graph preserves computed object accessor defaults with Object shadowing" {
+    const es5 = @import("../../transformer/compat.zig").fromESTarget(.es5);
+    const source = "var Object; function nextKey() { return 'value'; } export const box = { get [nextKey()]() { return this._value; }, set [nextKey()](value = 1) { this._value = value; } };";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+    var get = false;
+    var set = false;
+    try std.testing.expect(canRetainGraphForAuditedSyntaxSubset(
+        allocator,
+        &fixture.ast,
+        &fixture.semantic,
+        .{ .unsupported = es5 },
+        &get,
+        &set,
+        null,
+        null,
+    ));
+    try expectRetainedMethodDefaultSymbolIdentityWithShadowedExternalCountForTest(source, "value", 2);
+
+    const hostile_sources = [_][]const u8{
+        "var Object; function nextKey() { return 'value'; } function nextDefault() { return 1; } export const box = { get [nextKey()]() { return this._value; }, set [nextKey()](value = nextDefault()) { this._value = value; } };",
+        "var Object; function nextKey() { return 'value'; } export const box = { get [nextKey()]() { return this._value; }, set [nextKey()](value = 1) { eval('value'); this._value = value; } };",
     };
     for (hostile_sources) |hostile_source| {
         var hostile_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
