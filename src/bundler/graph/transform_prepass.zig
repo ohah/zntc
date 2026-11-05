@@ -8263,14 +8263,13 @@ fn collectSimpleConstructorDefaultParameterNodes(
     return true;
 }
 
-/// Default lowering in an ordinary function can retain the source graph only
-/// for strict, synchronous function declarations/expressions whose complete
-/// formal list consists of bound identifier parameters with primitive literal
-/// defaults. The lowerer copies reads/writes from each original parameter
-/// binding, so require the actual parameter environment to remain the parent
-/// of the function body scope. Dynamic lookup and non-literal initializers are
-/// excluded because they observe the parameter environment or its evaluation
-/// order.
+/// Default lowering in a strict synchronous function or method can retain the
+/// source graph only when its complete formal list consists of bound identifier
+/// parameters with primitive literal defaults. The lowerer copies reads/writes
+/// from each original parameter binding, so require the actual parameter
+/// environment to remain the parent of the function body scope. Dynamic lookup
+/// and non-literal initializers are excluded because they observe the parameter
+/// environment or its evaluation order.
 fn collectSimpleFunctionDefaultParameterNodes(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -8278,13 +8277,32 @@ fn collectSimpleFunctionDefaultParameterNodes(
     function: ast_mod.Node,
     defaults: *std.AutoHashMapUnmanaged(u32, void),
 ) bool {
-    if (function.tag != .function_declaration and function.tag != .function_expression) return false;
+    if (function.tag != .function_declaration and function.tag != .function_expression and
+        function.tag != .method_definition) return false;
     const extra = function.data.extra;
     const extras = ast.extra_data.items;
-    if (extra > extras.len or extras.len - extra <= ast_mod.FunctionExtra.flags) return false;
-    const flags = extras[extra + ast_mod.FunctionExtra.flags];
-    if ((flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator)) != 0 or
-        extras.len - extra <= ast_mod.FunctionExtra.params) return false;
+    if (extra > extras.len) return false;
+    const flags_slot: u32 = if (function.tag == .method_definition)
+        ast_mod.MethodExtra.flags
+    else
+        ast_mod.FunctionExtra.flags;
+    const params_slot: u32 = if (function.tag == .method_definition)
+        ast_mod.MethodExtra.params
+    else
+        ast_mod.FunctionExtra.params;
+    if (extras.len - extra <= flags_slot or extras.len - extra <= params_slot) return false;
+    if (function.tag == .method_definition) {
+        // Static is the only method-specific bit that does not change the
+        // parameter environment or method evaluation contract.
+        if ((extras[extra + flags_slot] & ~ast_mod.MethodFlags.is_static) != 0 or
+            extras.len - extra <= ast_mod.MethodExtra.deco_len or
+            extras[extra + ast_mod.MethodExtra.deco_start] != 0 or
+            extras[extra + ast_mod.MethodExtra.deco_len] != 0) return false;
+        if ((extras[extra + flags_slot] & ast_mod.MethodFlags.is_static) != 0 and
+            !isDirectClassBodyMethod(ast, raw_function)) return false;
+    } else if ((extras[extra + flags_slot] & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator)) != 0) {
+        return false;
+    }
 
     const function_scope = semantic.scope_owner_map.get(raw_function) orelse return false;
     if (function_scope >= semantic.scopes.len) return false;
@@ -8292,7 +8310,7 @@ fn collectSimpleFunctionDefaultParameterNodes(
     if (function_frame.kind != .function or !function_frame.is_strict or
         function_frame.subtree_has_direct_eval or function_frame.subtree_has_with) return false;
 
-    const params_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + ast_mod.FunctionExtra.params]));
+    const params_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + params_slot]));
     if (params_idx.isNone() or @backingInt(params_idx) >= ast.nodes.items.len or
         ast.getNode(params_idx).tag != .formal_parameters) return false;
     const parameter_scope = semantic.scope_owner_map.get(@backingInt(params_idx)) orelse return false;
@@ -8350,6 +8368,26 @@ fn collectSimpleFunctionDefaultParameterNodes(
         if (is_default) defaults.put(ast.allocator, raw_parameter, {}) catch return false;
     }
     return true;
+}
+
+fn isDirectClassBodyMethod(ast: *const ast_mod.Ast, raw_method: u32) bool {
+    const extras = ast.extra_data.items;
+    var class_body_memberships: usize = 0;
+    var object_literal_memberships: usize = 0;
+    for (ast.nodes.items) |node| {
+        if (node.tag != .class_body and node.tag != .object_expression) continue;
+        const members = node.data.list;
+        if (members.start > extras.len or members.len > extras.len - members.start) return false;
+        for (extras[members.start .. members.start + members.len]) |raw_member| {
+            if (raw_member != raw_method) continue;
+            if (node.tag == .class_body) {
+                class_body_memberships += 1;
+            } else {
+                object_literal_memberships += 1;
+            }
+        }
+    }
+    return class_body_memberships == 1 and object_literal_memberships == 0;
 }
 
 fn isExactSimpleFunctionParameterBinding(
@@ -10412,7 +10450,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
     if (options.unsupported.default_params or options.unsupported.destructuring) {
         for (reachable_nodes) |raw_idx| {
             const function = ast.nodes.items[raw_idx];
-            if (function.tag == .function_declaration or function.tag == .function_expression) {
+            if (function.tag == .function_declaration or function.tag == .function_expression or
+                function.tag == .method_definition)
+            {
                 _ = collectSimpleFunctionDefaultParameterNodes(
                     ast,
                     semantic,
@@ -27941,6 +27981,337 @@ test "retained graph admits only strict simple synchronous arrow literal default
     poisoned.ast.nodes.items[default_raw].data.binary.right = @fromBackingInt(std.math.maxInt(u32));
     try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
     poisoned.ast.nodes.items[default_raw] = original_assignment;
+
+    try std.testing.expect(poisoned.semantic.scope_owner_map.remove(raw_params));
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+}
+
+fn expectRetainedMethodDefaultSymbolIdentityForTest(source: []const u8, parameter_name: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+    const parser_node_count: u32 = @intCast(fixture.ast.nodes.items.len);
+    const pre_transform_scope_count = fixture.semantic.scopes.len;
+    var parameter_raw: ?usize = null;
+    for (fixture.ast.nodes.items) |node| {
+        if (node.tag != .method_definition) continue;
+        const params = fixture.ast.functionParamsList(node);
+        for (fixture.ast.extra_data.items[params.start .. params.start + params.len]) |raw_parameter| {
+            const parameter_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_parameter));
+            const parameter = fixture.ast.getNode(parameter_idx);
+            const binding = switch (parameter.tag) {
+                .formal_parameter => fixture.ast.readExtraNode(parameter.data.extra, ast_mod.FormalParameterExtra.pattern),
+                .assignment_pattern => parameter.data.binary.left,
+                else => parameter_idx,
+            };
+            if (Scanner.identifierNamesEqual(fixture.ast.getText(fixture.ast.getNode(binding).span), parameter_name)) {
+                parameter_raw = @backingInt(binding);
+            }
+        }
+    }
+    const source_parameter_raw = parameter_raw orelse return error.MissingDefaultMethodParameter;
+    const parameter_span = fixture.ast.nodes.items[source_parameter_raw].span;
+    const parameter_sid = fixture.semantic.symbol_ids[source_parameter_raw] orelse return error.MissingDefaultMethodSymbol;
+    var module = Module.init(@fromBackingInt(0), "method-default-parameter.js");
+    module.ast = fixture.ast;
+    module.semantic = fixture.semantic;
+    const Plugin = @import("../plugin.zig").Plugin;
+    const context = .{ .allocator = allocator, .flow = false, .worklet_transform = false, .plugins = &[_]Plugin{}, .styled_components = false, .emotion = false };
+    var admission_get = false;
+    var admission_set = false;
+    try std.testing.expect(canKeepPrepassSemanticGraph(
+        &context,
+        &module,
+        .{ .strip_types = true, .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5) },
+        context.plugins,
+        &admission_get,
+        &admission_set,
+        null,
+    ));
+    var transformer = try Transformer.init(
+        allocator,
+        &fixture.ast,
+        .{ .strip_types = true, .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5) },
+    );
+    try transformer.initSymbolIds(fixture.semantic.symbol_ids);
+    transformer.symbols = fixture.semantic.symbols.items;
+    transformer.references = fixture.semantic.references;
+    transformer.scopes = fixture.semantic.scopes;
+    transformer.scope_maps = fixture.semantic.scope_maps;
+    transformer.scope_owner_map = fixture.semantic.scope_owner_map;
+    transformer.node_scope_provenance = fixture.semantic.node_scope_provenance;
+    transformer.source_owned_retirements = fixture.semantic.source_owned_retirements;
+    transformer.scope_history = fixture.semantic.scope_history;
+    transformer.class_self_symbol_map = fixture.semantic.class_self_symbol_map;
+    transformer.helper_scope_map = fixture.semantic.helper_scope_map;
+    transformer.unresolved_references = &fixture.semantic.unresolved_references;
+    transformer.record_explicit_global_references = true;
+    transformer.semantic_edit_enabled = true;
+    const output_root = try transformer.transform();
+    if (try transformer.finishSemanticEdit()) |edited| fixture.semantic.applyEdit(edited);
+    module.ast = transformer.ast.*;
+    module.semantic = fixture.semantic;
+    const exact = try exactPrepassReport(
+        allocator,
+        &module,
+        output_root,
+        parser_node_count,
+        &transformer,
+        &fixture.unresolved_nodes,
+        pre_transform_scope_count,
+        true,
+    );
+    try std.testing.expect(exact != null and exact.?.isClean());
+    var generated_parameter_edges: usize = 0;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (raw < parser_node_count or node.span.start != parameter_span.start or
+            node.span.end != parameter_span.end or
+            (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) or
+            !Scanner.identifierNamesEqual(transformer.ast.getText(node.span), parameter_name)) continue;
+        const output_sid = transformer.getSymbolIdAt(@fromBackingInt(@intCast(raw))) orelse
+            return error.MissingLoweredMethodDefaultReferenceSymbol;
+        try std.testing.expectEqual(parameter_sid, output_sid);
+        generated_parameter_edges += 1;
+    }
+    try std.testing.expect(generated_parameter_edges >= 3);
+}
+
+test "retained graph admits only strict simple synchronous method literal defaults" {
+    const es5 = @import("../../transformer/compat.zig").fromESTarget(.es5);
+    const safe_sources = [_][]const u8{
+        "export const box = { read(value = 1) { return value; } };",
+        "class Box { read(value = 'text') { return value; } }",
+        "class Box { static read(value = true) { return value; } }",
+    };
+    for (safe_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+        var get = false;
+        var set = false;
+        try std.testing.expect(canRetainGraphForAuditedSyntaxSubset(
+            allocator,
+            &fixture.ast,
+            &fixture.semantic,
+            .{ .unsupported = es5 },
+            &get,
+            &set,
+            null,
+            null,
+        ));
+    }
+
+    try expectRetainedMethodDefaultSymbolIdentityForTest(
+        "export const box = { read(value = 1) { return /./.test(value); } };",
+        "value",
+    );
+    try expectRetainedMethodDefaultSymbolIdentityForTest(
+        "class Box { read(value = 'text') { return /./.test(value); } }",
+        "value",
+    );
+    try expectRetainedMethodDefaultSymbolIdentityForTest(
+        "class Box { static read(value = true) { return /./.test(value); } }",
+        "value",
+    );
+
+    const hostile_sources = [_][]const u8{
+        "export const box = { read(value = seed) { return value; } };",
+        "export const box = { read(value = next()) { return value; } };",
+        "export const box = { read(value = 1 + 2) { return value; } };",
+        "export const box = { read(value = -1) { return value; } };",
+        "export const box = { read(value = [1]) { return value; } };",
+        "export const box = { read(value = {}) { return value; } };",
+        "export const box = { read({ value } = {}) { return value; } };",
+        "export const box = { read(value = 1, ...rest) { return value; } };",
+        "export const box = { async read(value = 1) { return value; } };",
+        "export const box = { *read(value = 1) { return value; } };",
+        "export const box = { read(value = 1) { eval('value'); return value; } };",
+        "export class Box { read(value = 1) { return value; } }",
+    };
+    for (hostile_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+        var get = false;
+        var set = false;
+        try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+            allocator,
+            &fixture.ast,
+            &fixture.semantic,
+            .{ .unsupported = es5 },
+            &get,
+            &set,
+            null,
+            null,
+        ));
+    }
+
+    var script_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer script_arena.deinit();
+    const script_allocator = script_arena.allocator();
+    var sloppy = try runtimeHelperReanalysisTestFixtureForSource(
+        script_allocator,
+        "const box = { read(value = 1) { return value; } };",
+        false,
+    );
+    var get = false;
+    var set = false;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(
+        script_allocator,
+        &sloppy.ast,
+        &sloppy.semantic,
+        .{ .unsupported = es5 },
+        &get,
+        &set,
+        null,
+        null,
+    ));
+
+    var poisoned_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer poisoned_arena.deinit();
+    const poisoned_allocator = poisoned_arena.allocator();
+    var poisoned = try runtimeHelperReanalysisTestFixture(
+        poisoned_allocator,
+        "export const box = { read(value = 1, other) { return value + other; } };",
+    );
+    var method_raw: ?usize = null;
+    var parameter_raw: ?usize = null;
+    var other_raw: ?usize = null;
+    var params_raw: ?u32 = null;
+    for (poisoned.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .method_definition) continue;
+        method_raw = raw;
+        const params_idx = poisoned.ast.readExtraNode(node.data.extra, ast_mod.MethodExtra.params);
+        params_raw = @backingInt(params_idx);
+        const params = poisoned.ast.functionParamsList(node);
+        for (poisoned.ast.extra_data.items[params.start .. params.start + params.len]) |raw_parameter| {
+            const parameter_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_parameter));
+            const parameter = poisoned.ast.getNode(parameter_idx);
+            const binding = switch (parameter.tag) {
+                .formal_parameter => poisoned.ast.readExtraNode(parameter.data.extra, ast_mod.FormalParameterExtra.pattern),
+                .assignment_pattern => parameter.data.binary.left,
+                else => parameter_idx,
+            };
+            const name = poisoned.ast.getText(poisoned.ast.getNode(binding).span);
+            if (std.mem.eql(u8, name, "value")) parameter_raw = @backingInt(binding);
+            if (std.mem.eql(u8, name, "other")) other_raw = @backingInt(binding);
+        }
+    }
+    const raw_method = method_raw orelse return error.MissingPoisonedMethod;
+    const raw_parameter = parameter_raw orelse return error.MissingPoisonedMethodParameter;
+    const raw_other = other_raw orelse return error.MissingOtherMethodParameter;
+    const raw_params = params_raw orelse return error.MissingMethodParameterList;
+    const method_scope = poisoned.semantic.scope_owner_map.get(@intCast(raw_method)) orelse return error.MissingMethodScope;
+    const parameter_scope = poisoned.semantic.scope_owner_map.get(raw_params) orelse return error.MissingMethodParameterScope;
+    const parameter_sid = poisoned.semantic.symbol_ids[raw_parameter] orelse return error.MissingMethodParameterSymbol;
+    const other_sid = poisoned.semantic.symbol_ids[raw_other] orelse return error.MissingOtherMethodParameterSymbol;
+    const method_node = poisoned.ast.nodes.items[raw_method];
+    const default_raw = poisoned.ast.extra_data.items[poisoned.ast.functionParamsList(method_node).start];
+    const default_parameter_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(default_raw));
+    const default_parameter = poisoned.ast.getNode(default_parameter_idx);
+    const original_default_value_raw: u32 = switch (default_parameter.tag) {
+        .assignment_pattern => @backingInt(default_parameter.data.binary.right),
+        .formal_parameter => poisoned.ast.extra_data.items[default_parameter.data.extra + ast_mod.FormalParameterExtra.default],
+        else => return error.UnexpectedMethodDefaultParameterShape,
+    };
+    const original_parent = poisoned.semantic.scopes[method_scope].parent;
+    const original_strict = poisoned.semantic.scopes[method_scope].is_strict;
+    const flags_index = method_node.data.extra + ast_mod.MethodExtra.flags;
+    const original_flags = poisoned.ast.extra_data.items[flags_index];
+    get = false;
+    set = false;
+
+    @constCast(poisoned.semantic.symbol_ids)[raw_parameter] = other_sid;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    @constCast(poisoned.semantic.symbol_ids)[raw_parameter] = parameter_sid;
+
+    @constCast(poisoned.semantic.scopes)[method_scope].is_strict = false;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    @constCast(poisoned.semantic.scopes)[method_scope].is_strict = original_strict;
+
+    @constCast(poisoned.semantic.scopes)[method_scope].parent = .none;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    @constCast(poisoned.semantic.scopes)[method_scope].parent = original_parent;
+
+    try poisoned.semantic.scope_owner_map.put(poisoned_allocator, raw_params, method_scope);
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    try poisoned.semantic.scope_owner_map.put(poisoned_allocator, raw_params, parameter_scope);
+
+    @constCast(poisoned.semantic.scopes)[method_scope].subtree_has_direct_eval = true;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    @constCast(poisoned.semantic.scopes)[method_scope].subtree_has_direct_eval = false;
+
+    @constCast(poisoned.semantic.scopes)[method_scope].subtree_has_with = true;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    @constCast(poisoned.semantic.scopes)[method_scope].subtree_has_with = false;
+
+    poisoned.ast.extra_data.items[flags_index] |= ast_mod.MethodFlags.is_async;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    poisoned.ast.extra_data.items[flags_index] = original_flags;
+
+    poisoned.ast.extra_data.items[flags_index] |= ast_mod.MethodFlags.is_generator;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    poisoned.ast.extra_data.items[flags_index] = original_flags;
+
+    poisoned.ast.extra_data.items[flags_index] |= ast_mod.MethodFlags.is_getter;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    poisoned.ast.extra_data.items[flags_index] = original_flags;
+
+    poisoned.ast.extra_data.items[flags_index] |= ast_mod.MethodFlags.is_static;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    const forged_class_member_list = try poisoned.ast.addNodeList(&.{@fromBackingInt(@intCast(raw_method))});
+    _ = try poisoned.ast.addNode(.{
+        .tag = .class_body,
+        .span = .EMPTY,
+        .data = .{ .list = forged_class_member_list },
+    });
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    poisoned.ast.extra_data.items[flags_index] = original_flags;
+
+    const decorator_start_index = method_node.data.extra + ast_mod.MethodExtra.deco_start;
+    const decorator_len_index = method_node.data.extra + ast_mod.MethodExtra.deco_len;
+    const original_decorator_start = poisoned.ast.extra_data.items[decorator_start_index];
+    const original_decorator_len = poisoned.ast.extra_data.items[decorator_len_index];
+    poisoned.ast.extra_data.items[decorator_len_index] = 1;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    poisoned.ast.extra_data.items[decorator_len_index] = original_decorator_len;
+    poisoned.ast.extra_data.items[decorator_start_index] = 1;
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    poisoned.ast.extra_data.items[decorator_start_index] = original_decorator_start;
+
+    if (default_parameter.tag == .formal_parameter) {
+        const parameter_type_index = default_parameter.data.extra + ast_mod.FormalParameterExtra.type_ann;
+        const original_parameter_type = poisoned.ast.extra_data.items[parameter_type_index];
+        poisoned.ast.extra_data.items[parameter_type_index] = @intCast(raw_other);
+        try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+        poisoned.ast.extra_data.items[parameter_type_index] = original_parameter_type;
+
+        const parameter_flags_index = default_parameter.data.extra + ast_mod.FormalParameterExtra.flags;
+        const original_parameter_flags = poisoned.ast.extra_data.items[parameter_flags_index];
+        poisoned.ast.extra_data.items[parameter_flags_index] = 1;
+        try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+        poisoned.ast.extra_data.items[parameter_flags_index] = original_parameter_flags;
+    }
+
+    switch (default_parameter.tag) {
+        .assignment_pattern => {
+            poisoned.ast.nodes.items[default_raw].data.binary.right = @fromBackingInt(@intCast(raw_other));
+        },
+        .formal_parameter => {
+            const default_value_slot = default_parameter.data.extra + ast_mod.FormalParameterExtra.default;
+            poisoned.ast.extra_data.items[default_value_slot] = @intCast(raw_other);
+        },
+        else => return error.UnexpectedMethodDefaultParameterShape,
+    }
+    try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
+    switch (default_parameter.tag) {
+        .assignment_pattern => poisoned.ast.nodes.items[default_raw].data.binary.right = @fromBackingInt(@intCast(original_default_value_raw)),
+        .formal_parameter => poisoned.ast.extra_data.items[default_parameter.data.extra + ast_mod.FormalParameterExtra.default] = original_default_value_raw,
+        else => unreachable,
+    }
 
     try std.testing.expect(poisoned.semantic.scope_owner_map.remove(raw_params));
     try std.testing.expect(!canRetainGraphForAuditedSyntaxSubset(poisoned_allocator, &poisoned.ast, &poisoned.semantic, .{ .unsupported = es5 }, &get, &set, null, null));
