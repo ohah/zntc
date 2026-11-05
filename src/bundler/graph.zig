@@ -2017,6 +2017,145 @@ fn expectExternalImportEqualsGraphModule(
     return .{ .alias_symbol = alias_symbol, .alias_scope = alias_scope };
 }
 
+fn expectSourceNamespaceMemberExpression(
+    ast: *const ast_mod.Ast,
+    expression: ast_mod.NodeIndex,
+) !ast_mod.NodeIndex {
+    try std.testing.expect(!expression.isNone() and @backingInt(expression) < ast.nodes.items.len);
+    const member = ast.getNode(expression);
+    try std.testing.expectEqual(.static_member_expression, member.tag);
+    try std.testing.expect(ast.hasExtra(member.data.extra, 2));
+    const object = ast.readExtraNode(member.data.extra, 0);
+    const property = ast.readExtraNode(member.data.extra, 1);
+    try std.testing.expect(!object.isNone() and @backingInt(object) < ast.nodes.items.len);
+    try std.testing.expect(!property.isNone() and @backingInt(property) < ast.nodes.items.len);
+    try std.testing.expectEqual(.identifier_reference, ast.getNode(object).tag);
+    try std.testing.expectEqualStrings("Source", ast.identifierNameText(ast.getNode(object)));
+    try std.testing.expectEqualStrings("Inner", ast.getText(ast.getNode(property).span));
+    return object;
+}
+
+fn expectQualifiedLocalImportEqualsGraphModule(
+    graph: *const ModuleGraph,
+    entry: []const u8,
+) !TypeScriptImportEqualsGraphIdentity {
+    const module = graph.findModuleByPath(entry) orelse return error.MissingQualifiedImportEqualsGraphModule;
+    try std.testing.expectEqual(Module.State.ready, module.state);
+    try std.testing.expectEqual(@as(usize, 0), module.import_records.len);
+    const ast = &(module.ast orelse return error.MissingQualifiedImportEqualsGraphAst);
+    const semantic = &(module.semantic orelse return error.MissingQualifiedImportEqualsGraphSemantic);
+    const transformed = module.transform_cache orelse return error.MissingQualifiedImportEqualsGraphTransform;
+    const root = ast.transformed_root orelse return error.MissingQualifiedImportEqualsGraphRoot;
+    try std.testing.expectEqual(ast.nodes.items.len, semantic.symbol_ids.len);
+    try std.testing.expectEqualSlices(?u32, semantic.symbol_ids, transformed.symbol_ids);
+
+    var source_local: ast_mod.NodeIndex = .none;
+    var source_value: ast_mod.NodeIndex = .none;
+    var source_import_span: @import("../lexer/token.zig").Span = .EMPTY;
+    var source_import_count: usize = 0;
+    for (ast.nodes.items) |node| {
+        if (node.tag != .ts_import_equals_declaration) continue;
+        source_import_count += 1;
+        source_import_span = node.span;
+        source_local = node.data.binary.left;
+        source_value = node.data.binary.right;
+    }
+    try std.testing.expectEqual(@as(usize, 1), source_import_count);
+    try std.testing.expect(!source_local.isNone() and @backingInt(source_local) < ast.nodes.items.len);
+    try std.testing.expectEqual(.identifier_reference, ast.getNode(source_local).tag);
+    try std.testing.expectEqualStrings("DeepAlias", ast.identifierNameText(ast.getNode(source_local)));
+    const alias_symbol = semantic.symbol_ids[@backingInt(source_local)] orelse return error.MissingQualifiedImportEqualsAliasSymbol;
+    try std.testing.expect(alias_symbol < semantic.symbols.items.len);
+    const alias_symbol_data = semantic.symbols.items[alias_symbol];
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_const, alias_symbol_data.kind);
+    try std.testing.expectEqualStrings("DeepAlias", alias_symbol_data.nameText(ast.source));
+    try std.testing.expect(std.meta.eql(ast.getNode(source_local).span, alias_symbol_data.name));
+    try std.testing.expect(std.meta.eql(source_import_span, alias_symbol_data.declaration_span));
+    try std.testing.expect(!alias_symbol_data.scope_id.isNone());
+    const alias_scope = @backingInt(alias_symbol_data.scope_id);
+    try std.testing.expect(alias_scope < semantic.scope_maps.len);
+    try std.testing.expectEqual(@as(?usize, alias_symbol), semantic.scope_maps[alias_scope].get("DeepAlias"));
+
+    const source_namespace_reference = try expectSourceNamespaceMemberExpression(ast, source_value);
+    const source_namespace_symbol = semantic.symbol_ids[@backingInt(source_namespace_reference)] orelse return error.MissingQualifiedImportEqualsNamespaceReferenceSymbol;
+    try std.testing.expect(source_namespace_symbol != alias_symbol);
+    try expectImportEqualsReferenceRow(semantic, source_namespace_reference, source_namespace_symbol);
+
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
+    defer std.testing.allocator.free(reachable);
+    var namespace_symbol: ?u32 = null;
+    var namespace_scope: ?u32 = null;
+    var namespace_count: usize = 0;
+    var alias_binding: ast_mod.NodeIndex = .none;
+    var alias_binding_count: usize = 0;
+    var alias_initializer: ast_mod.NodeIndex = .none;
+    var alias_declarator_count: usize = 0;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag == .ts_import_equals_declaration) return error.QualifiedImportEqualsSurvivedLowering;
+        if (node.tag == .ts_module_declaration and node.data.binary.flags == 0) {
+            const name = node.data.binary.left;
+            if (!name.isNone() and @backingInt(name) < ast.nodes.items.len and
+                ast.getNode(name).tag == .binding_identifier and
+                std.mem.eql(u8, ast.identifierNameText(ast.getNode(name)), "Source"))
+            {
+                namespace_symbol = semantic.symbol_ids[@backingInt(name)] orelse return error.MissingQualifiedImportEqualsNamespaceSymbol;
+                namespace_scope = semantic.scope_owner_map.get(@intCast(raw)) orelse return error.MissingQualifiedImportEqualsNamespaceScope;
+                namespace_count += 1;
+            }
+        }
+        if (node.tag == .binding_identifier and std.mem.eql(u8, ast.identifierNameText(node), "DeepAlias") and
+            semantic.symbol_ids[raw] == alias_symbol)
+        {
+            alias_binding = @fromBackingInt(@intCast(raw));
+            alias_binding_count += 1;
+        }
+        if (node.tag != .variable_declarator or !ast.hasExtra(node.data.extra, 2)) continue;
+        const binding = ast.readExtraNode(node.data.extra, 0);
+        if (binding.isNone() or @backingInt(binding) >= ast.nodes.items.len or ast.getNode(binding).tag != .binding_identifier or
+            !std.mem.eql(u8, ast.identifierNameText(ast.getNode(binding)), "DeepAlias") or semantic.symbol_ids[@backingInt(binding)] != alias_symbol) continue;
+        alias_initializer = ast.readExtraNode(node.data.extra, 2);
+        alias_declarator_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), namespace_count);
+    try std.testing.expectEqual(@as(usize, 1), alias_binding_count);
+    try std.testing.expectEqual(@as(usize, 1), alias_declarator_count);
+    const emitted_namespace_symbol = namespace_symbol orelse return error.MissingQualifiedImportEqualsNamespaceSymbol;
+    const emitted_namespace_scope = namespace_scope orelse return error.MissingQualifiedImportEqualsNamespaceScope;
+    try std.testing.expectEqual(source_namespace_symbol, emitted_namespace_symbol);
+    try std.testing.expect(!alias_binding.isNone());
+    try std.testing.expect(std.meta.eql(ast.getNode(alias_binding).span, ast.getNode(source_local).span));
+    const output_namespace_reference = try expectSourceNamespaceMemberExpression(ast, alias_initializer);
+    try std.testing.expect(std.meta.eql(ast.getNode(alias_initializer).span, ast.getNode(source_value).span));
+    try std.testing.expectEqual(source_namespace_symbol, semantic.symbol_ids[@backingInt(output_namespace_reference)] orelse return error.MissingQualifiedImportEqualsOutputNamespaceSymbol);
+    try expectImportEqualsReferenceRow(semantic, output_namespace_reference, source_namespace_symbol);
+
+    const runtime_references = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(
+        std.testing.allocator,
+        ast,
+        root,
+    );
+    defer std.testing.allocator.free(runtime_references);
+    var alias_runtime_references: usize = 0;
+    for (runtime_references) |reference_node| {
+        const raw = @backingInt(reference_node);
+        if (raw >= ast.nodes.items.len or ast.nodes.items[raw].tag != .identifier_reference or
+            !std.mem.eql(u8, ast.identifierNameText(ast.nodes.items[raw]), "DeepAlias")) continue;
+        try std.testing.expectEqual(alias_symbol, semantic.symbol_ids[raw] orelse return error.MissingQualifiedImportEqualsOutputReferenceSymbol);
+        try expectImportEqualsReferenceRow(semantic, reference_node, alias_symbol);
+        alias_runtime_references += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), alias_runtime_references);
+
+    for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+    return .{
+        .namespace_symbol = emitted_namespace_symbol,
+        .alias_symbol = alias_symbol,
+        .namespace_scope = emitted_namespace_scope,
+        .alias_scope = alias_scope,
+    };
+}
+
 fn expectAutomaticJsxModuleGraph(
     entries: []const []const u8,
     jsx_entries: []const []const u8,
@@ -2738,6 +2877,55 @@ test "graph TypeScript caller: external require import-equals preserves CJS grap
         const identity = try expectExternalImportEqualsGraphModule(&graph, entry, specifier);
         if (cold_identity) |cold| {
             try std.testing.expectEqual(cold.alias_symbol, identity.alias_symbol);
+            try std.testing.expectEqual(cold.alias_scope, identity.alias_scope);
+        } else {
+            cold_identity = identity;
+        }
+    }
+}
+
+test "graph TypeScript caller: qualified local import-equals keeps exact identities on cold/cache" {
+    const profile = @import("../profile.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const source = "namespace Source { export namespace Inner { export const value = 42; } } import DeepAlias = Source.Inner; export const result = DeepAlias.value;";
+    try writeFile(tmp.dir, "entry.ts", source);
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    defer profile.resetForTest();
+    var cold_identity: ?TypeScriptImportEqualsGraphIdentity = null;
+    for ([_]usize{ 0, 1 }) |expected_load_hits| {
+        profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+        var cache = ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.disk_cache = &disk;
+        graph.disk_load_enabled = true;
+        graph.disk_options_hash = 0x6193_4819;
+        graph.disk_compiler_build_id = 0x4819;
+        graph.max_threads = 1;
+        graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es5);
+
+        try graph.build(std.testing.io, &.{entry});
+
+        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+        try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+        try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+        const identity = try expectQualifiedLocalImportEqualsGraphModule(&graph, entry);
+        if (cold_identity) |cold| {
+            try std.testing.expectEqual(cold.namespace_symbol, identity.namespace_symbol);
+            try std.testing.expectEqual(cold.alias_symbol, identity.alias_symbol);
+            try std.testing.expectEqual(cold.namespace_scope, identity.namespace_scope);
             try std.testing.expectEqual(cold.alias_scope, identity.alias_scope);
         } else {
             cold_identity = identity;
