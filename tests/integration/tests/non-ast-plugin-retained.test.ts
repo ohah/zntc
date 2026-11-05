@@ -120,7 +120,7 @@ function runCase(
   }
 }
 
-function runPluginLoadedImportEqualsDependency(useVirtualId: boolean) {
+function runPluginLoadedImportEqualsDependency(useVirtualId: boolean, useSyncBuild = false) {
   const dir = mkdtempSync(join(tmpdir(), 'zntc-import-equals-plugin-dependency-'));
   const entry = join(dir, 'entry.ts');
   const dependency = useVirtualId ? 'virtual:container.ts?plugin' : join(dir, 'dep.ts');
@@ -153,12 +153,17 @@ function runPluginLoadedImportEqualsDependency(useVirtualId: boolean) {
     ? ['resolve:virtual:container', `load:${reportedDependency}`]
     : [`load:${reportedDependency}`];
   const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+  const buildImport = useSyncBuild
+    ? `import {buildSync} from ${JSON.stringify(coreEntry)};`
+    : `import {build,close} from ${JSON.stringify(coreEntry)};`;
+  const buildCall = useSyncBuild ? 'buildSync' : 'await build';
+  const closeCall = useSyncBuild ? '' : 'close();';
   const runner = [
-    `import {build,close} from ${JSON.stringify(coreEntry)};`,
+    buildImport,
     `const entry=${JSON.stringify(entry)}; const dependency=${JSON.stringify(dependency)}; const source=${JSON.stringify(source)}; const calls=[];`,
-    `const result=await build({entryPoints:[entry],platform:'node',format:'cjs',target:'es5',minifyWhitespace:true,minifySyntax:true,minifyIdentifiers:true,write:false,plugins:[{name:'import-equals-plugin-dependency',setup(api){${resolveHook}api.onLoad({filter:${loadFilter}},args=>{calls.push('load:'+args.path);return {contents:source,loader:'ts'};});}}]});`,
+    `const result=${buildCall}({entryPoints:[entry],platform:'node',format:'cjs',target:'es5',minifyWhitespace:true,minifySyntax:true,minifyIdentifiers:true,write:false,plugins:[{name:'import-equals-plugin-dependency',setup(api){${resolveHook}api.onLoad({filter:${loadFilter}},args=>{calls.push('load:'+args.path);return {contents:source,loader:'ts'};});}}]});`,
     `if(result.errors.length){console.error(JSON.stringify(result.errors));process.exit(1);}`,
-    `process.stdout.write(JSON.stringify({calls,outputs:result.outputFiles.map(file=>file.text)}));close();`,
+    `process.stdout.write(JSON.stringify({calls,outputs:result.outputFiles.map(file=>file.text)}));${closeCall}`,
   ].join('\n');
   try {
     const run = Bun.spawnSync(['bun', '-e', runner], {
@@ -173,6 +178,7 @@ function runPluginLoadedImportEqualsDependency(useVirtualId: boolean) {
     };
     expect(result.calls).toEqual(expectedCalls);
     expect(result.outputs).toHaveLength(1);
+    expect(result.outputs[0]).not.toContain('Container');
     expect(result.outputs[0]).not.toContain('=>');
     expect(result.outputs[0]).not.toMatch(/\breturn\s*;/);
     const output = join(dir, 'out.cjs');
@@ -372,6 +378,11 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
     'onResolve and onLoad virtual import-equals dependency retain both module graphs',
     { timeout: 30_000 },
     () => runPluginLoadedImportEqualsDependency(true),
+  );
+  test(
+    'buildSync onResolve/onLoad virtual import-equals dependency retains both graphs',
+    { timeout: 30_000 },
+    () => runPluginLoadedImportEqualsDependency(true, true),
   );
 
   test(
