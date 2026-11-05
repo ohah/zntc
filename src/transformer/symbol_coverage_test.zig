@@ -7322,7 +7322,7 @@ test "#4819 for-of using head keeps one generated binding and reference" {
     }
 }
 
-test "#4819 for-of using head keeps its staging name when descendant eval can observe it" {
+test "#4819 for-of using head preserves source before rejecting opaque descendant eval" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -7333,7 +7333,7 @@ test "#4819 for-of using head keeps its staging name when descendant eval can ob
     );
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(".mjs");
-    _ = try parser.parse();
+    const source_root = try parser.parse();
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
     try analyzer.analyze();
@@ -7352,31 +7352,21 @@ test "#4819 for-of using head keeps its staging name when descendant eval can ob
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
-    _ = try transformer.transform();
-    const edited = (try transformer.finishSemanticEdit()).?;
-
-    var head_id: ?usize = null;
-    for (edited.symbols.items[original_symbols..], original_symbols..) |symbol, id| {
-        if (symbol.kind != .variable_const or !std.mem.startsWith(u8, symbol.synthetic_name, "_using")) continue;
-        try std.testing.expect(head_id == null);
-        head_id = id;
-    }
-    const id = head_id orelse return error.TestUnexpectedResult;
-    const symbol = edited.symbols.items[id];
-    try std.testing.expectEqual(@as(?SyntheticKind, null), symbol.synthetic_kind);
-    try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[symbol.scope_id.toIndex()].get(symbol.synthetic_name));
-    var bindings: usize = 0;
-    var reads: usize = 0;
-    for (edited.symbol_ids, 0..) |maybe_id, raw| {
-        if (maybe_id != @as(?u32, @intCast(id))) continue;
-        switch (transformer.ast.nodes.items[raw].tag) {
-            .binding_identifier => bindings += 1,
-            .identifier_reference => reads += 1,
-            else => {},
-        }
-    }
-    try std.testing.expectEqual(@as(usize, 1), bindings);
-    try std.testing.expectEqual(@as(usize, 1), reads);
+    const source_nodes = try allocator.dupe(u8, std.mem.sliceAsBytes(transformer.ast.nodes.items));
+    const source_extra = try allocator.dupe(u32, transformer.ast.extra_data.items);
+    const source_strings = try allocator.dupe(u8, transformer.ast.string_table.items);
+    const output = try transformer.transform();
+    // Opaque source can synthesize a closure over the using cell. The source
+    // remains untouched so public boundaries can report precise ZNTC1509.
+    try std.testing.expectEqual(source_root, output);
+    const span = transformer.unsupported_loop_dynamic_scope_span orelse return error.MissingLoopDynamicDiagnostic;
+    try std.testing.expectEqualStrings("eval(\"_\" + suffix)", parser.ast.source[span.start..span.end]);
+    try std.testing.expect(transformer.semantic_editor == null);
+    try std.testing.expectEqual(original_symbols, transformer.symbols.len);
+    try std.testing.expectEqualSlices(?u32, analyzer.symbol_ids.items, transformer.symbol_ids.items[0..analyzer.symbol_ids.items.len]);
+    try std.testing.expectEqualSlices(u8, source_nodes, std.mem.sliceAsBytes(transformer.ast.nodes.items));
+    try std.testing.expectEqualSlices(u32, source_extra, transformer.ast.extra_data.items);
+    try std.testing.expectEqualSlices(u8, source_strings, transformer.ast.string_table.items);
 }
 
 test "#4819 downlevel using lowering preserves exact transform identities" {
