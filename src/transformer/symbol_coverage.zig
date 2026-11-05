@@ -3142,6 +3142,119 @@ const ExactCtx = struct {
     }
 };
 
+/// Prove that every live, symbol-bound reference still resolves to the same
+/// SymbolId from its retained use scope. The bundler's retained-graph gate
+/// uses this after syntax-only mutations, where matching reference rows and
+/// counts alone cannot detect a reference rewired to a visible outer binding
+/// across a same-name inner declaration.
+pub fn hasExactReachableReferenceResolution(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    reachable: []const u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
+    namespace_member_owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    namespace_declaration_owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    helper_reference_nodes: []const u32,
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+) std.mem.Allocator.Error!bool {
+    var parent_by_node: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer parent_by_node.deinit(allocator);
+    var reachable_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer reachable_nodes.deinit(allocator);
+    for (reachable) |raw| {
+        if (raw >= ast.nodes.items.len) return false;
+        try reachable_nodes.put(allocator, raw, {});
+        var children = ast_walk.children(ast, ast.nodes.items[raw]);
+        while (children.next()) |child| {
+            if (child.isNone()) continue;
+            const child_raw = @backingInt(child);
+            if (child_raw >= ast.nodes.items.len) return false;
+            const parent = try parent_by_node.getOrPut(allocator, child_raw);
+            if (!parent.found_existing) parent.value_ptr.* = raw;
+        }
+    }
+
+    var namespace_scope_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer namespace_scope_owners.deinit(allocator);
+    for (reachable) |raw| {
+        const declaration = ast.nodes.items[raw];
+        if (declaration.tag != .ts_module_declaration or declaration.data.binary.flags == 1) continue;
+        const scope_id = scope_owner_map.get(raw) orelse continue;
+        const name = declaration.data.binary.left;
+        if (name.isNone() or @backingInt(name) >= symbol_ids.len) return false;
+        const declaration_id = symbol_ids[@backingInt(name)] orelse return false;
+        if (declaration_id >= symbols.len) return false;
+        const owner_id = namespace_declaration_owners.get(declaration_id) orelse declaration_id;
+        if (scope_id >= scopes.len or owner_id >= symbols.len) return false;
+        const owner = try namespace_scope_owners.getOrPut(allocator, scope_id);
+        if (owner.found_existing and owner.value_ptr.* != owner_id) return false;
+        owner.value_ptr.* = owner_id;
+    }
+
+    var helper_refs: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer helper_refs.deinit(allocator);
+    for (helper_reference_nodes) |raw| try helper_refs.put(allocator, raw, {});
+
+    const empty_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const empty_origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const empty_references: std.AutoHashMapUnmanaged(u32, IndexedReference) = .empty;
+    const empty_counts: []const usize = &.{};
+    var report: ExactReport = .{};
+    var ctx: ExactCtx = .{
+        .allocator = allocator,
+        .ast = ast,
+        .root = root,
+        .parser_node_count = @intCast(ast.nodes.items.len),
+        .parent_by_node = &parent_by_node,
+        .scope_owner_map = scope_owner_map,
+        .symbol_ids = symbol_ids,
+        .declaration_nodes = &empty_nodes,
+        .symbols = symbols,
+        .scopes = scopes,
+        .scope_maps = scope_maps,
+        .namespace_member_owners = namespace_member_owners,
+        .namespace_scope_owners = &namespace_scope_owners,
+        .all_references = references,
+        .references_by_node = &empty_references,
+        .helper_reference_nodes = &helper_refs,
+        .helper_scope_map = helper_scope_map,
+        .dynamic_eval_units = &empty_nodes,
+        .with_body_roots = &empty_nodes,
+        .declaration_counts = empty_counts,
+        .unresolved_nodes = &empty_nodes,
+        .explicit_global_nodes = &empty_nodes,
+        .origins = &empty_origins,
+        .reachable_nodes = &reachable_nodes,
+        .report = &report,
+        .emit_details = false,
+    };
+    defer ctx.name_positions.deinit(allocator);
+    defer ctx.jsx_variable_roots.deinit(allocator);
+
+    for (references) |reference| {
+        if (reference.flags.declare or reference.node_index.isNone()) continue;
+        const raw = @backingInt(reference.node_index);
+        const symbol_id = @backingInt(reference.symbol_id);
+        if (!reachable_nodes.contains(raw) or raw >= ast.nodes.items.len or raw >= symbol_ids.len or
+            symbol_id >= symbols.len or symbol_ids[raw] != symbol_id) return false;
+        const node = ast.nodes.items[raw];
+        if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) return false;
+        const name = ast.getText(node.data.string_ref);
+        const expected: ?u32 = if (helper_refs.contains(raw)) blk: {
+            if (helper_scope_map.get(name)) |helper_id| break :blk @intCast(helper_id);
+            break :blk null;
+        } else if (ctx.isEnumMemberReference(raw, name, symbol_id, reference.scope_id)) symbol_id else resolveInExactScopes(&ctx, name, reference.scope_id);
+        if (expected == null or expected.? != symbol_id) return false;
+    }
+    return true;
+}
+
 fn outputBindingIsVar(ctx: *const ExactCtx, node: u32) bool {
     var child = node;
     var parent = ctx.parent_by_node.get(child);
