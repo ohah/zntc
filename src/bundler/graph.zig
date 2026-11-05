@@ -1732,6 +1732,148 @@ fn expectMergedTypeScriptNamespaceGraphModule(
     };
 }
 
+const TypeScriptImportEqualsGraphIdentity = struct {
+    namespace_symbol: u32,
+    alias_symbol: u32,
+    namespace_scope: u32,
+    alias_scope: u32,
+};
+
+fn expectImportEqualsReferenceRow(semantic: anytype, node: ast_mod.NodeIndex, symbol_id: u32) !void {
+    var rows: usize = 0;
+    for (semantic.references) |reference| {
+        if (reference.node_index != node) continue;
+        try std.testing.expect(!reference.flags.declare);
+        try std.testing.expectEqual(symbol_id, @backingInt(reference.symbol_id));
+        rows += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), rows);
+}
+
+fn expectLocalImportEqualsGraphModule(
+    graph: *const ModuleGraph,
+    entry: []const u8,
+) !TypeScriptImportEqualsGraphIdentity {
+    const module = graph.findModuleByPath(entry) orelse return error.MissingImportEqualsGraphModule;
+    try std.testing.expectEqual(Module.State.ready, module.state);
+    try std.testing.expectEqual(@as(usize, 0), module.import_records.len);
+    const ast = &(module.ast orelse return error.MissingImportEqualsGraphAst);
+    const semantic = &(module.semantic orelse return error.MissingImportEqualsGraphSemantic);
+    const transformed = module.transform_cache orelse return error.MissingImportEqualsGraphTransform;
+    const root = ast.transformed_root orelse return error.MissingImportEqualsGraphRoot;
+    try std.testing.expectEqual(ast.nodes.items.len, semantic.symbol_ids.len);
+    try std.testing.expectEqualSlices(?u32, semantic.symbol_ids, transformed.symbol_ids);
+
+    var source_local: ast_mod.NodeIndex = .none;
+    var source_value: ast_mod.NodeIndex = .none;
+    var source_import_span: @import("../lexer/token.zig").Span = .EMPTY;
+    var source_imports: usize = 0;
+    for (ast.nodes.items) |node| {
+        if (node.tag != .ts_import_equals_declaration) continue;
+        source_imports += 1;
+        source_import_span = node.span;
+        source_local = node.data.binary.left;
+        source_value = node.data.binary.right;
+    }
+    try std.testing.expectEqual(@as(usize, 1), source_imports);
+    try std.testing.expect(!source_local.isNone() and @backingInt(source_local) < ast.nodes.items.len);
+    try std.testing.expectEqual(.identifier_reference, ast.getNode(source_local).tag);
+    try std.testing.expectEqualStrings("Alias", ast.identifierNameText(ast.getNode(source_local)));
+    const alias_symbol = semantic.symbol_ids[@backingInt(source_local)] orelse return error.MissingImportEqualsAliasSymbol;
+    try std.testing.expect(alias_symbol < semantic.symbols.items.len);
+    const alias_symbol_data = semantic.symbols.items[alias_symbol];
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_const, alias_symbol_data.kind);
+    try std.testing.expectEqualStrings("Alias", alias_symbol_data.nameText(ast.source));
+    try std.testing.expect(std.meta.eql(ast.getNode(source_local).span, alias_symbol_data.name));
+    try std.testing.expect(std.meta.eql(source_import_span, alias_symbol_data.declaration_span));
+    try std.testing.expect(!alias_symbol_data.scope_id.isNone());
+    try std.testing.expect(!source_value.isNone() and @backingInt(source_value) < ast.nodes.items.len);
+    try std.testing.expectEqual(.identifier_reference, ast.getNode(source_value).tag);
+    try std.testing.expectEqualStrings("Source", ast.identifierNameText(ast.getNode(source_value)));
+
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
+    defer std.testing.allocator.free(reachable);
+    var namespace_symbol: ?u32 = null;
+    var namespace_scope: ?u32 = null;
+    var namespace_count: usize = 0;
+    var alias_binding: ast_mod.NodeIndex = .none;
+    var alias_binding_count: usize = 0;
+    var alias_initializer: ast_mod.NodeIndex = .none;
+    var alias_declarator_count: usize = 0;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag == .ts_import_equals_declaration) return error.ImportEqualsSurvivedLowering;
+        if (node.tag == .ts_module_declaration and node.data.binary.flags == 0) {
+            const name = node.data.binary.left;
+            if (!name.isNone() and @backingInt(name) < ast.nodes.items.len and
+                ast.getNode(name).tag == .binding_identifier and
+                std.mem.eql(u8, ast.identifierNameText(ast.getNode(name)), "Source"))
+            {
+                namespace_symbol = semantic.symbol_ids[@backingInt(name)] orelse return error.MissingImportEqualsNamespaceSymbol;
+                namespace_scope = semantic.scope_owner_map.get(@intCast(raw)) orelse return error.MissingImportEqualsNamespaceScope;
+                namespace_count += 1;
+            }
+        }
+        if (node.tag == .binding_identifier and std.mem.eql(u8, ast.identifierNameText(node), "Alias")) {
+            if (semantic.symbol_ids[raw] == alias_symbol) {
+                alias_binding = @fromBackingInt(@intCast(raw));
+                alias_binding_count += 1;
+            }
+        }
+        if (node.tag != .variable_declarator or !ast.hasExtra(node.data.extra, 2)) continue;
+        const binding = ast.readExtraNode(node.data.extra, 0);
+        if (binding.isNone() or @backingInt(binding) >= ast.nodes.items.len or ast.getNode(binding).tag != .binding_identifier or
+            !std.mem.eql(u8, ast.identifierNameText(ast.getNode(binding)), "Alias") or semantic.symbol_ids[@backingInt(binding)] != alias_symbol) continue;
+        alias_initializer = ast.readExtraNode(node.data.extra, 2);
+        alias_declarator_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), namespace_count);
+    try std.testing.expectEqual(@as(usize, 1), alias_binding_count);
+    try std.testing.expectEqual(@as(usize, 1), alias_declarator_count);
+    const source_namespace_symbol = namespace_symbol orelse return error.MissingImportEqualsNamespaceSymbol;
+    const source_namespace_scope = namespace_scope orelse return error.MissingImportEqualsNamespaceScope;
+    try std.testing.expect(source_namespace_symbol != alias_symbol);
+    try std.testing.expect(!alias_binding.isNone());
+    try std.testing.expect(std.meta.eql(ast.getNode(alias_binding).span, ast.getNode(source_local).span));
+    try std.testing.expectEqual(source_namespace_symbol, semantic.symbol_ids[@backingInt(source_value)] orelse return error.MissingImportEqualsSourceNamespaceSymbol);
+
+    const alias_scope = @backingInt(semantic.symbols.items[alias_symbol].scope_id);
+    try std.testing.expect(alias_scope < semantic.scope_maps.len);
+    try std.testing.expectEqual(@as(?usize, alias_symbol), semantic.scope_maps[alias_scope].get("Alias"));
+
+    try std.testing.expect(!alias_initializer.isNone() and @backingInt(alias_initializer) < ast.nodes.items.len);
+    try std.testing.expectEqual(.identifier_reference, ast.getNode(alias_initializer).tag);
+    try std.testing.expectEqualStrings("Source", ast.identifierNameText(ast.getNode(alias_initializer)));
+    try std.testing.expect(std.meta.eql(ast.getNode(alias_initializer).span, ast.getNode(source_value).span));
+    try std.testing.expectEqual(source_namespace_symbol, semantic.symbol_ids[@backingInt(alias_initializer)] orelse return error.MissingImportEqualsSourceReferenceSymbol);
+    try expectImportEqualsReferenceRow(semantic, alias_initializer, source_namespace_symbol);
+
+    const runtime_references = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(
+        std.testing.allocator,
+        ast,
+        root,
+    );
+    defer std.testing.allocator.free(runtime_references);
+    var alias_runtime_references: usize = 0;
+    for (runtime_references) |reference_node| {
+        const raw = @backingInt(reference_node);
+        if (raw >= ast.nodes.items.len or ast.nodes.items[raw].tag != .identifier_reference or
+            !std.mem.eql(u8, ast.identifierNameText(ast.nodes.items[raw]), "Alias")) continue;
+        try std.testing.expectEqual(alias_symbol, semantic.symbol_ids[raw] orelse return error.MissingImportEqualsOutputReferenceSymbol);
+        try expectImportEqualsReferenceRow(semantic, reference_node, alias_symbol);
+        alias_runtime_references += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), alias_runtime_references);
+
+    for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+    return .{
+        .namespace_symbol = source_namespace_symbol,
+        .alias_symbol = alias_symbol,
+        .namespace_scope = source_namespace_scope,
+        .alias_scope = alias_scope,
+    };
+}
+
 fn expectAutomaticJsxModuleGraph(
     entries: []const []const u8,
     jsx_entries: []const []const u8,
@@ -2351,6 +2493,55 @@ test "graph TypeScript caller: merged namespace keeps exact identities on cold/c
             try std.testing.expectEqual(cold.destructuring_temp_symbol, identity.destructuring_temp_symbol);
             try std.testing.expectEqual(cold.first_namespace_scope, identity.first_namespace_scope);
             try std.testing.expectEqual(cold.second_namespace_scope, identity.second_namespace_scope);
+        } else {
+            cold_identity = identity;
+        }
+    }
+}
+
+test "graph TypeScript caller: local import-equals keeps exact identities on cold/cache" {
+    const profile = @import("../profile.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const source = "namespace Source { export const value = 42; } import Alias = Source; export const result = Alias.value;";
+    try writeFile(tmp.dir, "entry.ts", source);
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    defer profile.resetForTest();
+    var cold_identity: ?TypeScriptImportEqualsGraphIdentity = null;
+    for ([_]usize{ 0, 1 }) |expected_load_hits| {
+        profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+        var cache = ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.disk_cache = &disk;
+        graph.disk_load_enabled = true;
+        graph.disk_options_hash = 0x6193_4819;
+        graph.disk_compiler_build_id = 0x4819;
+        graph.max_threads = 1;
+        graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es5);
+
+        try graph.build(std.testing.io, &.{entry});
+
+        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+        try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+        try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+        const identity = try expectLocalImportEqualsGraphModule(&graph, entry);
+        if (cold_identity) |cold| {
+            try std.testing.expectEqual(cold.namespace_symbol, identity.namespace_symbol);
+            try std.testing.expectEqual(cold.alias_symbol, identity.alias_symbol);
+            try std.testing.expectEqual(cold.namespace_scope, identity.namespace_scope);
+            try std.testing.expectEqual(cold.alias_scope, identity.alias_scope);
         } else {
             cold_identity = identity;
         }
