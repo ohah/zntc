@@ -113,7 +113,8 @@ pub fn captureEnvironFromLibc() void {
 fn dumpLeaksOnEnvCleanup(_: ?*anyopaque) callconv(.c) void {
     if (comptime builtin.mode != .debug) return;
     if (debug_gpa.mutex.tryLock()) {
-        defer debug_gpa.mutex.unlock();
+        // Match DebugAllocator's locking backend without requiring NAPI io init.
+        defer std.Io.Threaded.mutexUnlock(&debug_gpa.mutex);
         _ = debug_gpa.detectLeaks();
     }
     // large_allocations HashMap 자체는 leak (deinit 만 free) — process 종료
