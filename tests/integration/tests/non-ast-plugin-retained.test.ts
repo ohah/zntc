@@ -1049,4 +1049,98 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
       }
     },
   );
+
+  test(
+    'buildSync onTransform JSX helpers retain exact identities under same-name bindings',
+    { timeout: 30_000 },
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-buildsync-ontransform-jsx-'));
+      const entry = join(dir, 'entry.tsx');
+      const reactDir = join(dir, 'node_modules/react');
+      mkdirSync(reactDir, { recursive: true });
+      const source = [
+        "const _jsx = () => 'user-jsx';",
+        "const _jsxs = () => 'user-jsxs';",
+        "const _Fragment = () => 'user-fragment';",
+        'const value = 3;',
+        'const element = <div data-x={value}><span>{_jsx()}</span><span>{_jsxs()}</span></div>;',
+        'const fragment = <><span>fragment</span></>;',
+        "console.log(_jsx(), _jsxs(), _Fragment(), element.type, element.props['data-x'], element.props.children.map(child => child.props.children).join(','), fragment.type);",
+      ].join('\n');
+      writeFileSync(entry, '// buildSync onTransform supplies TSX source');
+      writeFileSync(
+        join(reactDir, 'package.json'),
+        JSON.stringify({ name: 'react', exports: { './jsx-runtime': './jsx-runtime.cjs' } }),
+      );
+      writeFileSync(
+        join(reactDir, 'jsx-runtime.cjs'),
+        "exports.jsx=(type,props)=>({type,props}); exports.jsxs=(type,props)=>({type,props}); exports.Fragment='fragment';",
+      );
+      const reportedEntry = realpathSync(entry);
+      const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+      const runner = [
+        `import {buildSync} from ${JSON.stringify(coreEntry)};`,
+        `const entry=${JSON.stringify(entry)}; const source=${JSON.stringify(source)}; const calls=[];`,
+        `const result=buildSync({entryPoints:[entry],platform:'node',format:'cjs',target:'es5',jsx:'automatic',external:['react/jsx-runtime'],minifyWhitespace:true,minifySyntax:true,minifyIdentifiers:true,write:false,plugins:[{name:'buildsync-ontransform-jsx',setup(api){api.onTransform({filter:/entry\\.tsx$/},args=>{calls.push(args.path);return {code:source};});}}]});`,
+        `if(result.errors.length){console.error(JSON.stringify(result.errors));process.exit(1);}`,
+        `process.stdout.write(JSON.stringify({calls,outputs:result.outputFiles.map(file=>file.text)}));`,
+      ].join('\n');
+      try {
+        const run = Bun.spawnSync(['bun', '-e', runner], {
+          cwd: join(import.meta.dir, '../../..'),
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        });
+        const stderr = run.stderr.toString();
+        expect(run.exitCode, stderr).toBe(0);
+        const result = JSON.parse(run.stdout.toString()) as {
+          calls: string[];
+          outputs: string[];
+        };
+        expect(result.calls).toEqual([reportedEntry]);
+        expect(result.outputs).toHaveLength(1);
+        const helperNames = ['jsx', 'jsxs', 'Fragment'].map(
+          (helper) =>
+            result.outputs[0].match(
+              new RegExp(`var ([A-Za-z_$][\\w$]*) = require\\("react/jsx-runtime"\\)\\.${helper};`),
+            )?.[1],
+        );
+        expect(helperNames.every(Boolean)).toBe(true);
+        expect(new Set(helperNames).size).toBe(3);
+        expect(helperNames).not.toContain('_jsx');
+        expect(helperNames).not.toContain('_jsxs');
+        expect(helperNames).not.toContain('_Fragment');
+        expect(result.outputs[0]).not.toContain('=>');
+        const output = join(dir, 'out.cjs');
+        writeFileSync(output, result.outputs[0]);
+        const execution = Bun.spawnSync(['node', output]);
+        expect(execution.exitCode, execution.stderr.toString()).toBe(0);
+        expect(execution.stdout.toString()).toBe(
+          'user-jsx user-jsxs user-fragment div 3 user-jsx,user-jsxs fragment\n',
+        );
+
+        const lines = stderr.split(/\r?\n/);
+        const identity = lines.filter(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass ') && line.includes(reportedEntry),
+        );
+        expect(identity, stderr).toHaveLength(1);
+        expect(identity[0]).toMatch(/generated_bindings=[1-9]\d* generated_references=[1-9]\d*/);
+        for (const field of [...zeroCounters, 'clean']) {
+          const values = [
+            ...identity[0].matchAll(new RegExp(`(?:^| )${field}=(\\d+)(?= |$)`, 'g')),
+          ];
+          expect(values, `${field}: ${identity[0]}`).toHaveLength(1);
+          expect(Number(values[0][1]), field).toBe(field === 'clean' ? 1 : 0);
+        }
+        const mode = lines.filter(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(reportedEntry),
+        );
+        expect(mode, stderr).toHaveLength(1);
+        expect(mode[0]).toContain('semantic_graph=retained');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
