@@ -1424,6 +1424,138 @@ fn expectClassicJsxGraphModule(graph: *const ModuleGraph, entry: []const u8) !vo
     try std.testing.expect(found_external_factory_import);
 }
 
+fn expectTypeScriptEnumGraphModule(graph: *const ModuleGraph, entry: []const u8, enum_name: []const u8) !void {
+    const module = graph.findModuleByPath(entry) orelse return error.MissingTypeScriptEnumGraphModule;
+    try std.testing.expectEqual(Module.State.ready, module.state);
+    const ast = &(module.ast orelse return error.MissingTypeScriptEnumGraphAst);
+    const semantic = &(module.semantic orelse return error.MissingTypeScriptEnumGraphSemantic);
+    _ = module.transform_cache orelse return error.MissingTypeScriptEnumGraphTransform;
+    const root = ast.transformed_root orelse return error.MissingTypeScriptEnumGraphRoot;
+    try std.testing.expectEqual(ast.nodes.items.len, semantic.symbol_ids.len);
+
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
+    defer std.testing.allocator.free(reachable);
+    const runtime_references = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(
+        std.testing.allocator,
+        ast,
+        root,
+    );
+    defer std.testing.allocator.free(runtime_references);
+    var runtime_reference_nodes = std.AutoHashMapUnmanaged(u32, void).empty;
+    defer runtime_reference_nodes.deinit(std.testing.allocator);
+    for (runtime_references) |reference| try runtime_reference_nodes.put(std.testing.allocator, @backingInt(reference), {});
+
+    var enum_declarations: usize = 0;
+    var enum_binding_nodes = std.AutoHashMapUnmanaged(u32, void).empty;
+    defer enum_binding_nodes.deinit(std.testing.allocator);
+    var binding_symbols = std.AutoHashMapUnmanaged(u32, void).empty;
+    defer binding_symbols.deinit(std.testing.allocator);
+    var enum_references: usize = 0;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag == .ts_enum_declaration) {
+            enum_declarations += 1;
+            const enum_name_node = ast.readExtraNode(node.data.extra, ast_mod.EnumExtra.name);
+            if (!enum_name_node.isNone() and @backingInt(enum_name_node) < ast.nodes.items.len) {
+                const enum_name_raw = @backingInt(enum_name_node);
+                if (std.mem.eql(u8, ast.identifierNameText(ast.nodes.items[enum_name_raw]), enum_name)) {
+                    const symbol_id = semantic.symbol_ids[enum_name_raw] orelse return error.MissingTypeScriptEnumIifeParameterSymbol;
+                    try std.testing.expect(symbol_id < semantic.symbols.items.len);
+                    try std.testing.expectEqualStrings(enum_name, semantic.symbols.items[symbol_id].nameText(ast.source));
+                    try enum_binding_nodes.put(std.testing.allocator, enum_name_raw, {});
+                    try binding_symbols.put(std.testing.allocator, symbol_id, {});
+                }
+            }
+            if (semantic.scope_owner_map.get(@intCast(raw))) |enum_scope| {
+                for (semantic.symbols.items, 0..) |symbol, symbol_id| {
+                    if (symbol.synthetic_kind != .enum_iife_parameter or @backingInt(symbol.scope_id) != enum_scope or
+                        !std.mem.eql(u8, symbol.nameText(ast.source), enum_name)) continue;
+                    try binding_symbols.put(std.testing.allocator, @intCast(symbol_id), {});
+                }
+            }
+        }
+        const is_enum_binding = node.tag == .binding_identifier or enum_binding_nodes.contains(@intCast(raw));
+        const is_enum_name = switch (node.tag) {
+            .binding_identifier => std.mem.eql(u8, ast.getText(node.data.string_ref), enum_name),
+            .assignment_target_identifier => enum_binding_nodes.contains(@intCast(raw)) and
+                std.mem.eql(u8, ast.identifierNameText(node), enum_name),
+            .identifier_reference => runtime_reference_nodes.contains(@intCast(raw)) and
+                std.mem.eql(u8, ast.getText(node.data.string_ref), enum_name),
+            else => false,
+        };
+        if (!is_enum_name) continue;
+
+        const symbol_id = semantic.symbol_ids[raw] orelse return error.MissingTypeScriptEnumSymbolId;
+        try std.testing.expect(symbol_id < semantic.symbols.items.len);
+        try std.testing.expectEqualStrings(enum_name, semantic.symbols.items[symbol_id].nameText(ast.source));
+        if (is_enum_binding) {
+            var found_declaration = false;
+            for (semantic.references) |reference| {
+                if (!reference.flags.declare or reference.declaration_node_index.isNone()) continue;
+                if (@backingInt(reference.declaration_node_index) != raw) continue;
+                try std.testing.expectEqual(symbol_id, @backingInt(reference.symbol_id));
+                found_declaration = true;
+            }
+            if (node.tag == .binding_identifier) try std.testing.expect(found_declaration);
+            try binding_symbols.put(std.testing.allocator, symbol_id, {});
+        } else {
+            var found_reference = false;
+            for (semantic.references) |reference| {
+                if (reference.node_index.isNone() or @backingInt(reference.node_index) != raw) continue;
+                try std.testing.expect(!reference.flags.declare);
+                try std.testing.expectEqual(symbol_id, @backingInt(reference.symbol_id));
+                found_reference = true;
+            }
+            try std.testing.expect(found_reference);
+            enum_references += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), enum_declarations);
+    try std.testing.expect(binding_symbols.count() > 0);
+    try std.testing.expect(enum_references > 0);
+    for (semantic.references) |reference| {
+        if (reference.node_index.isNone()) continue;
+        const raw = @backingInt(reference.node_index);
+        if (raw >= ast.nodes.items.len or ast.nodes.items[raw].tag != .identifier_reference) continue;
+        if (!runtime_reference_nodes.contains(raw)) continue;
+        if (!std.mem.eql(u8, ast.getText(ast.nodes.items[raw].data.string_ref), enum_name)) continue;
+        const reference_symbol = @backingInt(reference.symbol_id);
+        try std.testing.expect(binding_symbols.contains(reference_symbol));
+    }
+}
+
+fn expectTypeScriptEnumModuleGraph(
+    entries: []const []const u8,
+    enum_names: []const []const u8,
+    disk: *@import("disk_module_store.zig").DiskModuleStore,
+    expected_load_hits: usize,
+) !void {
+    const profile = @import("../profile.zig");
+    profile.resetForTest();
+    defer profile.resetForTest();
+    profile.setIoForTest(std.testing.io);
+    profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.disk_cache = disk;
+    graph.disk_load_enabled = true;
+    graph.disk_options_hash = 0x6193_4819;
+    graph.disk_compiler_build_id = 0x4819;
+    graph.max_threads = 1;
+
+    try graph.build(std.testing.io, entries);
+
+    try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+    try std.testing.expect(graph.moduleCount() >= entries.len);
+    try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+    try std.testing.expectEqual(entries.len, enum_names.len);
+    for (entries, enum_names) |entry, enum_name| try expectTypeScriptEnumGraphModule(&graph, entry, enum_name);
+    for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+}
+
 fn expectAutomaticJsxModuleGraph(
     entries: []const []const u8,
     jsx_entries: []const []const u8,
@@ -1956,6 +2088,46 @@ test "graph JSX caller: classic runtime binds factory references to source impor
 
     try expectClassicJsxModuleGraph(&entries, &jsx_entries, entries[sources.len], &disk, 0);
     try expectClassicJsxModuleGraph(&entries, &jsx_entries, entries[sources.len], &disk, entries.len);
+}
+
+test "graph TypeScript caller: runtime enums keep exact symbol references on cold/cache" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const sources = [_][]const u8{
+        "enum Kind0 { North, South } export const value0 = Kind0.South;",
+        "export enum Kind1 { North = 3, South } export const value1 = Kind1.South;",
+        "enum Kind2 { North = 'n', South = 's' } export const value2 = Kind2.South;",
+        "enum Kind3 { North = 1 + 2, South = Kind3.North * 2 } export const value3 = Kind3.South;",
+        "function read4() { enum Kind4 { North, South } return Kind4.South; } export const value4 = read4();",
+        "enum Kind5 { North, South = 7 } function read(Kind5: number) { return Kind5; } export const value5 = Kind5.South + read(0);",
+        "function outer6() { enum Kind6 { North, South } return () => Kind6.South; } export const value6 = outer6()();",
+        "enum Kind7 { North, South } export const record7 = { [Kind7.North]: Kind7.South };",
+        "enum Kind8 { North, South } export function read8(input: number) { switch (input) { case Kind8.North: return Kind8.South; default: return Kind8.North; } }",
+        "enum Kind9 { North = 0x10, South = 0b10, West = 0o7 } const lookup9 = { [Kind9.North]: Kind9.South }; export const value9 = lookup9[Kind9.North];",
+    };
+    var enum_names: [sources.len][]const u8 = undefined;
+    var entries: [sources.len][]const u8 = undefined;
+    for (sources, 0..) |source, index| {
+        const basename = try std.fmt.allocPrint(std.testing.allocator, "enum-entry-{d}.ts", .{index});
+        defer std.testing.allocator.free(basename);
+        try writeFile(tmp.dir, basename, source);
+        entries[index] = try absPath(&tmp, basename);
+        enum_names[index] = try std.fmt.allocPrint(std.testing.allocator, "Kind{d}", .{index});
+    }
+    defer {
+        for (entries) |entry| std.testing.allocator.free(entry);
+        for (enum_names) |enum_name| std.testing.allocator.free(enum_name);
+    }
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    try expectTypeScriptEnumModuleGraph(&entries, &enum_names, &disk, 0);
+    try expectTypeScriptEnumModuleGraph(&entries, &enum_names, &disk, entries.len);
 }
 
 test "graph visitor caller: cold parse runs every hook and retains its semantic graph" {
