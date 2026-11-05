@@ -3142,16 +3142,17 @@ const ExactCtx = struct {
     }
 };
 
-/// Prove that every live, symbol-bound reference still resolves to the same
-/// SymbolId from its retained use scope. The bundler's retained-graph gate
-/// uses this after syntax-only mutations, where matching reference rows and
-/// counts alone cannot detect a reference rewired to a visible outer binding
-/// across a same-name inner declaration.
+/// Prove that each live, symbol-bound reference still resolves to the same
+/// SymbolId and that an unbound reference is not shadowed by a live lexical
+/// binding. The bundler's retained-graph gate uses this after syntax-only
+/// mutations, where matching rows and counts alone cannot detect a reference
+/// rewired to an outer binding or detached into the unresolved-name set.
 pub fn hasExactReachableReferenceResolution(
     allocator: std.mem.Allocator,
     ast: *const Ast,
     root: NodeIndex,
     reachable: []const u32,
+    live_reference_nodes: []const NodeIndex,
     symbol_ids: []const ?u32,
     symbols: []const Symbol,
     scopes: []const Scope,
@@ -3251,6 +3252,31 @@ pub fn hasExactReachableReferenceResolution(
             break :blk null;
         } else if (ctx.isEnumMemberReference(raw, name, symbol_id, reference.scope_id)) symbol_id else resolveInExactScopes(&ctx, name, reference.scope_id);
         if (expected == null or expected.? != symbol_id) return false;
+    }
+
+    for (live_reference_nodes) |node_index| {
+        if (node_index.isNone()) return false;
+        const raw = @backingInt(node_index);
+        if (!reachable_nodes.contains(raw) or raw >= ast.nodes.items.len or raw >= symbol_ids.len) return false;
+        if (symbol_ids[raw] != null) continue;
+        const expected_scope = expectedReferenceScope(ast, root, &parent_by_node, scope_owner_map, raw) orelse return false;
+        const node = ast.nodes.items[raw];
+        const name = ast.getText(node.data.string_ref);
+        if (helper_refs.contains(raw)) return false;
+        const use_scope: ScopeId = @fromBackingInt(@intCast(expected_scope.scope));
+        if (resolveInExactScopes(&ctx, name, use_scope)) |expected_id| {
+            if (expected_id >= symbols.len) return false;
+            if (ctx.isErasedTypeOnlyImportBinding(name, expected_id)) continue;
+            const symbol = symbols[expected_id];
+            if (hasReachableBindingForSymbol(&ctx, expected_id) or namespace_member_owners.contains(expected_id) or
+                symbol.kind == .import_binding or symbol.synthetic_kind != null) return false;
+            continue;
+        }
+        for (symbols, 0..) |symbol, symbol_raw| {
+            if (symbol.synthetic_kind != .enum_iife_member) continue;
+            if (ctx.isEnumMemberReference(raw, name, @intCast(symbol_raw), use_scope)) return false;
+        }
+        if (ctx.oom) return false;
     }
     return true;
 }
