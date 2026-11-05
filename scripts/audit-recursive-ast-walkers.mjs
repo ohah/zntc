@@ -287,6 +287,14 @@ const ALLOWLIST = {
     class: 'one_level',
     note: 'flat direct-child edge scan over reachable from the iterative reachable-node collector',
   },
+  'src/transformer/symbol_coverage.zig::hasExactReachableScopeOwnership': {
+    class: 'one_level',
+    note: 'builds parent edges from direct children of the caller-provided iterative reachable-node list',
+  },
+  'src/transformer/symbol_coverage.zig::hasExactReachableReferenceResolution': {
+    class: 'one_level',
+    note: 'builds parent edges from direct children of the caller-provided iterative reachable-node list',
+  },
   'src/transformer/symbol_coverage.zig::nestedEnumAuditFixture': {
     class: 'one_level',
     note: 'flat direct-child edge scan over source_nodes/nodes from the iterative reachable-node collector',
