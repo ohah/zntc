@@ -12878,6 +12878,7 @@ fn canRetainMinifiedSemanticGraph(
     defer allocator.free(reachable);
     const statement_contexts = collectMinifiedStatementContexts(allocator, ast, root) catch
         return rejectMinifiedGraphGate(failure, .allocation);
+    defer allocator.free(statement_contexts);
     const live_reference_nodes = reference_walk.collectIdentifierReferences(allocator, ast, root) catch
         return rejectMinifiedGraphGate(failure, .allocation);
     defer allocator.free(live_reference_nodes);
@@ -14353,7 +14354,7 @@ test "syntax minification retains only an exact semantic graph" {
     }
 }
 
-test "minified graph gate classifies enum member key decoding OOM as allocation" {
+test "minified graph gate classifies OOM and releases statement contexts" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -14378,9 +14379,9 @@ test "minified graph gate classifies enum member key decoding OOM as allocation"
     var injected_failures: usize = 0;
     var completed_without_failure = false;
     for (0..512) |fail_index| {
-        var trial_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-        defer trial_arena.deinit();
-        var failing = std.testing.FailingAllocator.init(trial_arena.allocator(), .{ .fail_index = fail_index });
+        // Use the leak-checking testing allocator beneath each fail-index
+        // injector so OOM early returns must release every gate scratch buffer.
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
         var failure: MinifiedGraphGateFailure = .scope_resolution;
         const retained = canRetainMinifiedSemanticGraph(
             failing.allocator(),
