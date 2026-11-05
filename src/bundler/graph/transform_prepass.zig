@@ -39,6 +39,7 @@ const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const SemanticScope = @import("../../semantic/scope.zig").Scope;
 const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
 const scope_owner_proof = @import("../../semantic/scope_owner_proof.zig");
+const symbol_coverage = @import("../../transformer/symbol_coverage.zig");
 const isTypeOnlyNode = @import("../../transformer/transformer/type_only.zig").isTypeOnlyNode;
 const define_mod = @import("../../transformer/transformer/define.zig");
 const drop_mod = @import("../../transformer/transformer/drop.zig");
@@ -12884,6 +12885,18 @@ fn canRetainMinifiedSemanticGraph(
             return rejectMinifiedGraphGate(failure, .scope_owners);
         scopes_with_owner[scope_id] = true;
     }
+    const exact_scope_ownership = symbol_coverage.hasExactReachableScopeOwnership(
+        allocator,
+        ast,
+        root,
+        reachable,
+        symbol_ids,
+        symbols,
+        scopes,
+        scope_owner_map,
+        references,
+    ) catch return rejectMinifiedGraphGate(failure, .allocation);
+    if (!exact_scope_ownership) return rejectMinifiedGraphGate(failure, .scope_owners);
     for (scopes_with_owner, 0..) |has_owner, scope_raw| {
         if (has_owner) continue;
         const allowed = allowed_orphan_scopes orelse
@@ -13141,6 +13154,7 @@ fn syntaxMinifyGraphRetainableForTest(source: []const u8) !bool {
     analyzer.enable_stmt_info = true;
     try analyzer.analyze();
     const before_statement_lists = try snapshotMinifiedStatementLists(allocator, &parser.ast);
+    var pre_minify_failure: MinifiedGraphGateFailure = .allocation;
     if (!canRetainMinifiedSemanticGraph(
         allocator,
         &parser.ast,
@@ -13152,8 +13166,11 @@ fn syntaxMinifyGraphRetainableForTest(source: []const u8) !bool {
         &analyzer.unresolved_references,
         &analyzer.scope_owner_map,
         null,
-        null,
-    )) return error.InvalidPreMinifyGraph;
+        &pre_minify_failure,
+    )) {
+        std.debug.print("pre-minify gate rejected source={s} reason={s}\n", .{ source, @tagName(pre_minify_failure) });
+        return error.InvalidPreMinifyGraph;
+    }
 
     const minify_mod = @import("../../transformer/minify.zig");
     minify_mod.minify(&parser.ast, .{
@@ -13184,6 +13201,75 @@ fn syntaxMinifyGraphRetainableForTest(source: []const u8) !bool {
         &analyzer.scope_owner_map,
         null,
         null,
+    );
+}
+
+fn preMinifiedGraphGateAcceptsForTest(source: []const u8, extension: []const u8) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(extension);
+    defer parser.deinit();
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.enable_stmt_info = true;
+    try analyzer.analyze();
+    var failure: MinifiedGraphGateFailure = .allocation;
+    const retained = canRetainMinifiedSemanticGraph(
+        allocator,
+        &parser.ast,
+        root,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.references.items,
+        analyzer.symbol_ids.items,
+        &analyzer.unresolved_references,
+        &analyzer.scope_owner_map,
+        null,
+        &failure,
+    );
+    if (!retained) std.debug.print("valid graph preflight failure={s} source={s}\n", .{ @tagName(failure), source });
+    return retained;
+}
+
+fn exactScopeOwnershipAcceptsForTest(source: []const u8, extension: []const u8) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(extension);
+    defer parser.deinit();
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.enable_stmt_info = true;
+    try analyzer.analyze();
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, &parser.ast, root);
+    defer allocator.free(reachable);
+    return symbol_coverage.hasExactReachableScopeOwnership(
+        allocator,
+        &parser.ast,
+        root,
+        reachable,
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
     );
 }
 
@@ -13301,13 +13387,22 @@ const MinifiedGraphMutation = enum {
     missing_statement_index,
     wrong_statement_index,
     wrong_scope_statement_index,
+    duplicate_scope_owner,
+    wrong_scope_owner_kind,
+    swapped_scope_owners,
+    valid_but_wrong_binding_scope,
 };
 
-fn minifiedGraphMutationIsRejected(mutation: MinifiedGraphMutation) !bool {
+const MinifiedGraphMutationResult = struct {
+    retained: bool,
+    failure: MinifiedGraphGateFailure,
+};
+
+fn minifiedGraphMutationIsRejected(mutation: MinifiedGraphMutation) !MinifiedGraphMutationResult {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const source = "const externalValue = external; function read(input) { const alias = input; let count = 0; count = input; return alias + count + externalValue; }";
+    const source = "const externalValue = external; function read(input) { const alias = input; let count = 0; count = input; return alias + count + externalValue; } function other() {}";
     var scanner = try Scanner.init(allocator, source);
     defer scanner.deinit();
     var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
@@ -13386,6 +13481,72 @@ fn minifiedGraphMutationIsRejected(mutation: MinifiedGraphMutation) !bool {
         .missing_statement_index => references.items[reference_row].stmt_idx = SemanticReference.NO_STMT,
         .wrong_statement_index => references.items[reference_row].stmt_idx = if (references.items[reference_row].stmt_idx == 0) 1 else 0,
         .wrong_scope_statement_index => references.items[reference_row].scope_stmt_idx +|= 1,
+        .duplicate_scope_owner => {
+            var first_function_scope: ?u32 = null;
+            var changed_second_owner = false;
+            for (parser.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag != .function_declaration) continue;
+                const scope_id = scope_owner_map.get(@intCast(raw)) orelse continue;
+                if (first_function_scope) |first_scope| {
+                    try scope_owner_map.put(allocator, @intCast(raw), first_scope);
+                    changed_second_owner = true;
+                    break;
+                }
+                first_function_scope = scope_id;
+            }
+            if (!changed_second_owner) return error.MissingSecondFunctionScopeOwner;
+        },
+        .wrong_scope_owner_kind => {
+            var function_scope: ?u32 = null;
+            for (parser.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag != .function_declaration) continue;
+                function_scope = scope_owner_map.get(@intCast(raw));
+                if (function_scope != null) break;
+            }
+            const scope_id = function_scope orelse return error.MissingFunctionScopeOwner;
+            analyzer.scopes.items[scope_id].kind = .block;
+        },
+        .swapped_scope_owners => {
+            var first_owner: ?u32 = null;
+            var first_scope: ?u32 = null;
+            var swapped = false;
+            for (parser.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag != .function_declaration) continue;
+                const scope_id = scope_owner_map.get(@intCast(raw)) orelse continue;
+                if (first_owner) |owner| {
+                    const owner_scope = first_scope orelse unreachable;
+                    try scope_owner_map.put(allocator, owner, scope_id);
+                    try scope_owner_map.put(allocator, @intCast(raw), owner_scope);
+                    swapped = true;
+                    break;
+                }
+                first_owner = @intCast(raw);
+                first_scope = scope_id;
+            }
+            if (!swapped) return error.MissingSecondFunctionScopeOwner;
+        },
+        .valid_but_wrong_binding_scope => {
+            const target_symbol = for (symbols, 0..) |symbol, sid| {
+                if (std.mem.eql(u8, parser.ast.getText(symbol.name), "externalValue")) break @as(?u32, @intCast(sid));
+            } else null;
+            const symbol_id = target_symbol orelse return error.MissingHostileBinding;
+            var function_scope: ?u32 = null;
+            for (parser.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag != .function_declaration) continue;
+                function_scope = scope_owner_map.get(@intCast(raw));
+                if (function_scope != null) break;
+            }
+            const scope_id = function_scope orelse return error.MissingFunctionScopeOwner;
+            const changed_scope: ScopeId = @fromBackingInt(scope_id);
+            symbols[symbol_id].scope_id = changed_scope;
+            var changed_declaration = false;
+            for (references.items) |*reference| {
+                if (!reference.flags.declare or @backingInt(reference.symbol_id) != symbol_id) continue;
+                reference.scope_id = changed_scope;
+                changed_declaration = true;
+            }
+            if (!changed_declaration) return error.MissingHostileDeclaration;
+        },
     }
 
     var failure: MinifiedGraphGateFailure = .allocation;
@@ -13402,7 +13563,7 @@ fn minifiedGraphMutationIsRejected(mutation: MinifiedGraphMutation) !bool {
         null,
         &failure,
     );
-    return !retained and failure != .allocation;
+    return .{ .retained = retained, .failure = failure };
 }
 
 fn shouldRecordPrepassExplicitGlobalsForTest(
@@ -14147,11 +14308,40 @@ test "syntax minification repairs statement coordinates without changing identit
     ));
 }
 
-test "syntax minify graph gate rejects eighteen hostile identity and statement corruptions" {
+test "syntax minify graph gate rejects twenty-two hostile identity and statement corruptions" {
     inline for (std.meta.tags(MinifiedGraphMutation)) |mutation| {
-        const rejected = try minifiedGraphMutationIsRejected(mutation);
-        if (!rejected) std.debug.print("minify graph mutation accepted: {s}\n", .{@tagName(mutation)});
-        try std.testing.expect(rejected);
+        const result = try minifiedGraphMutationIsRejected(mutation);
+        if (result.retained) std.debug.print("minify graph mutation accepted: {s}\n", .{@tagName(mutation)});
+        try std.testing.expect(!result.retained);
+        try std.testing.expect(result.failure != .allocation);
+        if (mutation == .duplicate_scope_owner or mutation == .wrong_scope_owner_kind or
+            mutation == .swapped_scope_owners or mutation == .valid_but_wrong_binding_scope)
+            try std.testing.expectEqual(MinifiedGraphGateFailure.scope_owners, result.failure);
+    }
+}
+
+test "minified graph exact scope gate accepts valid nested bindings and canonical owner aliases" {
+    const sources = [_]struct { source: []const u8, extension: []const u8 }{
+        .{ .source = "function outer() { if (condition) { var hoisted = 1; console.log(hoisted); } }", .extension = ".js" },
+        .{ .source = "try { throw 1; } catch (error) { console.log(error); }", .extension = ".js" },
+    };
+    for (sources) |case| {
+        const retained = try preMinifiedGraphGateAcceptsForTest(case.source, case.extension);
+        if (!retained) std.debug.print("valid exact scope graph rejected: {s}\n", .{case.source});
+        try std.testing.expect(retained);
+    }
+}
+
+test "exact scope ownership accepts canonical static-block enum and namespace aliases" {
+    const sources = [_]struct { source: []const u8, extension: []const u8 }{
+        .{ .source = "class Container { static { const value = 1; console.log(value); } }", .extension = ".js" },
+        .{ .source = "enum Kind { Value = 1 } console.log(Kind.Value);", .extension = ".ts" },
+        .{ .source = "namespace Values { export const value = 1; } console.log(Values.value);", .extension = ".ts" },
+    };
+    for (sources) |case| {
+        const valid = try exactScopeOwnershipAcceptsForTest(case.source, case.extension);
+        if (!valid) std.debug.print("valid canonical scope ownership rejected: {s}\n", .{case.source});
+        try std.testing.expect(valid);
     }
 }
 
