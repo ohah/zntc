@@ -2071,6 +2071,11 @@ pub const Bundler = struct {
         }
         shake_scope.end();
 
+        // Only the post-shake selected, retained initializer can require a
+        // waiter. Preserve the normal diagnostic result and emit no partial JS.
+        const tla_publication_options = self.makeEmitOptions(self.options.format);
+        const lowered_tla_publication_blocked = try @import("lowered_tla_publication.zig").diagnose(graph, &tla_publication_options, if (shaker) |*value| value else null);
+
         var emit_scope = profile.begin(.emit);
         defer emit_scope.end();
 
@@ -2245,7 +2250,10 @@ pub const Bundler = struct {
         // linker/emit 의 code_splitting 게이트가 splitting 시 프로덕션 init 으로 fallback 한다.
         // kill-switch — lazy_compilation=false(또는 code_splitting=false)면 기존 dev 단일 번들 100% 보존.
         const dev_split = self.options.dev_mode and self.options.code_splitting and self.options.lazy_compilation;
-        if (self.options.dev_mode and !dev_split) {
+        if (lowered_tla_publication_blocked) {
+            output = try self.allocator.dupe(u8, "");
+            outputs = try self.allocator.alloc(OutputFile, 0);
+        } else if (self.options.dev_mode and !dev_split) {
             // Dev mode: 프로덕션 파이프라인 재사용 (__commonJS/__esm 래핑 + HMR 런타임).
             var dev_emit_opts = self.makeEmitOptions(self.options.format);
             dev_emit_opts.sourcemap.enable = true;
