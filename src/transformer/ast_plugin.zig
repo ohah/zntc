@@ -323,15 +323,11 @@ pub const AstTransformCtx = struct {
         const Parser = @import("../parser/parser.zig").Parser;
         const alloc = self.transformer.allocator;
 
-        const scanner_ptr = alloc.create(Scanner) catch return error.OutOfMemory;
-        scanner_ptr.* = Scanner.init(alloc, code) catch return error.OutOfMemory;
-        defer {
-            scanner_ptr.deinit();
-            alloc.destroy(scanner_ptr);
-        }
+        var scanner = Scanner.init(alloc, code) catch return error.OutOfMemory;
+        defer scanner.deinit();
 
         const parser_ptr = alloc.create(Parser) catch return error.OutOfMemory;
-        parser_ptr.* = Parser.init(alloc, scanner_ptr);
+        parser_ptr.* = Parser.init(alloc, &scanner);
         defer {
             parser_ptr.deinit();
             alloc.destroy(parser_ptr);
@@ -1854,4 +1850,31 @@ test "plugin trailing statement batches remain empty when append allocation fail
     try std.testing.expectError(error.OutOfMemory, api.addTrailingStatements(&.{ statement, statement }));
     try std.testing.expectEqual(@as(usize, 1), transformer.trailing_nodes.items.len);
     try std.testing.expectEqual(statement, transformer.trailing_nodes.items[0]);
+}
+
+test "plugin trailing parser initialization OOM releases scanner state" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var scanner = try Scanner.init(alloc, "function marker() {}");
+    var parser = @import("../parser/parser.zig").Parser.init(alloc, &scanner);
+    _ = try parser.parse();
+
+    var transformer = try Transformer.init(alloc, &parser.ast, .{});
+    var api = AstTransformCtx{
+        .transformer = &transformer,
+        .trailing_statements_allowed = true,
+    };
+
+    for (0..2) |fail_index| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        transformer.allocator = failing.allocator();
+        try std.testing.expectError(
+            error.OutOfMemory,
+            api.parseAndInjectStatements("console.log('scanner allocation failure probe');"),
+        );
+        try std.testing.expect(!transformer.plugin_injection_failed);
+        try std.testing.expectEqual(@as(usize, 0), transformer.trailing_nodes.items.len);
+    }
 }
