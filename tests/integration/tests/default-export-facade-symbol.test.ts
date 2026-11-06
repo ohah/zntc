@@ -1,7 +1,115 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { writeFileSync } from 'node:fs';
+import { realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createFixture, runNode, runZntc } from './helpers';
+
+const DEFAULT_CLASS_TARGETS = [
+  { name: 'es5', flags: ['--target=es5'] },
+  { name: 'es2015', flags: ['--target=es2015'] },
+  { name: 'es2017', flags: ['--target=es2017'] },
+  { name: 'es2022', flags: ['--target=es2022'] },
+  { name: 'esnext', flags: ['--target=esnext'] },
+  { name: 'hermes', flags: ['--platform=react-native'] },
+] as const;
+
+const DEFAULT_CLASS_MINIFY_MODES = [
+  { name: 'plain', flags: [] },
+  { name: 'identifiers', flags: ['--minify-identifiers'] },
+  { name: 'identifiers-and-syntax', flags: ['--minify-identifiers', '--minify-syntax'] },
+] as const;
+
+const EXACT_PREPASS_ZERO_COUNTERS = [
+  'invalid_id',
+  'invalid_reference_node',
+  'unreachable_reference',
+  'ambiguous_ast_parent',
+  'cyclic_ast_edges',
+  'invalid_ast_root',
+  'invalid_ast_edge',
+  'invalid_ast_layout',
+  'shadowed_external_reference',
+  'duplicate_reference',
+  'identity_mismatch',
+  'binding_scope_mismatch',
+  'binding_scope_unknown',
+  'invalid_scope',
+  'reference_scope_mismatch',
+  'scope_map_mismatch',
+  'scope_owner_mismatch',
+  'scope_owner_parent_mismatch',
+  'duplicate_scope_owner',
+  'scope_strictness_mismatch',
+  'namespace_iife_param_mismatch',
+  'enum_iife_param_mismatch',
+  'helper_symbol_mismatch',
+  'scope_resolution_mismatch',
+  'invisible_reference',
+  'unclassified_reference',
+  'reference_statement_mismatch',
+  'reference_scope_statement_alias',
+  'reference_node_use_alias',
+  'declaration_scope_mismatch',
+  'declaration_identity_mismatch',
+  'declaration_anchor_mismatch',
+  'reference_count_mismatch',
+  'write_count_mismatch',
+  'missing_binding',
+  'missing_reference',
+] as const;
+
+function assertExactDefaultClassPrepass(
+  stderr: string,
+  sourceFile: string,
+  requireGeneratedScopeOwners: boolean,
+) {
+  const lines = stderr.split(/\r?\n/);
+  const sourcePath = realpathSync(sourceFile).replaceAll('\\', '/');
+  const moduleReports = (prefix: string) =>
+    lines.filter(
+      (line) =>
+        line.startsWith(prefix) && line.replaceAll('\\', '/').startsWith(`${prefix}${sourcePath}:`),
+    );
+  const modes = moduleReports('zntc: symbol-identity-prepass-mode ');
+  const identities = moduleReports('zntc: symbol-identity-prepass ');
+  const scopes = moduleReports('zntc: symbol-source-scope-owner ');
+
+  expect(modes, stderr).toHaveLength(1);
+  expect(modes[0], stderr).toContain('semantic_graph=retained');
+  expect(identities, stderr).toHaveLength(1);
+  expect(scopes, stderr).toHaveLength(1);
+
+  const identity = identities[0] ?? '';
+  expect(identity, stderr).toMatch(
+    /invariant_counter_count=36 observation_field_count=8 diagnostic_field_count=17/,
+  );
+  expect(identity, stderr).toMatch(/clean=1(?:\s|$)/);
+  expect(identity, stderr).toMatch(/schema_fingerprint=41454302a0dc783a(?:\s|$)/);
+  for (const counter of EXACT_PREPASS_ZERO_COUNTERS) {
+    expect(identity, `${counter}: ${identity}`).toMatch(new RegExp(`(?:^| )${counter}=0(?:\\s|$)`));
+  }
+
+  const observation = (field: string) => {
+    const matches = identity.match(new RegExp(`(?:^| )${field}=(\\d+)(?=\\s|$)`, 'g')) ?? [];
+    expect(matches, `${field}: ${identity}`).toHaveLength(1);
+    return Number(matches[0]?.match(/=(\d+)/)?.[1] ?? -1);
+  };
+  expect(observation('declaration_anchors_checked')).toBeGreaterThan(0);
+  if (requireGeneratedScopeOwners) {
+    expect(observation('generated_bindings')).toBeGreaterThan(0);
+    expect(observation('generated_references')).toBeGreaterThan(0);
+    expect(observation('generated_scope_owners_checked')).toBeGreaterThanOrEqual(3);
+  }
+
+  for (const counter of [
+    'scope_owner_mismatch',
+    'scope_owner_parent_mismatch',
+    'duplicate_scope_owner',
+  ]) {
+    expect(scopes[0], `${counter}: ${scopes[0]}`).toMatch(
+      new RegExp(`(?:^| )${counter}=0(?:\\s|$)`),
+    );
+  }
+}
 
 describe('#4819 default export facade SymbolId', () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -142,6 +250,99 @@ export { default } from './dep.mjs';
       expect(bundled.stdout).toBe(native.stdout);
     });
   }
+
+  test('default class SymbolId and ScopeId reports stay exact across target/minify modes', async () => {
+    const fixture = await createFixture({
+      'anonymous-entry.mjs':
+        "import DefaultClass, { _default as local } from './anonymous.mjs';\n" +
+        'console.log(JSON.stringify([new DefaultClass().value(), local]));\n',
+      'anonymous.mjs':
+        "const _default = 'anonymous source';\n" +
+        'export { _default };\n' +
+        'export default class { value() { return _default; } }\n',
+      'named-entry.mjs':
+        "import DefaultClass, { _default as local } from './named.mjs';\n" +
+        'console.log(JSON.stringify([new DefaultClass().value(), local]));\n',
+      'named.mjs':
+        "const _default = 'named source';\n" +
+        'export { _default };\n' +
+        'export default class Widget { value() { return _default; } }\n',
+    });
+    cleanup = fixture.cleanup;
+
+    const cases = [
+      {
+        name: 'anonymous',
+        entry: 'anonymous-entry.mjs',
+        module: 'anonymous.mjs',
+        expected: '["anonymous source","anonymous source"]',
+      },
+      {
+        name: 'named',
+        entry: 'named-entry.mjs',
+        module: 'named.mjs',
+        expected: '["named source","named source"]',
+      },
+    ] as const;
+    let runs = 0;
+
+    for (const testCase of cases) {
+      const entry = join(fixture.dir, testCase.entry);
+      const native = await runNode(entry);
+      expect(native.stderr).toBe('');
+      expect(native.stdout).toBe(testCase.expected);
+
+      for (const target of DEFAULT_CLASS_TARGETS) {
+        for (const mode of DEFAULT_CLASS_MINIFY_MODES) {
+          const output = join(
+            fixture.dir,
+            `bundle-${testCase.name}-${target.name}-${mode.name}.mjs`,
+          );
+          const result = await runZntc(
+            ['--bundle', entry, '-o', output, '--format=esm', ...target.flags, ...mode.flags],
+            { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+          );
+          expect(
+            result.exitCode,
+            `${testCase.name} ${target.name} ${mode.name}: ${result.stderr}`,
+          ).toBe(0);
+
+          const sourceModule = realpathSync(join(fixture.dir, testCase.module)).replaceAll(
+            '\\',
+            '/',
+          );
+          const identityPrefix = `zntc: symbol-identity-prepass ${sourceModule}:`;
+          const hasIdentityReport = result.stderr
+            .split(/\r?\n/)
+            .some((line) => line.startsWith(identityPrefix));
+          if (target.name === 'es5' || target.name === 'hermes') {
+            expect(
+              hasIdentityReport,
+              `${testCase.name} ${target.name} ${mode.name}: ${result.stderr}`,
+            ).toBe(true);
+          }
+          if (hasIdentityReport) {
+            assertExactDefaultClassPrepass(
+              result.stderr,
+              sourceModule,
+              target.name === 'es5' || target.name === 'hermes',
+            );
+          }
+
+          const bundled = await runNode(output);
+          expect(bundled.stderr, `${testCase.name} ${target.name} ${mode.name}`).toBe('');
+          expect(bundled.stdout, `${testCase.name} ${target.name} ${mode.name}`).toBe(
+            native.stdout,
+          );
+          runs++;
+        }
+      }
+    }
+
+    expect(runs).toBe(
+      cases.length * DEFAULT_CLASS_TARGETS.length * DEFAULT_CLASS_MINIFY_MODES.length,
+    );
+  });
 
   test('anonymous default class keeps its facade identity on the retained ES5 graph', async () => {
     const fixture = await createFixture({
