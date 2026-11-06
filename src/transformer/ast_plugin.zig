@@ -883,6 +883,23 @@ pub const AstTransformCtx = struct {
                 });
             },
 
+            // Tagged templates store [tag expression, template literal, flags].
+            // Both children may carry source SymbolIds through the retained graph.
+            .tagged_template_expression => blk: {
+                const e = src_node.data.extra;
+                if (e > src_ast.extra_data.items.len or src_ast.extra_data.items.len - e < 3) break :blk .none;
+                const tag_source = src_ast.readExtraNode(e, 0);
+                const template_source = src_ast.readExtraNode(e, 1);
+                if (tag_source.isNone() or template_source.isNone()) break :blk .none;
+                const tag = try self.copyNodeFromParsedAst(src_ast, tag_source);
+                const template = try self.copyNodeFromParsedAst(src_ast, template_source);
+                if (tag.isNone() or template.isNone()) break :blk .none;
+                const flags = src_ast.extra_data.items[e + 2];
+                break :blk self.addExtraNode(.tagged_template_expression, new_span, &.{
+                    @backingInt(tag), @backingInt(template), flags,
+                });
+            },
+
             // 지원하지 않는 노드: data에 AST 인덱스가 포함될 수 있으므로
             // raw 복사는 dangling index 위험. 안전하게 스킵.
             else => .none,
