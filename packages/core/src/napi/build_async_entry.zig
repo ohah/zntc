@@ -73,7 +73,9 @@ fn buildWorkerThread(async_data: *BuildAsyncData) void {
     var bundler = Bundler.init(native_alloc, async_data.options);
     defer bundler.deinit();
     async_data.result = bundler.bundle(common.io()) catch |err| {
-        async_data.err_msg = if (err == error.LoopDynamicScope)
+        async_data.err_msg = if (err == error.ClassHeritageEval)
+            "ZNTC1512: class heritage direct eval cannot preserve strictness in a sloppy lowered evaluation context"
+        else if (err == error.LoopDynamicScope)
             "ZNTC1509: direct eval observes a loop lexical environment requiring lowering"
         else if (err == error.GeneratorNativeLexicalResume)
             "ZNTC1510: retained class lexical cell cannot be preserved in the generated state callback"

@@ -969,7 +969,18 @@ fn onClassDeclaration(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeInd
     // 원본 class extra를 복사하여 body만 교체한 새 class 노드.
     const none = @backingInt(NodeIndex.none);
     const new_name_idx = t.ast.extra_data.items[class_extra];
-    const new_super_idx = t.ast.extra_data.items[class_extra + 1];
+    const source_super: NodeIndex = @fromBackingInt(t.ast.extra_data.items[class_extra + 1]);
+    // Capture the evaluated heritage at the source class, not when the
+    // reconstruction factory is called later. Its exact temp SID crosses
+    // the factory closure; no superclass expression is evaluated twice.
+    const super_identity: ?es_helpers.TempIdentityCapture = if (!source_super.isNone())
+        if (t.semantic_edit_enabled)
+            try es_helpers.reserveTrackedTempIdentityInOutputScope(t, node.span, t.outputScopeParent(source_class_scope), source_class_scope)
+        else
+            try es_helpers.reserveTrackedTempIdentity(t, node.span)
+    else
+        null;
+    const new_super_idx = if (super_identity) |identity| @backingInt(try es_helpers.makeAssignExpr(t, try es_helpers.makeTempRefFromIdentity(t, identity, node.span, .{ .write = true }), source_super, node.span, 0)) else @backingInt(NodeIndex.none);
     const deco_start = t.ast.extra_data.items[class_extra + 6];
     const deco_len = t.ast.extra_data.items[class_extra + 7];
     const new_class = try t.addExtraNode(node.tag, node.span, &.{
@@ -979,7 +990,7 @@ fn onClassDeclaration(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeInd
     });
     // visit은 skip (default 경로가 __workletClass 필드 없는 상태로 이미 완료).
     // Trailing: `Foo.Foo__classFactory = <worklet IIFE>`
-    const factory_stmt = try buildClassFactoryAssignment(
+    const factory_stmt = buildClassFactoryAssignment(
         t,
         class_name,
         @fromBackingInt(@intCast(new_name_idx)),
@@ -987,7 +998,11 @@ fn onClassDeclaration(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeInd
         source_class_self,
         source_class_scope,
         node_idx,
-    );
+        super_identity,
+    ) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.PluginFailed,
+    };
     // pending_nodes 또는 trailing_nodes에 추가해야 program/block이 반영.
     try t.trailing_nodes.append(t.allocator, factory_stmt);
     return new_class;
@@ -1078,6 +1093,7 @@ fn buildClassFactoryBody(
     factory_function_symbol: ?@import("../../semantic/symbol.zig").SymbolId,
     wrapper_scope: @import("../../semantic/scope.zig").ScopeId,
     source_class: NodeIndex,
+    super_identity: ?es_helpers.TempIdentityCapture,
 ) !ClassFactoryBody {
     const zero_span = Span{ .start = 0, .end = 0 };
     const none = @backingInt(NodeIndex.none);
@@ -1112,6 +1128,12 @@ fn buildClassFactoryBody(
             editor.symbols.items[@backingInt(class_self_symbol.?)].decl_flags.is_const = true;
             editor.symbols.items[@backingInt(class_self_symbol.?)].decl_flags.preserve_class_name = true;
         } else unreachable;
+    }
+    if (super_identity) |identity| {
+        var read = identity;
+        read.reference_scope = class_scope;
+        const superclass = try es_helpers.makeTempRefFromIdentity(t, read, zero_span, .{ .read = true });
+        t.ast.extra_data.items[t.ast.getNode(class_expr).data.extra + ast_mod.ClassExtra.super] = @backingInt(superclass);
     }
     const BoundaryBinding = @import("../../semantic/runtime_subtree_clone.zig").BoundaryBinding;
     const mappings: []const BoundaryBinding = if (t.semantic_edit_enabled) &.{.{
@@ -1173,6 +1195,7 @@ fn buildClassFactoryAssignment(
     source_class_self: ?u32,
     source_class_scope: @import("../../semantic/scope.zig").ScopeId,
     source_class: NodeIndex,
+    super_identity: ?es_helpers.TempIdentityCapture,
 ) !NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
@@ -1233,7 +1256,7 @@ fn buildClassFactoryAssignment(
             try es_helpers.resolveSyntheticNameAvoidingDynamicEval(t, factory_name, t.current_scope);
         symbol.output_name_hint = try t.allocator.dupe(u8, output_name_hint);
     }
-    const factory_body = try buildClassFactoryBody(t, class_name_span, stripped_body, factory_scope, source_class_scope, source_class_self, inner_fn, binding_node, factory_symbol, wrapper_scope, source_class);
+    const factory_body = try buildClassFactoryBody(t, class_name_span, stripped_body, factory_scope, source_class_scope, source_class_self, inner_fn, binding_node, factory_symbol, wrapper_scope, source_class, super_identity);
     t.ast.extra_data.items[t.ast.getNode(inner_fn).data.extra + ast_mod.FunctionExtra.body] = @backingInt(factory_body.node);
     const body_raw = @backingInt(factory_body.node);
     if (t.plugins.worklet.class_factory_display_names.contains(body_raw))

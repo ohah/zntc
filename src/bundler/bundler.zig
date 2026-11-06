@@ -43,6 +43,7 @@ fn rejectUnsupportedLoopPublication(graph: *const ModuleGraph) !void {
         if (diagnostic.severity != .@"error") continue;
         switch (diagnostic.code) {
             .loop_dynamic_scope => return error.LoopDynamicScope,
+            .class_heritage_eval => return error.ClassHeritageEval,
             .generator_native_lexical_resume => return error.GeneratorNativeLexicalResume,
             .generator_native_lexical_nesting => return error.GeneratorNativeLexicalNesting,
             else => {},
@@ -1765,7 +1766,7 @@ pub const Bundler = struct {
                 if (!worker_output_map.contains(we.resolved_path)) {
                     const worker_format = self.workerFormatFor(!classic_workers.contains(we.resolved_path));
                     const worker_result = self.buildWorker(io, we.resolved_path, worker_format, graph) catch |err| switch (err) {
-                        error.OutOfMemory, error.LoopDynamicScope, error.GeneratorNativeLexicalResume, error.GeneratorNativeLexicalNesting => return err,
+                        error.OutOfMemory, error.ClassHeritageEval, error.LoopDynamicScope, error.GeneratorNativeLexicalResume, error.GeneratorNativeLexicalNesting => return err,
                         else => continue,
                     } orelse {
                         try failed_worker_paths.put(self.allocator, we.resolved_path, {});
@@ -3126,6 +3127,7 @@ test "unsupported loop publication returns typed errors before bundle results" {
     const helpers = @import("test_helpers.zig");
     const cases = .{
         .{ "for(let index=0;index<2;index++){eval('index=9')}", error.LoopDynamicScope, true },
+        .{ "class Parent{};class Child extends eval('Parent'){}", error.ClassHeritageEval, true },
         .{ "function* run(){for(var i=0;i<2;i++){class Cell{}yield 0;use(()=>Cell)}}run();", error.GeneratorNativeLexicalResume, false },
         .{ "function* run(){for(let i=0;i<2;i++){use(()=>i);for(let i=4;i<6;i++){yield 0;use(()=>i)}}}run();", error.GeneratorNativeLexicalNesting, false },
     };

@@ -27,6 +27,16 @@ pub const ClassInitializerTransfer = struct {
     body: ast.NodeIndex,
     owner_epoch: u32,
 };
+/// The registered Worklet creator captures this pair from its actual clone map.
+pub const WorkletClassClone = struct {
+    creator_index: u32,
+    source_owner: @import("scope_frame_history.zig").Owner,
+    target_owner: @import("scope_frame_history.zig").Owner,
+    source_execution: scope.ScopeId,
+    target_execution: scope.ScopeId,
+    source_leaf: @import("scope_frame_history.zig").Owner,
+    target_leaf: @import("scope_frame_history.zig").Owner,
+};
 pub const ScopeMove = struct {
     node: ast.NodeIndex,
     source_node: ast.NodeIndex,
@@ -34,13 +44,14 @@ pub const ScopeMove = struct {
     to: scope.ScopeId,
     from_frame: scope.Scope,
     to_frame: scope.Scope,
-    reason: enum(u32) { lowerer_scope_relocation, empty_arrow_scope_elision, static_block_environment_transfer, generator_environment_transfer, class_heritage_evaluation, class_initializer_environment_transfer, class_key_evaluation },
+    reason: enum(u32) { lowerer_scope_relocation, empty_arrow_scope_elision, static_block_environment_transfer, generator_environment_transfer, class_heritage_evaluation, class_initializer_environment_transfer, class_key_evaluation, worklet_class_clone },
     elision: ?EmptyArrowElision = null,
     static_block: ?StaticBlockTransfer = null,
     generator: ?@import("generator_environment_transfer.zig").Transfer = null,
     class_heritage: ?ClassHeritageTransfer = null,
     class_initializer: ?ClassInitializerTransfer = null,
     class_key: ?@import("class_key_evaluation.zig").Transfer = null,
+    worklet_clone: ?WorkletClassClone = null,
     frame_epoch: u32 = 0,
 };
 
@@ -100,6 +111,9 @@ pub fn validate(
         if (execution != origin.execution_scope) return false;
         var current = origin.source_scope;
         var current_execution = origin.execution_scope;
+        var clone_leaf = entry.value_ptr.source_node;
+        var saw_clone = false;
+        var heritage_carrier: ?ast.NodeIndex = null;
         for (origin.scope_moves, 0..) |move, move_index| {
             if (move.source_node != entry.value_ptr.source_node or
                 move.node.isNone() or @backingInt(move.node) >= tree.nodes.items.len or
@@ -108,8 +122,19 @@ pub fn validate(
                 !sameFrame(move.from_frame, history.frameAt(move.from, move.frame_epoch) orelse return false) or
                 !sameFrame(move.to_frame, history.frameAt(move.to, move.frame_epoch) orelse return false)) return false;
             if ((move.reason == .class_initializer_environment_transfer) != (move.class_initializer != null) or
-                (move.reason == .class_key_evaluation) != (move.class_key != null)) return false;
+                (move.reason == .class_key_evaluation) != (move.class_key != null) or
+                (move.reason == .worklet_class_clone) != (move.worklet_clone != null)) return false;
+            if (move.reason != .class_heritage_evaluation) heritage_carrier = null;
             switch (move.reason) {
+                .worklet_class_clone => {
+                    const transfer = move.worklet_clone orelse return false;
+                    if (move.elision != null or move.static_block != null or move.generator != null or move.class_heritage != null or move.class_initializer != null or move.class_key != null or
+                        transfer.source_leaf.node != clone_leaf or current_execution != transfer.source_execution or
+                        !validWorkletClone(tree, history, origin, move, transfer, scopes.len)) return false;
+                    clone_leaf = transfer.target_leaf.node;
+                    current_execution = transfer.target_execution;
+                    saw_clone = true;
+                },
                 .lowerer_scope_relocation => {
                     if (move.elision != null or move.static_block != null or move.generator != null or move.class_heritage != null or move.class_initializer != null) return false;
                     if (!descendantAt(history, move.from, current_execution, move.frame_epoch, scopes.len) or
@@ -144,7 +169,9 @@ pub fn validate(
                 },
                 .class_heritage_evaluation => {
                     const transfer = move.class_heritage orelse return false;
-                    if (move.elision != null or move.static_block != null or move.generator != null or !validClassHeritage(tree, history, origin, move, transfer, parser_node_count)) return false;
+                    if (current_execution != move.from or move.elision != null or move.static_block != null or move.generator != null or !validClassHeritage(tree, history, origin, current_execution, heritage_carrier, move, transfer, parser_node_count)) return false;
+                    current_execution = move.to;
+                    heritage_carrier = transfer.owner.node;
                 },
                 .empty_arrow_scope_elision => {
                     if (move.static_block != null or move.generator != null or move.class_heritage != null) return false;
@@ -161,9 +188,74 @@ pub fn validate(
             }
             current = move.to;
         }
-        if (entry.value_ptr.scope != current) return false;
+        if (entry.value_ptr.scope != current or (saw_clone and entry.key_ptr.* != clone_leaf)) return false;
     }
     return true;
+}
+
+fn workletOwnerAt(index: *const @import("scope_frame_history.zig").Index, id: scope.ScopeId, epoch: u32) ?@import("scope_frame_history.zig").Owner {
+    if (!index.valid or epoch > index.history.events.len) return null;
+    var owner: ?@import("scope_frame_history.zig").Owner = null;
+    for (index.history.source_owners) |binding| if (binding.scope == id) {
+        if (owner != null) return null;
+        owner = binding.owner;
+    };
+    for (index.history.events[0..epoch]) |event| {
+        if (event.scope != id) continue;
+        switch (event.kind) {
+            .birth => owner = event.owner_after,
+            .owner => owner = event.owner_after,
+            .frame => {},
+        }
+    }
+    return owner;
+}
+
+pub fn validWorkletClone(tree: *const ast.Ast, index: *const @import("scope_frame_history.zig").Index, origin: Origin, move: ScopeMove, transfer: WorkletClassClone, scope_count: usize) bool {
+    const std = @import("std");
+    if (transfer.creator_index >= index.history.worklet_class_creators.len or move.frame_epoch > index.history.events.len) return false;
+    const creator = index.history.worklet_class_creators[transfer.creator_index];
+    const class_boundary = transfer.source_execution == creator.source.scope and transfer.target_execution == creator.target.scope and
+        transfer.source_owner.node == creator.source.node and transfer.target_owner.node == creator.target.node;
+    const source_class_owner = workletOwnerAt(index, creator.source.scope, creator.epoch) orelse return false;
+    const target_class_owner = workletOwnerAt(index, creator.target.scope, creator.epoch) orelse return false;
+    const factory_owner = workletOwnerAt(index, creator.factory_scope, creator.epoch) orelse return false;
+    if (source_class_owner.node != creator.source.node or target_class_owner.node != creator.target.node or factory_owner.node != creator.factory or
+        (index.frameAt(creator.target.scope, creator.epoch) orelse return false).parent != creator.factory_scope or
+        (index.frameAt(creator.factory_scope, creator.epoch) orelse return false).parent != creator.wrapper_scope) return false;
+    if (creator.epoch != move.frame_epoch or transfer.source_execution == transfer.target_execution or
+        transfer.source_leaf.node == transfer.target_leaf.node or transfer.target_leaf.node != move.node or
+        transfer.source_owner.node == transfer.target_owner.node or
+        (!class_boundary and (transfer.source_owner.tag != transfer.target_owner.tag or !std.meta.eql(transfer.source_owner.span, transfer.target_owner.span))) or
+        !std.meta.eql(workletOwnerAt(index, transfer.source_execution, move.frame_epoch) orelse return false, transfer.source_owner) or
+        !std.meta.eql(workletOwnerAt(index, transfer.target_execution, move.frame_epoch) orelse return false, transfer.target_owner) or
+        !descendantAt(index, move.from, transfer.source_execution, move.frame_epoch, scope_count) or
+        !descendantAt(index, move.to, transfer.target_execution, move.frame_epoch, scope_count) or
+        !descendantAt(index, transfer.source_execution, creator.source.scope, move.frame_epoch, scope_count) or
+        !descendantAt(index, transfer.target_execution, creator.target.scope, move.frame_epoch, scope_count)) return false;
+    var born = false;
+    for (index.history.events[0..move.frame_epoch]) |event| if (event.kind == .birth and event.scope == transfer.target_execution) {
+        if (born or !std.meta.eql(event.owner_after, @as(?@import("scope_frame_history.zig").Owner, transfer.target_owner))) return false;
+        born = true;
+    };
+    if (!born or transfer.source_leaf.tag != origin.tag or transfer.target_leaf.tag != origin.tag or
+        !std.meta.eql(transfer.source_leaf.span, origin.span) or !std.meta.eql(transfer.target_leaf.span, origin.span) or
+        transfer.source_leaf.words[0] != origin.name.start or transfer.source_leaf.words[1] != origin.name.end or
+        transfer.target_leaf.words[0] != origin.name.start or transfer.target_leaf.words[1] != origin.name.end) return false;
+    inline for (.{ transfer.source_leaf, transfer.target_leaf }) |leaf| {
+        const actual = (@import("scope_frame_history.zig").Owner.capture(tree, leaf.node) catch return false) orelse return false;
+        if (!std.meta.eql(actual, leaf)) return false;
+    }
+    return true;
+}
+
+pub fn clonedWorkletClass(a: @import("std").mem.Allocator, origin: Origin, node: ast.NodeIndex, source_node: ast.NodeIndex, from: scope.ScopeId, to: scope.ScopeId, scopes: []const scope.Scope, frame_epoch: u32, transfer: WorkletClassClone) !Origin {
+    var next = origin;
+    const moves = try a.alloc(ScopeMove, origin.scope_moves.len + 1);
+    @memcpy(moves[0..origin.scope_moves.len], origin.scope_moves);
+    moves[origin.scope_moves.len] = .{ .node = node, .source_node = source_node, .from = from, .to = to, .from_frame = scopes[from.toIndex()], .to_frame = scopes[to.toIndex()], .reason = .worklet_class_clone, .worklet_clone = transfer, .frame_epoch = frame_epoch };
+    next.scope_moves = moves;
+    return next;
 }
 
 fn validClassInitializer(tree: *const ast.Ast, index: *const @import("scope_frame_history.zig").Index, origin: Origin, move: ScopeMove, transfer: ClassInitializerTransfer) bool {
@@ -588,10 +680,10 @@ pub fn transferredGenerator(a: @import("std").mem.Allocator, origin: Origin, nod
     return next;
 }
 
-fn validClassHeritage(tree: *const ast.Ast, index: *const @import("scope_frame_history.zig").Index, origin: Origin, move: ScopeMove, transfer: ClassHeritageTransfer, parser_count: u32) bool {
+fn validClassHeritage(tree: *const ast.Ast, index: *const @import("scope_frame_history.zig").Index, origin: Origin, current_execution: scope.ScopeId, heritage_carrier: ?ast.NodeIndex, move: ScopeMove, transfer: ClassHeritageTransfer, parser_count: u32) bool {
     const std = @import("std");
-    if (transfer.class_scope != move.from or transfer.evaluation_scope != move.to or origin.execution_scope != transfer.class_scope or
-        transfer.capture_epoch > move.frame_epoch or move.source_node != transfer.heritage or transfer.heritage.isNone() or
+    if (transfer.class_scope != move.from or transfer.evaluation_scope != move.to or current_execution != transfer.class_scope or
+        transfer.capture_epoch > move.frame_epoch or transfer.heritage.isNone() or move.source_node.isNone() or @backingInt(move.source_node) >= parser_count or
         @backingInt(transfer.heritage) >= parser_count or transfer.owner.node.isNone() or @backingInt(transfer.owner.node) >= parser_count or
         origin.tag != .identifier_reference or !origin.flags.read or origin.flags.write or origin.flags.type_context or origin.flags.value_as_type or
         (transfer.owner.tag != .class_declaration and transfer.owner.tag != .class_expression)) return false;
@@ -602,14 +694,16 @@ fn validClassHeritage(tree: *const ast.Ast, index: *const @import("scope_frame_h
         matches += 1;
     };
     if (matches != 1 or !tree.hasExtra(transfer.owner.words[0], ast.ClassExtra.super) or tree.readExtraNode(transfer.owner.words[0], ast.ClassExtra.super) != transfer.heritage) return false;
-    const heritage = tree.getNode(transfer.heritage);
-    return heritage.tag == .identifier_reference and std.meta.eql(heritage.data.string_ref, origin.name) and std.meta.eql(heritage.span, origin.span);
+    const member = heritage_carrier orelse move.source_node;
+    if (!index.heritage_read_membership.contains((@as(u64, @backingInt(transfer.class_scope)) << 32) | @as(u64, @backingInt(member)))) return false;
+    const leaf = tree.getNode(move.source_node);
+    return leaf.tag == .identifier_reference and std.meta.eql(leaf.data.string_ref, origin.name) and std.meta.eql(leaf.span, origin.span);
 }
 
 pub fn classHeritage(a: @import("std").mem.Allocator, origin: Origin, transfer: ClassHeritageTransfer, node: ast.NodeIndex, source_node: ast.NodeIndex) !Origin {
     if (origin.scope_moves.len == 0) return error.InvalidScope;
     const previous = origin.scope_moves[origin.scope_moves.len - 1];
-    if (previous.node != node or previous.source_node != source_node or source_node != transfer.heritage or previous.from != transfer.class_scope or previous.to != transfer.evaluation_scope or previous.reason != .lowerer_scope_relocation) return error.InvalidScope;
+    if (previous.node != node or previous.source_node != source_node or previous.from != transfer.class_scope or previous.to != transfer.evaluation_scope or previous.reason != .lowerer_scope_relocation) return error.InvalidScope;
     const moves = try a.dupe(ScopeMove, origin.scope_moves);
     moves[moves.len - 1].reason = .class_heritage_evaluation;
     moves[moves.len - 1].class_heritage = transfer;
@@ -625,7 +719,7 @@ test "generator and heritage source witnesses preserve immutable edges and rejec
     const Analyzer = @import("analyzer.zig").SemanticAnalyzer;
     const Transformer = @import("../transformer/transformer.zig").Transformer;
     const Data = @import("../bundler/module.zig").ModuleSemanticData;
-    const source = "class A extends Promise{}class B extends Promise{}async function first(){const One=class extends(await pendingCtor){};return One}async function second(){const Two=class extends(await pendingCtor){};return Two}";
+    const source = "class A extends Promise{}class B extends Promise{}async function first(){const One=class extends(await pendingCtor){};return One}async function second(){const Two=class extends(await pendingCtor){};return Two}class Nested extends(class extends Promise{}){}";
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -699,6 +793,7 @@ test "generator and heritage source witnesses preserve immutable edges and rejec
                 if (selected == null) selected = .{ .node = entry.key_ptr.*, .entry = entry.value_ptr.*, .index = i } else if (transfer.source.owner.node != selected.?.entry.source_external.?.scope_moves[selected.?.index].generator.?.source.owner.node) other = .{ .node = entry.key_ptr.*, .entry = entry.value_ptr.*, .index = i };
             }
             if (move.class_heritage) |transfer| {
+                if (move.source_node != transfer.heritage) continue;
                 if (heritage == null) heritage = .{ .node = entry.key_ptr.*, .entry = entry.value_ptr.*, .index = i } else if (transfer.owner.node != heritage.?.entry.source_external.?.scope_moves[heritage.?.index].class_heritage.?.owner.node) other_heritage = .{ .node = entry.key_ptr.*, .entry = entry.value_ptr.*, .index = i };
             }
         }
@@ -808,6 +903,69 @@ test "generator and heritage source witnesses preserve immutable edges and rejec
         try std.testing.expect(!try Check.run(a, transformer.ast, root, parser_node_count, &data, &analyzer.unresolved_reference_nodes, &transformer));
         try data.node_scope_provenance.put(a, direct.node, direct.entry);
     }
+    // The immutable source edge authenticates leaves, not arbitrary same-name
+    // nodes from another class, its body, or a nested execution environment.
+    var membership_index = try @import("scope_frame_history.zig").validateAndIndex(a, transformer.ast, data.scopes, &data.scope_owner_map, &data.scope_history, null);
+    defer membership_index.deinit(a);
+    try std.testing.expect(membership_index.valid);
+    try std.testing.expect(validClassHeritage(transformer.ast, &membership_index, old_direct, old_direct.execution_scope, null, direct_move, known, parser_node_count));
+    for (0..12) |poison| {
+        var changed = known;
+        var poisoned_move = direct_move;
+        var external = old_direct;
+        switch (poison) {
+            0 => changed.owner = other_known.owner,
+            1 => changed.class_scope = other_known.class_scope,
+            2 => changed.heritage = other_known.heritage,
+            3 => changed.evaluation_scope = other_known.class_scope,
+            4 => changed.capture_epoch = poisoned_move.frame_epoch + 1,
+            5 => poisoned_move.source_node = other_known.heritage,
+            6 => poisoned_move.source_node = known.owner.node,
+            7 => poisoned_move.source_node = .none,
+            8 => external.execution_scope = other_known.class_scope,
+            9 => external.flags.write = true,
+            10 => poisoned_move.source_node = transformer.ast.readExtraNode(known.owner.words[0], ast.ClassExtra.body),
+            11 => poisoned_move.source_node = chosen.entry.source_node,
+            else => unreachable,
+        }
+        try std.testing.expect(!validClassHeritage(transformer.ast, &membership_index, external, external.execution_scope, null, poisoned_move, changed, parser_node_count));
+    }
+    const membership_key = (@as(u64, @backingInt(known.class_scope)) << 32) | @as(u64, @backingInt(direct_move.source_node));
+    try std.testing.expect(membership_index.heritage_read_membership.remove(membership_key));
+    try std.testing.expect(!validClassHeritage(transformer.ast, &membership_index, old_direct, old_direct.execution_scope, null, direct_move, known, parser_node_count));
+    try membership_index.heritage_read_membership.put(a, membership_key, {});
+    try std.testing.expect(validClassHeritage(transformer.ast, &membership_index, old_direct, old_direct.execution_scope, null, direct_move, known, parser_node_count));
+    // Nested class heritage is a consecutive, authenticated prefix. Its
+    // immutable origin remains in the inner class environment throughout.
+    var chain_count: usize = 0;
+    var chain_entries = data.node_scope_provenance.iterator();
+    while (chain_entries.next()) |candidate| {
+        const external = candidate.value_ptr.source_external orelse continue;
+        for (external.scope_moves, 0..) |second, step| {
+            if (step == 0 or second.class_heritage == null) continue;
+            const first = external.scope_moves[step - 1];
+            const issuer = first.class_heritage orelse continue;
+            const receiver = second.class_heritage.?;
+            chain_count += 1;
+            try std.testing.expect(external.execution_scope != receiver.class_scope);
+            try std.testing.expect(validClassHeritage(transformer.ast, &membership_index, external, first.to, issuer.owner.node, second, receiver, parser_node_count));
+            try std.testing.expect(!validClassHeritage(transformer.ast, &membership_index, external, external.execution_scope, issuer.owner.node, second, receiver, parser_node_count));
+            try std.testing.expect(!validClassHeritage(transformer.ast, &membership_index, external, first.to, other_known.owner.node, second, receiver, parser_node_count));
+            try std.testing.expect(!validClassHeritage(transformer.ast, &membership_index, external, first.to, null, second, receiver, parser_node_count));
+            const moves = try a.dupe(ScopeMove, external.scope_moves);
+            // A generic move cannot leave a stale typed issuer available to
+            // the next heritage transition, even with the old receipt intact.
+            moves[step - 1].reason = .lowerer_scope_relocation;
+            moves[step - 1].class_heritage = null;
+            var changed_origin = external;
+            changed_origin.scope_moves = moves;
+            const saved_entry = candidate.value_ptr.*;
+            candidate.value_ptr.source_external = changed_origin;
+            try std.testing.expect(!try Check.run(a, transformer.ast, root, parser_node_count, &data, &analyzer.unresolved_reference_nodes, &transformer));
+            candidate.value_ptr.* = saved_entry;
+        }
+    }
+    try std.testing.expect(chain_count > 0);
     // A paired current class-super and receipt mutation still cannot replace
     // the original source-owner's immutable heritage edge.
     const super_slot = known.owner.words[0] + ast.ClassExtra.super;
@@ -822,7 +980,7 @@ test "generator and heritage source witnesses preserve immutable edges and rejec
     paired_origin.span = transformer.ast.getNode(other_known.heritage).span;
     var frame_index = try @import("scope_frame_history.zig").validateAndIndex(a, transformer.ast, data.scopes, &data.scope_owner_map, &data.scope_history, null);
     try std.testing.expect(frame_index.valid);
-    try std.testing.expect(!validClassHeritage(transformer.ast, &frame_index, paired_origin, paired_move, paired, parser_node_count));
+    try std.testing.expect(!validClassHeritage(transformer.ast, &frame_index, paired_origin, paired_origin.execution_scope, null, paired_move, paired, parser_node_count));
     transformer.ast.extra_data.items[super_slot] = old_super;
     var wire: std.ArrayList(u8) = .empty;
     try @import("../bundler/semantic_codec.zig").serialize(&data, &wire, a);

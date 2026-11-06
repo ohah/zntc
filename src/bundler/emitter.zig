@@ -2243,6 +2243,12 @@ pub fn emitModuleWithHolderReservations(
     // jsxDEV source info 계산용 line offsets
     transformer.line_offsets = module.line_offsets;
     const root = try transformer.transform();
+    if (transformer.unsupported_class_heritage_eval_span != null) {
+        if (linker) |l| for (l.graph.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == .class_heritage_eval and diagnostic.severity == .@"error" and std.mem.eql(u8, diagnostic.file_path, module.path)) return null;
+        };
+        return error.ClassHeritageEval;
+    }
     if (transformer.unsupported_loop_dynamic_scope_span != null) {
         if (linker) |l| {
             for (l.graph.diagnostics.items) |diagnostic| {

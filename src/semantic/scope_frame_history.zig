@@ -444,12 +444,16 @@ pub const Index = struct {
     offsets: []usize,
     event_indices: []u32,
     class_key_read_membership: []bool = &.{},
+    /// Ephemeral membership from the immutable initial class heritage edges.
+    /// The upper word is the exact class ScopeId, the lower its source leaf.
+    heritage_read_membership: std.AutoHashMapUnmanaged(u64, void) = .empty,
     valid: bool,
 
     pub fn deinit(self: *Index, a: std.mem.Allocator) void {
         a.free(self.offsets);
         a.free(self.event_indices);
         a.free(self.class_key_read_membership);
+        self.heritage_read_membership.deinit(a);
     }
 
     /// Epoch is the number of already-published events at the producer point.
@@ -516,6 +520,7 @@ pub fn validateAndIndex(
     errdefer a.free(key_membership);
     @memset(key_membership, false);
     var result: Index = .{ .history = history, .offsets = offsets, .event_indices = indices, .class_key_read_membership = key_membership, .valid = false };
+    errdefer result.heritage_read_membership.deinit(a);
     if (history.source_scopes.len == 0) {
         result.valid = history.source_owners.len == 0 and history.source_initializers.len == 0 and history.source_computed_awaits.len == 0 and history.worklet_class_creators.len == 0 and history.lowered_worklet_classes.len == 0 and history.source_class_keys.len == 0 and history.source_dropped_statements.len == 0 and history.source_drop_edges.len == 0 and history.events.len == 0;
         return result;
@@ -532,6 +537,11 @@ pub fn validateAndIndex(
         if (binding.scope.isNone() or binding.scope.toIndex() >= frames.items.len or !ownerValid(tree, binding.owner) or owners.contains(@backingInt(binding.owner.node))) return result;
         inline for (.{ binding.edges.parameters, binding.edges.body, binding.edges.heritage }) |node| if (!node.isNone() and @backingInt(node) >= tree.nodes.items.len) return result;
         try owners.put(a, @backingInt(binding.owner.node), @backingInt(binding.scope));
+        if ((binding.owner.tag == .class_declaration or binding.owner.tag == .class_expression) and !binding.edges.heritage.isNone()) {
+            const reads = try @import("reference_walk.zig").collectHeritageMembers(a, tree, binding.edges.heritage);
+            defer a.free(reads);
+            for (reads) |leaf| try result.heritage_read_membership.put(a, (@as(u64, @backingInt(binding.scope)) << 32) | @as(u64, @backingInt(leaf)), {});
+        }
     }
     for (history.source_initializers) |entry| {
         if (entry.scope.isNone() or entry.scope.toIndex() >= frames.items.len or frames.items[entry.scope.toIndex()].kind != .class_body or

@@ -2504,3 +2504,604 @@ test "Worklet closure analysis preserves capture through 20000 nested scopes" {
     try std.testing.expectEqualStrings("capturedValue", captured[0].name);
     try std.testing.expectEqual(reference, captured[0].ref_idx);
 }
+
+test "worklet public direct-eval factory class keeps exact prepass identity" {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const Bundler = @import("../bundler/bundler.zig").Bundler;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // Exact first case of the committed public NAPI factory-name witness.
+    // The generated factory must not shadow the source's global eval lookup.
+    try helpers.writeFile(tmp.dir, "entry.js",
+        \\globalThis["C0__" + 'classFactory'] = 'global:0';
+        \\class C0 { __workletClass = true; read() { return eval('C0__classFactory'); } }
+        \\const Recreated0 = C0["C0__classFactory"]();
+        \\console.log(new Recreated0().read());
+    );
+    const entry = try helpers.absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    var bundler = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .node,
+        .format = .cjs,
+        .unsupported = .{},
+        .worklet_transform = true,
+    });
+    defer bundler.deinit();
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    for (result.getDiagnostics()) |diagnostic| std.debug.print("worklet public eval source: {s}\n", .{diagnostic.message});
+    try std.testing.expect(!result.hasErrors());
+    const actual = try std.process.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ "node", "-e", result.output },
+    });
+    defer std.testing.allocator.free(actual.stdout);
+    defer std.testing.allocator.free(actual.stderr);
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    try std.testing.expectEqualStrings("global:0\n", actual.stdout);
+}
+// The public regression above exercises installed-module publication. This
+// fixture retains the actual clone creator and cache payload for hostile edits.
+test "worklet external class clone has typed replay cache and hostile receipts" {
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const H = @import("../semantic/scope_frame_history.zig");
+    const External = @import("../semantic/source_external_origin.zig");
+    const codec = @import("../bundler/semantic_codec.zig");
+    const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "class C0{__workletClass=true;read(){return eval('C0__classFactory')}}";
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    const parser_count: u32 = @intCast(parser.ast.nodes.items.len);
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
+    try analyzer.analyze();
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var t = try transformer_mod.Transformer.initFromOwnedAst(a, &parser.ast, .{ .plugins = &plugins, .jsx_filename = "clone-contract.cjs" });
+    try t.initSymbolIdsOwned(analyzer.ast, analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.scope_history = analyzer.scope_history;
+    t.helper_scope_map = analyzer.helper_scope_map;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    t.semantic_edit_enabled = true;
+    t.record_explicit_global_references = true;
+    const root = try t.transform();
+    t.ast.transformed_root = root;
+    const completed = (try t.finishSemanticEdit()).?;
+    const sem: @import("../bundler/module.zig").ModuleSemanticData = .{
+        .symbols = completed.symbols,
+        .scopes = completed.scopes,
+        .scope_maps = completed.scope_maps,
+        .scope_owner_map = completed.scope_owner_map,
+        .node_scope_provenance = completed.node_scope_provenance,
+        .class_self_symbol_map = t.class_self_symbol_map,
+        .source_owned_retirements = completed.source_owned_retirements,
+        .scope_history = completed.scope_history,
+        .helper_scope_map = completed.helper_scope_map,
+        .exported_names = .empty,
+        .symbol_ids = completed.symbol_ids,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = completed.references,
+    };
+    const index = try H.validateAndIndex(a, t.ast, sem.scopes, &sem.scope_owner_map, &sem.scope_history, null);
+    try std.testing.expect(index.valid);
+    try std.testing.expect(External.validate(t.ast, parser_count, sem.symbol_ids, sem.scopes, &analyzer.unresolved_reference_nodes, &sem.node_scope_provenance, &index));
+    var selected: NodeIndex = .none;
+    var entries = sem.node_scope_provenance.iterator();
+    while (entries.next()) |entry| if (entry.value_ptr.source_external) |origin| {
+        for (origin.scope_moves) |move| if (move.worklet_clone != null) {
+            try std.testing.expect(selected.isNone());
+            selected = entry.key_ptr.*;
+        };
+    };
+    try std.testing.expect(!selected.isNone());
+    const entry = sem.node_scope_provenance.getPtr(selected).?;
+    const saved = entry.*;
+    const origin = saved.source_external.?;
+    try std.testing.expectEqual(@as(usize, 1), origin.scope_moves.len);
+    const moves = @constCast(origin.scope_moves);
+    const good = moves[0];
+    const transfer = good.worklet_clone.?;
+    try std.testing.expect(good.from_frame.subtree_has_direct_eval);
+    try std.testing.expect(good.to_frame.subtree_has_direct_eval);
+    try std.testing.expectEqual(good.from_frame.subtree_has_with, good.to_frame.subtree_has_with);
+    const creators = @constCast(sem.scope_history.worklet_class_creators);
+    const creator = creators[transfer.creator_index];
+    for (0..18) |bad| {
+        switch (bad) {
+            0 => moves[0].worklet_clone.?.creator_index = @intCast(creators.len),
+            1 => moves[0].worklet_clone.?.source_owner = transfer.target_owner,
+            2 => moves[0].worklet_clone.?.target_owner = transfer.source_owner,
+            3 => moves[0].worklet_clone.?.source_execution = creator.factory_scope,
+            4 => moves[0].worklet_clone.?.target_execution = transfer.source_execution,
+            5 => moves[0].worklet_clone.?.source_leaf = transfer.target_leaf,
+            6 => moves[0].worklet_clone.?.target_leaf = transfer.source_leaf,
+            7 => moves[0].worklet_clone.?.source_leaf.words[0] +%= 1,
+            8 => moves[0].worklet_clone.?.target_leaf.span.start +%= 1,
+            9 => moves[0].frame_epoch +%= 1,
+            10 => moves[0].from = good.to,
+            11 => moves[0].to = good.from,
+            12 => moves[0].reason = .lowerer_scope_relocation,
+            13 => entry.source_external.?.scope_moves = &.{},
+            14 => entry.scope = good.from,
+            15 => creators[transfer.creator_index].source.node = creator.target.node,
+            16 => creators[transfer.creator_index].target.node = creator.source.node,
+            17 => creators[transfer.creator_index].factory = creator.source.node,
+            else => unreachable,
+        }
+        try std.testing.expect(!External.validate(t.ast, parser_count, sem.symbol_ids, sem.scopes, &analyzer.unresolved_reference_nodes, &sem.node_scope_provenance, &index));
+        entry.* = saved;
+        moves[0] = good;
+        creators[transfer.creator_index] = creator;
+        try std.testing.expect(External.validate(t.ast, parser_count, sem.symbol_ids, sem.scopes, &analyzer.unresolved_reference_nodes, &sem.node_scope_provenance, &index));
+    }
+    // Cache is reconstructed into a different arena, then passes through a
+    // real editor lifetime before the original external-origin checker runs.
+    var bytes: std.ArrayList(u8) = .empty;
+    try codec.serialize(&sem, &bytes, a);
+    var cache_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer cache_arena.deinit();
+    const decoded = try codec.deserialize(bytes.items, cache_arena.allocator());
+    var edited = try decoded.beginEdit(cache_arena.allocator(), t.ast);
+    const after_edit = try edited.finish();
+    const restored_index = try H.validateAndIndex(a, t.ast, after_edit.scopes, &after_edit.scope_owner_map, &after_edit.scope_history, null);
+    try std.testing.expect(restored_index.valid);
+    try std.testing.expect(External.validate(t.ast, parser_count, after_edit.symbol_ids, after_edit.scopes, &analyzer.unresolved_reference_nodes, &after_edit.node_scope_provenance, &restored_index));
+    const old_wire = try a.dupe(u8, bytes.items);
+    std.mem.writeInt(u32, old_wire[4..8], 51, .little);
+    try std.testing.expectError(error.UnsupportedVersion, codec.deserialize(old_wire, a));
+    var failures: usize = 0;
+    var succeeded = false;
+    for (0..2048) |fail_index| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        var window = std.heap.ArenaAllocator.init(failing.allocator());
+        defer window.deinit();
+        const result = codec.deserialize(bytes.items, window.allocator());
+        if (result) |_| {
+            succeeded = true;
+            break;
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            failures += 1;
+        }
+    }
+    try std.testing.expect(failures > 0 and succeeded);
+}
+
+test "worklet computed class composition preserves exact owners" {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const Bundler = @import("../bundler/bundler.zig").Bundler;
+    const cases = [_]struct { source: []const u8, probe: []const u8, expected: []const u8 }{
+        .{ .source = "class Clazz{__workletClass=true;[Symbol.iterator](){return [42][Symbol.iterator]()}}", .probe = "Array.from(new C())", .expected = "[42]\n" },
+        .{ .source = "class Clazz{__workletClass=true;static[Symbol.iterator](){return [42][Symbol.iterator]()}}", .probe = "Array.from(C)", .expected = "[42]\n" },
+    };
+    var failures: usize = 0;
+    for (cases, 0..) |case, index| {
+        const native_source = try std.fmt.allocPrint(std.testing.allocator, "{s};const C=Clazz;console.log(JSON.stringify({s}));", .{ case.source, case.probe });
+        defer std.testing.allocator.free(native_source);
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", native_source } });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings(case.expected, native.stdout);
+        const input = try std.fmt.allocPrint(std.testing.allocator, "{s};const C=Clazz.Clazz__classFactory();console.log(JSON.stringify({s}));", .{ case.source, case.probe });
+        defer std.testing.allocator.free(input);
+        inline for (.{ .es5, .esnext }) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                var tmp = std.testing.tmpDir(.{});
+                defer tmp.cleanup();
+                try helpers.writeFile(tmp.dir, "entry.cjs", input);
+                const entry = try helpers.absPath(&tmp, "entry.cjs");
+                defer std.testing.allocator.free(entry);
+                var bundler = Bundler.init(std.testing.allocator, .{
+                    .entry_points = &.{entry},
+                    .platform = .node,
+                    .format = .cjs,
+                    .unsupported = compat.fromESTarget(target),
+                    .worklet_transform = true,
+                    .tree_shaking = false,
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                });
+                defer bundler.deinit();
+                const result = try bundler.bundle(std.testing.io);
+                defer result.deinit(std.testing.allocator);
+                if (result.hasErrors()) {
+                    std.debug.print("computed Worklet case={d} target={s} minify={any} BUILD_REJECT\n", .{ index, @tagName(target), minify });
+                    for (result.getDiagnostics()) |diagnostic| std.debug.print("{s}\n", .{diagnostic.message});
+                    failures += 1;
+                    continue;
+                }
+                const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+                defer std.testing.allocator.free(actual.stdout);
+                defer std.testing.allocator.free(actual.stderr);
+                if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) {
+                    std.debug.print("computed Worklet case={d} target={s} minify={any} stdout={s} stderr={s}\n", .{ index, @tagName(target), minify, actual.stdout, actual.stderr });
+                    failures += 1;
+                }
+            }
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}
+test "worklet recreated class retains evaluated heritage without repeating source effects" {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const Bundler = @import("../bundler/bundler.zig").Bundler;
+    const source =
+        "let calls=0;class First{value(){return 42}}class Later{value(){return 99}}" ++
+        "let selected=First;function choose(){calls++;return selected}" ++
+        "class Clazz extends choose(){__workletClass=true}" ++
+        "const originalParent=Object.getPrototypeOf(Clazz);selected=Later;" ++
+        "const C=Clazz.Clazz__classFactory();" ++
+        "console.log(JSON.stringify([new C().value(),calls,Object.getPrototypeOf(C)===originalParent]));";
+    const native_source =
+        "let calls=0;class First{value(){return 42}}class Later{value(){return 99}}" ++
+        "let selected=First;function choose(){calls++;return selected}" ++
+        "class Clazz extends choose(){__workletClass=true}" ++
+        "const originalParent=Object.getPrototypeOf(Clazz);selected=Later;" ++
+        "const C=Clazz;" ++
+        "console.log(JSON.stringify([new C().value(),calls,Object.getPrototypeOf(C)===originalParent]));";
+    const a = std.testing.allocator;
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", native_source } });
+    defer a.free(native.stdout);
+    defer a.free(native.stderr);
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("[42,1,true]\n", native.stdout);
+    for ([_]bool{ false, true }) |es5| for ([_]bool{ false, true }) |min| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.cjs", source);
+        const entry = try helpers.absPath(&tmp, "entry.cjs");
+        defer a.free(entry);
+        var bundler = Bundler.init(a, .{
+            .entry_points = &.{entry},
+            .platform = .node,
+            .format = .cjs,
+            .unsupported = if (es5) compat.fromESTarget(.es5) else .{},
+            .worklet_transform = true,
+            .minify_identifiers = min,
+            .minify_syntax = min,
+            .minify_whitespace = min,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(a);
+        try std.testing.expect(!result.hasErrors());
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+        defer a.free(actual.stdout);
+        defer a.free(actual.stderr);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    };
+}
+
+test "worklet computed class composition rejects foreign clone source leaf owner and replay" {
+    const History = @import("../semantic/scope_frame_history.zig");
+    const Keys = @import("../semantic/class_key_evaluation.zig");
+    const External = @import("../semantic/source_external_origin.zig");
+    const a = std.testing.allocator;
+    const source = "class Clazz{__workletClass=true;[Symbol.iterator](){return [42][Symbol.iterator]()}}const C=Clazz.Clazz__classFactory();console.log(JSON.stringify(Array.from(new C())));";
+    var source_arena = std.heap.ArenaAllocator.init(a);
+    defer source_arena.deinit();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(source_arena.allocator(), source);
+    var parser = @import("../parser/parser.zig").Parser.init(source_arena.allocator(), &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    const parser_count: u32 = @intCast(parser.ast.nodes.items.len);
+    // The public test above includes CJS runtime publication. This fixture
+    // inspects the same class producer BEFORE that independent host wrapper;
+    // no guessed RuntimePermission is granted to a post-wrapper history.
+    const owned = source_arena.allocator();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(owned, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var transformer = try transformer_mod.Transformer.initFromOwnedAst(owned, &parser.ast, .{
+        .plugins = &plugins,
+        .jsx_filename = "class-key-clone.cjs",
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIdsOwned(analyzer.ast, analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.scope_history = analyzer.scope_history;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.semantic_edit_enabled = true;
+    transformer.record_explicit_global_references = true;
+    transformer.ast.transformed_root = try transformer.transform();
+    const completed = (try transformer.finishSemanticEdit()).?;
+    const tree = transformer.ast;
+    const sem = &completed;
+    var index = try History.validateAndIndex(a, tree, sem.scopes, &sem.scope_owner_map, &sem.scope_history, null);
+    defer index.deinit(a);
+    try std.testing.expect(index.valid);
+    var checked: usize = 0;
+    var entries = sem.node_scope_provenance.iterator();
+    while (entries.next()) |item| {
+        const origin = item.value_ptr.source_external orelse continue;
+        if (origin.scope_moves.len != 2 or origin.scope_moves[0].worklet_clone == null) continue;
+        const move = origin.scope_moves[1];
+        const transfer = move.class_key orelse continue;
+        try std.testing.expect(origin.source_scope == origin.execution_scope);
+        try std.testing.expect(origin.source_scope != move.from);
+        try std.testing.expect(Keys.validates(tree, &index, parser_count, origin, move, transfer));
+        for (0..7) |poison| {
+            var wrong = origin;
+            var steps = [_]External.ScopeMove{ origin.scope_moves[0], move };
+            var clone = steps[0].worklet_clone.?;
+            switch (poison) {
+                0 => clone.creator_index = @intCast(sem.scope_history.worklet_class_creators.len),
+                1 => clone.source_leaf = clone.target_leaf,
+                2 => clone.target_leaf = clone.source_leaf,
+                3 => clone.target_owner = clone.source_owner,
+                4 => clone.target_execution = clone.source_execution,
+                5 => steps[0].frame_epoch += 1,
+                6 => steps[0] = move,
+                else => unreachable,
+            }
+            steps[0].worklet_clone = clone;
+            wrong.scope_moves = &steps;
+            try std.testing.expect(!Keys.validates(tree, &index, parser_count, wrong, move, transfer));
+        }
+        checked += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), checked);
+}
+
+test "runtime Worklet clone records actual eval and with frame flags before owners" {
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const Editor = @import("../semantic/editor.zig").SemanticEditor;
+    const H = @import("../semantic/scope_frame_history.zig");
+    const core = @import("../semantic/runtime_subtree_clone.zig");
+    const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+    const ScopeId = @import("../semantic/scope.zig").ScopeId;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "const holder=function(){with({answer:42}){return eval('answer')}}");
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.enable_source_external_origins = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var editor = try Editor.init(a, &parser.ast, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, analyzer.scope_owner_map, analyzer.references.items, analyzer.symbol_ids.items, analyzer.helper_scope_map);
+    try editor.importScopeHistory(analyzer.scope_history);
+    var function: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| if (node.tag == .function_expression) {
+        try std.testing.expect(function.isNone());
+        function = @fromBackingInt(@as(u32, @intCast(raw)));
+    };
+    try std.testing.expect(!function.isNone());
+    const original: ScopeId = @fromBackingInt(editor.scope_owner_map.get(@backingInt(function)).?);
+    var implicit: std.ArrayList(@import("../semantic/symbol.zig").SymbolId) = .empty;
+    for (editor.symbols.items, 0..) |symbol, raw| if (symbol.synthetic_kind == .implicit_arguments) try implicit.append(a, @fromBackingInt(@as(u32, @intCast(raw))));
+    const parent = editor.scopes.items[original.toIndex()].parent;
+    const cloned = try core.clone(a, &parser.ast, &editor, &.{function}, &analyzer.scope_owner_map, &.{}, implicit.items, parent, parent);
+    const fresh = cloned.scopes.get(@backingInt(original)).?;
+    try std.testing.expect(editor.scopes.items[fresh.toIndex()].subtree_has_direct_eval);
+    try std.testing.expect(editor.scopes.items[fresh.toIndex()].subtree_has_with);
+    const history = editor.scopeHistoryView();
+    const index = try H.validateAndIndex(a, &parser.ast, editor.scopes.items, &editor.scope_owner_map, &history, null);
+    try std.testing.expect(index.valid);
+    const before = editor.scopes.items[fresh.toIndex()];
+    editor.scopes.items[fresh.toIndex()].subtree_has_with = false;
+    const wrong_current = try H.validateAndIndex(a, &parser.ast, editor.scopes.items, &editor.scope_owner_map, &history, null);
+    try std.testing.expect(!wrong_current.valid);
+    editor.scopes.items[fresh.toIndex()] = before;
+    var recorded: usize = 0;
+    for (editor.scope_history.events.items) |*event| {
+        if (event.scope != fresh or event.kind != .frame) continue;
+        const saved = event.*;
+        event.after.subtree_has_direct_eval = false;
+        const wrong_replay = try H.validateAndIndex(a, &parser.ast, editor.scopes.items, &editor.scope_owner_map, &history, null);
+        try std.testing.expect(!wrong_replay.valid);
+        event.* = saved;
+        recorded += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), recorded);
+    const restored = try H.validateAndIndex(a, &parser.ast, editor.scopes.items, &editor.scope_owner_map, &history, null);
+    try std.testing.expect(restored.valid);
+}
+
+test "worklet serialized class payload retains evaluated heritage and computed Symbol keys" {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const Bundler = @import("../bundler/bundler.zig").Bundler;
+    const a = std.testing.allocator;
+    const prefix =
+        "let calls=0;const _a=73;const _b=74;class First{value(){return 42}}class Later{value(){return 99}}" ++
+        "let selected=First;function choose(){calls++;return selected}" ++
+        "class Clazz extends choose(){__workletClass=true;[Symbol.iterator](){return [this.value(),_a+_b-105][Symbol.iterator]()}}" ++
+        "const originalParent=Object.getPrototypeOf(Clazz);selected=Later;";
+    const native_source = prefix ++
+        "const C=Clazz;const D=Clazz;console.log(JSON.stringify([Array.from(new C()),Array.from(new D()),calls,Object.getPrototypeOf(D)===originalParent]));";
+    const source = prefix ++
+        "const factory=Clazz.Clazz__classFactory;" ++
+        "const C=factory();" ++
+        // A separate VM realm cannot accidentally recover the source's temp
+        // or local bindings. Only the actual serialized closure is supplied.
+        "const payload=require('node:vm').runInNewContext('('+factory.__initData.code+')',{Symbol});" ++
+        "const D=payload.call(factory);" ++
+        "console.log(JSON.stringify([Array.from(new C()),Array.from(new D()),calls,Object.getPrototypeOf(D)===originalParent]));";
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", native_source } });
+    defer a.free(native.stdout);
+    defer a.free(native.stderr);
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("[[42,42],[42,42],1,true]\n", native.stdout);
+    inline for (.{ .es5, .esnext }) |target| {
+        for ([_]bool{ false, true }) |minify| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try helpers.writeFile(tmp.dir, "entry.cjs", source);
+            const entry = try helpers.absPath(&tmp, "entry.cjs");
+            defer a.free(entry);
+            var bundler = Bundler.init(a, .{
+                .entry_points = &.{entry},
+                .platform = .node,
+                .format = .cjs,
+                .unsupported = compat.fromESTarget(target),
+                .worklet_transform = true,
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+                .minify_whitespace = minify,
+            });
+            defer bundler.deinit();
+            const result = try bundler.bundle(std.testing.io);
+            defer result.deinit(a);
+            for (result.getDiagnostics()) |diagnostic| std.debug.print("serialized Worklet target={s} minify={any}: {s}\n", .{ @tagName(target), minify, diagnostic.message });
+            try std.testing.expect(!result.hasErrors());
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+            defer a.free(actual.stdout);
+            defer a.free(actual.stderr);
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                std.debug.print("serialized Worklet target={s} minify={any} stdout={s} stderr={s}\n", .{ @tagName(target), minify, actual.stdout, actual.stderr });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+}
+
+test "worklet computed global heritage keeps exact output lookup scopes" {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const Bundler = @import("../bundler/bundler.zig").Bundler;
+    const a = std.testing.allocator;
+    const expressions = [_][]const u8{
+        "globalThis.Base",
+        "globalThis[globalThis.Key]",
+        "(events.push('sequence'),globalThis.Base)",
+        "(globalThis.Choose?globalThis.Base:globalThis.Other)",
+        "pick(globalThis.Base)",
+        "(globalThis.Choose?globalThis[globalThis.Key]:globalThis.Other)",
+        "(function(){events.push('function');return globalThis.Base})()",
+        "[globalThis.Base][0]",
+        "(globalThis.Other||globalThis.Base)",
+        "(()=>{events.push('arrow');return globalThis.Base})()",
+        "(class extends globalThis.Base {})",
+    };
+    for (expressions) |expression| {
+        const prefix = "const events=[];globalThis.Base=class{value(){return 42}};globalThis.Key='Base';globalThis.Choose=true;globalThis.Other=null;function pick(value){events.push('call');return value}class Clazz extends ";
+        const suffix = "{__workletClass=true};const C=";
+        const source = try std.fmt.allocPrint(a, "{s}{s}{s}Clazz.Clazz__classFactory();console.log(JSON.stringify([new C().value(),events]));", .{ prefix, expression, suffix });
+        defer a.free(source);
+        const native_source = try std.fmt.allocPrint(a, "{s}{s}{s}Clazz;console.log(JSON.stringify([new C().value(),events]));", .{ prefix, expression, suffix });
+        defer a.free(native_source);
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", native_source } });
+        defer a.free(native.stdout);
+        defer a.free(native.stderr);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+
+        for ([_]compat.ESTarget{ .es5, .esnext }) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                var tmp = std.testing.tmpDir(.{});
+                defer tmp.cleanup();
+                try helpers.writeFile(tmp.dir, "entry.cjs", source);
+                const entry = try helpers.absPath(&tmp, "entry.cjs");
+                defer a.free(entry);
+                const mask = compat.fromESTarget(target);
+                var bundler = Bundler.init(a, .{
+                    .entry_points = &.{entry},
+                    .platform = .node,
+                    .format = .cjs,
+                    .unsupported = mask,
+                    .rn_version_matrix = mask,
+                    .worklet_transform = true,
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                    .minify_whitespace = minify,
+                });
+                defer bundler.deinit();
+                const result = try bundler.bundle(std.testing.io);
+                defer result.deinit(a);
+                try std.testing.expect(!result.hasErrors());
+                const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+                defer a.free(actual.stdout);
+                defer a.free(actual.stderr);
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+            }
+        }
+    }
+}
+
+test "worklet heritage direct eval rejects sloppy ES5 publication and preserves native class strictness" {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const Bundler = @import("../bundler/bundler.zig").Bundler;
+    const a = std.testing.allocator;
+    const sources = [_][]const u8{
+        "delete globalThis.__heritageLeak;globalThis.Base=class{};try{class Clazz extends eval('(__heritageLeak=1,globalThis.Base)'){__workletClass=true};const C=Clazz.Clazz__classFactory();console.log(JSON.stringify(['success',typeof globalThis.__heritageLeak,new C() instanceof globalThis.Base]));}catch(error){console.log(JSON.stringify([error.name,typeof globalThis.__heritageLeak]));}",
+        "delete globalThis.__heritageLeak;globalThis.Base=class{};try{class Clazz extends(class Inner extends eval('(__heritageLeak=1,globalThis.Base)'){}){__workletClass=true};const C=Clazz.Clazz__classFactory();console.log(JSON.stringify(['success',typeof globalThis.__heritageLeak,new C() instanceof globalThis.Base]));}catch(error){console.log(JSON.stringify([error.name,typeof globalThis.__heritageLeak]));}",
+    };
+    const native_sources = [_][]const u8{
+        "delete globalThis.__heritageLeak;globalThis.Base=class{};try{class Clazz extends eval('(__heritageLeak=1,globalThis.Base)'){__workletClass=true};const C=Clazz;console.log(JSON.stringify(['success',typeof globalThis.__heritageLeak,new C() instanceof globalThis.Base]));}catch(error){console.log(JSON.stringify([error.name,typeof globalThis.__heritageLeak]));}",
+        "delete globalThis.__heritageLeak;globalThis.Base=class{};try{class Clazz extends(class Inner extends eval('(__heritageLeak=1,globalThis.Base)'){}){__workletClass=true};const C=Clazz;console.log(JSON.stringify(['success',typeof globalThis.__heritageLeak,new C() instanceof globalThis.Base]));}catch(error){console.log(JSON.stringify([error.name,typeof globalThis.__heritageLeak]));}",
+    };
+    for (sources, native_sources) |source, native_source| {
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", native_source } });
+        defer a.free(native.stdout);
+        defer a.free(native.stderr);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings("[\"ReferenceError\",\"undefined\"]\n", native.stdout);
+        for ([_]compat.ESTarget{ .es5, .esnext }) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                var tmp = std.testing.tmpDir(.{});
+                defer tmp.cleanup();
+                try helpers.writeFile(tmp.dir, "entry.cjs", source);
+                const entry = try helpers.absPath(&tmp, "entry.cjs");
+                defer a.free(entry);
+                const mask = compat.fromESTarget(target);
+                var bundler = Bundler.init(a, .{
+                    .entry_points = &.{entry},
+                    .platform = .node,
+                    .format = .cjs,
+                    .unsupported = mask,
+                    .rn_version_matrix = mask,
+                    .worklet_transform = true,
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                    .minify_whitespace = minify,
+                });
+                defer bundler.deinit();
+                if (target == .es5) {
+                    try std.testing.expectError(error.ClassHeritageEval, bundler.bundle(std.testing.io));
+                    continue;
+                }
+                const result = try bundler.bundle(std.testing.io);
+                defer result.deinit(a);
+                try std.testing.expect(!result.hasErrors());
+                const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+                defer a.free(actual.stdout);
+                defer a.free(actual.stderr);
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+            }
+        }
+    }
+}

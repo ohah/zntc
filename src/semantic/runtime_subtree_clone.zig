@@ -94,8 +94,15 @@ fn cloneScope(allocator: std.mem.Allocator, editor: *Editor, result: *Result, ow
     else
         return error.InvalidCloneOwnership;
     const cloned = try editor.addScope(parent, if (owner == @backingInt(NodeIndex.none)) .none else result.nodes.get(owner) orelse return error.InvalidNode, source.kind, source.is_strict);
-    editor.scopes.items[cloned.toIndex()].subtree_has_direct_eval = source.subtree_has_direct_eval;
-    editor.scopes.items[cloned.toIndex()].subtree_has_with = source.subtree_has_with;
+    var completed_frame = editor.scopes.items[cloned.toIndex()];
+    completed_frame.subtree_has_direct_eval = source.subtree_has_direct_eval;
+    completed_frame.subtree_has_with = source.subtree_has_with;
+    editor.scope_history.recordOwnedFrame(allocator, editor.ast, editor.scopes.items, &editor.scope_owner_map, cloned, completed_frame, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.InvalidNode => return error.InvalidNode,
+        else => return error.InvalidScope,
+    };
+    editor.scopes.items[cloned.toIndex()] = completed_frame;
     try result.scopes.put(allocator, @backingInt(original), cloned);
     return cloned;
 }

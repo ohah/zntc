@@ -245,6 +245,63 @@ pub fn ES2015Class(comptime Transformer: type) type {
             self.node_scope_provenance_changed = true;
         }
 
+        /// Expression heritage executes in the enclosing evaluation scope,
+        /// while its initial source leaves belong to the class environment.
+        /// Retain that immutable birth and publish only this actual edge move.
+        fn recordExpressionHeritage(self: *Transformer, output: NodeIndex, class_scope: ScopeId, parent: ScopeId, capture_epoch: u32) Transformer.Error!void {
+            if (!self.semantic_edit_enabled) return;
+            const editor = if (self.semantic_editor) |*value| value else return;
+            var known: ?@import("../semantic/source_external_origin.zig").ClassHeritageTransfer = null;
+            for (editor.scope_history.source_owners) |binding| {
+                if (binding.scope != class_scope or binding.edges.heritage.isNone() or
+                    (binding.owner.tag != .class_declaration and binding.owner.tag != .class_expression)) continue;
+                if (known != null) std.debug.panic("class heritage expression has duplicate initial owners", .{});
+                known = .{ .owner = binding.owner, .class_scope = class_scope, .heritage = binding.edges.heritage, .evaluation_scope = parent, .capture_epoch = capture_epoch };
+            }
+            // Moving the evaluated expression also moves its directly nested
+            // lexical owners (not the execution scopes inside their bodies).
+            var owners: std.ArrayList(NodeIndex) = .empty;
+            defer owners.deinit(self.allocator);
+            var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer seen.deinit(self.allocator);
+            try owners.append(self.allocator, output);
+            while (owners.pop()) |candidate| {
+                if (candidate.isNone() or @backingInt(candidate) >= self.ast.nodes.items.len) continue;
+                const gop = try seen.getOrPut(self.allocator, @backingInt(candidate));
+                if (gop.found_existing) continue;
+                const node = self.ast.getNode(candidate);
+                if (self.outputOwnedScope(candidate)) |owned| {
+                    if (owned != class_scope and self.outputScopeParent(owned) == class_scope)
+                        try self.reparentGeneratedScope(owned, parent);
+                }
+                switch (node.tag) {
+                    .function_declaration, .function_expression, .arrow_function_expression, .class_declaration, .class_expression => continue,
+                    else => {},
+                }
+                var children = @import("../parser/ast_walk.zig").children(self.ast, node);
+                while (children.next()) |child| try owners.append(self.allocator, child);
+            }
+            const reads = try @import("../semantic/reference_walk.zig").collectHeritageEvaluationReferences(self.allocator, self.ast, output);
+            defer self.allocator.free(reads);
+            for (reads) |read| {
+                if (editor.node_scope_provenance.get(read)) |previous| {
+                    if (previous.scope == class_scope) {
+                        try self.relocateNodeScopeProvenance(read, class_scope, parent);
+                        if (previous.source_external != null) try recordClassHeritage(self, read, previous.source_node, known);
+                    }
+                }
+                const reference = editor.referenceForNode(read) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => std.debug.panic("class heritage expression lost its exact reference: {s}", .{@errorName(err)}),
+                };
+                if (reference) |actual| if (!actual.flags.declare and actual.scope_id == class_scope)
+                    editor.moveReference(read, parent, actual.stmt_idx, actual.scope_stmt_idx) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => std.debug.panic("class heritage expression cannot move its exact reference: {s}", .{@errorName(err)}),
+                    };
+            }
+        }
+
         pub fn lowerClassDeclaration(self: *Transformer, source_idx: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const e = node.data.extra;
             const span = node.span;
@@ -309,9 +366,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 self.current_scope;
             const iife_parent = if (self.semantic_edit_enabled) self.outputScopeParent(source_class_scope) else self.current_scope;
             const heritage_source = captureClassHeritage(self, source_idx, source_class_scope, super_idx, iife_parent);
+            const heritage_epoch: u32 = if (self.semantic_editor) |*editor| editor.scope_history.epoch() else @intCast(self.scope_history.events.len);
             const iife_scope = try self.reserveGeneratedFunctionScope(iife_parent);
-            try self.reparentGeneratedScope(source_class_scope, iife_scope);
-            if (self.current_class_self_symbol_id) |id| try self.moveSymbolToOutputScope(id, iife_scope);
 
             // super class 처리
             const has_super = !super_idx.isNone();
@@ -352,9 +408,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     // 표현식 (e.g. React.Component, eventTargetShim.EventTarget):
                     // visit하여 new AST 노드로 변환, IIFE 매개변수 _super로 전달.
                     super_expr_node = try self.visitNode(super_idx);
+                    try recordExpressionHeritage(self, super_expr_node, source_class_scope, iife_parent, heritage_epoch);
                     super_span = try self.ast.addString(parameter_name.name);
                 }
             }
+
+            // Heritage is evaluated outside this IIFE. Keep its actual
+            // source parent during visiting, so generated var temps are born
+            // in that evaluation environment rather than the future IIFE.
+            try self.reparentGeneratedScope(source_class_scope, iife_scope);
+            if (self.current_class_self_symbol_id) |id| try self.moveSymbolToOutputScope(id, iife_scope);
 
             const saved_class_super_parameter = self.active_class_super_parameter;
             defer self.active_class_super_parameter = saved_class_super_parameter;
@@ -784,6 +847,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             const iife_parent = if (self.semantic_edit_enabled) self.outputScopeParent(source_class_scope) else self.current_scope;
             const heritage_source = captureClassHeritage(self, source_idx, source_class_scope, super_idx, iife_parent);
+            const heritage_epoch: u32 = if (self.semantic_editor) |*editor| editor.scope_history.epoch() else @intCast(self.scope_history.events.len);
 
             // super class
             const has_super = !super_idx.isNone();
@@ -817,6 +881,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     super_span = try self.ast.addString(parameter_name.name);
                 } else {
                     expr_super_node = try self.visitNode(super_idx);
+                    try recordExpressionHeritage(self, expr_super_node, source_class_scope, iife_parent, heritage_epoch);
                     super_span = try self.ast.addString(parameter_name.name);
                 }
             }
