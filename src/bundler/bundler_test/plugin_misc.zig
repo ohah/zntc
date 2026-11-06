@@ -1057,6 +1057,60 @@ test "Bundle: Flow file with parse errors does not crash" {
     try std.testing.expect(result.output.len > 0 or result.hasErrors());
 }
 
+test "Bundle: Flow match identities survive ES5 and all minify passes at runtime" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\// @flow
+        \\const fallback = 'outer';
+        \\const Status = { Ready: 1, Done: 2 };
+        \\function read0(value = fallback) { const unused = 2 * 3; return match (value) { 1 => 'one', _ => fallback }; }
+        \\function read1(value) { return match (value) { { type: 'a', value: const item } => item, _ => fallback }; }
+        \\function read2(value) { return match (value) { [const head, ...const tail] => tail, _ => fallback }; }
+        \\function read3(value) { return match (value) { { type: 'a', ...const rest } if (rest.ok) => rest, _ => fallback }; }
+        \\function read4(value) { return match (value) { 1 | 2 | 3 => 'small', _ => fallback }; }
+        \\function read5(value) { return match (value) { const item if (item > 0) => item, _ => fallback }; }
+        \\function read6(value) { return match (value) { Status.Ready => 1, Status.Done => 2, _ => fallback }; }
+        \\function read7(value) { return match (value) { (1 | 2) as item => item, _ => fallback }; }
+        \\function read8(value) { return match (value) { 1 => value + 1, _ => fallback }; }
+        \\function read9(value) { return match (value) { 1 => match (2) { 2 => value, _ => 0 }, _ => fallback }; }
+        \\function read10(value) { return match (value) { [1, 2] => 'pair', _ => fallback }; }
+        \\console.log(JSON.stringify([
+        \\  read0(1), read0('1'), read0(),
+        \\  read1({ type: 'a', value: 'object' }),
+        \\  read1({ type: 'a' }), read1(null),
+        \\  read2([1, 2, 3]), read2([]),
+        \\  read3({ type: 'a', ok: true, extra: 'yes' }),
+        \\  read3({ type: 'a', ok: false, extra: 'no' }),
+        \\  read4(2), read5(3), read5(-1), read6(1), read6(2), read7(2), read8(1), read9(1),
+        \\  read10([1, 2]), read10([1, 2, 3]),
+        \\]));
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var bundler = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .node,
+        .format = .iife,
+        .flow = true,
+        .unsupported = compat.fromESTarget(.es5),
+        .minify_whitespace = true,
+        .minify_syntax = true,
+        .minify_identifiers = true,
+    });
+    defer bundler.deinit();
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+    defer std.testing.allocator.free(actual.stdout);
+    defer std.testing.allocator.free(actual.stderr);
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    try std.testing.expectEqualStrings("[\"one\",\"outer\",\"outer\",\"object\",\"outer\",\"outer\",[2,3],\"outer\",{\"ok\":true,\"extra\":\"yes\"},\"outer\",\"small\",3,\"outer\",1,2,2,2,1,\"pair\",\"outer\"]\n", actual.stdout);
+}
+
 test "Bundle: Flow export type alias + module.exports → CJS wrapping (#713)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

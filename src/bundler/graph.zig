@@ -4750,7 +4750,7 @@ test "graph pre-pass predicate: Flow match lowering triggers graph ownership" {
         "// @flow\nconst result = match (value) { 1 | 2 | 3 => 'small', _ => 'other' };",
         "// @flow\nconst result = match (value) { const item if (item > 0) => item, _ => 0 };",
         "// @flow\nconst result = match (value) { Status.Ready => 1, Status.Done => 2, _ => 0 };",
-        "// @flow\nfunction read(value) { return match (value) { 1 => { const next = value + 1; next }, _ => 0 }; }",
+        "// @flow\nfunction read(value) { return match (value) { 1 => value + 1, _ => 0 }; }",
         "// @flow\nfunction read(value) { return match (value) { 1 => match (2) { 2 => value, _ => 0 }, _ => 0 }; }",
     };
     for (sources) |source| try expectPrePassDecision(true, source, "flow-match.js", .{});
@@ -4800,10 +4800,11 @@ test "graph Flow caller: match and ref-component identities survive cold and cac
         "match (value) { const item if (item > 0) => item, _ => fallback }",
         "match (value) { (1 | 2) as item => item, _ => fallback }",
         "match (value) { Status.Ready => 1, Status.Done => 2, _ => fallback }",
-        "match (value) { 1 => { const next = value + 1; next }, _ => fallback }",
+        "match (value) { 1 => value + 1, _ => fallback }",
         "match (value) { 1 => match (2) { 2 => value, _ => 0 }, _ => fallback }",
+        "match (value) { [1, 2] => 'pair', _ => fallback }",
     };
-    const match_parameter_counts = [_]usize{ 1, 1, 1, 1, 1, 1, 1, 1, 1, 2 };
+    const match_parameter_counts = [_]usize{ 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1 };
     const component_declarations = [_][]const u8{
         "component Card(ref?: mixed, ...props: any) { return props; }",
         "component Card(ref?: mixed, label: string, ...props: { extra?: boolean }) { return label; }",
@@ -5081,6 +5082,113 @@ test "Flow ref-component identity survives minify modes on cold and cached ASTs"
                 cold_source_symbol_id = source_symbol_id;
             }
             try std.testing.expect(identity.symbol_id != source_symbol_id);
+            for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+        }
+    }
+}
+
+test "Flow match identities survive ES5 lowering and syntax minification on cold and cached ASTs" {
+    const match_expressions = [_][]const u8{
+        "match (value) { 1 => 'one', _ => fallback }",
+        "match (value) { { type: 'a', value: const item } => item, _ => fallback }",
+        "match (value) { [const head, ...const tail] => tail, _ => fallback }",
+        "match (value) { { type: 'a', ...const rest } if (rest.ok) => rest, _ => fallback }",
+        "match (value) { 1 | 2 | 3 => 'small', _ => fallback }",
+        "match (value) { const item if (item > 0) => item, _ => fallback }",
+        "match (value) { (1 | 2) as item => item, _ => fallback }",
+        "match (value) { Status.Ready => 1, Status.Done => 2, _ => fallback }",
+        "match (value) { 1 => value + 1, _ => fallback }",
+        "match (value) { 1 => match (2) { 2 => value, _ => 0 }, _ => fallback }",
+        "match (value) { [1, 2] => 'pair', _ => fallback }",
+    };
+    const match_parameter_counts = [_]usize{ 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1 };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var entries: [match_expressions.len][]const u8 = undefined;
+    var initialized_entries: usize = 0;
+    defer for (entries[0..initialized_entries]) |entry| std.testing.allocator.free(entry);
+    for (match_expressions, 0..) |match_expression, index| {
+        const file_name = try std.fmt.allocPrint(std.testing.allocator, "flow-match-minify-{d}.js", .{index});
+        defer std.testing.allocator.free(file_name);
+        const source = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "// @flow\nconst fallback = 'outer'; export function read(value = fallback) {{ const unused = 2 * 3; return {s}; }}",
+            .{match_expression},
+        );
+        defer std.testing.allocator.free(source);
+        try writeFile(tmp.dir, file_name, source);
+        entries[index] = try absPath(&tmp, file_name);
+        initialized_entries += 1;
+    }
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    var cold_identities: [match_expressions.len][]FlowGraphIdentity = undefined;
+    for (&cold_identities) |*identities| identities.* = &.{};
+    defer for (cold_identities) |identities| {
+        if (identities.len > 0) std.testing.allocator.free(identities);
+    };
+
+    const profile = @import("../profile.zig");
+    defer profile.resetForTest();
+    for ([_]usize{ 0, entries.len }) |expected_load_hits| {
+        profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.resync.semantic");
+
+        var cache = ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.disk_cache = &disk;
+        graph.disk_load_enabled = true;
+        graph.disk_options_hash = 0x4819_6923;
+        graph.disk_compiler_build_id = 0x4819_6924;
+        graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es5);
+        graph.transform_options_base.minify_syntax = true;
+        graph.minify_identifiers = true;
+        graph.max_threads = 1;
+
+        try graph.build(std.testing.io, &entries);
+
+        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+        try std.testing.expect(graph.moduleCount() >= entries.len);
+        try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+        for (entries, 0..) |entry, index| {
+            const module = graph.findModuleByPath(entry) orelse return error.MissingFlowMatchMinifyModule;
+            try std.testing.expectEqual(Module.State.ready, module.state);
+            try std.testing.expect(module.ast.?.has_flow_runtime_transform);
+            try std.testing.expect(module.transform_cache != null);
+            try std.testing.expect(module.semantic != null);
+            const identities = try expectFlowGeneratedIdentities(module, .match_parameter);
+            defer std.testing.allocator.free(identities);
+            try std.testing.expectEqual(match_parameter_counts[index], identities.len);
+            const root = module.ast.?.transformed_root orelse return error.MissingFlowMatchMinifyRoot;
+            const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, &module.ast.?, root);
+            defer std.testing.allocator.free(reachable);
+            _ = try expectFlowSourceBindingIdentity(module, reachable, "fallback");
+            for (reachable) |raw| {
+                const node = module.ast.?.nodes.items[raw];
+                if (node.tag == .assignment_pattern) return error.ES5DefaultParameterWasNotLowered;
+                if (node.tag == .binding_identifier and std.mem.eql(u8, module.ast.?.getText(node.data.string_ref), "unused"))
+                    return error.SyntaxMinifyKeptUnusedBinding;
+            }
+            if (expected_load_hits == 0) {
+                cold_identities[index] = try std.testing.allocator.dupe(FlowGraphIdentity, identities);
+            } else {
+                try std.testing.expectEqual(cold_identities[index].len, identities.len);
+                for (cold_identities[index], identities) |cold, warm| {
+                    try std.testing.expectEqual(cold.symbol_id, warm.symbol_id);
+                    try std.testing.expectEqual(cold.scope_id, warm.scope_id);
+                    try std.testing.expectEqual(cold.reference_count, warm.reference_count);
+                }
+            }
             for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
         }
     }
