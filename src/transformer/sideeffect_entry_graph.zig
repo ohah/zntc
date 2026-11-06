@@ -14,8 +14,9 @@ const Meta = struct {
     jsx_key: bool,
     decorator: bool,
     flow_enum: bool,
+    flow_runtime_transform: bool,
     fn capture(t: *const ast.Ast) Meta {
-        return .{ .typescript = t.is_typescript, .jsx = t.has_jsx, .jsx_key = t.has_jsx_key_after_spread, .decorator = t.has_decorator, .flow_enum = t.has_flow_enum_declaration };
+        return .{ .typescript = t.is_typescript, .jsx = t.has_jsx, .jsx_key = t.has_jsx_key_after_spread, .decorator = t.has_decorator, .flow_enum = t.has_flow_enum_declaration, .flow_runtime_transform = t.has_flow_runtime_transform };
     }
 };
 pub const Import = struct { declaration: N, literal: N, slot: usize, fields: [6]u32 };
@@ -167,7 +168,7 @@ pub fn forModule(a: std.mem.Allocator, m: *const module.Module, opts: Options) !
         opts.module_specifier_map.len != 0) return null;
     const tree = &m.ast.?;
     const sem = &m.semantic.?;
-    if (tree.nodes.items.len == 0 or tree.is_typescript or tree.has_jsx or tree.has_decorator or tree.has_flow_enum_declaration or
+    if (tree.nodes.items.len == 0 or tree.is_typescript or tree.has_jsx or tree.has_decorator or tree.has_flow_runtime_transform or
         opts.unsupportedGraphPrePassFeatureUsed(tree) or sem.symbols.items.len != 0 or sem.references.len != 0 or
         sem.scopes.len != 1 or sem.scopes[0].blocksMangling() or sem.scopes[0].parent != .none or
         (sem.scopes[0].kind != .module and sem.scopes[0].kind != .global)) return null;

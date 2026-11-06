@@ -4237,6 +4237,44 @@ test "graph pre-pass predicate: Flow enums trigger graph ownership" {
     try expectPrePassDecision(false, "export const value = 42;", "plain-js.js", .{});
 }
 
+test "graph pre-pass predicate: Flow match lowering triggers graph ownership" {
+    const sources = [_][]const u8{
+        "// @flow\nconst result = match (value) { 1 => 'one', _ => 'other' };",
+        "// @flow\nfunction read(mode: number) { return match (mode) { 0 => 'a', 1 => 'b', _ => 'c' }; }",
+        "// @flow\nconst result = match (value) { { type: 'a', value: const item } => item, _ => null };",
+        "// @flow\nconst result = match (value) { [const head, ...const tail] => tail, _ => []; }",
+        "// @flow\nconst result = match (value) { { type: 'a', ...const rest } if (rest.ok) => rest, _ => null };",
+        "// @flow\nconst result = match (value) { 1 | 2 | 3 => 'small', _ => 'other' };",
+        "// @flow\nconst result = match (value) { const item if (item > 0) => item, _ => 0 };",
+        "// @flow\nconst result = match (value) { Status.Ready => 1, Status.Done => 2, _ => 0 };",
+        "// @flow\nfunction read(value) { return match (value) { 1 => { const next = value + 1; next }, _ => 0 }; }",
+        "// @flow\nfunction read(value) { return match (value) { 1 => match (2) { 2 => value, _ => 0 }, _ => 0 }; }",
+    };
+    for (sources) |source| try expectPrePassDecision(true, source, "flow-match.js", .{});
+
+    try expectPrePassDecision(false, "// @flow\nconst value = 42;", "flow-match-unused.js", .{});
+    try expectPrePassDecision(false, "const value = match(input);", "plain-match-call.js", .{});
+}
+
+test "graph pre-pass predicate: Flow ref components trigger graph ownership" {
+    const sources = [_][]const u8{
+        "// @flow\ncomponent Card(ref?: mixed, ...props: any) { return props; }",
+        "// @flow\ncomponent Card(ref?: mixed, label: string, ...props: { extra?: boolean }) { return label; }",
+        "// @flow\ncomponent Card<T>(ref?: mixed, value: T, ...props: any) { return value; }",
+        "// @flow\nfunction make() { component Card(ref?: mixed, ...props: any) { return props; } return Card; }",
+        "// @flow\nexport component Card(ref?: mixed, ...props: any) { return props; }",
+        "// @flow\ncomponent First(ref?: mixed) { return ref; } component Second(ref?: mixed) { return ref; }",
+        "// @flow\ncomponent Card(label: string, ref?: mixed) { return label; }",
+        "// @flow\ncomponent Card(ref?: mixed = null, ...props: any) { return props; }",
+        "// @flow\ncomponent Card(ref?: mixed, 'data-value' as value: string, ...props: any) renders React.Node { return value; }",
+        "// @flow\nfunction outer() { const label = 'outer'; component Card(ref?: mixed, ...props: any) { return label; } return Card; }",
+    };
+    for (sources) |source| try expectPrePassDecision(true, source, "flow-component.js", .{});
+
+    try expectPrePassDecision(false, "// @flow\ncomponent Card(label: string) { return label; }", "flow-component-no-ref.js", .{});
+    try expectPrePassDecision(false, "// @flow\nexport const value = 42;", "flow-component-unused.js", .{});
+}
+
 test "graph pre-pass predicate: worklet transforms stay gated by conservative AST signals" {
     const worklet: PrePassPredicateTestOptions = .{ .worklet_transform = true };
     try expectPrePassDecision(false, "export const answer = 42;", "worklet-noop.ts", worklet);

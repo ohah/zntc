@@ -159,9 +159,8 @@ pub fn shouldRun(
     {
         var ast_flags_scope = profile.begin(.graph_discover_pm_prepass_decision_ast_flags);
         defer ast_flags_scope.end();
-        // Flow enum lowering emits a runtime helper access and follows the
-        // same-graph enum identity path; register it before linker decisions.
-        if (ast.has_flow_enum_declaration or ast.has_jsx or ast.has_decorator or ast.has_ts_namespace_or_enum or
+        // Flow runtime syntax follows same-graph lowering/identity paths; register it before linker decisions.
+        if (ast.has_flow_runtime_transform or ast.has_jsx or ast.has_decorator or ast.has_ts_namespace_or_enum or
             ast.has_ts_import_equals or ast.has_ts_export_equals)
         {
             return true;
@@ -18995,7 +18994,8 @@ fn sameGenericPrepassAstContents(left: *const ast_mod.Ast, right: *const ast_mod
         left.has_jsx != right.has_jsx or left.has_jsx_key_after_spread != right.has_jsx_key_after_spread or
         left.has_decorator != right.has_decorator or left.has_ts_namespace_or_enum != right.has_ts_namespace_or_enum or
         left.has_ts_import_equals != right.has_ts_import_equals or left.has_ts_export_equals != right.has_ts_export_equals or
-        left.has_flow_enum_declaration != right.has_flow_enum_declaration or left.has_object_getter != right.has_object_getter or
+        left.has_flow_enum_declaration != right.has_flow_enum_declaration or left.has_flow_runtime_transform != right.has_flow_runtime_transform or
+        left.has_object_getter != right.has_object_getter or
         left.is_typescript != right.is_typescript or left.transform_boundary != right.transform_boundary or
         left.transformed_root != right.transformed_root or left.tla_lowered != right.tla_lowered or
         !std.meta.eql(left.jsx_pragma_factory, right.jsx_pragma_factory) or
@@ -34108,4 +34108,17 @@ test "Hermes block pattern rename publishes exact declaration anchors before fir
         }
         try std.testing.expect(checked > 0);
     }
+}
+
+test "generic prepass snapshot includes Flow runtime-transform metadata" {
+    const allocator = std.testing.allocator;
+    var source = ast_mod.Ast.init(allocator, "");
+    defer source.deinit();
+    var snapshot = try ast_mod.Ast.cloneForTransformer(&source, allocator);
+    defer snapshot.deinit();
+    snapshot.type_only_binding_names = try source.type_only_binding_names.clone(allocator);
+
+    try std.testing.expect(try sameGenericPrepassAstContents(&snapshot, &source, allocator));
+    source.has_flow_runtime_transform = true;
+    try std.testing.expect(!try sameGenericPrepassAstContents(&snapshot, &source, allocator));
 }

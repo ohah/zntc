@@ -243,6 +243,42 @@ test "ast_codec: type_only_binding_names + jsx_pragma round-trip 보존" {
     }
 }
 
+test "ast_codec: Flow runtime-transform admission survives parse cache and AST clone" {
+    const alloc = testing.allocator;
+    const cases = [_]struct { source: []const u8, runtime_transform: bool, flow_enum: bool }{
+        .{ .source = "// @flow\nconst result = match (1) { 1 => 'yes', _ => 'no' };", .runtime_transform = true, .flow_enum = false },
+        .{ .source = "// @flow\ncomponent Card(ref?: mixed, ...props: any) { return props; }", .runtime_transform = true, .flow_enum = false },
+        .{ .source = "// @flow\nenum Color { Red }", .runtime_transform = true, .flow_enum = true },
+        .{ .source = "// @flow\ncomponent Card(label: string) { return label; }", .runtime_transform = false, .flow_enum = false },
+        .{ .source = "const result = 42;", .runtime_transform = false, .flow_enum = false },
+    };
+
+    for (cases) |case| {
+        var scanner = try Scanner.init(alloc, case.source);
+        defer scanner.deinit();
+        var parser = Parser.init(alloc, &scanner);
+        defer parser.deinit();
+        _ = try parser.parse();
+        try testing.expectEqual(case.runtime_transform, parser.ast.has_flow_runtime_transform);
+        try testing.expectEqual(case.flow_enum, parser.ast.has_flow_enum_declaration);
+
+        var cloned = try Ast.cloneForTransformer(&parser.ast, alloc);
+        defer cloned.deinit();
+        try testing.expectEqual(case.runtime_transform, cloned.has_flow_runtime_transform);
+
+        var bytes: std.ArrayList(u8) = .empty;
+        defer bytes.deinit(alloc);
+        try codec.serialize(&parser.ast, &bytes, alloc);
+        var restored = try codec.deserialize(bytes.items, alloc);
+        defer {
+            alloc.free(restored.source);
+            restored.deinit();
+        }
+        try testing.expectEqual(case.runtime_transform, restored.has_flow_runtime_transform);
+        try testing.expectEqual(case.flow_enum, restored.has_flow_enum_declaration);
+    }
+}
+
 test "ast_codec: default named-declaration role survives lowering and codec restoration" {
     const alloc = testing.allocator;
     var scanner = try Scanner.init(alloc, "export default class Live{}");
@@ -384,7 +420,7 @@ test "function expression owned payload rejects v6 cache" {
     var bytes: std.ArrayList(u8) = .empty;
     defer bytes.deinit(alloc);
     try codec.serialize(&parser.ast, &bytes, alloc);
-    try testing.expectEqual(@as(u32, 7), codec.FORMAT_VERSION);
+    try testing.expectEqual(@as(u32, 8), codec.FORMAT_VERSION);
     var previous: [4]u8 = undefined;
     std.mem.writeInt(u32, &previous, 6, .little);
     @memcpy(bytes.items[4..8], &previous);
