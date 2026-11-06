@@ -670,6 +670,24 @@ pub const AstTransformCtx = struct {
                 });
             },
 
+            // Conditional expressions contain three independently evaluated
+            // branches. Copy each branch so references in the selected output
+            // keep their source SymbolIds after plugin insertion.
+            .conditional_expression => blk: {
+                const source = src_node.data.ternary;
+                const a = try self.copyNodeFromParsedAst(src_ast, source.a);
+                const b = try self.copyNodeFromParsedAst(src_ast, source.b);
+                const c = try self.copyNodeFromParsedAst(src_ast, source.c);
+                if ((!source.a.isNone() and a.isNone()) or
+                    (!source.b.isNone() and b.isNone()) or
+                    (!source.c.isNone() and c.isNone())) break :blk .none;
+                break :blk self.transformer.ast.addNode(.{
+                    .tag = .conditional_expression,
+                    .span = new_span,
+                    .data = .{ .ternary = .{ .a = a, .b = b, .c = c } },
+                });
+            },
+
             // Identifier-only var/let/const declarations. Keeping the binding
             // node in the copied AST lets insertion-scope registration attach
             // its producer-selected SymbolId before references are resolved.
