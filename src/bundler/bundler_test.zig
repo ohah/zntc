@@ -29,6 +29,7 @@ comptime {
     _ = @import("bundler_test/resolution.zig");
     _ = @import("bundler_test/tree_shake.zig");
     _ = @import("bundler_test/cjs_esm.zig");
+    _ = @import("bundler_test/cjs_native_namespace.zig");
     _ = @import("bundler_test/splitting_dev.zig");
     _ = @import("bundler_test/splitting_mangle.zig");
     _ = @import("bundler_test/minify_loader.zig");

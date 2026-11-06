@@ -10,11 +10,12 @@ const absPath = test_helpers.absPath;
 
 fn cjsEntryExportLocalName(output: []const u8, export_name: []const u8) ![]const u8 {
     var marker_buf: [160]u8 = undefined;
-    const marker = try std.fmt.bufPrint(&marker_buf, "exports.{s}", .{export_name});
+    const marker = try std.fmt.bufPrint(&marker_buf, "(exports,\"{s}\",", .{export_name});
     const marker_pos = std.mem.indexOf(u8, output, marker) orelse return error.TestUnexpectedResult;
-    const equals_pos = std.mem.indexOfPos(u8, output, marker_pos + marker.len, "=") orelse
+    const getter = "get:function(){return ";
+    const getter_pos = std.mem.indexOfPos(u8, output, marker_pos + marker.len, getter) orelse
         return error.TestUnexpectedResult;
-    var start = equals_pos + 1;
+    var start = getter_pos + getter.len;
     while (start < output.len and (output[start] == ' ' or output[start] == '\t' or output[start] == '\n' or output[start] == '\r')) start += 1;
     var end = start;
     while (end < output.len and (std.ascii.isAlphanumeric(output[end]) or output[end] == '_' or output[end] == '$')) end += 1;
