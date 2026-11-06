@@ -607,6 +607,9 @@ pub const Module = struct {
     /// Arena-owned proof from this Module's actual decoded source installation.
     /// Never serialized or transferred to another Module owner.
     self_namespace_source_receipt: ?*const @import("self_namespace_ast.zig").RestoredSourceReceipt = null,
+    /// Immutable lexical public-key facts from the original parser view. Owned
+    /// by parse_arena; retained by PersistentModuleStore, rebuilt on disk load.
+    cjs_public_facade_keys: ?*const @import("cjs_public_facade_keys.zig").Registry = null,
     /// JS plugin load/transform 이 반환한 Source Map V3 JSON chain.
     /// 순서는 transform 실행 순서이며 parse_arena 가 backing 을 소유한다.
     plugin_source_maps: []const []const u8 = &.{},

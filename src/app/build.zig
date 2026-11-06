@@ -737,6 +737,9 @@ fn appendModulePreloadImports(
 }
 
 fn findEntryOutputPath(outputs: []const bundler_mod.emitter.OutputFile, entry_path: []const u8) ?[]const u8 {
+    for (outputs) |out| if (out.public_entry_facade) |facade| {
+        if (std.mem.eql(u8, facade.source_path, entry_path)) return out.path;
+    };
     for (outputs) |out| {
         if (out.kind != .chunk) continue;
         for (out.module_ids) |mid| {

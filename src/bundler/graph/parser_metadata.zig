@@ -18,6 +18,15 @@ const determineExportsKind = graph_parse_helpers.determineExportsKind;
 const projectExportedNames = graph_parse_helpers.projectExportedNames;
 const injectFlowEnumRuntimeImport = graph_synthetic_imports.injectFlowEnumRuntimeImport;
 
+/// Called only on the initial parser view or a freshly decoded pre-transform
+/// cache view. Publishing the pointer is the final, no-fail step.
+pub fn capturePublicCjsFacadeKeys(module: *Module, arena_alloc: std.mem.Allocator) !void {
+    const ast = if (module.ast) |*actual| actual else return error.MissingAst;
+    const registry = try @import("../cjs_public_facade_keys.zig").capture(arena_alloc, module, ast);
+    try registry.validate(module);
+    module.cjs_public_facade_keys = registry;
+}
+
 pub fn materialize(
     self: anytype,
     module: *Module,
@@ -76,6 +85,11 @@ pub fn materialize(
             }
             module.import_bindings = ibindings;
         } else |_| {}
+
+        capturePublicCjsFacadeKeys(module, arena_alloc) catch {
+            module.state = .ready;
+            return false;
+        };
 
         // Parser scan export bindings -> bundler ExportBinding.
         const scan_ebindings = parser.scan_export_bindings.items;

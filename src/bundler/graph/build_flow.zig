@@ -600,6 +600,18 @@ fn demandTlaReadinessAll(self: *ModuleGraph, io: std.Io, runtime_indices: *std.A
             demanded = true;
             break;
         }
+        // Among supported preserve-modules formats, this existing non-ESM
+        // readiness role is CJS. Dynamic ESM namespaces need its source-owned
+        // Promise scheduler even when the target itself has no await.
+        if (self.preserve_modules) for (module.import_records) |record| {
+            if (record.kind != .dynamic_import or record.resolved.isNone() or record.is_external) continue;
+            const target = self.getModule(record.resolved) orelse continue;
+            if (target.exports_kind.isEsm()) {
+                demanded = true;
+                break;
+            }
+        };
+        if (demanded) break;
     }
     if (!demanded) return;
     const start = self.modules.count();

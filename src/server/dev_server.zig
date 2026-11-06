@@ -1767,6 +1767,9 @@ pub const DevServer = struct {
     /// chunk OutputFile 중 `wanted` 절대경로를 `module_ids` 에 포함한 첫 청크 인덱스.
     /// entry 청크(entry 모듈 포함) 또는 lazy 청크(seed 모듈 포함) 식별에 쓴다.
     fn findChunkContaining(outputs: []const lib.bundler.emitter.OutputFile, wanted: []const u8) ?usize {
+        for (outputs, 0..) |out, index| if (out.public_entry_facade) |facade| {
+            if (std.mem.eql(u8, facade.source_path, wanted)) return index;
+        };
         for (outputs, 0..) |o, i| {
             if (o.kind != .chunk) continue;
             for (o.module_ids) |mid| {

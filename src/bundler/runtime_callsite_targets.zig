@@ -6,6 +6,13 @@ const SymbolID = @import("symbol.zig").SymbolID;
 pub fn validateTargetRole(graph: anytype, target: anytype) !void {
     const module = graph.getModule(target.symbol.module) orelse return error.InvalidCallsiteTarget;
     const expected: SymbolID = switch (target.role) {
+        .readiness_all => blk: {
+            const helper = graph.tla_readiness_all orelse return error.InvalidCallsiteTarget;
+            if (helper.owner_token != target.owner or helper.module_index != target.symbol.module) return error.InvalidCallsiteTarget;
+            const origin = module.runtime_helper_source orelse return error.InvalidCallsiteTarget;
+            if (origin.catalog != .readiness_all or !@import("../runtime_helper_modules.zig").matchesConstructedSource(origin, graph.helper_plugin_opts, module.source)) return error.InvalidCallsiteTarget;
+            break :blk SymbolID.make(helper.module_index, @backingInt(helper.symbol_id));
+        },
         .schedule => try @import("runtime_dynamic_import_ast.zig").exactBinding(graph),
         .entry_guard => try @import("runtime_entry_guard_ast.zig").exactBinding(graph),
         .to_esm => blk: {

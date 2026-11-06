@@ -73,6 +73,7 @@ pub const default_cjs_exports_name = "exports";
 pub const default_cjs_module_name = "module";
 
 pub const CodegenOptions = struct {
+    compiler_literal_overrides: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null,
     module_format: ModuleFormat = .esm,
     /// Standalone runtime helpers, emitted after the program's hashbang and
     /// directive prologue. Writing them through codegen also advances mappings.
