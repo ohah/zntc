@@ -60,6 +60,14 @@ fn editorFor(self: *Transformer) Transformer.Error!*SemanticEditor {
     return &self.semantic_editor.?;
 }
 
+/// Add the semantic owner for a function node created by AST plugin injection.
+/// Keeping this behind editorFor preserves the imported scope history and
+/// ensures the new function scope participates in the same identity journal.
+pub fn addInjectedFunctionScope(self: *Transformer, parent: ScopeId, owner: NodeIndex) Transformer.Error!ScopeId {
+    const editor = try editorFor(self);
+    return editor.addScope(parent, owner, .function, false) catch |err| return editError(err);
+}
+
 pub fn selectDroppedStatement(self: *Transformer, statement: NodeIndex) Transformer.Error!void {
     const editor = try editorFor(self);
     try @import("../drop_statement_retirement.zig").select(self, editor, statement);
