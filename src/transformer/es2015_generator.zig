@@ -6810,6 +6810,8 @@ test "suspension compound static members own separate property leaves" {
 
 test "suspension switch expressions preserve single discriminant and lazy case order" {
     const sources = [_][]const u8{
+        "function* run(){var value=0;switch(yield 'pick'){case 2:value=42;break;default:value=7;}return value;}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(2)]));",
+        "function* run(){var value=0;switch(2){case yield 'pick':value=42;break;default:value=7;}return value;}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(2)]));",
         "function* run(){switch(yield 'disc'){case 2:return 42;default:return 0;}}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(2)]));",
         "function* run(){switch(2){case yield 'case':return 42;default:return 0;}}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(2)]));",
         "function* run(){switch(yield 'disc'){case yield 'case':return 42;default:return 0;}}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(2),iter.next(2)]));",
