@@ -6115,3 +6115,60 @@ test "full bundler folding preserves GetValue indirect eval names and nullish op
     }
     try std.testing.expectEqual(@as(usize, 0), failures);
 }
+
+test "full bundler builtin constant folds require actual unshadowed global identity" {
+    const cases = [_]struct { name: []const u8, source: []const u8, expected: []const u8 }{
+        .{ .name = "parameters", .source = "function read(undefined,NaN,Infinity){return [undefined??7,!!undefined,typeof undefined,NaN?1:2,typeof NaN,Infinity??7]}console.log(JSON.stringify([42,0,false,null,void 0].map(value=>read(value,42,0))));", .expected = "[[42,true,\"number\",1,\"number\",0],[0,false,\"number\",1,\"number\",0],[false,false,\"boolean\",1,\"number\",0],[7,false,\"object\",1,\"number\",0],[7,false,\"undefined\",1,\"number\",0]]\n" },
+        .{ .name = "default-parameter", .source = "function read(undefined=42){return [undefined??7,!!undefined,typeof undefined]}console.log(JSON.stringify([read(),read(0),read(false),read(null)]));", .expected = "[[42,true,\"number\"],[0,false,\"number\"],[false,false,\"boolean\"],[7,false,\"object\"]]\n" },
+        .{ .name = "block-alias", .source = "const observed=[];{let undefined=42;const alias=undefined;observed.push(alias??7,undefined?1:2,typeof undefined)}observed.push(typeof undefined);console.log(JSON.stringify(observed));", .expected = "[42,1,\"number\",\"undefined\"]\n" },
+        .{ .name = "function-var", .source = "function read(){var undefined=42;return [undefined??7,!!undefined,typeof undefined]}console.log(JSON.stringify(read()));", .expected = "[42,true,\"number\"]\n" },
+        .{ .name = "function-declaration", .source = "function read(){function undefined(){return 42}return [typeof(undefined??0),!!undefined,typeof undefined,undefined()]}console.log(JSON.stringify(read()));", .expected = "[\"function\",true,\"function\",42]\n" },
+        .{ .name = "comparison", .source = "function read(undefined){const value=42;return value===null||value===undefined}console.log(JSON.stringify([read(42),read(0)]));", .expected = "[true,false]\n" },
+        .{ .name = "dynamic-eval", .source = "function read(){eval(\"var undefined=42\");return [undefined??7,!!undefined,typeof undefined]}console.log(JSON.stringify(read()));", .expected = "[7,false,\"undefined\"]\n" },
+        .{ .name = "global-control", .source = "console.log(JSON.stringify([undefined??7,!!undefined,typeof undefined,!!NaN,typeof NaN,Infinity??7]));", .expected = "[7,false,\"undefined\",false,\"number\",null]\n" },
+    };
+    var failures: usize = 0;
+    for (cases) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.mjs", case.source);
+        const entry = try absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", entry } });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings(case.expected, native.stdout);
+        inline for (.{ .es5, .esnext }) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                var bundler = Bundler.init(std.testing.allocator, .{
+                    .entry_points = &.{entry},
+                    .platform = .node,
+                    .format = .cjs,
+                    .unsupported = @import("../../transformer/compat.zig").fromESTarget(target),
+                    .tree_shaking = false,
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                    .minify_whitespace = minify,
+                });
+                defer bundler.deinit();
+                const result = try bundler.bundle(std.testing.io);
+                defer result.deinit(std.testing.allocator);
+                if (result.hasErrors()) {
+                    std.debug.print("builtin constant source {s} target={s} minify={any} BUILD_REJECT\n", .{ case.name, @tagName(target), minify });
+                    for (result.getDiagnostics()) |diagnostic| std.debug.print("{s}\n", .{diagnostic.message});
+                    failures += 1;
+                    continue;
+                }
+                const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+                defer std.testing.allocator.free(actual.stdout);
+                defer std.testing.allocator.free(actual.stderr);
+                if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout) or !std.mem.eql(u8, native.stderr, actual.stderr)) {
+                    std.debug.print("builtin constant source {s} target={s} minify={any} expected={s}actual={s}stderr={s}\n", .{ case.name, @tagName(target), minify, native.stdout, actual.stdout, actual.stderr });
+                    failures += 1;
+                }
+            }
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}

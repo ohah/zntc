@@ -388,7 +388,7 @@ fn runOnce(
                 if (!foldNullishCheck(ast, ctx, i, node, &changed))
                     foldLogical(ast, ctx, i, node, &changed);
             },
-            .unary_expression => foldUnary(ast, i, node, &changed),
+            .unary_expression => foldUnary(ast, ctx, i, node, &changed),
             .call_expression => foldCall(ast, ctx, i, node, &changed),
             .conditional_expression => foldConditional(ast, ctx, i, node, &changed),
             .if_statement => foldIf(ast, ctx, i, node, &changed),
@@ -2152,7 +2152,7 @@ fn stringLiteralValuesEqual(allocator: std.mem.Allocator, left_raw: []const u8, 
 // Constant Folding — Unary Expression
 // ================================================================
 
-fn foldUnary(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
+fn foldUnary(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
     const e = node.data.extra;
     if (e + 1 >= ast.extra_data.items.len) return;
     const operand_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e]));
@@ -2183,7 +2183,7 @@ fn foldUnary(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
                 }
             }
             // !true → false, !false → true, !0 → true, !1 → false
-            if (evalTruthiness(ast, operand)) |truthy| {
+            if (evalTruthiness(ast, ctx, operand_idx)) |truthy| {
                 const text = if (!truthy) "true" else "false";
                 if (ast.addString(text)) |span| {
                     replaceNode(ast, node_idx, .{
@@ -2197,7 +2197,7 @@ fn foldUnary(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
         .kw_typeof => {
             // typeof "str" → "string", typeof 42 → "number", typeof true → "boolean"
             // typeof null → "object", typeof undefined → "undefined"
-            if (foldTypeof(ast, operand)) |type_str| {
+            if (foldTypeof(ast, ctx, operand_idx)) |type_str| {
                 if (makeQuotedString(ast, type_str)) |span| {
                     replaceNode(ast, node_idx, .{
                         .tag = .string_literal,
@@ -2245,8 +2245,24 @@ fn foldUnary(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
 // Helpers
 // ================================================================
 
+/// A spelling is not builtin authority. Every attached source SymbolKind
+/// shadows the global value; only an actual unresolved read in a static
+/// analyzed domain may use the immutable global constants. Scope0 carries
+/// the existing propagated eval/with subtree flags, so this is O(1), not a
+/// per-identifier scope/reference/AST walk. Graphless contexts keep the read.
+fn isUnshadowedGlobalConstant(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex, name: []const u8) bool {
+    if (!ctx.hasSemantic() or idx.isNone() or @backingInt(idx) >= ast.nodes.items.len or
+        @backingInt(idx) >= ctx.symbol_ids.len or ctx.symbol_ids[@backingInt(idx)] != null or
+        ctx.scopes[0].blocksMangling()) return false;
+    const globals = ctx.unresolved_globals orelse return false;
+    const node = ast.getNode(idx);
+    return node.tag == .identifier_reference and std.mem.eql(u8, ast.identifierNameText(node), name) and globals.contains(name);
+}
+
 /// 노드의 truthiness를 정적으로 평가한다. 결정 불가능하면 null.
-fn evalTruthiness(ast: *const Ast, node: Node) ?bool {
+fn evalTruthiness(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex) ?bool {
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return null;
+    const node = ast.getNode(idx);
     return switch (node.tag) {
         .boolean_literal => getBoolValue(ast, node),
         .numeric_literal => blk: {
@@ -2260,17 +2276,13 @@ fn evalTruthiness(ast: *const Ast, node: Node) ?bool {
             break :blk text.len > 0;
         },
         .identifier_reference => blk: {
-            const text = ast.getText(node.span);
-            if (std.mem.eql(u8, text, "true")) break :blk true;
-            if (std.mem.eql(u8, text, "false")) break :blk false;
-            if (std.mem.eql(u8, text, "undefined")) break :blk false;
-            if (std.mem.eql(u8, text, "NaN")) break :blk false;
+            if (isUnshadowedGlobalConstant(ast, ctx, idx, "undefined") or isUnshadowedGlobalConstant(ast, ctx, idx, "NaN")) break :blk false;
             break :blk null;
         },
         .parenthesized_expression => blk: {
             const inner_ni = @backingInt(node.data.unary.operand);
             if (inner_ni >= ast.nodes.items.len) break :blk null;
-            break :blk evalTruthiness(ast, ast.nodes.items[inner_ni]);
+            break :blk evalTruthiness(ast, ctx, node.data.unary.operand);
         },
         else => null,
     };
@@ -2284,15 +2296,16 @@ fn getBoolValue(ast: *const Ast, node: Node) ?bool {
     return null;
 }
 
-fn foldTypeof(ast: *const Ast, operand: Node) ?[]const u8 {
+fn foldTypeof(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex) ?[]const u8 {
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return null;
+    const operand = ast.getNode(idx);
     return switch (operand.tag) {
         .string_literal => "string",
         .numeric_literal => "number",
         .boolean_literal => "boolean",
         .null_literal => "object",
         .identifier_reference => blk: {
-            const text = ast.getText(operand.span);
-            if (std.mem.eql(u8, text, "undefined")) break :blk "undefined";
+            if (isUnshadowedGlobalConstant(ast, ctx, idx, "undefined")) break :blk "undefined";
             break :blk null;
         },
         .function_expression, .arrow_function_expression => "function",
@@ -2311,9 +2324,8 @@ fn foldTypeof(ast: *const Ast, operand: Node) ?[]const u8 {
 fn foldConditional(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
     const cond_ni = @backingInt(node.data.ternary.a);
     if (cond_ni >= ast.nodes.items.len) return;
-    const cond = ast.nodes.items[cond_ni];
 
-    const truthy = evalTruthiness(ast, cond) orelse return;
+    const truthy = evalTruthiness(ast, ctx, node.data.ternary.a) orelse return;
     const kept = if (truthy) node.data.ternary.b else node.data.ternary.c;
     const dropped = if (truthy) node.data.ternary.c else node.data.ternary.b;
     const kept_ni = @backingInt(kept);
@@ -2327,9 +2339,8 @@ fn foldConditional(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed
 fn foldIf(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
     const cond_ni = @backingInt(node.data.ternary.a);
     if (cond_ni >= ast.nodes.items.len) return;
-    const cond = ast.nodes.items[cond_ni];
 
-    const truthy = evalTruthiness(ast, cond) orelse return;
+    const truthy = evalTruthiness(ast, ctx, node.data.ternary.a) orelse return;
     const semantic = ctx.hasSemantic();
     if (truthy) {
         // if (true) { A } else { B } → A. else (B) 분기 cascade.
@@ -2362,9 +2373,8 @@ fn foldIf(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) 
 fn foldWhile(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
     const cond_ni = @backingInt(node.data.binary.left);
     if (cond_ni >= ast.nodes.items.len) return;
-    const cond = ast.nodes.items[cond_ni];
 
-    const truthy = evalTruthiness(ast, cond) orelse return;
+    const truthy = evalTruthiness(ast, ctx, node.data.binary.left) orelse return;
     if (!truthy) {
         if (ctx.hasSemantic()) decrementRefsShallow(ast, ctx, node.data.binary.right);
         replaceNode(ast, node_idx, .{
@@ -2389,14 +2399,14 @@ fn simpleIdentText(ast: *const Ast, idx: ast_mod.NodeIndex) ?[]const u8 {
 }
 
 /// `null` literal 또는 `undefined`(식별자)/`void <expr>` 인지.
-fn isNullOrUndefinedLit(ast: *const Ast, idx: ast_mod.NodeIndex) enum { null_lit, undef, no } {
+fn isNullOrUndefinedLit(ast: *const Ast, ctx: MinifyCtx, idx: ast_mod.NodeIndex) enum { null_lit, undef, no } {
     const ni = @backingInt(idx);
     if (ni >= ast.nodes.items.len) return .no;
     const n = ast.nodes.items[ni];
     switch (n.tag) {
         .null_literal => return .null_lit,
         .identifier_reference => {
-            if (std.mem.eql(u8, ast.getText(n.span), "undefined")) return .undef;
+            if (isUnshadowedGlobalConstant(ast, ctx, idx, "undefined")) return .undef;
             return .no;
         },
         .unary_expression => {
@@ -2438,8 +2448,8 @@ fn foldNullishCheck(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, change
     const rx = simpleIdentText(ast, R.data.binary.left) orelse return false;
     if (!std.mem.eql(u8, lx, rx)) return false;
 
-    const lkind = isNullOrUndefinedLit(ast, L.data.binary.right);
-    const rkind = isNullOrUndefinedLit(ast, R.data.binary.right);
+    const lkind = isNullOrUndefinedLit(ast, ctx, L.data.binary.right);
+    const rkind = isNullOrUndefinedLit(ast, ctx, R.data.binary.right);
     // {null, undefined} 한 쌍이어야 — (null,null)/(undef,undef) 등은 다른 의미.
     if (!((lkind == .null_lit and rkind == .undef) or (lkind == .undef and rkind == .null_lit)))
         return false;
@@ -2476,7 +2486,7 @@ fn foldLogical(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *b
     const left = ast.nodes.items[left_ni];
     const op: Kind = @fromBackingInt(@intCast(node.data.binary.flags));
 
-    const truthy = evalTruthiness(ast, left) orelse return;
+    const truthy = evalTruthiness(ast, ctx, node.data.binary.left) orelse return;
     const semantic = ctx.hasSemantic();
 
     switch (op) {
@@ -2511,8 +2521,7 @@ fn foldLogical(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *b
                 if (right_ni >= ast.nodes.items.len) return;
                 _ = replaceValueFromChild(ast, ctx, node_idx, right_ni, changed);
             } else if (left.tag == .identifier_reference) {
-                const text = ast.getText(left.span);
-                if (std.mem.eql(u8, text, "undefined")) {
+                if (isUnshadowedGlobalConstant(ast, ctx, node.data.binary.left, "undefined")) {
                     const right_ni = @backingInt(node.data.binary.right);
                     if (right_ni >= ast.nodes.items.len) return;
                     _ = replaceValueFromChild(ast, ctx, node_idx, right_ni, changed);
