@@ -4233,3 +4233,134 @@ test "ES5 default parameter class key authenticates only its source function bod
     }
     try std.testing.expectEqual(@as(usize, 1), checked);
 }
+
+test "class wrapper output identity preserves native retained class declarations" {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const cases = [_][]const u8{
+        \\// static 필드 초기값 화살표의 this·super — 클래스 밖으로 옮겨도 클래스를 가리켜야 한다 (#4801)
+        \\const out = [];
+        \\class A {
+        \\  static x = 1;
+        \\  static f = () => this.x;
+        \\}
+        \\out.push(A.f());
+        \\function make(base) {
+        \\  return class B extends base {
+        \\    static y = 2;
+        \\    static g = () => this.y + (this === B);
+        \\  };
+        \\}
+        \\out.push(make(Object).g());
+        \\const C = class {
+        \\  static z = 3;
+        \\  static h = () => this.z;
+        \\};
+        \\out.push(C.h());
+        \\const D = class Named {
+        \\  static w = 4;
+        \\  static k = () => this.w + Named.w;
+        \\};
+        \\out.push(D.k());
+        \\function mk2() {
+        \\  return class {
+        \\    static v = 5;
+        \\    static m = (p) => [this.v, p].join(':');
+        \\  };
+        \\}
+        \\out.push(mk2().m('p'));
+        \\function mk3() {
+        \\  class Inner {
+        \\    static q = 6;
+        \\    static n = () => this.q;
+        \\  }
+        \\  return Inner;
+        \\}
+        \\out.push(mk3().n());
+        \\console.log(out.join(','));
+        \\
+        ,
+        \\// Array elements remain anonymous, so the ES5 lowerer creates inner names.
+        \\// Their static-block `this` reads must use distinct scope-owned SymbolIds.
+        \\const _Class = 'outer';
+        \\class Base {}
+        \\globalThis.__zntcAnonymousClassSelfs = [];
+        \\
+        \\function create(_Class2) {
+        \\  const pair = [
+        \\    class extends Base {
+        \\      static {
+        \\        globalThis.__zntcAnonymousClassSelfs.push(this);
+        \\      }
+        \\      static readValue() {
+        \\        return 10;
+        \\      }
+        \\    },
+        \\    class extends Base {
+        \\      static {
+        \\        globalThis.__zntcAnonymousClassSelfs.push(this);
+        \\      }
+        \\      static readValue() {
+        \\        return 20;
+        \\      }
+        \\    },
+        \\  ];
+        \\  const First = pair[0];
+        \\  const Second = pair[1];
+        \\  return [First.readValue(), Second.readValue(), _Class2];
+        \\}
+        \\
+        \\console.log([_Class, ...create('parameter')].join(','));
+        \\
+        ,
+        \\const Box = class Named {
+        \\  static async #read(value) {
+        \\    return await Promise.resolve(value + 1);
+        \\  }
+        \\  static read(value) {
+        \\    return this.#read(value);
+        \\  }
+        \\};
+        \\(async () => console.log(await Box.read(2)))();
+        \\
+        ,
+    };
+    var failures: usize = 0;
+    var attempted: usize = 0;
+    for (cases, 0..) |source, source_index| {
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]@import("compat.zig").ESTarget{ .es5, .es2015, .es2017, .esnext }) |target| for ([_]bool{ false, true }) |minify| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try helpers.writeFile(tmp.dir, "entry.mjs", source);
+            const entry = try helpers.absPath(&tmp, "entry.mjs");
+            defer std.testing.allocator.free(entry);
+            var bundler = @import("../bundler/bundler.zig").Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm, .platform = .node, .unsupported = @import("compat.zig").fromESTarget(target), .minify_syntax = minify, .minify_identifiers = minify, .minify_whitespace = minify });
+            defer bundler.deinit();
+            attempted += 1;
+            const result = bundler.bundle(std.testing.io) catch |err| {
+                std.debug.print("CLASS_OUTPUT_CELL source={d} target={s} min={any} error={s}\n", .{ source_index, @tagName(target), minify, @errorName(err) });
+                failures += 1;
+                continue;
+            };
+            defer result.deinit(std.testing.allocator);
+            if (result.hasErrors()) {
+                for (result.diagnostics orelse &.{}) |diag| std.debug.print("CLASS_OUTPUT_CELL source={d} target={s} min={any} diagnostic={s}\n", .{ source_index, @tagName(target), minify, diag.message });
+                failures += 1;
+                continue;
+            }
+            const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+            defer std.testing.allocator.free(actual.stdout);
+            defer std.testing.allocator.free(actual.stderr);
+            if (actual.term != .exited or actual.term.exited != 0 or actual.stderr.len != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) {
+                std.debug.print("CLASS_OUTPUT_RUNTIME source={d} target={s} min={any} stdout={s} stderr={s}\n", .{ source_index, @tagName(target), minify, actual.stdout, actual.stderr });
+                failures += 1;
+            }
+        };
+    }
+    std.debug.print("CLASS_OUTPUT_MATRIX attempted={d} failed={d}\n", .{ attempted, failures });
+    try std.testing.expectEqual(@as(usize, 24), attempted);
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}
