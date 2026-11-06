@@ -38764,6 +38764,76 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('NAPI onAstFunction rejects generated console lookups inside direct eval calls', () => {
+    const trailingCalls = [
+      "console.log(eval('shared'));",
+      "console.info(eval('shared'));",
+      "console.warn(eval('shared'));",
+      "console.error(eval('shared'));",
+      "console.debug(eval('shared'));",
+      "console.trace(eval('shared'));",
+      "console.dir(eval('shared'));",
+      "console.table(eval('shared'));",
+      "console.count(eval('shared'));",
+      "console.group(eval('shared'));",
+    ];
+    const source =
+      'let shared = 40; function outer() { try { function marker() {} marker(); } catch (error) {} } outer();';
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+
+    for (const trailingCode of trailingCalls) {
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-generated-eval-reject-'));
+      const entry = join(dir, 'entry.js');
+      writeFileSync(entry, source);
+
+      const baseOptions = JSON.stringify({
+        entryPoints: [entry],
+        platform: 'node',
+        format: 'cjs',
+        target: 'esnext',
+        minifySyntax: false,
+        minifyIdentifiers: false,
+        write: false,
+      });
+      const runner = [
+        `import { build } from ${JSON.stringify(coreEntry)};`,
+        `const result = await build({ ...${baseOptions}, plugins: [{ name: 'nested-eval', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: ${JSON.stringify([trailingCode])} } : null); } }] });`,
+        'process.stdout.write(JSON.stringify(result.errors.map((error) => error.text)));',
+      ].join('\n');
+
+      try {
+        const buildResult = spawnSync('bun', ['-e', runner], {
+          cwd: join(import.meta.dir, '../../..'),
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        });
+        expect(buildResult.status, `${trailingCode}: ${buildResult.stderr}`).toBe(0);
+        const diagnostics = JSON.parse(buildResult.stdout) as string[];
+        expect(diagnostics, trailingCode).toHaveLength(1);
+        expect(diagnostics[0], trailingCode).toContain(
+          'Generic prepass output failed exact semantic identity validation',
+        );
+
+        const stderrLines = (buildResult.stderr ?? '').split(/\r?\n/);
+        const debt = stderrLines.filter(
+          (line) =>
+            line.startsWith('zntc: symbol-debt-node kind=unclassified_reference') &&
+            line.includes('name=console'),
+        );
+        expect(debt, `${trailingCode}: ${buildResult.stderr}`).toHaveLength(1);
+        const sourceReport = stderrLines.find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-source-slots ') &&
+            line.includes(entry) &&
+            line.includes('unclassified_reference=1'),
+        );
+        expect(sourceReport, `${trailingCode}: ${buildResult.stderr}`).toContain('clean=0');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  }, 60_000);
+
   test('NAPI onAstFunction retained graph exposes ten compileable identity mutants under syntax and identifier minification', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-graph-mutants-'));
     const entry = join(dir, 'entry.js');
