@@ -2466,17 +2466,19 @@ pub fn makeMemberFromKeyIdx(self: anytype, obj: NodeIndex, key_idx: NodeIndex, s
         const inner = try self.visitNode(key_node.data.unary.operand);
         return makeComputedMember(self, obj, inner, span);
     }
-    if (key_node.tag == .numeric_literal or key_node.tag == .bigint_literal) {
-        // #4241: numeric/bigint key 는 data 가 `.none` variant — string_ref 로
-        // 읽으면 빈/garbage span → `this[]` SyntaxError. 노드를 그대로 computed
-        // key 로: `obj[1e3]`/`obj[10n]` 은 ToPropertyKey 가 "1000"/"10" 으로
-        // 정규화 → 런타임 정확 (exp/hex/bigint 모두). span 으로 원본 텍스트 보존.
-        const num = try self.ast.addNode(.{
+    if (key_node.tag == .string_literal or key_node.tag == .numeric_literal or key_node.tag == .bigint_literal) {
+        // Literal keys must remain literal AST nodes. Converting a quoted Flow
+        // component prop such as `'data-value' as value` into an identifier
+        // reference makes semantic re-analysis treat the property name as a
+        // source variable and can invalidate the retained graph. Numeric/bigint
+        // keys also have non-string_ref data variants; copying all three kinds
+        // preserves their original spelling and computed-member semantics.
+        const literal_key = try self.ast.addNode(.{
             .tag = key_node.tag,
             .span = key_node.span,
             .data = key_node.data,
         });
-        return makeComputedMember(self, obj, num, span);
+        return makeComputedMember(self, obj, literal_key, span);
     }
     // 프로퍼티 키는 문자열 이름이므로 visitNode(symbol 전파) 대신 span만 복사.
     // destructuring { polyfillGlobal: renamed } → _ref.polyfillGlobal 에서
