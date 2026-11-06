@@ -1098,6 +1098,8 @@ fn expectColdAndCachedTrackedInjectedBindingGraph(source: []const u8, expected_m
         graph.disk_compiler_build_id = 0xCACE;
         graph.max_threads = 1;
         graph.plugins = &cold_plugins;
+        graph.transform_options_base.minify_syntax = true;
+        graph.minify_identifiers = false;
 
         try graph.build(std.testing.io, &.{entry});
 
@@ -1122,6 +1124,8 @@ fn expectColdAndCachedTrackedInjectedBindingGraph(source: []const u8, expected_m
     warm_graph.disk_compiler_build_id = 0xCACE;
     warm_graph.max_threads = 1;
     warm_graph.plugins = &warm_plugins;
+    warm_graph.transform_options_base.minify_syntax = true;
+    warm_graph.minify_identifiers = false;
 
     try warm_graph.build(std.testing.io, &.{entry});
 
@@ -1185,6 +1189,7 @@ fn expectUntrackedEvalGraphMutationRejected(source: []const u8) !void {
     defer graph.deinit();
     graph.max_threads = 1;
     graph.plugins = &plugins;
+    graph.transform_options_base.minify_syntax = true;
 
     try graph.build(std.testing.io, &.{entry});
 
@@ -1204,6 +1209,60 @@ fn expectUntrackedEvalGraphMutationRejected(source: []const u8) !void {
         if (diagnostic.severity == .@"error") error_diagnostics += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), error_diagnostics);
+}
+
+const TrackedNoopFunctionHookState = struct { calls: usize = 0 };
+
+fn trackedNoopFunctionHook(
+    ctx: ?*anyopaque,
+    _: *plugin_mod.AstTransformCtx,
+    _: @import("../transformer/ast_plugin.zig").FunctionInfo,
+) plugin_mod.PluginError!void {
+    const state_ptr = ctx orelse return error.PluginFailed;
+    const state: *TrackedNoopFunctionHookState = @ptrCast(@alignCast(state_ptr));
+    state.calls += 1;
+}
+
+test "graph function-hook caller: syntax minification publishes when the tracked candidate stays exact" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const source = "export function read() { return 1 + 2; }";
+    try writeFile(tmp.dir, "entry.js", source);
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.js" });
+    defer std.testing.allocator.free(entry);
+
+    var hook_state: TrackedNoopFunctionHookState = .{};
+    const plugins = [_]plugin_mod.Plugin{.{
+        .name = "tracked-noop-function-hook",
+        .context = @ptrCast(&hook_state),
+        .onFunction = trackedNoopFunctionHook,
+        .ast_graph_contract = .tracked_function_edits,
+    }};
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.max_threads = 1;
+    graph.plugins = &plugins;
+    graph.transform_options_base.minify_syntax = true;
+
+    try graph.build(std.testing.io, &.{entry});
+
+    try std.testing.expectEqual(@as(usize, 1), hook_state.calls);
+    try expectVisitorGraphReady(&graph, entry);
+    const ast = &graph.findModuleByPath(entry).?.ast.?;
+    const root = ast.transformed_root.?;
+    var folded = TransformedNumericLiteralCount{ .ast = ast, .text = "3" };
+    try ast_walk.walkPreorderIterative(std.testing.allocator, ast, root, &folded, TransformedNumericLiteralCount.visit);
+    try std.testing.expectEqual(@as(usize, 1), folded.count);
+    for ([_][]const u8{ "1", "2" }) |text| {
+        var stale = TransformedNumericLiteralCount{ .ast = ast, .text = text };
+        try ast_walk.walkPreorderIterative(std.testing.allocator, ast, root, &stale, TransformedNumericLiteralCount.visit);
+        try std.testing.expectEqual(@as(usize, 0), stale.count);
+    }
 }
 
 fn coldParseVisitorHook(

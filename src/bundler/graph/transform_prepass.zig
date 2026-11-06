@@ -21323,6 +21323,10 @@ fn minifyGenericPrepassGraph(
     transformer: *Transformer,
     root: ast_mod.NodeIndex,
     arena_alloc: std.mem.Allocator,
+    tracked_ast_plugin_graph: bool,
+    parser_node_count: u32,
+    unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    pre_transform_scope_count: usize,
 ) !bool {
     return minify_transaction: {
         const semantic = &module.semantic.?;
@@ -21452,6 +21456,46 @@ fn minifyGenericPrepassGraph(
             error.OutOfMemory => return error.OutOfMemory,
             else => break :minify_transaction false,
         };
+
+        // Syntax minification is optional. A contracted AST plugin may have
+        // introduced exact identities that make a source declaration live to
+        // the graph even when the minifier only sees it as dead syntax. Audit
+        // the complete candidate before publishing; a failed receipt refuses
+        // this optimization and lets the caller continue with the exact graph
+        // that entered minification.
+        if (tracked_ast_plugin_graph) {
+            var candidate_semantic = semantic.*;
+            candidate_semantic.applyEdit(edited);
+            candidate_semantic.class_self_symbol_map = candidate_class_self;
+
+            var candidate_module = module.*;
+            candidate_module.ast = transformer.ast.*;
+            candidate_module.semantic = candidate_semantic;
+            const helper_ref_nodes = transformer.ownedHelperRefNodes(arena_alloc) catch return error.OutOfMemory;
+            candidate_module.transform_cache = blk: {
+                var cache = module.transform_cache orelse @as(@TypeOf(module.transform_cache.?), .{
+                    .runtime_helpers = transformer.runtime_helpers,
+                    .symbol_ids = candidate_semantic.symbol_ids,
+                });
+                cache.helper_ref_nodes = helper_ref_nodes;
+                break :blk cache;
+            };
+
+            var candidate_transformer = transformer.*;
+            candidate_transformer.reference_origin_map = candidate_origins;
+            const exact = exactPrepassReport(
+                arena_alloc,
+                &candidate_module,
+                root,
+                parser_node_count,
+                &candidate_transformer,
+                unresolved_nodes,
+                pre_transform_scope_count,
+                true,
+            ) catch null;
+            if (exact == null or !exact.?.isClean()) break :minify_transaction false;
+        }
+
         semantic.applyEdit(edited);
         transformer.reference_origin_map = candidate_origins;
         transformer.class_self_symbol_map = candidate_class_self;
@@ -22025,7 +22069,17 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     // aggregate decrement against the same semantic counts.
     const prepass_ref_deltas: []u32 = &.{};
     if (self.transform_options_base.minify_syntax) {
-        const optimized = minifyGenericPrepassGraph(self, module, &transformer, root, arena_alloc) catch |err| switch (err) {
+        const optimized = minifyGenericPrepassGraph(
+            self,
+            module,
+            &transformer,
+            root,
+            arena_alloc,
+            tracked_ast_plugin_graph,
+            parser_node_count,
+            &unresolved_nodes,
+            pre_transform_scope_count,
+        ) catch |err| switch (err) {
             error.OutOfMemory => return,
             else => return,
         };
