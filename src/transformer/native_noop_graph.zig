@@ -14,8 +14,9 @@ pub const Metadata = struct {
     jsx_key_after_spread: bool,
     decorators: bool,
     flow_enum: bool,
+    flow_runtime_transform: bool,
     fn capture(tree: *const ast.Ast) Metadata {
-        return .{ .typescript = tree.is_typescript, .jsx = tree.has_jsx, .jsx_key_after_spread = tree.has_jsx_key_after_spread, .decorators = tree.has_decorator, .flow_enum = tree.has_flow_enum_declaration };
+        return .{ .typescript = tree.is_typescript, .jsx = tree.has_jsx, .jsx_key_after_spread = tree.has_jsx_key_after_spread, .decorators = tree.has_decorator, .flow_enum = tree.has_flow_enum_declaration, .flow_runtime_transform = tree.has_flow_runtime_transform };
     }
 };
 pub const ModuleFrame = struct { pointer: *const module.Module, index: @import("../bundler/types.zig").ModuleIndex };
@@ -91,7 +92,7 @@ fn allowed(tag: ast.Node.Tag) bool {
 }
 /// This deliberately excludes imports; source graph edges need their own certificate.
 pub fn sourcePlan(a: std.mem.Allocator, tree: *const ast.Ast, sem: *const module.ModuleSemanticData, opts: Options) !?Source {
-    if (tree.nodes.items.len == 0 or tree.is_typescript or tree.has_jsx or tree.has_decorator or
+    if (tree.nodes.items.len == 0 or tree.is_typescript or tree.has_jsx or tree.has_decorator or tree.has_flow_runtime_transform or
         opts.unsupported.optional_chaining or opts.unsupported.nullish_coalescing or
         opts.minify_syntax or !opts.strip_types or opts.react_refresh or opts.emotion or opts.styled_components or
         opts.define.len != 0 or opts.drop_console or opts.drop_debugger or opts.drop_labels.len != 0 or

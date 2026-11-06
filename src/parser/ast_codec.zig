@@ -34,7 +34,9 @@ pub const MAGIC: u32 = 0x5A4E5443; // "ZNTC"
 // four-slot enum must never be traversed as the new layout after cache restore.
 // v7: function expressions own the return-type word, including absent types.
 // v6 caches may contain four-slot expressions and must be reparsed.
-pub const FORMAT_VERSION: u32 = 7;
+// v8: Flow runtime-transform admission is persisted so cached match/component ASTs
+// cannot skip the graph pre-pass after parse-cache restoration.
+pub const FORMAT_VERSION: u32 = 8;
 
 /// null `?[]const u8` 표식 (jsx_pragma offset 자리).
 const NULL_OFFSET: u32 = std.math.maxInt(u32);
@@ -61,7 +63,7 @@ comptime {
     // lexical binding 보존 목록이며 parse-cache Ast 에는 비어 있어야 한다.
     // #5595 `is_typescript`: **직렬화**(메타 플래그). transformer 의 import elision 범위를 정한다.
     // #5665 `has_object_getter`: **직렬화**(메타 플래그). tree shaking 의 속성 읽기 순수성 판정.
-    if (@typeInfo(Ast).@"struct".field_names.len != 28)
+    if (@typeInfo(Ast).@"struct".field_names.len != 29)
         @compileError("Ast 필드 수가 바뀜 — 새 필드의 직렬화 필요 여부를 판정해 ast_codec 갱신 후 이 수를 갱신할 것.");
 }
 
@@ -141,13 +143,13 @@ pub fn serialize(ast: *const Ast, out: *std.ArrayList(u8), alloc: std.mem.Alloca
     // 항상 같은 byte stream (캐시 결정성). deserialize 는 순서 무관(키 set 복원).
     try putSortedKeySet(&payload, alloc, &ast.type_only_binding_names);
 
-    // 메타 플래그 9개 (1바이트씩)
+    // 메타 플래그 10개 (1바이트씩)
     const flags = [_]bool{
         ast.has_jsx,                   ast.has_jsx_key_after_spread,
         ast.has_decorator,             ast.has_ts_namespace_or_enum,
         ast.has_ts_import_equals,      ast.has_ts_export_equals,
-        ast.has_flow_enum_declaration, ast.is_typescript,
-        ast.has_object_getter,
+        ast.has_flow_enum_declaration, ast.has_flow_runtime_transform,
+        ast.is_typescript,             ast.has_object_getter,
     };
     for (flags) |f| try payload.append(alloc, if (f) @as(u8, 1) else 0);
 
@@ -263,6 +265,7 @@ pub fn deserialize(data: []const u8, alloc: std.mem.Allocator) Error!Ast {
     ast.has_ts_import_equals = (try r.byte()) != 0;
     ast.has_ts_export_equals = (try r.byte()) != 0;
     ast.has_flow_enum_declaration = (try r.byte()) != 0;
+    ast.has_flow_runtime_transform = (try r.byte()) != 0;
     ast.is_typescript = (try r.byte()) != 0;
     ast.has_object_getter = (try r.byte()) != 0;
 

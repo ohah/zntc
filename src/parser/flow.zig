@@ -1732,11 +1732,13 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
         const wrapper_extra = try self.ast.addExtras(&.{
             @backingInt(func_decl), @backingInt(const_decl),
         });
-        return try self.ast.addNode(.{
+        const wrapper = try self.ast.addNode(.{
             .tag = .flow_component_wrapper,
             .span = span,
             .data = .{ .extra = wrapper_extra },
         });
+        self.ast.has_flow_runtime_transform = true;
+        return wrapper;
     }
 
     // ref가 없으면 일반 함수 선언
@@ -2086,11 +2088,13 @@ pub fn parseMatchExpression(self: *Parser) ParseError2!NodeIndex {
         arms_list.start,
         arms_list.len,
     });
-    return try self.ast.addNode(.{
+    const match = try self.ast.addNode(.{
         .tag = .flow_match_expression,
         .span = .{ .start = start, .end = self.currentSpan().start },
         .data = .{ .extra = extra },
     });
+    self.ast.has_flow_runtime_transform = true;
+    return match;
 }
 
 /// wildcard `_` placeholder. transformer 가 span 텍스트 `_` 를 보고 else-branch
@@ -2403,6 +2407,7 @@ pub fn parseFlowEnumDeclaration(self: *Parser) ParseError2!NodeIndex {
     });
 
     self.ast.has_flow_enum_declaration = true;
+    self.ast.has_flow_runtime_transform = true;
     return try self.ast.addNode(.{
         .tag = .flow_enum_declaration,
         .span = .{ .start = start, .end = end },

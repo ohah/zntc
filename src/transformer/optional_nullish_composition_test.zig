@@ -587,7 +587,7 @@ test "native no-op graph native hardening keeps module domains metadata and copy
     try std.testing.expect(!try Native.beforeBinder(&f.t, f.root));
     try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
     f.t.semantic_source_ast = original_domain;
-    inline for (.{ "is_typescript", "has_jsx", "has_jsx_key_after_spread", "has_decorator", "has_flow_enum_declaration" }) |field| {
+    inline for (.{ "is_typescript", "has_jsx", "has_jsx_key_after_spread", "has_decorator", "has_flow_enum_declaration", "has_flow_runtime_transform" }) |field| {
         const source_ast = @constCast(f.t.native_noop_source.?.ast);
         const prior_source = @field(source_ast, field);
         @field(source_ast, field) = !prior_source;

@@ -120,6 +120,54 @@ function runCase(
   }
 }
 
+function runPlainFlowBuild(name: string, source: string, expectedOutput: string) {
+  const dir = mkdtempSync(join(tmpdir(), `zntc-${name}-`));
+  const entry = join(dir, 'entry.js');
+  const output = join(dir, 'out.cjs');
+  writeFileSync(entry, source);
+  const reportedEntry = realpathSync(entry);
+  const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+  const runner = [
+    `import {buildSync} from ${JSON.stringify(coreEntry)};`,
+    `const result=buildSync({entryPoints:[${JSON.stringify(entry)}],platform:'node',format:'cjs',target:'esnext',flow:true,write:false});`,
+    `if(result.errors.length){console.error(JSON.stringify(result.errors));process.exit(1);}`,
+    `process.stdout.write(JSON.stringify({outputs:result.outputFiles.map(file=>file.text)}));`,
+  ].join('\n');
+  try {
+    const run = Bun.spawnSync(['bun', '-e', runner], {
+      cwd: join(import.meta.dir, '../../..'),
+      env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+    });
+    const stderr = run.stderr.toString();
+    expect(run.exitCode, stderr).toBe(0);
+    const result = JSON.parse(run.stdout.toString()) as { outputs: string[] };
+    expect(result.outputs).toHaveLength(1);
+    writeFileSync(output, result.outputs[0]);
+    const execution = Bun.spawnSync(['node', output]);
+    expect(execution.exitCode, execution.stderr.toString()).toBe(0);
+    expect(execution.stdout.toString()).toBe(expectedOutput);
+
+    const lines = stderr.split(/\r?\n/);
+    const identity = lines.filter(
+      (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(reportedEntry),
+    );
+    expect(identity, stderr).toHaveLength(1);
+    for (const field of [...zeroCounters, 'clean']) {
+      const values = [...identity[0].matchAll(new RegExp(`(?:^| )${field}=(\\d+)(?= |$)`, 'g'))];
+      expect(values, `${field}: ${identity[0]}`).toHaveLength(1);
+      expect(Number(values[0][1]), field).toBe(field === 'clean' ? 1 : 0);
+    }
+    const mode = lines.filter(
+      (line) =>
+        line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(reportedEntry),
+    );
+    expect(mode, stderr).toHaveLength(1);
+    expect(mode[0]).toContain('semantic_graph=retained');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function runPluginLoadedImportEqualsDependency(
   useVirtualId: boolean,
   useSyncBuild = false,
@@ -1298,6 +1346,37 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
       }
     },
   );
+
+  test('plain Flow match enables graph prepass and preserves output without minification', () => {
+    runPlainFlowBuild(
+      'flow-match-prepass-gate',
+      [
+        '// @flow',
+        "const fallback = 'outer';",
+        'function classify(value) {',
+        "  return match (value) { 0 => 'zero', _ => fallback };",
+        '}',
+        'console.log(classify(0), classify(1));',
+      ].join('\n'),
+      'zero outer\n',
+    );
+  });
+
+  test('plain Flow ref component enables graph prepass and preserves output without minification', () => {
+    runPlainFlowBuild(
+      'flow-component-prepass-gate',
+      [
+        '// @flow',
+        'const React = { forwardRef: (render) => render };',
+        "const LongCard_withRef = 'user-binding';",
+        'component LongCard(ref?: mixed, ...props: { label?: string }) {',
+        '  return props.label;',
+        '}',
+        "console.log(LongCard({ label: 'ok' }), LongCard_withRef);",
+      ].join('\n'),
+      'ok user-binding\n',
+    );
+  });
 
   test(
     'buildSync onTransform Flow match keeps generated callbacks and outer captures exact',
