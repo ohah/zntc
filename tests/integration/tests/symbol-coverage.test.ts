@@ -38378,6 +38378,29 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         functionName: 'nestedMarker',
         expected: '100\n',
       },
+      {
+        label: 'ES5 class-field downlevel with a live plugin reference',
+        source:
+          'let shared = 40; class Box { value = shared; } function marker() {} console.log(new Box().value);',
+        functionName: 'marker',
+        target: 'es5',
+        minifySyntax: false,
+        trailingCode: ['console.log(shared + 2);'],
+        expected: '42\n40\n',
+        expectDownlevelClass: true,
+        mutateReference: true,
+      },
+      {
+        label: 'ES5 class-field downlevel with syntax minification',
+        source:
+          'let shared = 40; class Box { value = shared; } function marker() {} console.log(new Box().value);',
+        functionName: 'marker',
+        target: 'es5',
+        minifySyntax: true,
+        trailingCode: ['console.log(shared + 2);'],
+        expected: '42\n40\n',
+        expectDownlevelClass: true,
+      },
     ];
 
     for (const fixture of cases) {
@@ -38391,14 +38414,15 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         entryPoints: [entry],
         platform: 'node',
         format: 'cjs',
-        target: 'esnext',
-        minifySyntax: true,
+        target: fixture.target ?? 'esnext',
+        minifySyntax: fixture.minifySyntax ?? true,
         minifyIdentifiers: true,
         write: false,
       });
+      const trailingCode = fixture.trailingCode ?? ['throw shared;'];
       const runner = [
         `import { build } from ${JSON.stringify(coreEntry)};`,
-        `const result = await build({ ...${baseOptions}, plugins: [{ name: 'trailing-reference', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === ${JSON.stringify(fixture.functionName)} ? { trailingCode: ['throw shared;'] } : null); } }] });`,
+        `const result = await build({ ...${baseOptions}, plugins: [{ name: 'trailing-reference', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === ${JSON.stringify(fixture.functionName)} ? { trailingCode: ${JSON.stringify(trailingCode)} } : null); } }] });`,
         'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
         'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
       ].join('\n');
@@ -38427,7 +38451,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         expect(exactSchemaProblems(identity ?? ''), `${fixture.label}: ${identity}`).toEqual([]);
         const outputs = JSON.parse(buildResult.stdout) as string[];
         expect(outputs).toHaveLength(1);
-        writeFileSync(output, outputs[0]);
+        const emitted = outputs[0];
+        if (fixture.expectDownlevelClass)
+          expect(emitted, fixture.label).not.toMatch(/\bclass\s+Box\b/);
+        writeFileSync(output, emitted);
 
         const execute = spawnSync(
           'node',
@@ -38439,6 +38466,19 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         );
         expect(execute.status, `${fixture.label}: ${execute.stderr}`).toBe(0);
         expect(execute.stdout, fixture.label).toBe(fixture.expected);
+
+        if (fixture.mutateReference) {
+          const injectedRead = emitted.match(/console\.log\(([\w$]+) \+ 2\);/);
+          const functionName = [...emitted.matchAll(/function ([\w$]+)\(\) \{\s*\}/g)].at(-1)?.[1];
+          expect(injectedRead, fixture.label).not.toBeNull();
+          expect(functionName, fixture.label).toBeDefined();
+          const mutated = emitted.replace(injectedRead![0], `console.log(${functionName} + 2);`);
+          expect(mutated, fixture.label).not.toBe(emitted);
+          writeFileSync(output, mutated);
+          const hostile = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(hostile.status, `${fixture.label}: ${hostile.stderr}`).toBe(0);
+          expect(hostile.stdout, fixture.label).not.toBe(fixture.expected);
+        }
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
