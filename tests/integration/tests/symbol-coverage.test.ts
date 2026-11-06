@@ -38809,6 +38809,159 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('NAPI onAstFunction keeps generated external globals through ES5 cold and warm cache builds', () => {
+    const trailingStatements = [
+      'console.log(new Box().value);',
+      'console.log(new Box(1).value);',
+      "console.log(new Box('one').value);",
+      'console.log(new Box(true).value);',
+      'console.log(new Box(null).value);',
+      'console.log(new Box(1, 2).value);',
+      'console.log(new Box(1 + 2).value);',
+      "console.log(new Box('one', false, 3).value);",
+      'console.log(new Box(2 * 3).value);',
+      'console.log(new Box(7 - 4).value);',
+    ];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-external-cache-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    const cacheDir = join(dir, 'cache');
+    writeFileSync(
+      entry,
+      'let shared = 40; class Box { value = shared; } function outer() { function marker() {} marker(); } outer();',
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const baseOptions = JSON.stringify({
+      entryPoints: [entry],
+      platform: 'node',
+      format: 'cjs',
+      target: 'es5',
+      minifySyntax: true,
+      minifyIdentifiers: true,
+      diskCache: true,
+      cacheDir,
+      write: false,
+    });
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build({ ...${baseOptions}, plugins: [{ name: 'generated-external-global', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: ${JSON.stringify(trailingStatements)} } : null); } }] });`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+
+    try {
+      let coldOutput: string | undefined;
+      let coldCacheSnapshot: string[] | undefined;
+      for (const phase of ['cold', 'warm'] as const) {
+        // Each phase starts a new Bun process so warm must restore the parsed
+        // semantic graph before reapplying the AST hook and ES5 class lowering.
+        const buildResult = spawnSync('bun', ['-e', runner], {
+          cwd: join(import.meta.dir, '../../..'),
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        });
+        expect(buildResult.status, `${phase}: ${buildResult.stderr}`).toBe(0);
+        const stderr = buildResult.stderr ?? '';
+        const mode = stderr
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
+          );
+        expect(mode, `${phase}: ${stderr}`).toContain('semantic_graph=retained');
+        const identity = stderr
+          .split(/\r?\n/)
+          .find(
+            (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry),
+          );
+        expect(identity, `${phase}: ${stderr}`).toBeDefined();
+        expect(exactSchemaProblems(identity ?? ''), `${phase}: ${identity}`).toEqual([]);
+        expect(identity, `${phase}: generated console remains an external reference`).toContain(
+          `external=${trailingStatements.length}`,
+        );
+
+        const outputs = JSON.parse(buildResult.stdout) as string[];
+        expect(outputs, phase).toHaveLength(1);
+        const emitted = outputs[0];
+        expect(emitted, phase).not.toMatch(/\bclass\s+Box\b/);
+        if (phase === 'cold') {
+          coldOutput = emitted;
+          coldCacheSnapshot = diskCacheFileSnapshot(cacheDir);
+          expect(coldCacheSnapshot.length, 'cold build wrote disk cache').toBeGreaterThan(0);
+        } else {
+          expect(emitted, 'warm output').toBe(coldOutput);
+          // A cache miss reparses and atomically rewrites the semantic entry.
+          expect(diskCacheFileSnapshot(cacheDir), 'warm build loaded cache').toEqual(
+            coldCacheSnapshot,
+          );
+        }
+
+        writeFileSync(output, emitted);
+        const execute = spawnSync(
+          'node',
+          [
+            '-e',
+            `try { require(${JSON.stringify(output)}); } catch (error) { process.stdout.write(String(error) + '\\n'); }`,
+          ],
+          { encoding: 'utf8' },
+        );
+        expect(execute.status, `${phase}: ${execute.stderr}`).toBe(0);
+        expect(execute.stdout, phase).toBe('40\n'.repeat(trailingStatements.length));
+
+        if (phase === 'warm') {
+          const generatedClassReads = [
+            ...emitted.matchAll(/\bconsole\.log\(new ([\w$]+)\([^)]*\)\.value\);/g),
+          ];
+          expect(generatedClassReads, 'generated class binding references').toHaveLength(
+            trailingStatements.length,
+          );
+          for (let index = 0; index < generatedClassReads.length; index += 1) {
+            const generatedClassRead = generatedClassReads[index];
+            const mutations = [
+              {
+                name: `missing_class_owner_${index}`,
+                code: emitted.replace(
+                  generatedClassRead[0],
+                  generatedClassRead[0].replace(
+                    `new ${generatedClassRead[1]}`,
+                    `new missing_class_owner_${index}`,
+                  ),
+                ),
+              },
+              {
+                name: `missing_console_owner_${index}`,
+                code: emitted.replace(generatedClassRead[0], (statement) =>
+                  statement.replace('console.log', `missing_console_owner_${index}.log`),
+                ),
+              },
+            ];
+            for (const mutation of mutations) {
+              expect(mutation.code, mutation.name).not.toBe(emitted);
+              writeFileSync(output, mutation.code);
+              const syntax = spawnSync('node', ['--check', output], { encoding: 'utf8' });
+              expect(syntax.status, `${mutation.name}: ${syntax.stderr}`).toBe(0);
+              const hostile = spawnSync(
+                'node',
+                [
+                  '-e',
+                  `try { require(${JSON.stringify(output)}); } catch (error) { process.stdout.write(String(error) + '\\n'); }`,
+                ],
+                { encoding: 'utf8' },
+              );
+              expect(hostile.status, `${mutation.name}: ${hostile.stderr}`).toBe(0);
+              expect(hostile.stdout, mutation.name).toContain(
+                `ReferenceError: ${mutation.name} is not defined\n`,
+              );
+            }
+          }
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('NAPI onAstFunction rejects generated console lookups inside direct eval calls', () => {
     const trailingCalls = [
       "console.log(eval('shared'));",
