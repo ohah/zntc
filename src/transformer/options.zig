@@ -393,6 +393,11 @@ pub const TransformOptions = struct {
                         if (!key.isNone() and ast.getNode(key).tag != .private_identifier) return true;
                     }
                 },
+                // Plain auto-accessors lower into a private storage field and
+                // generated getter/setter scopes even when classes and public
+                // fields remain native. The bundler must edit their identities
+                // before linking the transformed output.
+                .accessor_property => if (u.decorator_auto_accessor) return true,
                 .for_of_statement => if (u.for_of) return true,
                 // 최상위 `for await` 도 top-level await 다 — 아래 await_expression 과 같이 TLA 를
                 // 낮춰야 하면 pre-pass 가 래퍼 promise 를 기록해야 importer 가 기다린다 (#4598).
