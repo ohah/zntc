@@ -38644,64 +38644,123 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
-  test('NAPI onAstFunction generated direct eval keeps dynamic names through syntax and identifier minification', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-generated-eval-'));
-    const entry = join(dir, 'entry.js');
-    const output = join(dir, 'out.cjs');
-    writeFileSync(entry, 'function outer(shared) { function marker() {} marker(); } outer(40);');
+  test('NAPI onAstFunction generated direct eval keeps exact identities through target lowering', () => {
+    const fixtures = [
+      {
+        label: 'ESNext syntax and identifier minification',
+        source: 'function outer(shared) { function marker() {} marker(); } outer(40);',
+        target: 'esnext',
+        minifySyntax: true,
+        expected: '40\n',
+      },
+      {
+        label: 'ES5 class-field lowering without syntax minification',
+        source:
+          'let shared = 40; class Box { value = shared; } function outer() { try { function marker() {} marker(); } catch (error) { console.log(error); } console.log(new Box().value); } outer();',
+        target: 'es5',
+        minifySyntax: false,
+        expected: '40\n40\n',
+        expectDownlevelClass: true,
+      },
+      {
+        label: 'ES5 class-field lowering with syntax and identifier minification',
+        source:
+          'let shared = 40; class Box { value = shared; } function outer() { try { function marker() {} marker(); } catch (error) { console.log(error); } console.log(new Box().value); } outer();',
+        target: 'es5',
+        minifySyntax: true,
+        expected: '40\n40\n',
+        expectDownlevelClass: true,
+        hostileEvalNames: Array.from({ length: 10 }, (_, index) => `hostile_eval_${index}`),
+      },
+    ];
 
     const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
-    const baseOptions = JSON.stringify({
-      entryPoints: [entry],
-      platform: 'node',
-      format: 'cjs',
-      target: 'esnext',
-      minifySyntax: true,
-      minifyIdentifiers: true,
-      write: false,
-    });
-    const runner = [
-      `import { build } from ${JSON.stringify(coreEntry)};`,
-      `const result = await build({ ...${baseOptions}, plugins: [{ name: 'generated-eval', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: ["throw eval('shared');"] } : null); } }] });`,
-      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
-      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
-    ].join('\n');
+    for (const fixture of fixtures) {
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-generated-eval-'));
+      const entry = join(dir, 'entry.js');
+      const output = join(dir, 'out.cjs');
+      writeFileSync(entry, fixture.source);
 
-    try {
-      const buildResult = spawnSync('bun', ['-e', runner], {
-        cwd: join(import.meta.dir, '../../..'),
-        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
-        encoding: 'utf8',
+      const baseOptions = JSON.stringify({
+        entryPoints: [entry],
+        platform: 'node',
+        format: 'cjs',
+        target: fixture.target,
+        minifySyntax: fixture.minifySyntax,
+        minifyIdentifiers: true,
+        write: false,
       });
-      expect(buildResult.status, buildResult.stderr).toBe(0);
-      const stderr = buildResult.stderr ?? '';
-      const mode = stderr
-        .split(/\r?\n/)
-        .find(
-          (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
-        );
-      expect(mode, stderr).toContain('semantic_graph=retained');
-      const identity = stderr
-        .split(/\r?\n/)
-        .find((line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry));
-      expect(identity, stderr).toBeDefined();
-      expect(exactSchemaProblems(identity ?? ''), identity).toEqual([]);
-      const outputs = JSON.parse(buildResult.stdout) as string[];
-      expect(outputs).toHaveLength(1);
-      writeFileSync(output, outputs[0]);
+      const runner = [
+        `import { build } from ${JSON.stringify(coreEntry)};`,
+        `const result = await build({ ...${baseOptions}, plugins: [{ name: 'generated-eval', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: ["throw eval('shared');"] } : null); } }] });`,
+        'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+        'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+      ].join('\n');
 
-      const execute = spawnSync(
-        'node',
-        [
-          '-e',
-          `try { require(${JSON.stringify(output)}); } catch (error) { process.stdout.write(String(error) + '\\n'); }`,
-        ],
-        { encoding: 'utf8' },
-      );
-      expect(execute.status, execute.stderr).toBe(0);
-      expect(execute.stdout).toBe('40\n');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
+      try {
+        const buildResult = spawnSync('bun', ['-e', runner], {
+          cwd: join(import.meta.dir, '../../..'),
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        });
+        expect(buildResult.status, `${fixture.label}: ${buildResult.stderr}`).toBe(0);
+        const stderr = buildResult.stderr ?? '';
+        const mode = stderr
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
+          );
+        expect(mode, `${fixture.label}: ${stderr}`).toContain('semantic_graph=retained');
+        const identity = stderr
+          .split(/\r?\n/)
+          .find(
+            (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry),
+          );
+        expect(identity, `${fixture.label}: ${stderr}`).toBeDefined();
+        expect(exactSchemaProblems(identity ?? ''), `${fixture.label}: ${identity}`).toEqual([]);
+        const outputs = JSON.parse(buildResult.stdout) as string[];
+        expect(outputs).toHaveLength(1);
+        const emitted = outputs[0];
+        if (fixture.expectDownlevelClass)
+          expect(emitted, fixture.label).not.toMatch(/\bclass\s+Box\b/);
+        writeFileSync(output, emitted);
+
+        const execute = spawnSync(
+          'node',
+          [
+            '-e',
+            `try { require(${JSON.stringify(output)}); } catch (error) { process.stdout.write(String(error) + '\\n'); }`,
+          ],
+          { encoding: 'utf8' },
+        );
+        expect(execute.status, `${fixture.label}: ${execute.stderr}`).toBe(0);
+        expect(execute.stdout, fixture.label).toBe(fixture.expected);
+
+        if (fixture.hostileEvalNames) {
+          const evalCall = emitted.match(/eval\((["'])shared\1\)/);
+          expect(evalCall, fixture.label).not.toBeNull();
+          for (const hostileName of fixture.hostileEvalNames) {
+            const mutated = emitted.replace(evalCall![0], `eval(${JSON.stringify(hostileName)})`);
+            expect(mutated, `${fixture.label}: ${hostileName}`).not.toBe(emitted);
+            writeFileSync(output, mutated);
+            const hostile = spawnSync(
+              'node',
+              [
+                '-e',
+                `try { require(${JSON.stringify(output)}); } catch (error) { process.stdout.write(String(error) + '\\n'); }`,
+              ],
+              { encoding: 'utf8' },
+            );
+            expect(hostile.status, `${hostileName}: ${hostile.stderr}`).toBe(0);
+            expect(hostile.stdout, hostileName).toMatch(
+              new RegExp(`^ReferenceError: ${hostileName} is not defined[\\s\\S]*\\n40\\n$`),
+            );
+          }
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
   }, 60_000);
 
