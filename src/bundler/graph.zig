@@ -1099,7 +1099,7 @@ fn expectColdAndCachedTrackedInjectedBindingGraph(source: []const u8, expected_m
         graph.max_threads = 1;
         graph.plugins = &cold_plugins;
         graph.transform_options_base.minify_syntax = true;
-        graph.minify_identifiers = false;
+        graph.minify_identifiers = true;
 
         try graph.build(std.testing.io, &.{entry});
 
@@ -1125,7 +1125,7 @@ fn expectColdAndCachedTrackedInjectedBindingGraph(source: []const u8, expected_m
     warm_graph.max_threads = 1;
     warm_graph.plugins = &warm_plugins;
     warm_graph.transform_options_base.minify_syntax = true;
-    warm_graph.minify_identifiers = false;
+    warm_graph.minify_identifiers = true;
 
     try warm_graph.build(std.testing.io, &.{entry});
 
@@ -1190,6 +1190,7 @@ fn expectUntrackedEvalGraphMutationRejected(source: []const u8) !void {
     graph.max_threads = 1;
     graph.plugins = &plugins;
     graph.transform_options_base.minify_syntax = true;
+    graph.minify_identifiers = true;
 
     try graph.build(std.testing.io, &.{entry});
 
@@ -1248,6 +1249,7 @@ test "graph function-hook caller: syntax minification publishes when the tracked
     graph.max_threads = 1;
     graph.plugins = &plugins;
     graph.transform_options_base.minify_syntax = true;
+    graph.minify_identifiers = true;
 
     try graph.build(std.testing.io, &.{entry});
 
@@ -4399,7 +4401,7 @@ test "graph function-hook caller: non-statement trailing injection is rejected b
     for (sources) |source| try expectRejectedTrailingCodeGraph(source);
 }
 
-test "graph function-hook caller: injected binding and references keep exact identities on cold and cached ASTs" {
+test "graph function-hook caller: injected identities survive syntax and identifier minification on cold and cached ASTs" {
     const cases = [_]struct { source: []const u8, method_calls: usize }{
         .{ .source = "const secret=1; function decoy(){const injectedValue=99;} function read(){}", .method_calls = 0 },
         .{ .source = "const secret=1; function decoy(){const injectedValue=99;} function read(ignored=0){}", .method_calls = 0 },
