@@ -3975,3 +3975,122 @@ test "escaped private helper candidate decoder OOM preserves reservations" {
     }
     std.debug.print("PRIVATE_CANDIDATE_OOM actualParserKey={s} failures={d} initFailureInjection=false\n", .{ original, count });
 }
+
+test "ES5 computed class key memo keeps exact source reference owners" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "const key='read';class Box{[Symbol.iterator](){return key}[key](){return 42}[(function nested(){return key})()](){return 43}}";
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    var source_class: NodeIndex = .none;
+    var key_id: ?u32 = null;
+    var global_key: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_declaration) source_class = @fromBackingInt(@intCast(raw));
+        if (node.tag == .identifier_reference and std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "Symbol"))
+            global_key = @fromBackingInt(@intCast(raw));
+        if (node.tag == .binding_identifier and std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "key"))
+            key_id = analyzer.symbol_ids.items[raw];
+    }
+    const id = key_id orelse return error.MissingSourceKeySymbol;
+    const class_scope: ScopeId = @fromBackingInt(analyzer.scope_owner_map.get(@backingInt(source_class)) orelse return error.MissingSourceClassOwner);
+    const source_symbol = analyzer.symbols.items[id];
+    const source_global_provenance = analyzer.node_scope_provenance.get(global_key) orelse return error.MissingSourceGlobalKey;
+    try std.testing.expectEqual(class_scope, source_global_provenance.scope);
+    const SourceRead = struct { node: NodeIndex, scope: ScopeId };
+    var reads: std.ArrayList(SourceRead) = .empty;
+    for (analyzer.references.items) |reference| {
+        if (@backingInt(reference.symbol_id) == id and reference.flags.read)
+            try reads.append(a, .{ .node = reference.node_index, .scope = reference.scope_id });
+    }
+    try std.testing.expectEqual(@as(usize, 3), reads.items.len);
+    var t = try Transformer.init(a, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    t.semantic_edit_enabled = true;
+    t.record_explicit_global_references = true;
+    const root = try t.transform();
+    const edited = (try t.finishSemanticEdit()).?;
+    const iife_scope = edited.scopes[class_scope.toIndex()].parent;
+    try std.testing.expect(!iife_scope.isNone() and iife_scope != class_scope);
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[iife_scope.toIndex()].kind);
+    try std.testing.expectEqual(source_symbol.scope_id, edited.symbols.items[id].scope_id);
+    try std.testing.expectEqual(source_symbol.origin_scope, edited.symbols.items[id].origin_scope);
+    const moved_global_provenance = edited.node_scope_provenance.get(global_key) orelse return error.MissingMovedGlobalKey;
+    try std.testing.expectEqual(iife_scope, moved_global_provenance.scope);
+    try std.testing.expectEqual(source_global_provenance.source_node, moved_global_provenance.source_node);
+    try std.testing.expect(edited.symbol_ids[@backingInt(global_key)] == null);
+    var moved: usize = 0;
+    var preserved: usize = 0;
+    for (reads.items) |read| {
+        var count: usize = 0;
+        for (edited.references) |reference| {
+            if (reference.node_index != read.node or !reference.flags.read) continue;
+            count += 1;
+            try std.testing.expectEqual(id, @backingInt(reference.symbol_id));
+            try std.testing.expectEqual(id, edited.symbol_ids[@backingInt(read.node)].?);
+            if (read.scope == class_scope) {
+                try std.testing.expectEqual(iife_scope, reference.scope_id);
+                moved += 1;
+            } else {
+                try std.testing.expectEqual(read.scope, reference.scope_id);
+                preserved += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), count);
+    }
+    try std.testing.expectEqual(@as(usize, 1), moved);
+    try std.testing.expectEqual(@as(usize, 2), preserved);
+    const report = try coverage.checkExact(a, t.ast, root, t.parser_node_count, edited.symbol_ids, edited.symbols.items, edited.scopes, edited.scope_maps, &edited.scope_owner_map, edited.references, t.helper_ref_nodes.items, &t.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &t.reference_origin_map);
+    try std.testing.expect(report.hasCompleteOutputIdentityBeforeNames());
+}
+
+test "ES5 computed class keys preserve iterator accessors fields heritage and nested functions" {
+    const sources = [_][]const u8{
+        "class Box{[Symbol.iterator](){return [42][Symbol.iterator]()}}console.log(JSON.stringify(Array.from(new Box())));",
+        "const Box=class{[Symbol.iterator](){return [42][Symbol.iterator]()}};console.log(JSON.stringify(Array.from(new Box())));",
+        "const key='value';class Box{get [key](){return 42}}console.log(new Box().value);",
+        "const key='value';class Box{set [key](value){this.result=value}}const box=new Box();box.value=42;console.log(box.result);",
+        "const key='read';class Box{static [key](){return 42}}console.log(Box.read());",
+        "const key='value';class Box{[key]=42;static ['other']=7}console.log(new Box().value,Box.other);",
+        "const base=class{};const key='read';class Box extends base{[(function nested(){return key})()](){return 42}}console.log(new Box().read());",
+        "const key='read';class Box{[key](){const inner=()=>key;return inner()}}console.log(new Box().read());",
+    };
+    for (sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        inline for (.{ .es5, .es2017 }) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                const result = try @import("../transpile.zig").transpile(a, source, "computed-key-owner.js", .{
+                    .unsupported = TransformOptions.compat.fromESTarget(target),
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                });
+                const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+                try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+            }
+        }
+    }
+}

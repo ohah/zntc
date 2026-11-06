@@ -583,7 +583,22 @@ pub fn Members(comptime Transformer: type) type {
         /// their temp must be removed from the enclosing function's later
         /// temp sweep.
         pub fn bindComputedKeyTempsForClass(self: *Transformer, cm: *ClassifiedMembers, scope: @import("../../semantic/scope.zig").ScopeId, span: Span, source_class: NodeIndex) Transformer.Error!void {
-            for (cm.accessor_key_memos.items) |fragment| try @import("../worklet_class_clone.zig").moveHoistedKeyReferences(self, source_class, fragment, scope);
+            for (cm.accessor_key_memos.items) |fragment| {
+                try @import("../worklet_class_clone.zig").moveHoistedKeyReferences(self, source_class, fragment, scope);
+                if (self.semantic_edit_enabled) {
+                    const source_scope = self.outputOwnedScope(source_class) orelse
+                        @panic("computed class key lost its actual source class owner");
+                    if (scope.isNone()) @panic("computed class key lost its reserved IIFE owner");
+                    // These exact memo declarations execute inside the class
+                    // IIFE. Move only their source-scope reads/provenance, not
+                    // method bodies, heritage arguments, or outer prehoists.
+                    // Functions inside a key keep their own scopes and IDs;
+                    // only their lexical root is reparented to the real IIFE.
+                    const strict = @import("../class_strict_context.zig");
+                    try strict.moveInitializerScopes(self, fragment, source_scope, source_scope, scope);
+                    try strict.moveSourceReferences(self, fragment, source_scope, source_scope, scope);
+                }
+            }
             return bindComputedKeyTemps(self, cm, scope, span);
         }
 
