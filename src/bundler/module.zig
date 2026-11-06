@@ -1036,6 +1036,40 @@ pub const Module = struct {
         ready,
     };
 
+    /// Publish the part of a staged Module that belongs to transformed AST
+    /// state. A staged Module is a projection of an installed graph node, not
+    /// an authority for graph identity, lifecycle, edges, or output ownership.
+    /// Keep this list explicit so adding a Module field cannot silently make a
+    /// whole-struct assignment part of a transform transaction again.
+    pub fn publishTransformerStateFrom(self: *Module, staged: *const Module) void {
+        self.ast = staged.ast;
+        self.semantic = staged.semantic;
+        self.prebuilt_stmt_info = staged.prebuilt_stmt_info;
+        self.import_records = staged.import_records;
+        self.import_bindings = staged.import_bindings;
+        self.export_bindings = staged.export_bindings;
+        self.exported_names = staged.exported_names;
+        self.export_index_by_name = staged.export_index_by_name;
+        self.alias_table = staged.alias_table;
+        self.transform_cache = staged.transform_cache;
+        self.namespace_access_index = staged.namespace_access_index;
+
+        self.exports_kind = staged.exports_kind;
+        self.wrap_kind = staged.wrap_kind;
+        self.has_cjs_export_signal = staged.has_cjs_export_signal;
+        self.has_esmodule_marker = staged.has_esmodule_marker;
+        self.can_skip_cjs_default_interop = staged.can_skip_cjs_default_interop;
+        self.is_wrapper_barrel = staged.is_wrapper_barrel;
+        self.has_local_export = staged.has_local_export;
+        self.default_export_named_local = staged.default_export_named_local;
+
+        self.self_uses_top_level_await = staged.self_uses_top_level_await;
+        self.tla_delegated_to_chunk = staged.tla_delegated_to_chunk;
+        self.tla_iife_stmt = staged.tla_iife_stmt;
+        self.tla_promise_reference = staged.tla_promise_reference;
+        self.self_namespace_source_receipt = staged.self_namespace_source_receipt;
+    }
+
     /// Check that an emitter-side TLA reference still points at the binding
     /// and scope captured when the lowering created the promise variable.
     pub fn matchesTlaPromiseReference(self: *const Module, binding_node_index: u32) bool {

@@ -19129,6 +19129,27 @@ fn sameGenericPrepassSource(
     return true;
 }
 
+/// A staged transform owns AST-derived state, not the module graph's mutable
+/// topology lists. Keep copied snapshots detached from all six edge arrays so
+/// preparation cannot accidentally mutate or later publish installed edges.
+fn snapshotTransformModule(source: *const Module) Module {
+    // Copying the whole header and clearing these fields later still reads a
+    // graph list while discovery may mutate it. Exclude those reads entirely.
+    var snapshot = Module.init(source.index, source.path);
+    inline for (@typeInfo(Module).@"struct".field_names) |field_name| {
+        if (comptime !std.mem.eql(u8, field_name, "dependencies") and
+            !std.mem.eql(u8, field_name, "importers") and
+            !std.mem.eql(u8, field_name, "dynamic_imports") and
+            !std.mem.eql(u8, field_name, "dynamic_importers") and
+            !std.mem.eql(u8, field_name, "implicitly_loaded_after_one_of") and
+            !std.mem.eql(u8, field_name, "implicitly_loaded_before"))
+        {
+            @field(snapshot, field_name) = @field(source, field_name);
+        }
+    }
+    return snapshot;
+}
+
 fn cloneGenericPrepassSemantic(
     allocator: std.mem.Allocator,
     source: *const ModuleSemanticData,
@@ -19172,7 +19193,7 @@ const PreparedGenericPrepass = struct {
         const ast = if (module.ast) |*value| value else return error.MissingAst;
         const semantic = if (module.semantic) |*value| value else return error.MissingSemantic;
         for (module.export_bindings) |binding| _ = try module.ordinaryQuotedExportLiteral(binding);
-        const source_header = module.*;
+        const source_header = snapshotTransformModule(module);
         var source_ast_snapshot = try ast_mod.Ast.cloneForTransformer(ast, allocator);
         source_ast_snapshot.type_only_binding_names = try ast.type_only_binding_names.clone(allocator);
         const source_semantic_snapshot = try cloneGenericPrepassSemantic(allocator, semantic, ast);
@@ -19262,11 +19283,11 @@ const PreparedGenericPrepass = struct {
     }
 
     /// All fallible preparation and validation has completed. The old heap
-    /// indexes are released, then the complete candidate header is installed.
+    /// indexes are released, then only transformer-owned state is installed.
     fn publish(self: *PreparedGenericPrepass, allocator: std.mem.Allocator) void {
         if (self.source.alias_table) |*table| table.deinit();
         if (self.source.export_index_by_name) |*index| index.deinit(allocator);
-        self.source.* = self.candidate;
+        self.source.publishTransformerStateFrom(&self.candidate);
         self.candidate.alias_table = null;
         self.candidate.export_index_by_name = null;
     }
@@ -20258,6 +20279,517 @@ fn moduleHasRegisteredOutputRoles(module: *const Module) bool {
     return false;
 }
 
+const PreparedModuleGraphRoles = struct {
+    index: ModuleIndex,
+    path: []const u8,
+    source: []const u8,
+    codegen_output_owner: @import("../codegen_output_domain.zig").Owner,
+    codegen_output_domain: ?*@import("../codegen_output_domain.zig").Domain,
+    init_symbol: ?SemanticSymbolId,
+    exports_symbol: ?SemanticSymbolId,
+    require_symbol: ?SemanticSymbolId,
+    cjs_wrapper_exports_parameter_symbol: ?SemanticSymbolId,
+    cjs_wrapper_module_parameter_symbol: ?SemanticSymbolId,
+    cjs_runtime_factory_symbol: ?SemanticSymbolId,
+    cjs_runtime_internal_symbols: ?CjsRuntimeInternalSymbolIds,
+    to_binary_runtime_symbol: ?SemanticSymbolId,
+    esm_runtime_factory_symbol: ?SemanticSymbolId,
+    esm_runtime_internal_symbols: ?EsmRuntimeInternalSymbolIds,
+    esm_interop_runtime_helper_symbols: ?EsmInteropRuntimeHelperSymbolIds,
+    esm_interop_runtime_internal_symbols: ?@import("../module.zig").EsmInteropRuntimeInternalSymbolIds,
+    hmr_runtime_internal_symbols: ?@import("../module.zig").HmrRuntimeInternalSymbolIds,
+    require_shim_local_symbol: ?SemanticSymbolId,
+    state: Module.State,
+    exec_index: u32,
+    cycle_group: u32,
+    is_entry_point: bool,
+    is_emitted_chunk_entry: bool,
+    is_federation_boundary: bool,
+    is_federation_expose: bool,
+    federation_id: ?[]const u8,
+    is_context_dep: bool,
+    is_disabled: bool,
+    disabled_throw_on_require: bool,
+    is_external: bool,
+    is_lazy_seed: bool,
+    is_module_field: bool,
+    is_included: bool,
+    tree_shaker_active: bool,
+    only_dynamically_reached: bool,
+    uses_top_level_await: bool,
+    in_async_cone: bool,
+    side_effects: bool,
+    side_effects_user_defined: bool,
+    const_baked: bool,
+    const_providers: []const []const u8,
+    dependencies: []const ModuleIndex,
+    importers: []const ModuleIndex,
+    dynamic_imports: []const ModuleIndex,
+    dynamic_importers: []const ModuleIndex,
+    implicitly_loaded_after_one_of: []const ModuleIndex,
+    implicitly_loaded_before: []const ModuleIndex,
+    static_target_importers: []const ModuleIndex,
+    dynamic_target_importers: []const ModuleIndex,
+};
+
+fn capturePreparedModuleGraphRoles(
+    module: *const Module,
+    static_target: *const Module,
+    dynamic_target: *const Module,
+) PreparedModuleGraphRoles {
+    return .{
+        .index = module.index,
+        .path = module.path,
+        .source = module.source,
+        .codegen_output_owner = module.codegen_output_owner,
+        .codegen_output_domain = module.codegen_output_domain,
+        .init_symbol = module.init_symbol,
+        .exports_symbol = module.exports_symbol,
+        .require_symbol = module.require_symbol,
+        .cjs_wrapper_exports_parameter_symbol = module.cjs_wrapper_exports_parameter_symbol,
+        .cjs_wrapper_module_parameter_symbol = module.cjs_wrapper_module_parameter_symbol,
+        .cjs_runtime_factory_symbol = module.cjs_runtime_factory_symbol,
+        .cjs_runtime_internal_symbols = module.cjs_runtime_internal_symbols,
+        .to_binary_runtime_symbol = module.to_binary_runtime_symbol,
+        .esm_runtime_factory_symbol = module.esm_runtime_factory_symbol,
+        .esm_runtime_internal_symbols = module.esm_runtime_internal_symbols,
+        .esm_interop_runtime_helper_symbols = module.esm_interop_runtime_helper_symbols,
+        .esm_interop_runtime_internal_symbols = module.esm_interop_runtime_internal_symbols,
+        .hmr_runtime_internal_symbols = module.hmr_runtime_internal_symbols,
+        .require_shim_local_symbol = module.require_shim_local_symbol,
+        .state = module.state,
+        .exec_index = module.exec_index,
+        .cycle_group = module.cycle_group,
+        .is_entry_point = module.is_entry_point,
+        .is_emitted_chunk_entry = module.is_emitted_chunk_entry,
+        .is_federation_boundary = module.is_federation_boundary,
+        .is_federation_expose = module.is_federation_expose,
+        .federation_id = module.federation_id,
+        .is_context_dep = module.is_context_dep,
+        .is_disabled = module.is_disabled,
+        .disabled_throw_on_require = module.disabled_throw_on_require,
+        .is_external = module.is_external,
+        .is_lazy_seed = module.is_lazy_seed,
+        .is_module_field = module.is_module_field,
+        .is_included = module.is_included,
+        .tree_shaker_active = module.tree_shaker_active,
+        .only_dynamically_reached = module.only_dynamically_reached,
+        .uses_top_level_await = module.uses_top_level_await,
+        .in_async_cone = module.in_async_cone,
+        .side_effects = module.side_effects,
+        .side_effects_user_defined = module.side_effects_user_defined,
+        .const_baked = module.const_baked,
+        .const_providers = module.const_providers,
+        .dependencies = module.dependencies.items,
+        .importers = module.importers.items,
+        .dynamic_imports = module.dynamic_imports.items,
+        .dynamic_importers = module.dynamic_importers.items,
+        .implicitly_loaded_after_one_of = module.implicitly_loaded_after_one_of.items,
+        .implicitly_loaded_before = module.implicitly_loaded_before.items,
+        .static_target_importers = static_target.importers.items,
+        .dynamic_target_importers = dynamic_target.dynamic_importers.items,
+    };
+}
+
+fn expectPreparedModuleGraphRoles(
+    module: *const Module,
+    static_target: *const Module,
+    dynamic_target: *const Module,
+    expected: PreparedModuleGraphRoles,
+) !void {
+    try std.testing.expectEqual(expected.index, module.index);
+    try std.testing.expectEqual(expected.path.ptr, module.path.ptr);
+    try std.testing.expectEqualStrings(expected.path, module.path);
+    try std.testing.expectEqual(expected.source.ptr, module.source.ptr);
+    try std.testing.expectEqualStrings(expected.source, module.source);
+    try std.testing.expectEqual(expected.codegen_output_owner, module.codegen_output_owner);
+    try std.testing.expectEqual(expected.codegen_output_domain, module.codegen_output_domain);
+    try std.testing.expectEqual(expected.init_symbol, module.init_symbol);
+    try std.testing.expectEqual(expected.exports_symbol, module.exports_symbol);
+    try std.testing.expectEqual(expected.require_symbol, module.require_symbol);
+    try std.testing.expectEqual(expected.cjs_wrapper_exports_parameter_symbol, module.cjs_wrapper_exports_parameter_symbol);
+    try std.testing.expectEqual(expected.cjs_wrapper_module_parameter_symbol, module.cjs_wrapper_module_parameter_symbol);
+    try std.testing.expectEqual(expected.cjs_runtime_factory_symbol, module.cjs_runtime_factory_symbol);
+    try std.testing.expectEqual(expected.cjs_runtime_internal_symbols, module.cjs_runtime_internal_symbols);
+    try std.testing.expectEqual(expected.to_binary_runtime_symbol, module.to_binary_runtime_symbol);
+    try std.testing.expectEqual(expected.esm_runtime_factory_symbol, module.esm_runtime_factory_symbol);
+    try std.testing.expectEqual(expected.esm_runtime_internal_symbols, module.esm_runtime_internal_symbols);
+    try std.testing.expectEqual(expected.esm_interop_runtime_helper_symbols, module.esm_interop_runtime_helper_symbols);
+    try std.testing.expectEqual(expected.esm_interop_runtime_internal_symbols, module.esm_interop_runtime_internal_symbols);
+    try std.testing.expectEqual(expected.hmr_runtime_internal_symbols, module.hmr_runtime_internal_symbols);
+    try std.testing.expectEqual(expected.require_shim_local_symbol, module.require_shim_local_symbol);
+    try std.testing.expectEqual(expected.state, module.state);
+    try std.testing.expectEqual(expected.exec_index, module.exec_index);
+    try std.testing.expectEqual(expected.cycle_group, module.cycle_group);
+    try std.testing.expectEqual(expected.is_entry_point, module.is_entry_point);
+    try std.testing.expectEqual(expected.is_emitted_chunk_entry, module.is_emitted_chunk_entry);
+    try std.testing.expectEqual(expected.is_federation_boundary, module.is_federation_boundary);
+    try std.testing.expectEqual(expected.is_federation_expose, module.is_federation_expose);
+    try std.testing.expectEqual(expected.federation_id != null, module.federation_id != null);
+    if (expected.federation_id) |id| {
+        const actual_id = module.federation_id.?;
+        try std.testing.expectEqual(id.ptr, actual_id.ptr);
+        try std.testing.expectEqualStrings(id, actual_id);
+    }
+    try std.testing.expectEqual(expected.is_context_dep, module.is_context_dep);
+    try std.testing.expectEqual(expected.is_disabled, module.is_disabled);
+    try std.testing.expectEqual(expected.disabled_throw_on_require, module.disabled_throw_on_require);
+    try std.testing.expectEqual(expected.is_external, module.is_external);
+    try std.testing.expectEqual(expected.is_lazy_seed, module.is_lazy_seed);
+    try std.testing.expectEqual(expected.is_module_field, module.is_module_field);
+    try std.testing.expectEqual(expected.is_included, module.is_included);
+    try std.testing.expectEqual(expected.tree_shaker_active, module.tree_shaker_active);
+    try std.testing.expectEqual(expected.only_dynamically_reached, module.only_dynamically_reached);
+    try std.testing.expectEqual(expected.uses_top_level_await, module.uses_top_level_await);
+    try std.testing.expectEqual(expected.in_async_cone, module.in_async_cone);
+    try std.testing.expectEqual(expected.side_effects, module.side_effects);
+    try std.testing.expectEqual(expected.side_effects_user_defined, module.side_effects_user_defined);
+    try std.testing.expectEqual(expected.const_baked, module.const_baked);
+    try std.testing.expectEqual(expected.const_providers.ptr, module.const_providers.ptr);
+    try std.testing.expectEqualSlices([]const u8, expected.const_providers, module.const_providers);
+    try std.testing.expectEqual(expected.dependencies.ptr, module.dependencies.items.ptr);
+    try std.testing.expectEqualSlices(ModuleIndex, expected.dependencies, module.dependencies.items);
+    try std.testing.expectEqual(expected.importers.ptr, module.importers.items.ptr);
+    try std.testing.expectEqualSlices(ModuleIndex, expected.importers, module.importers.items);
+    try std.testing.expectEqual(expected.dynamic_imports.ptr, module.dynamic_imports.items.ptr);
+    try std.testing.expectEqualSlices(ModuleIndex, expected.dynamic_imports, module.dynamic_imports.items);
+    try std.testing.expectEqual(expected.dynamic_importers.ptr, module.dynamic_importers.items.ptr);
+    try std.testing.expectEqualSlices(ModuleIndex, expected.dynamic_importers, module.dynamic_importers.items);
+    try std.testing.expectEqual(expected.implicitly_loaded_after_one_of.ptr, module.implicitly_loaded_after_one_of.items.ptr);
+    try std.testing.expectEqualSlices(ModuleIndex, expected.implicitly_loaded_after_one_of, module.implicitly_loaded_after_one_of.items);
+    try std.testing.expectEqual(expected.implicitly_loaded_before.ptr, module.implicitly_loaded_before.items.ptr);
+    try std.testing.expectEqualSlices(ModuleIndex, expected.implicitly_loaded_before, module.implicitly_loaded_before.items);
+    try std.testing.expectEqual(expected.static_target_importers.ptr, static_target.importers.items.ptr);
+    try std.testing.expectEqualSlices(ModuleIndex, expected.static_target_importers, static_target.importers.items);
+    try std.testing.expectEqual(expected.dynamic_target_importers.ptr, dynamic_target.dynamic_importers.items.ptr);
+    try std.testing.expectEqualSlices(ModuleIndex, expected.dynamic_target_importers, dynamic_target.dynamic_importers.items);
+}
+
+const PreparedModuleRoleAttack = enum {
+    index,
+    path,
+    source,
+    codegen_output_owner,
+    codegen_output_domain,
+    init_symbol,
+    exports_symbol,
+    require_symbol,
+    cjs_wrapper_exports_parameter_symbol,
+    cjs_wrapper_module_parameter_symbol,
+    cjs_runtime_factory_symbol,
+    cjs_runtime_internal_symbols,
+    to_binary_runtime_symbol,
+    esm_runtime_factory_symbol,
+    esm_runtime_internal_symbols,
+    esm_interop_runtime_helper_symbols,
+    esm_interop_runtime_internal_symbols,
+    hmr_runtime_internal_symbols,
+    require_shim_local_symbol,
+    state,
+    exec_index,
+    cycle_group,
+    is_entry_point,
+    is_emitted_chunk_entry,
+    is_federation_boundary,
+    is_federation_expose,
+    federation_id,
+    is_context_dep,
+    is_disabled,
+    disabled_throw_on_require,
+    is_external,
+    is_lazy_seed,
+    is_module_field,
+    is_included,
+    tree_shaker_active,
+    only_dynamically_reached,
+    uses_top_level_await,
+    in_async_cone,
+    side_effects,
+    side_effects_user_defined,
+    const_baked,
+    const_providers,
+    dependencies,
+    importers,
+    dynamic_imports,
+    dynamic_importers,
+    implicitly_loaded_after_one_of,
+    implicitly_loaded_before,
+};
+
+fn poisonPreparedCandidateGraphRole(candidate: *Module, attack: PreparedModuleRoleAttack) void {
+    switch (attack) {
+        .index => candidate.index = @fromBackingInt(@as(u32, 99)),
+        .path => candidate.path = "/candidate/incorrect.js",
+        .source => candidate.source = "candidate source must not replace the graph-owned input",
+        .codegen_output_owner => candidate.codegen_output_owner = @import("../codegen_output_domain.zig").newOwner(),
+        .codegen_output_domain => candidate.codegen_output_domain = null,
+        .init_symbol => candidate.init_symbol = null,
+        .exports_symbol => candidate.exports_symbol = null,
+        .require_symbol => candidate.require_symbol = null,
+        .cjs_wrapper_exports_parameter_symbol => candidate.cjs_wrapper_exports_parameter_symbol = null,
+        .cjs_wrapper_module_parameter_symbol => candidate.cjs_wrapper_module_parameter_symbol = null,
+        .cjs_runtime_factory_symbol => candidate.cjs_runtime_factory_symbol = null,
+        .cjs_runtime_internal_symbols => candidate.cjs_runtime_internal_symbols = null,
+        .to_binary_runtime_symbol => candidate.to_binary_runtime_symbol = null,
+        .esm_runtime_factory_symbol => candidate.esm_runtime_factory_symbol = null,
+        .esm_runtime_internal_symbols => candidate.esm_runtime_internal_symbols = null,
+        .esm_interop_runtime_helper_symbols => candidate.esm_interop_runtime_helper_symbols = null,
+        .esm_interop_runtime_internal_symbols => candidate.esm_interop_runtime_internal_symbols = null,
+        .hmr_runtime_internal_symbols => candidate.hmr_runtime_internal_symbols = null,
+        .require_shim_local_symbol => candidate.require_shim_local_symbol = null,
+        .state => candidate.state = .parsing,
+        .exec_index => candidate.exec_index = 99,
+        .cycle_group => candidate.cycle_group = 77,
+        .is_entry_point => candidate.is_entry_point = false,
+        .is_emitted_chunk_entry => candidate.is_emitted_chunk_entry = false,
+        .is_federation_boundary => candidate.is_federation_boundary = false,
+        .is_federation_expose => candidate.is_federation_expose = false,
+        .federation_id => candidate.federation_id = null,
+        .is_context_dep => candidate.is_context_dep = false,
+        .is_disabled => candidate.is_disabled = false,
+        .disabled_throw_on_require => candidate.disabled_throw_on_require = false,
+        .is_external => candidate.is_external = false,
+        .is_lazy_seed => candidate.is_lazy_seed = false,
+        .is_module_field => candidate.is_module_field = false,
+        .is_included => candidate.is_included = false,
+        .tree_shaker_active => candidate.tree_shaker_active = false,
+        .only_dynamically_reached => candidate.only_dynamically_reached = false,
+        .uses_top_level_await => candidate.uses_top_level_await = false,
+        .in_async_cone => candidate.in_async_cone = false,
+        .side_effects => candidate.side_effects = true,
+        .side_effects_user_defined => candidate.side_effects_user_defined = false,
+        .const_baked => candidate.const_baked = false,
+        .const_providers => candidate.const_providers = &.{},
+        .dependencies => candidate.dependencies = .empty,
+        .importers => candidate.importers = .empty,
+        .dynamic_imports => candidate.dynamic_imports = .empty,
+        .dynamic_importers => candidate.dynamic_importers = .empty,
+        .implicitly_loaded_after_one_of => candidate.implicitly_loaded_after_one_of = .empty,
+        .implicitly_loaded_before => candidate.implicitly_loaded_before = .empty,
+    }
+}
+
+fn poisonPreparedCandidateGraphRoles(candidate: *Module) void {
+    for (std.meta.tags(PreparedModuleRoleAttack)) |attack| {
+        poisonPreparedCandidateGraphRole(candidate, attack);
+    }
+}
+
+test "three prepared publishers keep real graph roles and edge backing" {
+    @setEvalBranchQuota(5000);
+    const graph_mod = @import("../graph.zig");
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(allocator, .{});
+    defer cache.deinit();
+    var graph = graph_mod.ModuleGraph.init(allocator, &cache);
+    defer graph.deinit();
+    const source_index = try graph.addModule(std.testing.io, "/repo/input.js");
+    const static_target_index = try graph.addModule(std.testing.io, "/repo/static.js");
+    const dynamic_target_index = try graph.addModule(std.testing.io, "/repo/dynamic.js");
+    try graph.linkDependency(source_index, static_target_index);
+    try graph.linkDependency(dynamic_target_index, source_index);
+    try graph.linkDynamicImport(source_index, dynamic_target_index);
+    try graph.linkDynamicImport(dynamic_target_index, source_index);
+
+    const source = graph.moduleAtMut(source_index).?;
+    const static_target = graph.moduleAtMut(static_target_index).?;
+    const dynamic_target = graph.moduleAtMut(dynamic_target_index).?;
+    source.source = "const value = 1; value;";
+    source.init_symbol = @fromBackingInt(@as(u32, 11));
+    source.exports_symbol = @fromBackingInt(@as(u32, 12));
+    source.require_symbol = @fromBackingInt(@as(u32, 13));
+    source.cjs_wrapper_exports_parameter_symbol = @fromBackingInt(@as(u32, 14));
+    source.cjs_wrapper_module_parameter_symbol = @fromBackingInt(@as(u32, 15));
+    source.cjs_runtime_factory_symbol = @fromBackingInt(@as(u32, 16));
+    source.cjs_runtime_internal_symbols = std.mem.zeroes(CjsRuntimeInternalSymbolIds);
+    source.to_binary_runtime_symbol = @fromBackingInt(@as(u32, 17));
+    source.esm_runtime_factory_symbol = @fromBackingInt(@as(u32, 18));
+    source.esm_runtime_internal_symbols = std.mem.zeroes(EsmRuntimeInternalSymbolIds);
+    source.esm_interop_runtime_helper_symbols = std.mem.zeroes(EsmInteropRuntimeHelperSymbolIds);
+    source.esm_interop_runtime_internal_symbols = std.mem.zeroes(@import("../module.zig").EsmInteropRuntimeInternalSymbolIds);
+    source.hmr_runtime_internal_symbols = std.mem.zeroes(@import("../module.zig").HmrRuntimeInternalSymbolIds);
+    source.require_shim_local_symbol = @fromBackingInt(@as(u32, 19));
+    source.federation_id = try allocator.dupe(u8, "prepared-module-federation-id");
+    source.is_context_dep = true;
+    source.is_disabled = true;
+    source.disabled_throw_on_require = true;
+    source.is_external = true;
+    source.is_lazy_seed = true;
+    source.is_module_field = true;
+    source.is_included = true;
+    source.tree_shaker_active = true;
+    source.only_dynamically_reached = true;
+    source.uses_top_level_await = true;
+    source.in_async_cone = true;
+    source.side_effects = false;
+    source.side_effects_user_defined = true;
+    source.const_baked = true;
+    source.const_providers = &.{"provider.mjs"};
+    source.is_entry_point = true;
+    source.is_emitted_chunk_entry = true;
+    source.is_federation_boundary = true;
+    source.is_federation_expose = true;
+    source.exec_index = 37;
+    source.cycle_group = 19;
+    try source.implicitly_loaded_after_one_of.append(allocator, static_target_index);
+    try source.implicitly_loaded_before.append(allocator, dynamic_target_index);
+    const fixture = try runtimeHelperReanalysisTestFixture(arena_alloc, source.source);
+    source.ast = fixture.ast;
+    source.semantic = fixture.semantic;
+    source.codegen_output_domain = try @import("../codegen_output_domain.zig").Domain.createNamespace(
+        allocator,
+        source.codegen_output_owner,
+        "prepared-module-source-owner",
+    );
+    const expected_roles = capturePreparedModuleGraphRoles(source, static_target, dynamic_target);
+    // Restore graph-owned values even when a hostile publisher mutation fails
+    // an assertion, so graph teardown remains independent from the regression.
+    const owned_roles = source.*;
+    defer inline for (.{
+        "index",                                "path",                                "source",                         "codegen_output_owner",
+        "codegen_output_domain",                "init_symbol",                         "exports_symbol",                 "require_symbol",
+        "cjs_wrapper_exports_parameter_symbol", "cjs_wrapper_module_parameter_symbol", "cjs_runtime_factory_symbol",     "cjs_runtime_internal_symbols",
+        "to_binary_runtime_symbol",             "esm_runtime_factory_symbol",          "esm_runtime_internal_symbols",   "esm_interop_runtime_helper_symbols",
+        "esm_interop_runtime_internal_symbols", "hmr_runtime_internal_symbols",        "require_shim_local_symbol",      "state",
+        "exec_index",                           "cycle_group",                         "is_entry_point",                 "is_emitted_chunk_entry",
+        "is_federation_boundary",               "is_federation_expose",                "federation_id",                  "is_context_dep",
+        "is_disabled",                          "disabled_throw_on_require",           "is_external",                    "is_lazy_seed",
+        "is_module_field",                      "is_included",                         "tree_shaker_active",             "only_dynamically_reached",
+        "uses_top_level_await",                 "in_async_cone",                       "side_effects",                   "side_effects_user_defined",
+        "const_baked",                          "const_providers",                     "dependencies",                   "importers",
+        "dynamic_imports",                      "dynamic_importers",                   "implicitly_loaded_after_one_of", "implicitly_loaded_before",
+    }) |field| {
+        @field(source, field) = @field(owned_roles, field);
+    };
+
+    // Each hostile role is isolated so one publisher regression cannot hide
+    // behind another poisoned field in the same candidate.
+    for (std.meta.tags(PreparedModuleRoleAttack)) |attack| {
+        var candidate = snapshotTransformModule(source);
+        poisonPreparedCandidateGraphRole(&candidate, attack);
+        source.publishTransformerStateFrom(&candidate);
+        try expectPreparedModuleGraphRoles(source, static_target, dynamic_target, expected_roles);
+    }
+
+    var generic = try PreparedGenericPrepass.init(source, arena_alloc);
+    defer generic.discard(allocator);
+    const generic_ast_backing = generic.candidate.ast.?.nodes.items.ptr;
+    try generic.candidate.semantic.?.numeric_const_texts.put(arena_alloc, 77, "generic-candidate");
+    poisonPreparedCandidateGraphRoles(&generic.candidate);
+    generic.publish(allocator);
+    try std.testing.expectEqual(generic_ast_backing, source.ast.?.nodes.items.ptr);
+    try std.testing.expect(source.semantic.?.numeric_const_texts.contains(77));
+    try expectPreparedModuleGraphRoles(source, static_target, dynamic_target, expected_roles);
+
+    var constant = try prepareConstGraphProjection(graph, source, arena_alloc);
+    defer constant.discard();
+    try constant.candidate.semantic.?.numeric_const_texts.put(arena_alloc, 78, "const-candidate");
+    poisonPreparedCandidateGraphRoles(&constant.candidate);
+    try constant.finishPreparation();
+    constant.publish();
+    try std.testing.expect(source.semantic.?.numeric_const_texts.contains(78));
+    try expectPreparedModuleGraphRoles(source, static_target, dynamic_target, expected_roles);
+
+    const source_ast = &(source.ast orelse return error.MissingAst);
+    const source_semantic = &(source.semantic orelse return error.MissingSemantic);
+    const buffer_ast = try source_ast.cloneForTransformer(arena_alloc);
+    var buffer = PreparedBufferGraph{
+        .candidate = source.*,
+        .source_module = source,
+        .source_nodes = source_ast.nodes.items,
+        .source_extra = source_ast.extra_data.items,
+        .source_ids = source_semantic.symbol_ids,
+        .metadata_allocator = allocator,
+    };
+    defer buffer.discard();
+    buffer.candidate.ast = buffer_ast;
+    poisonPreparedCandidateGraphRoles(&buffer.candidate);
+    try std.testing.expect(buffer.publish(source));
+    try std.testing.expectEqual(buffer_ast.nodes.items.ptr, source.ast.?.nodes.items.ptr);
+    try expectPreparedModuleGraphRoles(source, static_target, dynamic_target, expected_roles);
+}
+
+test "transform module snapshot excludes mutable graph topology" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.js");
+    const target = @as(ModuleIndex, @fromBackingInt(@as(u32, 1)));
+    try module.dependencies.append(allocator, target);
+    try module.importers.append(allocator, target);
+    try module.dynamic_imports.append(allocator, target);
+    try module.dynamic_importers.append(allocator, target);
+    try module.implicitly_loaded_after_one_of.append(allocator, target);
+    try module.implicitly_loaded_before.append(allocator, target);
+
+    const snapshot = snapshotTransformModule(&module);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.dependencies.items.len);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.importers.items.len);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.dynamic_imports.items.len);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.dynamic_importers.items.len);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.implicitly_loaded_after_one_of.items.len);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.implicitly_loaded_before.items.len);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{target}, module.dependencies.items);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{target}, module.importers.items);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{target}, module.dynamic_imports.items);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{target}, module.dynamic_importers.items);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{target}, module.implicitly_loaded_after_one_of.items);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{target}, module.implicitly_loaded_before.items);
+}
+
+test "generic publication preserves graph edges added after candidate capture" {
+    const a = std.testing.allocator;
+    const Graph = @import("../graph.zig").ModuleGraph;
+    const Bundler = @import("../bundler.zig").Bundler;
+    var cache = Bundler.initResolveCacheFromOptions(a, .{ .entry_points = &.{"entry.mjs"} });
+    defer cache.deinit();
+    const graph = try a.create(Graph);
+    defer a.destroy(graph);
+    graph.* = Graph.init(a, &cache);
+    defer graph.deinit();
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const source = "export default 42;";
+    const fixture = try runtimeHelperReanalysisTestFixture(arena.allocator(), source);
+    const target_index = ModuleIndex.fromUsize(0);
+    const importer_index = ModuleIndex.fromUsize(1);
+    var target = Module.init(target_index, "provider.mjs");
+    target.source = source;
+    target.ast = fixture.ast;
+    target.semantic = fixture.semantic;
+    target.state = .ready;
+    try graph.modules.append(a, target);
+    try graph.modules.append(a, Module.init(importer_index, "consumer.mjs"));
+
+    const installed = graph.moduleAtMut(target_index).?;
+    var prepared = try PreparedGenericPrepass.init(installed, arena.allocator());
+    defer prepared.discard(a);
+    try graph.linkDynamicImport(importer_index, target_index);
+    try graph.linkDependency(importer_index, target_index);
+    const dynamic_backing = installed.dynamic_importers.items.ptr;
+    const static_backing = installed.importers.items.ptr;
+    const topology_free = snapshotTransformModule(installed);
+    try std.testing.expectEqual(@as(usize, 0), topology_free.dynamic_importers.items.len);
+    try std.testing.expectEqual(@as(usize, 0), topology_free.importers.items.len);
+    try std.testing.expectEqual(installed.index, topology_free.index);
+    try std.testing.expectEqualStrings(installed.path, topology_free.path);
+    try std.testing.expect(try prepared.isCurrent(arena.allocator()));
+
+    prepared.publish(a);
+    try std.testing.expect(installed.dynamic_importers.items.ptr == dynamic_backing);
+    try std.testing.expect(installed.importers.items.ptr == static_backing);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{importer_index}, installed.dynamic_importers.items);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{importer_index}, installed.importers.items);
+    const importer = graph.getModule(importer_index).?;
+    try std.testing.expectEqualSlices(ModuleIndex, &.{target_index}, importer.dynamic_imports.items);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{target_index}, importer.dependencies.items);
+}
+
 test "generic prepass transaction publishes a completed isolated candidate" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -20298,7 +20830,7 @@ test "generic prepass transaction publishes a completed isolated candidate" {
     try std.testing.expectEqualStrings("installed-alias", module.alias_table.?.aliases.items[0].name);
     prepared.publish(graph_allocator);
 
-    try std.testing.expectEqual(Module.State.parsed, module.state);
+    try std.testing.expectEqual(Module.State.ready, module.state);
     try std.testing.expectEqualStrings("published-alias", module.alias_table.?.aliases.items[0].name);
     try std.testing.expectEqual(@as(?u32, 1), module.export_index_by_name.?.get("published-export"));
     try std.testing.expect(module.export_index_by_name.?.get("installed-export") == null);
@@ -21559,7 +22091,7 @@ fn minifyGenericPrepassGraph(
             candidate_semantic.applyEdit(edited);
             candidate_semantic.class_self_symbol_map = candidate_class_self;
 
-            var candidate_module = module.*;
+            var candidate_module = snapshotTransformModule(module);
             candidate_module.ast = transformer.ast.*;
             candidate_module.semantic = candidate_semantic;
             const helper_ref_nodes = transformer.ownedHelperRefNodes(arena_alloc) catch return error.OutOfMemory;
@@ -25570,7 +26102,7 @@ const PreparedConstGraph = struct {
     fn publish(self: *PreparedConstGraph) void {
         if (self.source.alias_table) |*table| table.deinit();
         if (self.source.export_index_by_name) |*map| map.deinit(self.metadata_allocator);
-        self.source.* = self.candidate;
+        self.source.publishTransformerStateFrom(&self.candidate);
         self.candidate.alias_table = null;
         self.candidate.export_index_by_name = null;
     }
@@ -25579,7 +26111,7 @@ const PreparedConstGraph = struct {
 fn prepareConstGraphProjection(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) !PreparedConstGraph {
     const original = module.semantic orelse return error.MissingSemantic;
     var prepared = PreparedConstGraph{
-        .candidate = module.*,
+        .candidate = snapshotTransformModule(module),
         .source = module,
         .metadata_allocator = self.allocator,
     };
@@ -26455,7 +26987,7 @@ pub const PreparedBufferGraph = struct {
         if (self.runtime_registration) |*registration| if (!registration.isCurrent()) return false;
         if (module.alias_table) |*table| table.deinit();
         if (module.export_index_by_name) |*map| map.deinit(self.metadata_allocator);
-        module.* = self.candidate;
+        module.publishTransformerStateFrom(&self.candidate);
         if (self.runtime_registration) |registration| registration.publishAssumePrepared();
         self.candidate.alias_table = null;
         self.candidate.export_index_by_name = null;
@@ -26479,7 +27011,7 @@ fn prepareBufferGraphForAst(
     const actual_ast = if (module.ast) |*value| value else return null;
     const actual_semantic = if (module.semantic) |*value| value else return null;
     var prepared = PreparedBufferGraph{
-        .candidate = module.*,
+        .candidate = snapshotTransformModule(module),
         .source_module = module,
         .source_nodes = actual_ast.nodes.items,
         .source_extra = actual_ast.extra_data.items,
