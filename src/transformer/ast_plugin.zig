@@ -480,6 +480,7 @@ pub const AstTransformCtx = struct {
             .this_expression,
             .template_element,
             .expression_statement,
+            .if_statement,
             .return_statement,
             .throw_statement,
             .spread_element,
@@ -916,6 +917,23 @@ pub const AstTransformCtx = struct {
                     .tag = .computed_property_key,
                     .span = new_span,
                     .data = .{ .unary = .{ .operand = operand, .flags = src_node.data.unary.flags } },
+                });
+            },
+
+            // If branches without blocks introduce no new lexical scope owner.
+            // The tree gate below rejects block bodies and any other unsupported
+            // descendant before the parser-produced ternary children are copied.
+            .if_statement => blk: {
+                const source = src_node.data.ternary;
+                const test_expr = try self.copyNodeFromParsedAst(src_ast, source.a);
+                const consequent = try self.copyNodeFromParsedAst(src_ast, source.b);
+                const alternate = try self.copyNodeFromParsedAst(src_ast, source.c);
+                if (test_expr.isNone() or consequent.isNone() or
+                    (!source.c.isNone() and alternate.isNone())) break :blk .none;
+                break :blk self.transformer.ast.addNode(.{
+                    .tag = .if_statement,
+                    .span = new_span,
+                    .data = .{ .ternary = .{ .a = test_expr, .b = consequent, .c = alternate } },
                 });
             },
 
