@@ -350,7 +350,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                     else
                         self.outputScopeParent(class_scope);
                 } else blk: {
-                    prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
+                    prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx, new_name);
                     break :blk prepared_wrapper_scope;
                 };
                 const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, class_name_scope) orelse
@@ -384,7 +384,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
         if (self.semantic_edit_enabled and as_expression and !legacy_decorator_statement_class and
             prepared_wrapper_scope.isNone() and classBodyHasLowerableMember(self, body_idx, lower_pm, lower_pf, false))
         {
-            prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
+            prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx, new_name);
         }
         const private_helper_scope = if (!self.semantic_edit_enabled)
             @as(ScopeId, .none)
@@ -493,7 +493,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     if (self.semantic_edit_enabled and as_expression and !legacy_decorator_statement_class and
         !new_name.isNone() and prepared_wrapper_scope.isNone() and
         classBodyNeedsNameForStatics(self, body_idx, ctx.static_field_assignments != null and !ctx.static_fields_as_blocks))
-        prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
+        prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx, new_name);
 
     // 익명 클래스 식인데 static field / static block 을 **클래스 밖 문장**으로 낮춰야 하면
     // 그 문장들이 클래스를 가리킬 이름이 필요하다. 이름 없이 진행하면 static field 할당이
@@ -514,7 +514,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 else
                     self.outputScopeParent(class_scope);
             } else blk: {
-                prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
+                prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx, new_name);
                 break :blk prepared_wrapper_scope;
             };
             const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, class_name_scope) orelse
@@ -774,7 +774,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
 
     if (has_static_fields or has_static_blocks) {
         if (as_expression and has_static_fields and prepared_wrapper_scope.isNone()) {
-            prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
+            prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx, new_name);
         }
         const static_field_ref_scope = if (!prepared_wrapper_scope.isNone()) prepared_wrapper_scope else if (self.semantic_edit_enabled) blk: {
             const class_scope = self.outputOwnedScope(source_idx) orelse
