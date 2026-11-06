@@ -133,17 +133,6 @@ pub fn completeIife(self: anytype, class: Ast.NodeIndex, fragments: []const Ast.
     if (!self.semantic_edit_enabled or fragments.len == 0) return;
     const editor = &self.semantic_editor.?;
     const source_scope = self.outputOwnedScope(class) orelse @panic("class-key completion lost source owner");
-    // Inferred anonymous names may copy the class header before lowering.
-    // The owner-copy producer, not spelling or shared scope, supplies the
-    // immutable initial class identity used by source_class_keys.
-    const class_raw = @backingInt(class);
-    const initial_raw = self.scope_owner_origins.get(class_raw) orelse
-        if (class_raw < self.parser_node_count) class_raw else @panic("class-key completion lost source class lineage");
-    if (initial_raw >= self.parser_node_count or self.scope_owner_map.get(initial_raw) != @backingInt(source_scope))
-        @panic("class-key completion has a foreign initial class owner");
-    if (initial_raw != class_raw and self.scope_owner_remaps.get(initial_raw) != class_raw)
-        @panic("class-key completion lost its exact copied class owner");
-    const initial_class: Ast.NodeIndex = @fromBackingInt(initial_raw);
     if (self.outputOwnedScope(owner) != target or self.ast.getNode(owner).tag != .function_expression) @panic("class-key completion lost actual IIFE owner");
     const body = self.ast.readExtraNode(self.ast.getNode(owner).data.extra, Ast.FunctionExtra.body);
     // One bounded iterative walk proves that each exact memo fragment is in
@@ -169,6 +158,21 @@ pub fn completeIife(self: anytype, class: Ast.NodeIndex, fragments: []const Ast.
             var entry = editor.node_scope_provenance.get(read) orelse continue;
             var origin = entry.source_external orelse continue;
             if (origin.source_scope != source_scope or entry.scope != target) continue;
+            // Only an actual initial-source external transition requests this
+            // proof. Generated Worklet/bound-only memo carriers retain their
+            // own exact factory/ID contract and do not claim source-key birth.
+            // Inferred anonymous names may copy the class header before lowering.
+            // The owner-copy producer, not spelling or shared scope, supplies the
+            // immutable initial class identity used by source_class_keys.
+            const class_raw = @backingInt(class);
+            const initial_raw = self.scope_owner_origins.get(class_raw) orelse
+                if (class_raw < self.parser_node_count) class_raw else @panic("class-key completion lost source class lineage");
+            if (initial_raw >= self.parser_node_count or self.scope_owner_map.get(initial_raw) != @backingInt(source_scope))
+                @panic("class-key completion has a foreign initial class owner");
+            if (initial_raw != class_raw and self.scope_owner_remaps.get(initial_raw) != class_raw)
+                @panic("class-key completion lost its exact copied class owner");
+            const initial_class: Ast.NodeIndex = @fromBackingInt(initial_raw);
+
             if (origin.scope_moves.len == 0) @panic("class-key completion lost provisional move");
             const last = origin.scope_moves[origin.scope_moves.len - 1];
             if (last.reason != .lowerer_scope_relocation or last.from != source_scope or last.to != target or last.node != read or last.source_node != entry.source_node) @panic("class-key completion has foreign relocation");
