@@ -503,16 +503,12 @@ pub fn exprNeedsParens(self: anytype, node: ast_mod.Node, level: Level, flags: E
             const entry = precedence.binaryOpLevel(op) orelse break :blk false;
             // logical 단락 폴드 시 right 가 logical 자리에 옴 → 자기(right) wrap 으로
             // 위임하고 여기선 wrap 안 함(emitBinary 가 right 를 부모 level 로 투과).
-            if (node.tag == .logical_expression and self.options.linking_metadata != null) {
-                if (self.evalBooleanCondition(node.data.binary.left) != null) break :blk false;
-            }
+            if (expression_emit.foldedOutput(self, node) != null) break :blk false;
             break :blk level.gte(entry) or (op == .kw_in and flags.forbid_in);
         },
         .conditional_expression => blk: {
             // conditional 폴드(상수 test) 시 분기가 그 자리 → 자기 wrap 으로 위임.
-            if (self.options.linking_metadata != null) {
-                if (self.evalBooleanCondition(node.data.ternary.a) != null) break :blk false;
-            }
+            if (expression_emit.foldedOutput(self, node) != null) break :blk false;
             break :blk level.gte(.conditional);
         },
         .assignment_expression => level.gte(.assign) or

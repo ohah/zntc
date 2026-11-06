@@ -2415,3 +2415,138 @@ test "Codegen: enum runtime prelude keeps native local declarations in ESM facto
         try std.testing.expectEqualStrings(case.expected, native.stdout);
     };
 }
+
+test "Codegen: folded conditional keyword operands use the actual emitted token" {
+    const sources = [_][]const u8{
+        "function read(){return 'number'==='function'?0:42}console.log(read());",
+        "function read(){return 'number'!=='function'?42:0}console.log(read());",
+        "try{throw 'number'==='function'?0:42}catch(error){console.log(error)}",
+        "function read(){return 'number'==='function'?42:'ok'}console.log(read());",
+        "function read(){return 'number'==='function'?0:('a'==='b'?0:42)}console.log(read());",
+        "function read(){return ('a'==='a')&&42}console.log(read());",
+        "function read(){return ('a'==='b')||42}console.log(read());",
+        "function read(){return !('a'==='b')}console.log(read());",
+        "try{throw !('a'==='b')}catch(error){console.log(error)}",
+        "function read(){return (('a'==='b'?0:42),43)}console.log(read());",
+        "function read(){return ((('a'==='b'?0:42)))}console.log(read());",
+        "const events=[];function rhs(){events.push('rhs');return 42}function boom(){throw Error('unselected')}function read(){return 'a'==='a'?rhs():boom()}console.log(JSON.stringify([read(),events]));",
+        "const events=[];function rhs(){events.push('rhs');return 7}function read(){return ('a'==='b'&&rhs())||42}console.log(JSON.stringify([read(),events]));",
+        "const events=[];function left(){events.push('left');return false}function rhs(){events.push('rhs');return 42}function read(){return left()&&rhs()}console.log(JSON.stringify([read(),events]));",
+        "const events=[];function read(){return !(events.push('left'),0)}console.log(JSON.stringify([read(),events]));",
+        "const events=[];function rhs(){events.push('rhs');return 7}try{throw 42||rhs()}catch(error){console.log(JSON.stringify([error,events]))}",
+    };
+    for (sources) |source| for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        const root = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        try analyzer.analyze();
+        try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+        var metadata: LinkingMetadata = .{
+            .skip_nodes = try std.DynamicBitSet.initEmpty(allocator, parser.ast.nodes.items.len),
+            .renames = .empty,
+            .final_exports = null,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .allocator = allocator,
+        };
+        var generator = Codegen.initWithOptions(allocator, &parser.ast, .{
+            .minify_whitespace = minify,
+            .linking_metadata = &metadata,
+            .semantic_symbols = analyzer.symbols.items,
+        });
+        const output = try generator.generate(root);
+        const native = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        const actual = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", output } });
+        if (actual.term != .exited or actual.term.exited != 0)
+            std.debug.print("folded conditional source={s} output={s} stderr={s}\n", .{ source, output, actual.stderr });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("", actual.stderr);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        if (minify and std.mem.indexOf(u8, source, "'ok'") != null)
+            try std.testing.expect(std.mem.indexOf(u8, output, "return(0,") != null);
+    };
+}
+
+test "Codegen: folded logical values preserve operands and lazy effects" {
+    const values = [_][]const u8{ "undefined", "null", "0", "''", "NaN", "false", "'truthy'", "0n", "2n", "42" };
+    for ([_][]const u8{ "&&", "||", "??" }) |op| for (values) |value| for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const source = try std.fmt.allocPrint(allocator, "const events=[];function rhs(){{events.push('rhs');return 7}}function read(){{return {s}{s}rhs()}}const value=read();console.log(JSON.stringify([typeof value,String(value),events]));", .{ value, op });
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        const root = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        try analyzer.analyze();
+        try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+        var metadata: LinkingMetadata = .{
+            .skip_nodes = try std.DynamicBitSet.initEmpty(allocator, parser.ast.nodes.items.len),
+            .renames = .empty,
+            .final_exports = null,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .allocator = allocator,
+        };
+        var generator = Codegen.initWithOptions(allocator, &parser.ast, .{ .minify_whitespace = minify, .linking_metadata = &metadata, .semantic_symbols = analyzer.symbols.items });
+        const output = try generator.generate(root);
+        const native = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        const actual = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", output } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+            std.debug.print("folded logical source={s} output={s} native={s} actual={s} stderr={s}\n", .{ source, output, native.stdout, actual.stdout, actual.stderr });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("", actual.stderr);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    };
+}
+
+test "Codegen: folded values preserve GetValue and anonymous names" {
+    const sources = [_][]const u8{
+        "const obj={method(){return this===obj}};function other(){return 0}console.log(JSON.stringify([(true?obj.method:other)(),(true&&obj.method)()]));",
+        "function run(){const hidden=42;return (true?eval:function(){})('typeof hidden')}console.log(run());",
+        "function run(){const hidden=42;return (true&&eval)('typeof hidden')}console.log(run());",
+        "let hits=0;const obj={get value(){hits++;return 42}};const result=delete(true?obj.value:0);console.log(JSON.stringify([result,Object.hasOwn(obj,'value'),hits]));",
+        "let hits=0;const obj={get value(){hits++;return 42}};const result=delete(true&&obj.value);console.log(JSON.stringify([result,Object.hasOwn(obj,'value'),hits]));",
+        "try{console.log(typeof(true?missing:0))}catch(error){console.log(error.name)}",
+        "try{console.log(typeof(true&&missing))}catch(error){console.log(error.name)}",
+        "const fn=true?function(){}:null;const arrow=true&&(()=>0);const Constructor=true?class{}:null;console.log(JSON.stringify([fn.name,arrow.name,Constructor.name]));",
+        "const obj={method(){return this===obj}};console.log((true?obj.method:null)?.());",
+        "const obj={tag(){return this===obj}};console.log((true?obj.tag:null)`text`);",
+        "const Constructor=true?class{}:null;console.log(JSON.stringify([new(true?Constructor:null)() instanceof Constructor,Constructor.name]));",
+    };
+    for (sources) |source| for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        const root = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        try analyzer.analyze();
+        try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+        var metadata: LinkingMetadata = .{
+            .skip_nodes = try std.DynamicBitSet.initEmpty(allocator, parser.ast.nodes.items.len),
+            .renames = .empty,
+            .final_exports = null,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .allocator = allocator,
+        };
+        var generator = Codegen.initWithOptions(allocator, &parser.ast, .{ .minify_whitespace = minify, .linking_metadata = &metadata, .semantic_symbols = analyzer.symbols.items });
+        const output = try generator.generate(root);
+        const native = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        const actual = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", output } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+            std.debug.print("folded GetValue source={s} output={s} native={s} actual={s} stderr={s}\n", .{ source, output, native.stdout, actual.stdout, actual.stderr });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("", actual.stderr);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    };
+}
