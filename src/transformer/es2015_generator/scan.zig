@@ -55,6 +55,10 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
             .function_body,
             .array_expression,
             .object_expression,
+            .array_pattern,
+            .object_pattern,
+            .array_assignment_target,
+            .object_assignment_target,
             .sequence_expression,
             .template_literal,
             .formal_parameters,
@@ -70,6 +74,8 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
             .throw_statement,
             .spread_element,
             .rest_element,
+            .binding_rest_element,
+            .assignment_target_rest,
             // ⚠️ computed key 는 `computed_property_key` 래퍼에 싸여 있다. 여기 없으면
             // `{ [yield 1]: 2 }` / `class { [yield k]() {} }` 의 yield 를 못 보고,
             // 추출이 시작되지 않아 raw `yield` 가 남아 **산출물이 파싱조차 안 된다**. (#4721)
@@ -93,6 +99,11 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                 if (!pushNode(self, &stack, @fromBackingInt(@intCast(extras[e])))) return true;
             },
             .assignment_expression,
+            .assignment_pattern,
+            .assignment_target_with_default,
+            .binding_property,
+            .assignment_target_property_identifier,
+            .assignment_target_property_property,
             .binary_expression,
             .logical_expression,
             .object_property,
@@ -154,7 +165,18 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                     if (!pushNode(self, &stack, @fromBackingInt(@intCast(extras[e + slot])))) return true;
                 }
             },
-            .switch_statement, .variable_declaration => {
+            .switch_statement => {
+                const e = node.data.extra;
+                const extras = self.ast.extra_data.items;
+                if (e + 2 >= extras.len) continue;
+                if (!pushNode(self, &stack, @fromBackingInt(extras[e]))) return true;
+                const start = extras[e + 1];
+                const len = extras[e + 2];
+                for (extras[start .. start + len]) |raw| {
+                    if (!pushNode(self, &stack, @fromBackingInt(raw))) return true;
+                }
+            },
+            .variable_declaration => {
                 // extra = [_, list_start, list_len]
                 const extras = self.ast.extra_data.items;
                 const e = node.data.extra;
@@ -167,10 +189,11 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                 }
             },
             .switch_case => {
-                // extra = [test, stmts_start, stmts_len] — test 는 yield 안 가짐 (literal)
+                // Case tests are arbitrary expressions evaluated in the enclosing function.
                 const extras = self.ast.extra_data.items;
                 const e = node.data.extra;
                 if (e + 2 >= extras.len) continue;
+                if (!pushNode(self, &stack, @fromBackingInt(extras[e]))) return true;
                 const stmts_start = extras[e + 1];
                 const stmts_len = extras[e + 2];
                 const stmts = extras[stmts_start .. stmts_start + stmts_len];
@@ -195,6 +218,9 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                 const extras = self.ast.extra_data.items;
                 const e = node.data.extra;
                 if (e + 2 >= extras.len) continue;
+                // Pattern defaults and computed keys execute in this function,
+                // after the initializer and before subsequent declarators.
+                if (!pushNode(self, &stack, @fromBackingInt(extras[e]))) return true; // binding
                 if (!pushNode(self, &stack, @fromBackingInt(@intCast(extras[e + 2])))) return true; // init
             },
             else => {},
