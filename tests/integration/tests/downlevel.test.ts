@@ -19,6 +19,24 @@ describe('ES 다운레벨링 런타임 테스트', () => {
   // ===== ES2015 =====
 
   describe('ES2015', () => {
+    const runDefaultParameterMinifyCase = async (flags: string[]) => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            const base = 40;
+            const greet = (name = 'world') => 'hello ' + name;
+            function add(value = 2) { return base + value; }
+            console.log(greet(), add());
+          `,
+        },
+        'index.ts',
+        ['--target=es5', ...flags],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('hello world 42');
+    };
+
     test('template literal → string concat', async () => {
       const result = await bundleAndRun(
         { 'index.ts': "const name = 'world'; console.log(`hello ${name}`);" },
@@ -96,21 +114,23 @@ describe('ES 다운레벨링 런타임 테스트', () => {
     });
 
     test('default params with identifier-only minification', async () => {
-      const result = await bundleAndRun(
-        {
-          'index.ts': `
-            const base = 40;
-            const greet = (name = 'world') => 'hello ' + name;
-            function add(value = 2) { return base + value; }
-            console.log(greet(), add());
-          `,
-        },
-        'index.ts',
-        ['--target=es5', '--minify-identifiers'],
-      );
-      cleanup = result.cleanup;
-      expect(result.exitCode).toBe(0);
-      expect(result.runOutput).toBe('hello world 42');
+      await runDefaultParameterMinifyCase(['--minify-identifiers']);
+    });
+
+    test('default params with syntax-only minification', async () => {
+      await runDefaultParameterMinifyCase(['--minify-syntax']);
+    });
+
+    test('default params with full minification', async () => {
+      await runDefaultParameterMinifyCase(['--minify']);
+    });
+
+    test('default params with whitespace and syntax minification', async () => {
+      await runDefaultParameterMinifyCase(['--minify-whitespace', '--minify-syntax']);
+    });
+
+    test('default params with whitespace and identifier minification', async () => {
+      await runDefaultParameterMinifyCase(['--minify-whitespace', '--minify-identifiers']);
     });
 
     test('default parameter self TDZ는 ReferenceError', async () => {
