@@ -121,6 +121,7 @@ pub const TranspileError = error{
     StaticInitializerDynamicScope,
     GeneratorNativeLexicalResume,
     GeneratorNativeLexicalNesting,
+    ClassHeritageEval,
     ArrowPrivateDynamicScope,
     LoopDynamicScope,
     ParseError,
@@ -5117,6 +5118,15 @@ fn transpileWithCallbackInternal(
         }
     }
     const root = transformer.transform() catch return error.TransformError;
+    if (transformer.unsupported_class_heritage_eval_span) |span| {
+        if (on_error) |cb| cb(source, file_path, &scanner, &.{.{
+            .code = .class_heritage_eval,
+            .span = span,
+            .message = TransformOptions.class_heritage_eval_msg,
+            .kind = .semantic,
+        }});
+        return error.ClassHeritageEval;
+    }
     if (transformer.unsupported_loop_dynamic_scope_span) |span| {
         if (on_error) |cb| cb(source, file_path, &scanner, &.{.{
             .code = .loop_dynamic_scope,

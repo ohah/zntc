@@ -30,7 +30,72 @@ pub fn register(self: anytype, factory: state.WorkletClassFactory, cloned: anyty
         .epoch = captured.creator_epoch,
     });
     try self.plugins.worklet.class_factories.append(self.allocator, captured);
+    try registerExternalClones(self, captured, cloned);
     try registerReferences(self, index, cloned, self_binding);
+}
+
+fn captureExecutionOwner(self: anytype, execution: @import("../semantic/scope.zig").ScopeId) !@import("../semantic/scope_frame_history.zig").Owner {
+    const editor = &self.semantic_editor.?;
+    var owners = editor.scope_owner_map.iterator();
+    var selected: ?ast.NodeIndex = null;
+    while (owners.next()) |entry| if (entry.value_ptr.* == @backingInt(execution)) {
+        if (selected != null) return error.InvalidWorkletCloneOrigin;
+        selected = @fromBackingInt(entry.key_ptr.*);
+    };
+    return (try @import("../semantic/scope_frame_history.zig").Owner.capture(self.ast, selected orelse return error.InvalidWorkletCloneOrigin)) orelse return error.InvalidWorkletCloneOrigin;
+}
+
+fn registerExternalClones(self: anytype, factory: state.WorkletClassFactory, cloned: anytype) !void {
+    const editor = &self.semantic_editor.?;
+    const external = @import("../semantic/source_external_origin.zig");
+    const provenance = @import("../semantic/node_scope_provenance.zig");
+    const Prepared = struct { node: ast.NodeIndex, entry: provenance.Entry };
+    var prepared: std.ArrayList(Prepared) = .empty;
+    defer prepared.deinit(self.allocator);
+    var nodes = cloned.nodes.iterator();
+    while (nodes.next()) |mapping| {
+        const source_node: ast.NodeIndex = @fromBackingInt(mapping.key_ptr.*);
+        const target_node = mapping.value_ptr.*;
+        const source = editor.node_scope_provenance.get(source_node) orelse continue;
+        const origin = source.source_external orelse continue;
+        var target = editor.node_scope_provenance.get(target_node) orelse return error.InvalidWorkletCloneOrigin;
+        if (source.scope == target.scope) continue;
+        if (cloned.scope(source.scope) != target.scope or @backingInt(target_node) >= editor.symbol_ids.items.len or
+            editor.symbol_ids.items[@backingInt(target_node)] != null or editor.symbol_ids.items[mapping.key_ptr.*] != null or
+            source.source_node != target.source_node) return error.InvalidWorkletCloneOrigin;
+        var execution = source.scope;
+        var fuel = editor.scopes.items.len + 1;
+        while (!execution.isNone() and fuel > 0) : (fuel -= 1) {
+            if (execution.toIndex() >= editor.scopes.items.len) return error.InvalidWorkletCloneOrigin;
+            switch (editor.scopes.items[execution.toIndex()].kind) {
+                .global, .module, .function, .class_body, .class_static_block => break,
+                else => execution = editor.scopes.items[execution.toIndex()].parent,
+            }
+        }
+        if (execution.isNone() or fuel == 0) return error.InvalidWorkletCloneOrigin;
+        const source_execution = @backingInt(execution);
+        const target_execution = cloned.scope(@fromBackingInt(source_execution));
+        if (target_execution == @as(@import("../semantic/scope.zig").ScopeId, @fromBackingInt(source_execution))) return error.InvalidWorkletCloneOrigin;
+        const source_owner = try captureExecutionOwner(self, @fromBackingInt(source_execution));
+        const target_owner = try captureExecutionOwner(self, target_execution);
+        const class_boundary = execution == factory.source_scope and target_execution == factory.target_scope and source_owner.node == factory.source_class and target_owner.node == factory.target_class;
+        if (!class_boundary and cloned.nodes.get(@backingInt(source_owner.node)) != target_owner.node) return error.InvalidWorkletCloneOrigin;
+        target.source_external = try external.clonedWorkletClass(self.allocator, origin, target_node, source.source_node, source.scope, target.scope, editor.scopes.items, factory.creator_epoch, .{
+            .creator_index = factory.creator_index orelse return error.InvalidWorkletCloneOrigin,
+            .source_owner = source_owner,
+            .target_owner = target_owner,
+            .source_execution = @fromBackingInt(source_execution),
+            .target_execution = target_execution,
+            .source_leaf = (try @import("../semantic/scope_frame_history.zig").Owner.capture(self.ast, source_node)) orelse return error.InvalidWorkletCloneOrigin,
+            .target_leaf = (try @import("../semantic/scope_frame_history.zig").Owner.capture(self.ast, target_node)) orelse return error.InvalidWorkletCloneOrigin,
+        });
+        try prepared.append(self.allocator, .{ .node = target_node, .entry = target });
+    }
+    try self.transformed_node_scope_provenance.ensureUnusedCapacity(self.allocator, @intCast(prepared.items.len));
+    for (prepared.items) |value| {
+        editor.node_scope_provenance.getPtr(value.node).?.* = value.entry;
+        self.transformed_node_scope_provenance.putAssumeCapacity(value.node, value.entry);
+    }
 }
 
 fn registerReferences(self: anytype, index: usize, cloned: anytype, self_binding: ast.NodeIndex) !void {

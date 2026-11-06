@@ -70,6 +70,7 @@ function getCategory(num) {
 
 // 재현 코드 매핑 (주요 에러들)
 const examples = {
+  class_heritage_eval: { code: "class Parent {} class Child extends eval('Parent') {}", opts: { target: "es5" }, cliOpts: "--target=es5" },
   generator_native_lexical_resume: { code: 'function* run() { class Cell {} yield 0; console.log(Cell); }', opts: { target: 'chrome49' }, cliOpts: '--target=chrome49' },
   generator_native_lexical_nesting: { code: 'function* run() { for (let i=0;i<2;i++) { use(()=>i); for (let i=4;i<6;i++) { yield 0; use(()=>i); } } }', opts: { target: 'chrome49' }, cliOpts: '--target=chrome49' },
   top_level_await_target: { code: 'export const data = await fetch("/api");', opts: { target: "es2021" }, cliOpts: "--target=es2021" },

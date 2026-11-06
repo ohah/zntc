@@ -41,7 +41,7 @@ pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
 // v39: exact producer-owned static capture aliases retain their retirement proof.
 // v43: extracted await-loop source witnesses and function-name environment retirements.
 // v49: class-key, Worklet, enum-member and explicit-drop proofs share one wire layout.
-pub const FORMAT_VERSION: u32 = 51;
+pub const FORMAT_VERSION: u32 = 52;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -288,10 +288,14 @@ comptime {
     }
     const edge_fields = [_][]const u8{ "parameters", "body", "heritage" };
     for (@typeInfo(FrameHistory.SourceEdges).@"struct".field_names, edge_fields) |actual, expected| if (!std.mem.eql(u8, actual, expected)) @compileError("source edges wire fields changed");
-    const scope_move_fields = [_][]const u8{ "node", "source_node", "from", "to", "from_frame", "to_frame", "reason", "elision", "static_block", "generator", "class_heritage", "class_initializer", "class_key", "frame_epoch" };
+    const scope_move_fields = [_][]const u8{ "node", "source_node", "from", "to", "from_frame", "to_frame", "reason", "elision", "static_block", "generator", "class_heritage", "class_initializer", "class_key", "worklet_clone", "frame_epoch" };
     if (@typeInfo(ScopeMove).@"struct".field_names.len != scope_move_fields.len) @compileError("source scope move fields changed; update codec/version");
     for (scope_move_fields, @typeInfo(ScopeMove).@"struct".field_names) |expected, actual| if (!std.mem.eql(u8, expected, actual)) @compileError("source scope move wire order changed; update codec/version");
-    if (std.enums.values(@FieldType(ScopeMove, "reason")).len != 7) @compileError("source scope move reason changed; update codec/version");
+    if (std.enums.values(@FieldType(ScopeMove, "reason")).len != 8) @compileError("source scope move reason changed; update codec/version");
+    const WorkletClone = @import("../semantic/source_external_origin.zig").WorkletClassClone;
+    const worklet_clone_fields = [_][]const u8{ "creator_index", "source_owner", "target_owner", "source_execution", "target_execution", "source_leaf", "target_leaf" };
+    if (@typeInfo(WorkletClone).@"struct".field_names.len != worklet_clone_fields.len) @compileError("worklet clone wire fields changed; update codec/version");
+    for (@typeInfo(WorkletClone).@"struct".field_names, worklet_clone_fields) |actual, expected| if (!std.mem.eql(u8, actual, expected)) @compileError("worklet clone wire order changed; update codec/version");
     const GeneratorTransfer = @import("../semantic/generator_environment_transfer.zig");
     const generator_fields = [_][]const u8{ "source", "callback", "callback_scope", "parameters", "body", "state_parameter", "birth_epoch", "heritage", "computed_await_source" };
     for (@typeInfo(GeneratorTransfer.Transfer).@"struct".field_names, generator_fields) |actual, expected| if (!std.mem.eql(u8, actual, expected)) @compileError("generator transfer wire fields changed");
@@ -1214,6 +1218,16 @@ pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc:
                     try putU32(&payload, alloc, @backingInt(transfer.evaluation_scope));
                     try putU32(&payload, alloc, transfer.capture_epoch);
                 }
+                try putU8(&payload, alloc, @intFromBool(move.worklet_clone != null));
+                if (move.worklet_clone) |transfer| {
+                    try putU32(&payload, alloc, transfer.creator_index);
+                    try putFrameOwner(&payload, alloc, transfer.source_owner);
+                    try putFrameOwner(&payload, alloc, transfer.target_owner);
+                    try putU32(&payload, alloc, @backingInt(transfer.source_execution));
+                    try putU32(&payload, alloc, @backingInt(transfer.target_execution));
+                    try putFrameOwner(&payload, alloc, transfer.source_leaf);
+                    try putFrameOwner(&payload, alloc, transfer.target_leaf);
+                }
             }
         }
     }
@@ -1621,8 +1635,24 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
                 if (has_class_key > 1 or (has_class_key == 1) != (reason == .class_key_evaluation)) return error.Truncated;
                 const class_key: ?@import("../semantic/class_key_evaluation.zig").Transfer = if (has_class_key == 1) .{ .source_index = try r.u32v(), .evaluation_scope = @fromBackingInt(try r.u32v()), .capture_epoch = try r.u32v() } else null;
                 if (class_key) |transfer| if (transfer.evaluation_scope.isNone() or transfer.evaluation_scope.toIndex() >= scopes_len) return error.Truncated;
+                const has_worklet_clone = try r.byte();
+                if (has_worklet_clone > 1 or (has_worklet_clone == 1) != (reason == .worklet_class_clone)) return error.Truncated;
+                const worklet_clone: ?@import("../semantic/source_external_origin.zig").WorkletClassClone = if (has_worklet_clone == 1) .{
+                    .creator_index = try r.u32v(),
+                    .source_owner = try readFrameOwner(&r),
+                    .target_owner = try readFrameOwner(&r),
+                    .source_execution = @fromBackingInt(try r.u32v()),
+                    .target_execution = @fromBackingInt(try r.u32v()),
+                    .source_leaf = try readFrameOwner(&r),
+                    .target_leaf = try readFrameOwner(&r),
+                } else null;
+                if (worklet_clone) |transfer| if (transfer.creator_index >= scope_history.worklet_class_creators.len or
+                    transfer.source_execution.isNone() or transfer.source_execution.toIndex() >= scopes_len or
+                    transfer.target_execution.isNone() or transfer.target_execution.toIndex() >= scopes_len or
+                    @backingInt(transfer.source_owner.node) >= symbol_ids_len or @backingInt(transfer.target_owner.node) >= symbol_ids_len or
+                    @backingInt(transfer.source_leaf.node) >= symbol_ids_len or @backingInt(transfer.target_leaf.node) >= symbol_ids_len) return error.Truncated;
                 if (moved_node >= symbol_ids_len or moved_source >= symbol_ids_len or from >= scopes_len or to >= scopes_len) return error.Truncated;
-                move.* = .{ .node = @fromBackingInt(moved_node), .source_node = @fromBackingInt(moved_source), .from = @fromBackingInt(from), .to = @fromBackingInt(to), .from_frame = from_frame, .to_frame = to_frame, .reason = reason, .elision = elision, .static_block = static_block, .generator = generator, .class_heritage = class_heritage, .class_initializer = class_initializer, .class_key = class_key, .frame_epoch = frame_epoch };
+                move.* = .{ .node = @fromBackingInt(moved_node), .source_node = @fromBackingInt(moved_source), .from = @fromBackingInt(from), .to = @fromBackingInt(to), .from_frame = from_frame, .to_frame = to_frame, .reason = reason, .elision = elision, .static_block = static_block, .generator = generator, .class_heritage = class_heritage, .class_initializer = class_initializer, .class_key = class_key, .worklet_clone = worklet_clone, .frame_epoch = frame_epoch };
             }
             if (source_scope.isNone() or source_scope.toIndex() >= scopes_len or execution_scope.isNone() or execution_scope.toIndex() >= scopes_len) return error.Truncated;
             break :external .{ .tag = tag, .name = name, .span = span, .flags = flags, .source_scope = source_scope, .source_frame = source_frame, .execution_scope = execution_scope, .execution_frame = execution_frame, .scope_moves = moves, .jsx_reference = jsx_reference };

@@ -83,6 +83,8 @@ pub fn napiBuildSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c
     var bundler = Bundler.init(native_alloc, bundle_opts);
     defer bundler.deinit();
     var result = bundler.bundle(common.io()) catch |err| {
+        if (err == error.ClassHeritageEval)
+            return throwError(env, "ZNTC1512: class heritage direct eval cannot preserve strictness in a sloppy lowered evaluation context");
         if (err == error.LoopDynamicScope)
             return throwError(env, "ZNTC1509: direct eval observes a loop lexical environment requiring lowering");
         if (err == error.GeneratorNativeLexicalResume)

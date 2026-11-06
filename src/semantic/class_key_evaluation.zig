@@ -8,21 +8,62 @@ pub const Transfer = struct { source_index: u32, evaluation_scope: Scope.ScopeId
 
 pub fn validates(tree: *const Ast.Ast, history: *const H.Index, parser_count: u32, origin: anytype, move: anytype, transfer: Transfer) bool {
     if (!history.valid or transfer.source_index >= history.history.source_class_keys.len or transfer.capture_epoch != move.frame_epoch or
-        move.from != origin.source_scope or origin.execution_scope != origin.source_scope or transfer.evaluation_scope != move.to or
+        origin.execution_scope != origin.source_scope or transfer.evaluation_scope != move.to or
         !origin.flags.read or origin.flags.write or origin.flags.declare or origin.flags.type_context or origin.flags.value_as_type or
         origin.source_frame.kind != .class_body or !origin.source_frame.is_strict or origin.source_frame.blocksMangling()) return false;
     const source = history.history.source_class_keys[transfer.source_index];
-    if (source.scope != move.from or source.class_owner.node.isNone() or @backingInt(source.class_owner.node) >= parser_count or
+    if (source.scope != origin.source_scope or source.class_owner.node.isNone() or @backingInt(source.class_owner.node) >= parser_count or
         source.leaf.node != move.source_node or source.leaf.tag != origin.tag or !std.meta.eql(source.leaf.span, origin.span) or
         source.leaf.words[0] != origin.name.start or source.leaf.words[1] != origin.name.end or
         source.key.tag != .computed_property_key or source.key.node.isNone() or @backingInt(source.key.node) >= parser_count) return false;
     const initial = history.frameAt(source.scope, 0) orelse return false;
     if (initial.kind != .class_body or initial.blocksMangling() or !initial.is_strict) return false;
-    if (initial.parent != move.to and !validatesIife(tree, history, source.scope, initial.parent, move.to, transfer.capture_epoch)) return false;
+    if (move.from == source.scope) {
+        if (initial.parent != move.to and !validatesIife(tree, history, source.scope, initial.parent, move.to, transfer.capture_epoch)) return false;
+    } else {
+        // Compose only the existing exact class-clone boundary, not a generic
+        // ancestor permission. Immutable source membership remains unchanged.
+        const cloned = clonedClassKey(origin, move.from, move.node) orelse return false;
+        const prior = origin.scope_moves[0];
+        const recorded = origin.scope_moves[1];
+        const recorded_transfer = recorded.class_key orelse return false;
+        if (origin.scope_moves.len != 2 or recorded.node != move.node or recorded.source_node != move.source_node or
+            recorded.from != move.from or recorded.to != move.to or recorded.reason != .class_key_evaluation or
+            move.reason != .class_key_evaluation or recorded.frame_epoch != move.frame_epoch or
+            recorded_transfer.source_index != transfer.source_index or recorded_transfer.evaluation_scope != transfer.evaluation_scope or
+            recorded_transfer.capture_epoch != transfer.capture_epoch or
+            recorded.elision != null or recorded.static_block != null or recorded.generator != null or
+            recorded.class_heritage != null or recorded.class_initializer != null or recorded.worklet_clone != null or
+            !@import("source_external_origin.zig").sameFrame(recorded.from_frame, move.from_frame) or
+            !@import("source_external_origin.zig").sameFrame(recorded.to_frame, move.to_frame) or
+            cloned.source_owner.node != source.class_owner.node or cloned.source_execution != source.scope or
+            !@import("source_external_origin.zig").validWorkletClone(tree, history, origin, prior, cloned, history.offsets.len - 1)) return false;
+        const creator = history.history.worklet_class_creators[cloned.creator_index];
+        const birth = history.frameAt(move.from, prior.frame_epoch) orelse return false;
+        if (creator.source.node != source.class_owner.node or creator.target.node != cloned.target_owner.node or
+            creator.target.scope != move.from or birth.parent != creator.factory_scope or
+            birth.kind != .class_body or !birth.is_strict or birth.blocksMangling() or
+            !validatesIife(tree, history, move.from, birth.parent, move.to, transfer.capture_epoch)) return false;
+    }
     // The immutable source class/member/key relation is independent of the
     // lowered temporary. Never reconstruct a declaration by its spelling.
     if (source.member.words[0] >= tree.extra_data.items.len or tree.extra_data.items[source.member.words[0]] != @backingInt(source.key.node)) return false;
     return transfer.source_index < history.class_key_read_membership.len and history.class_key_read_membership[transfer.source_index];
+}
+
+// This producer role is deliberately bounded to one actual Worklet class
+// clone followed by this class-key handoff. Other execution transfers must
+// acquire their own composition contract rather than being silently skipped.
+fn clonedClassKey(origin: anytype, from: Scope.ScopeId, leaf: Ast.NodeIndex) ?@import("source_external_origin.zig").WorkletClassClone {
+    if (origin.scope_moves.len != 2) return null;
+    const prior = origin.scope_moves[0];
+    const cloned = prior.worklet_clone orelse return null;
+    if (prior.reason != .worklet_class_clone or prior.from != origin.source_scope or prior.to != from or
+        cloned.source_execution != origin.execution_scope or cloned.target_execution != from or
+        cloned.source_leaf.node != prior.source_node or cloned.target_leaf.node != leaf or prior.node != leaf or
+        cloned.source_owner.tag != .class_declaration and cloned.source_owner.tag != .class_expression or
+        cloned.target_owner.tag != .class_expression) return null;
+    return cloned;
 }
 
 // This branch is solely the class lowerer's generated evaluation environment.
@@ -157,7 +198,9 @@ pub fn completeIife(self: anytype, class: Ast.NodeIndex, fragments: []const Ast.
         for (reads) |read| {
             var entry = editor.node_scope_provenance.get(read) orelse continue;
             var origin = entry.source_external orelse continue;
-            if (origin.source_scope != source_scope or entry.scope != target) continue;
+            if (entry.scope != target) continue;
+            const cloned = if (origin.source_scope == source_scope) null else clonedClassKey(origin, source_scope, read);
+            if (origin.source_scope != source_scope and cloned == null) continue;
             // Only an actual initial-source external transition requests this
             // proof. Generated Worklet/bound-only memo carriers retain their
             // own exact factory/ID contract and do not claim source-key birth.
@@ -165,11 +208,18 @@ pub fn completeIife(self: anytype, class: Ast.NodeIndex, fragments: []const Ast.
             // The owner-copy producer, not spelling or shared scope, supplies the
             // immutable initial class identity used by source_class_keys.
             const class_raw = @backingInt(class);
-            const initial_raw = self.scope_owner_origins.get(class_raw) orelse
+            const initial_raw = if (cloned) |clone| @backingInt(clone.source_owner.node) else self.scope_owner_origins.get(class_raw) orelse
                 if (class_raw < self.parser_node_count) class_raw else @panic("class-key completion lost source class lineage");
-            if (initial_raw >= self.parser_node_count or self.scope_owner_map.get(initial_raw) != @backingInt(source_scope))
+            if (cloned) |clone| {
+                if (clone.creator_index >= editor.scope_history.worklet_class_creators.items.len) @panic("class-key clone lost creator");
+                const creator = editor.scope_history.worklet_class_creators.items[clone.creator_index];
+                if (creator.source.node != clone.source_owner.node or creator.source.scope != origin.source_scope or
+                    creator.target.node != class or creator.target.scope != source_scope or clone.target_owner.node != class or
+                    creator.epoch != origin.scope_moves[0].frame_epoch) @panic("class-key clone has foreign creator");
+            }
+            if (initial_raw >= self.parser_node_count or self.scope_owner_map.get(initial_raw) != @backingInt(origin.source_scope))
                 @panic("class-key completion has a foreign initial class owner");
-            if (initial_raw != class_raw and self.scope_owner_remaps.get(initial_raw) != class_raw)
+            if (cloned == null and initial_raw != class_raw and self.scope_owner_remaps.get(initial_raw) != class_raw)
                 @panic("class-key completion lost its exact copied class owner");
             const initial_class: Ast.NodeIndex = @fromBackingInt(initial_raw);
 
@@ -178,7 +228,7 @@ pub fn completeIife(self: anytype, class: Ast.NodeIndex, fragments: []const Ast.
             if (last.reason != .lowerer_scope_relocation or last.from != source_scope or last.to != target or last.node != read or last.source_node != entry.source_node) @panic("class-key completion has foreign relocation");
             var selected: ?u32 = null;
             for (editor.scope_history.source_class_keys, 0..) |source, index| {
-                if (source.scope != source_scope or source.class_owner.node != initial_class or source.leaf.node != entry.source_node) continue;
+                if (source.scope != origin.source_scope or source.class_owner.node != initial_class or source.leaf.node != entry.source_node) continue;
                 if (selected != null) @panic("class-key completion has ambiguous source membership");
                 selected = @intCast(index);
             }

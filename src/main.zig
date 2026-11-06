@@ -143,7 +143,7 @@ fn transpileFile(
     var result = transpile_mod.transpileWithCallback(allocator, source, file_path, core_opts, &printErrors) catch |err| {
         // 콜백에서 이미 상세 에러를 출력했으므로, 파싱/시맨틱 에러는 추가 메시지 불필요
         switch (err) {
-            error.ParseError, error.SemanticError, error.ArrowPrivateDynamicScope, error.LoopDynamicScope, error.GeneratorNativeLexicalResume, error.GeneratorNativeLexicalNesting => {},
+            error.ParseError, error.SemanticError, error.ClassHeritageEval, error.ArrowPrivateDynamicScope, error.LoopDynamicScope, error.GeneratorNativeLexicalResume, error.GeneratorNativeLexicalNesting => {},
             error.StaticInitializerDynamicScope => {
                 try stderr.print("zntc: {s}: ZNTC1505: {s}\n", .{ file_path, lib.transformer.TransformOptions.static_initializer_dynamic_scope_msg });
             },
@@ -875,7 +875,9 @@ pub fn main(init: std.process.Init) !void {
         defer bundler.deinit();
 
         const result = bundler.bundle(io) catch |err| {
-            if (err == error.LoopDynamicScope)
+            if (err == error.ClassHeritageEval)
+                try stderr.print("zntc: ZNTC1512: {s}\n", .{lib.transformer.TransformOptions.class_heritage_eval_msg})
+            else if (err == error.LoopDynamicScope)
                 try stderr.print("zntc: ZNTC1509: {s}\n", .{lib.transformer.TransformOptions.loop_dynamic_scope_msg})
             else if (err == error.GeneratorNativeLexicalResume)
                 try stderr.print("zntc: ZNTC1510: {s}\n", .{lib.transformer.TransformOptions.generator_native_lexical_resume_msg})

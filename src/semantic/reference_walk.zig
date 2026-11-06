@@ -32,6 +32,26 @@ pub fn collectIdentifierReferences(
     ast: *const Ast,
     root: NodeIndex,
 ) error{OutOfMemory}![]NodeIndex {
+    return collectReferences(allocator, ast, root, .all);
+}
+
+/// Initial heritage membership stops at nested execution boundaries. A nested
+/// class is represented by its exact owner node; its own heritage is indexed
+/// separately and can be composed only after its typed transition validates.
+pub fn collectHeritageMembers(allocator: std.mem.Allocator, ast: *const Ast, root: NodeIndex) error{OutOfMemory}![]NodeIndex {
+    return collectReferences(allocator, ast, root, .heritage_members);
+}
+
+/// References evaluated by this heritage expression itself. Function/IIFE
+/// bodies and nested classes have their own execution; call arguments remain
+/// traversed, including a nested lowered class's external heritage argument.
+pub fn collectHeritageEvaluationReferences(allocator: std.mem.Allocator, ast: *const Ast, root: NodeIndex) error{OutOfMemory}![]NodeIndex {
+    return collectReferences(allocator, ast, root, .heritage_evaluation);
+}
+
+const Boundaries = enum { all, heritage_members, heritage_evaluation };
+
+fn collectReferences(allocator: std.mem.Allocator, ast: *const Ast, root: NodeIndex, boundaries: Boundaries) error{OutOfMemory}![]NodeIndex {
     // Only subtree nodes enter this map. Repeating this walk for many loops
     // must not clear arrays proportional to the entire transformed AST.
     // Bits: value visit, match-pattern visit, result emitted.
@@ -56,6 +76,14 @@ pub fn collectIdentifierReferences(
         if ((gop.value_ptr.* & bit) != 0) continue;
         gop.value_ptr.* |= bit;
         const node = ast.nodes.items[raw];
+        if (boundaries != .all) switch (node.tag) {
+            .class_declaration, .class_expression => {
+                if (boundaries == .heritage_members) try result.append(allocator, idx);
+                continue;
+            },
+            .function_declaration, .function_expression, .arrow_function_expression => continue,
+            else => {},
+        };
         if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
             const is_wildcard = edge.context == .match_pattern and
                 std.mem.eql(u8, ast.identifierNameText(node), "_");

@@ -275,6 +275,7 @@ pub const Code = enum(u16) {
     loop_dynamic_scope = 1509,
     generator_native_lexical_resume = 1510,
     generator_native_lexical_nesting = 1511,
+    class_heritage_eval = 1512,
 
     /// 에러 코드를 "ZNTC0001" 형식의 문자열로 반환한다.
     pub fn format(self: Code) []const u8 {
@@ -517,6 +518,7 @@ pub const Code = enum(u16) {
             .arrow_dynamic_scope => "Arrow or containing class/object literal is preserved because a dynamic scope makes lexical capture downleveling unsafe; the target may not support syntax retained inside it",
             .static_initializer_dynamic_scope => "Class initializer or extracted private method cannot preserve its dynamic class lexical environment",
             .loop_dynamic_scope => "Direct eval observes a loop lexical environment that cannot be lowered safely",
+            .class_heritage_eval => "Class heritage direct eval cannot preserve strictness in a sloppy lowered evaluation context",
             .arrow_private_dynamic_scope => "Retained dynamic capture contains private class syntax that requires lowering for the configured target",
             .arrow_dynamic_eval => "Arrow is preserved because a dynamic direct eval can observe generated lexical capture bindings; the target may not support retained arrow syntax",
         };

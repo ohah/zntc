@@ -527,3 +527,20 @@ zntc --bundle src/index.ts --conditions=development,react-native
 zntc src/input.ts --tokenize
 zntc src/input.ts --tokenize --tokenize-format=json
 ```
+
+### Class heritage direct eval and legacy targets (ZNTC1512)
+
+Class heritage expressions run in strict mode even inside a sloppy CommonJS
+file. When a target requires class lowering (for example `es5`), a potential
+direct `eval(...)` in that expression cannot be moved into its sloppy enclosing
+evaluation context without changing JavaScript behavior. ZNTC reports
+`ZNTC1512` before editing or publishing output. `transpile`, `buildSync`, and
+`build` reject; existing output files remain unchanged.
+
+This is an explicit target limitation, not successful execution of the source.
+Use a target retaining native classes or an already strict enclosing context.
+Indirect `(0, eval)(...)`, optional `eval?.(...)`, and calls inside nested
+functions or methods are outside this particular diagnostic. The check follows
+syntax roles rather than selecting bindings by their names: a local binding
+named `eval` may itself hold the intrinsic eval function. Native-class targets
+keep their original runtime behavior.

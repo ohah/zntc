@@ -22521,6 +22521,11 @@ fn runCandidate(self: anytype, module: *Module, source_classes: @import("../../s
     // wrapper node has an external-reference marker.
     if (has_complex_define_replacement and transformer.has_opaque_define_replacement)
         can_keep_semantic_graph = false;
+    if (transformer.unsupported_class_heritage_eval_span) |span| {
+        self.addDiag(.class_heritage_eval, .@"error", module.path, span, .parse, TransformOptions.class_heritage_eval_msg, null);
+        candidate_diagnosed.* = true;
+        return;
+    }
     if (transformer.unsupported_loop_dynamic_scope_span) |span| {
         self.addDiag(.loop_dynamic_scope, .@"error", module.path, span, .parse, TransformOptions.loop_dynamic_scope_msg, null);
         candidate_diagnosed.* = true;

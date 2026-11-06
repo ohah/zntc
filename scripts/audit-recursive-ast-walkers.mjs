@@ -457,9 +457,21 @@ const ALLOWLIST = {
     class: 'iterative_safe',
     note: 'numeric_dfs_stack',
   },
-  'src/semantic/reference_walk.zig::collectIdentifierReferences': {
+  'src/semantic/reference_walk.zig::collectReferences': {
     class: 'iterative_safe',
-    note: 'explicit edge stack and one-level child collector',
+    note: 'explicit Edge stack and states map; heritage modes stop at nested execution boundaries',
+  },
+  'src/transformer/es2015_class.zig::recordExpressionHeritage': {
+    class: 'iterative_safe',
+    note: 'owners NodeIndex worklist and seen map stop at function/class owners; separate heritage-reference collector preserves call arguments',
+  },
+  'src/transformer/heritage_dynamic_scope.zig::potentialEval': {
+    class: 'iterative_safe',
+    note: 'NodeIndex stack scans parser expression edges and skips nested function/class execution',
+  },
+  'src/transformer/heritage_dynamic_scope.zig::preflight': {
+    class: 'iterative_safe',
+    note: 'Work stack carries final/source strictness separately; class heritage and body enqueue distinct contexts without native recursion',
   },
   'src/transformer/es2015_class/members.zig::moveInstanceInitScopes': {
     class: 'iterative_safe',
