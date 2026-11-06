@@ -39563,6 +39563,165 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('NAPI onAstFunction copies regexp literals with exact source spans', () => {
+    const trailingStatements = [
+      'console.log(/a/.test("a"));',
+      'console.log(/ab/i.test("AB"));',
+      'console.log(/a+/g.test("aaa"));',
+      'console.log(/^a/m.test("x\\na"));',
+      'console.log(/b$/m.test("b\\nx"));',
+      'console.log(/a.b/s.test("a\\nb"));',
+      'console.log(/(?<year>\\d{4})/.exec("year=2026")?.groups.year);',
+      'console.log(/[A-Z]/.test("1Z"));',
+      'console.log(/foo/y.test("foo"));',
+      'console.log(/\\u{1F600}/u.test("😀"));',
+    ];
+    const regexLiterals = [
+      '/a/',
+      '/ab/i',
+      '/a+/g',
+      '/^a/m',
+      '/b$/m',
+      '/a.b/s',
+      '/(?<year>\\d{4})/',
+      '/[A-Z]/',
+      '/foo/y',
+      '/\\u{1F600}/u',
+    ];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-regexp-literal-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(entry, 'function outer() { function marker() {} marker(); } outer();');
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const baseOptions = JSON.stringify({
+      entryPoints: [entry],
+      platform: 'node',
+      format: 'cjs',
+      target: 'esnext',
+      minifySyntax: false,
+      minifyIdentifiers: true,
+      write: false,
+    });
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build({ ...${baseOptions}, plugins: [{ name: 'regexp-literal-copy', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: ${JSON.stringify(trailingStatements)} } : null); } }] });`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+
+    try {
+      const buildResult = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      expect(buildResult.status, buildResult.stderr).toBe(0);
+      const stderr = buildResult.stderr ?? '';
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
+        );
+      expect(mode, stderr).toContain('semantic_graph=retained');
+      const identity = stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry));
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity ?? ''), identity).toEqual([]);
+      expect(identity).toContain(`external=${trailingStatements.length}`);
+
+      const outputs = JSON.parse(buildResult.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      const emitted = outputs[0];
+      const calls = [...emitted.matchAll(/\bconsole\.log\(([^;]*)\);/g)];
+      expect(calls).toHaveLength(trailingStatements.length);
+      for (const literal of regexLiterals) expect(emitted).toContain(literal);
+      writeFileSync(output, emitted);
+
+      const execute = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(execute.status, execute.stderr).toBe(0);
+      expect(execute.stdout).toBe('true\ntrue\ntrue\ntrue\ntrue\ntrue\n2026\ntrue\ntrue\ntrue\n');
+
+      for (const [index, literal] of regexLiterals.entries()) {
+        const mutated = emitted.replace(literal, '/(?!)/');
+        expect(mutated, `regexp literal mutation ${index}`).not.toBe(emitted);
+        writeFileSync(output, mutated);
+        const syntax = spawnSync('node', ['--check', output], { encoding: 'utf8' });
+        expect(syntax.status, `regexp mutation ${index}: ${syntax.stderr}`).toBe(0);
+        const altered = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(altered.status, `regexp mutation ${index}: ${altered.stderr}`).toBe(0);
+        expect(altered.stdout, `regexp mutation ${index}`).not.toBe(execute.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('NAPI onAstFunction applies target regex lowering to copied literals', () => {
+    const trailingStatements = [
+      'console.log(/a.b/s.test("a\\nb"));',
+      'console.log(/(?<year>\\d{4})/.exec("year=2026").groups.year);',
+    ];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-regexp-es5-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(entry, 'function outer() { function marker() {} marker(); } outer();');
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const baseOptions = JSON.stringify({
+      entryPoints: [entry],
+      platform: 'node',
+      format: 'cjs',
+      target: 'es5',
+      minifySyntax: false,
+      minifyIdentifiers: false,
+      write: false,
+    });
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build({ ...${baseOptions}, plugins: [{ name: 'regexp-lowering-copy', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: ${JSON.stringify(trailingStatements)} } : null); } }] });`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+
+    try {
+      const buildResult = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      expect(buildResult.status, buildResult.stderr).toBe(0);
+      const stderr = buildResult.stderr ?? '';
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
+        );
+      expect(mode, stderr).toContain('semantic_graph=retained');
+      const identity = stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry));
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity ?? ''), identity).toEqual([]);
+      expect(identity).toContain(`external=${trailingStatements.length}`);
+
+      const outputs = JSON.parse(buildResult.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      const emitted = outputs[0];
+      expect(emitted).toContain('/a[\\s\\S]b/');
+      expect(emitted).not.toContain('/a.b/s');
+      expect(emitted).not.toContain('(?<year>');
+      writeFileSync(output, emitted);
+
+      const execute = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(execute.status, execute.stderr).toBe(0);
+      expect(execute.stdout).toBe('true\n2026\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('NAPI onAstFunction copies assignment targets with exact captured identities', () => {
     const assignments = [
       'shared = shared + 1; console.log(shared);',
@@ -40123,7 +40282,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
-  test('NAPI onAstFunction rejects unsupported arrows and destructuring targets', () => {
+  test('NAPI onAstFunction rejects unsupported arrows, destructuring targets, and malformed syntax', () => {
     const rejectedCode = [
       ['console.log((value) => value);'],
       ['console.log(() => { const local = 1; return local; });'],
@@ -40134,6 +40293,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       ['console.log(() => shared++);'],
       ['[shared] = [1];'],
       ['({ value: shared } = { value: 1 });'],
+      ['console.log(/unterminated);'],
       ['console.log("partial_plugin_statement");', 'console.log((value) => value);'],
     ];
     const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-arrow-reject-'));

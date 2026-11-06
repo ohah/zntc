@@ -170,7 +170,7 @@ trailing_nodes가 있으면 함수 뒤에 삽입
 별도 `function` ScopeId를 만들고, 내부의 외부 참조를 그 scope에서 부모까지 정확히 해석한다. 중첩 화살표도
 지원하지만 lexical `this`/`arguments`, direct `eval`, async, block body, 파라미터, 함수 내부 선언과 쓰기 참조는
 지원하지 않는다. 일반 trailing statement에서는 단순 식별자 대입·증감 target을 해당 binding의 exact `SymbolId`에
-연결한다.
+연결한다. 정규식 리터럴은 parser 원문 span을 보존해 복사한 뒤 일반 target별 정규식 변환을 적용한다.
 
 구조분해, TypeScript 타입 주석, 중첩 블록 선언 등 복사 경로가 표현하지 못하는 코드가 있으면 해당 코드를
 조용히 버리지 않고 `plugin_error` 진단과 함께 빌드를 실패시킨다. 플러그인 코드는 조용히 누락된 상태로
