@@ -6230,7 +6230,7 @@ test "PM barrel import target actual source canonical selected export tuple" {
     defer std.testing.allocator.free(entries);
     try std.testing.expectEqual(@as(usize, 1), entries.len);
     std.debug.print("PM barrel record kind={s} symbolTag={s} symbolModule={d} localCheckedSID={?d} localAnchor={?d} recordIndex={?d} providerTag={s} providerModule={d}\n", .{ @tagName(barrel.export_bindings[0].kind), @tagName(std.meta.activeTag(barrel.export_bindings[0].symbol)), barrel.export_bindings[0].symbol.moduleIndex().toU32(), barrel.exportBindingSemanticIndex(barrel.export_bindings[0]), if (barrel.export_bindings[0].local_symbol_node) |n| @as(?u32, @backingInt(n)) else null, barrel.export_bindings[0].import_record_index, @tagName(std.meta.activeTag(eb.symbol)), eb.symbol.moduleIndex().toU32() });
-    const output = try @import("entry_exports.zig").emitCjsEntryExports(std.testing.allocator, entries, .auto, null, "__defProp");
+    const output = try @import("entry_exports.zig").emitCjsEntryExports(std.testing.allocator, entries, .auto, null, "__defProp", false);
     defer std.testing.allocator.free(output);
     std.debug.print("PM barrel tuple sourceModule={d} sourceSID={d} sourceAnchor={?d} physical={d}/{s} canonical={d}/{s} providerSID={d} barrelSourceImports={d} barrelExportSID={?d} selected={s} role={s} finalLocal={s} output={s}\n", .{ em.index.toU32(), sid, if (source.local_symbol_node) |n| @as(?u32, @backingInt(n)) else null, physical.toU32(), source.imported_name, canonical.module_index.toU32(), canonical.export_name, provider_sid, barrel.import_bindings.len, barrel.export_bindings[0].symbol.semanticIndex(), selected, @tagName(target.role), entries[0].local, output });
     try std.testing.expectEqualStrings(selected, entries[0].local);
