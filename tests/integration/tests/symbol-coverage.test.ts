@@ -134,8 +134,11 @@ const EXACT_MATRIX_REPORT_PREFIX_BY_KIND = {
   strict: 'zntc: synthetic-coverage ',
   post: 'zntc: symbol-identity-post-minify ',
 } as const;
+// 8f15b12의 전역 identity 가드로 undefined 4개 읽기를 보존한다.
+// signed-numeric-spread 원/reference의 24셀만 post refs/external +4이며,
+// census96-independent-diagnosis에서 원문과 양 출력 48회의 Node 값이 일치했다.
 const EXACT_MATRIX_OBSERVATION_FINGERPRINT =
-  'c7c9179a2667629f0a901bc97caca32353db81a4d6877107820a586ccbc8abda';
+  'a9f72bb734f9ccc1168153a528c7ac723ebf0046c8acfb3c16a6b87e4d0c626b';
 // Qualified 325-fixture observations retain all invariant and field checks.
 // The original 321 inputs are unchanged; four suspension/class-key fixtures
 // add 72 cells. ES5 switch discriminants now have exact frozen producers,
@@ -154,8 +157,8 @@ const EXACT_MATRIX_OBSERVATION_TOTALS = {
   'strict.external': 2109,
   'strict.marked_synthetic': 52776,
   'post.bindings': 51422,
-  'post.references': 117642,
-  'post.external': 15579,
+  'post.references': 117738,
+  'post.external': 15675,
   'post.helpers': 8379,
   'post.preserved_transform_refs': 204,
 } as const;
