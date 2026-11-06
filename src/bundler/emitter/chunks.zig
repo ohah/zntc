@@ -107,7 +107,7 @@ fn readinessHelperExpression(
     defer importer.deinit(allocator);
     var helper: std.ArrayListUnmanaged(u8) = .empty;
     defer helper.deinit(allocator);
-    try chunkPlaceholderStem(chunk, &importer, allocator, options);
+    try appendChunkOutputPath(chunk, &importer, allocator, options);
     try chunkPlaceholderStem(helper_chunk, &helper, allocator, options);
     const registry = options.format.isWrappedFormat() and !options.preserve_modules;
     const path = if (registry) blk: {
@@ -116,10 +116,11 @@ fn readinessHelperExpression(
         break :blk try allocator.dupe(u8, reg_ids[raw]);
     } else if (helper_chunk.explicit_file_name) |file|
         try computeRelativePath(allocator, std.fs.path.dirname(importer.items) orelse "", file, "")
-    else if (options.preserve_modules and helper_chunk.rel_dir != null)
-        try computeRelativeImportPath(allocator, chunk.rel_dir orelse "./", helper_chunk.rel_dir.?, ext, options.preserve_modules_root)
-    else
-        try computeRelativePath(allocator, std.fs.path.dirname(importer.items) orelse "", helper.items, ext);
+    else if (options.preserve_modules and helper_chunk.rel_dir != null) blk: {
+        const target = try computePreserveModulesPath(allocator, helper_chunk.rel_dir.?, ext, options.preserve_modules_root);
+        defer allocator.free(target);
+        break :blk try computeRelativePath(allocator, std.fs.path.dirname(importer.items) orelse "", target, "");
+    } else try computeRelativePath(allocator, std.fs.path.dirname(importer.items) orelse "", helper.items, ext);
     defer allocator.free(path);
     const quoted_path = try quoteChunkPath(allocator, path);
     defer allocator.free(quoted_path);
@@ -598,7 +599,7 @@ fn emitPmAsyncWrapperImport(
 ) !void {
     const names = try wrapperNamesFor(allocator, provider, null);
     defer names.deinit(allocator);
-    const quoted_path = try std.json.Stringify.valueAlloc(allocator, path, .{});
+    const quoted_path = try quoteChunkPath(allocator, path);
     defer allocator.free(quoted_path);
     const state = try std.fmt.allocPrint(allocator, "{s}.state(require({s}))", .{ helper, quoted_path });
     defer allocator.free(state);
@@ -822,6 +823,345 @@ pub fn emitChunksWithIo(
     return emitChunksImpl(io, allocator, graph, chunk_graph, options, linker);
 }
 
+fn putCompilerLiteral(map: *std.AutoHashMapUnmanaged(u32, []const u8), allocator: std.mem.Allocator, raw: u32, owned: []const u8) !void {
+    errdefer allocator.free(owned);
+    const slot = try map.getOrPut(allocator, raw);
+    if (slot.found_existing) return error.InvalidPmNamespaceCallsite;
+    slot.value_ptr.* = owned;
+}
+
+fn sortedChunkIndices(allocator: std.mem.Allocator, chunk_graph: *const ChunkGraph) ![]usize {
+    const sorted_indices = try allocator.alloc(usize, chunk_graph.chunkCount());
+    for (sorted_indices, 0..) |*index, i| index.* = i;
+    const SortCtx = struct {
+        chunks: []const Chunk,
+        fn lessThan(ctx: @This(), a: usize, b: usize) bool {
+            const ca = ctx.chunks[a];
+            const cb = ctx.chunks[b];
+            // 엔트리 청크 우선
+            const a_is_entry: u1 = if (ca.isEntryPoint()) 0 else 1;
+            const b_is_entry: u1 = if (cb.isEntryPoint()) 0 else 1;
+            if (a_is_entry != b_is_entry) return a_is_entry < b_is_entry;
+            // 같은 종류 내에서는 exec_order 순
+            return ca.exec_order < cb.exec_order;
+        }
+    };
+    std.mem.sort(usize, sorted_indices, SortCtx{ .chunks = chunk_graph.chunks.items }, SortCtx.lessThan);
+    return sorted_indices;
+}
+
+// A facade is an output artifact, not a second source module or chunk.
+// The shallow chunk view changes only physical filenames; source assignment,
+// cross-chunk provider receipts and ModuleIndex/ChunkIndex stay unchanged.
+const FacadeGuard = struct {
+    target: SymbolID,
+    owner: @import("../module.zig").SemanticOwnerToken,
+    chunk_index: ChunkIndex,
+    public_key: []const u8,
+};
+
+const RawFacadeKeys = struct {
+    public_keys: []const []const u8 = &.{},
+    external_reexports: []const []const u8 = &.{},
+
+    fn deinit(self: RawFacadeKeys, allocator: std.mem.Allocator) void {
+        for (self.public_keys) |key| allocator.free(key);
+        allocator.free(self.public_keys);
+        for (self.external_reexports) |specifier| allocator.free(specifier);
+        allocator.free(self.external_reexports);
+    }
+};
+
+/// Public-key closure follows only constructor-captured parser reexport edges.
+/// These strings are Node-CJS lexical metadata, never source SymbolId selectors.
+fn collectRawFacadeKeys(allocator: std.mem.Allocator, graph: *const ModuleGraph, source: ModuleIndex) !RawFacadeKeys {
+    var pending: std.ArrayListUnmanaged(ModuleIndex) = .empty;
+    defer pending.deinit(allocator);
+    var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer visited.deinit(allocator);
+    var keys: std.StringHashMapUnmanaged(void) = .empty;
+    defer keys.deinit(allocator);
+    var owned: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (owned.items) |key| allocator.free(key);
+        owned.deinit(allocator);
+    }
+    var externals: std.StringHashMapUnmanaged(void) = .empty;
+    defer externals.deinit(allocator);
+    var external_names: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (external_names.items) |specifier| allocator.free(specifier);
+        external_names.deinit(allocator);
+    }
+    try pending.append(allocator, source);
+    while (pending.pop()) |index| {
+        const seen = try visited.getOrPut(allocator, index.toU32());
+        if (seen.found_existing) continue;
+        const owner = graph.getModule(index) orelse return error.InvalidPublicEntryFacadeOwner;
+        const registry = owner.cjs_public_facade_keys orelse {
+            if (owner.exports_kind == .commonjs) return error.InvalidPublicEntryFacadeOwner;
+            continue;
+        };
+        try registry.validate(owner);
+        for (registry.direct_keys) |key| {
+            if (std.mem.eql(u8, key.value, "default")) continue;
+            const entry = try keys.getOrPut(allocator, key.value);
+            if (entry.found_existing) continue;
+            const copy = try allocator.dupe(u8, key.value);
+            errdefer allocator.free(copy);
+            try owned.append(allocator, copy);
+        }
+        for (registry.reexports) |edge| {
+            var selected: ?*const types.ImportRecord = null;
+            for (owner.import_records) |*record| {
+                if (record.kind != .require or record.source_node != edge.source_node) continue;
+                if (selected != null) return error.InvalidPublicEntryFacadeOwner;
+                selected = record;
+            }
+            const record = selected orelse return error.InvalidPublicEntryFacadeOwner;
+            if (record.is_external) {
+                const name = record.externalName();
+                const entry = try externals.getOrPut(allocator, name);
+                if (!entry.found_existing) {
+                    const copy = try allocator.dupe(u8, name);
+                    errdefer allocator.free(copy);
+                    try external_names.append(allocator, copy);
+                }
+                continue;
+            }
+            // A missing target does not invent a module or expose transport keys.
+            if (record.resolved.isNone()) return error.InvalidPublicEntryFacadeOwner;
+            try pending.append(allocator, record.resolved);
+        }
+    }
+    const public_keys = try owned.toOwnedSlice(allocator);
+    errdefer {
+        for (public_keys) |key| allocator.free(key);
+        allocator.free(public_keys);
+    }
+    return .{ .public_keys = public_keys, .external_reexports = try external_names.toOwnedSlice(allocator) };
+}
+
+const PublicEntryFacade = struct {
+    module_index: ModuleIndex,
+    chunk_index: ChunkIndex,
+    init_identity: SymbolID,
+    owner_token: @import("../module.zig").SemanticOwnerToken,
+    public_path: []const u8,
+    implementation_path: []const u8,
+    init_key: []const u8,
+    projection: union(enum) {
+        esm_default: struct {
+            namespace_identity: SymbolID,
+            namespace_key: []const u8,
+            awaited: bool,
+            guard: ?FacadeGuard = null,
+        },
+        // The callable is the actual source CommonJS wrapper, not an ESM
+        // namespace synthesized for a primitive or frozen public value.
+        // Decoded public data, never selectors of source binding identities.
+        cjs_result: RawFacadeKeys,
+    },
+
+    fn isAwaited(self: PublicEntryFacade) bool {
+        return switch (self.projection) {
+            .esm_default => |esm| esm.awaited,
+            .cjs_result => false,
+        };
+    }
+
+    fn entryGuard(self: PublicEntryFacade) ?FacadeGuard {
+        return switch (self.projection) {
+            .esm_default => |esm| esm.guard,
+            .cjs_result => null,
+        };
+    }
+
+    fn checkedOwner(self: PublicEntryFacade, graph: *const ModuleGraph, chunk_graph: *const ChunkGraph) !*const Module {
+        const owner = graph.getModule(self.module_index) orelse return error.InvalidPublicEntryFacadeOwner;
+        const semantic = owner.semantic orelse return error.InvalidPublicEntryFacadeOwner;
+        if (self.owner_token == .unassigned or semantic.owner_token != self.owner_token or owner.index != self.module_index or
+            @backingInt(owner.index) >= chunk_graph.module_to_chunk.len or !owner.is_entry_point or
+            chunk_graph.getModuleChunk(owner.index) != self.chunk_index)
+            return error.InvalidPublicEntryFacadeOwner;
+        const index = @backingInt(self.chunk_index);
+        if (index >= chunk_graph.chunks.items.len) return error.InvalidPublicEntryFacadeOwner;
+        const chunk = &chunk_graph.chunks.items[index];
+        if (chunk.index != self.chunk_index or chunk.modules.items.len != 1 or chunk.modules.items[0] != owner.index)
+            return error.InvalidPublicEntryFacadeOwner;
+        switch (self.projection) {
+            .esm_default => |esm| {
+                if (owner.wrap_kind != .esm or owner.in_async_cone != esm.awaited or
+                    !((try owner.esmInitSymbol()).eql(self.init_identity)) or
+                    !((try owner.esmNamespaceSymbol()).eql(esm.namespace_identity)) or
+                    !std.mem.eql(u8, try owner.esmWrapperName(esm.namespace_identity, null), esm.namespace_key) or
+                    !std.mem.eql(u8, try owner.esmWrapperName(self.init_identity, null), self.init_key))
+                    return error.InvalidPublicEntryFacadeOwner;
+            },
+            .cjs_result => |raw| {
+                const id = owner.require_symbol orelse return error.InvalidPublicEntryFacadeOwner;
+                const index_in_owner = @backingInt(id);
+                if (owner.wrap_kind != .cjs or owner.in_async_cone or
+                    !self.init_identity.eql(SymbolID.make(owner.index, index_in_owner)) or
+                    index_in_owner >= semantic.symbols.items.len or
+                    semantic.symbols.items[index_in_owner].synthetic_kind != .cjs_require or
+                    !std.mem.eql(u8, owner.getRequireName(null) orelse return error.InvalidPublicEntryFacadeOwner, self.init_key))
+                    return error.InvalidPublicEntryFacadeOwner;
+                const expected_keys = try collectRawFacadeKeys(chunk_graph.allocator, graph, owner.index);
+                defer expected_keys.deinit(chunk_graph.allocator);
+                if (raw.public_keys.len != expected_keys.public_keys.len or raw.external_reexports.len != expected_keys.external_reexports.len) return error.InvalidPublicEntryFacadeOwner;
+                for (raw.external_reexports, expected_keys.external_reexports) |actual, expected| {
+                    if (!std.mem.eql(u8, actual, expected)) return error.InvalidPublicEntryFacadeOwner;
+                }
+                for (raw.public_keys, expected_keys.public_keys) |actual, expected| {
+                    if (!std.mem.eql(u8, actual, expected)) return error.InvalidPublicEntryFacadeOwner;
+                }
+            },
+        }
+        if (self.entryGuard()) |guard| {
+            if (self.isAwaited() or !(try @import("../runtime_entry_guard_ast.zig").exactBinding(graph)).eql(guard.target)) return error.InvalidPublicEntryFacadeOwner;
+            const provider = graph.getModule(guard.target.module) orelse return error.InvalidPublicEntryFacadeOwner;
+            const guard_index = @backingInt(guard.chunk_index);
+            if (guard_index >= chunk_graph.chunks.items.len) return error.InvalidPublicEntryFacadeOwner;
+            const guard_chunk = &chunk_graph.chunks.items[guard_index];
+            if (guard_chunk.index != guard.chunk_index or guard_chunk.modules.items.len != 1 or guard_chunk.modules.items[0] != provider.index)
+                return error.InvalidPublicEntryFacadeOwner;
+            if (provider.semantic == null or provider.semantic.?.owner_token != guard.owner or
+                chunk_graph.getModuleChunk(provider.index) != guard.chunk_index or provider.export_bindings.len != 1)
+                return error.InvalidPublicEntryFacadeOwner;
+            const key = try @import("../public_export_key.zig").fromSyntax(chunk_graph.allocator, provider.export_bindings[0].exported_name);
+            defer key.deinit(chunk_graph.allocator);
+            if (!std.mem.eql(u8, key.text, guard.public_key)) return error.InvalidPublicEntryFacadeOwner;
+        }
+        return owner;
+    }
+
+    fn deinit(self: PublicEntryFacade, allocator: std.mem.Allocator) void {
+        allocator.free(self.public_path);
+        allocator.free(self.implementation_path);
+        switch (self.projection) {
+            .esm_default => |esm| allocator.free(esm.namespace_key),
+            .cjs_result => |raw| raw.deinit(allocator),
+        }
+        allocator.free(self.init_key);
+        if (self.entryGuard()) |guard| allocator.free(guard.public_key);
+    }
+};
+
+fn makePublicEntryFacadeOutput(allocator: std.mem.Allocator, facade: PublicEntryFacade, source_owner_path: []const u8, implementation_path: []const u8, guard_implementation_path: ?[]const u8) !OutputFile {
+    const relative = try computeRelativePath(allocator, std.fs.path.dirname(facade.public_path) orelse "", implementation_path, "");
+    defer allocator.free(relative);
+    const quoted_path = try std.json.Stringify.valueAlloc(allocator, relative, .{});
+    defer allocator.free(quoted_path);
+    const quoted_init = try std.json.Stringify.valueAlloc(allocator, facade.init_key, .{});
+    defer allocator.free(quoted_init);
+    const raw_code = switch (facade.projection) {
+        .cjs_result => |raw| blk: {
+            var body: std.ArrayListUnmanaged(u8) = .empty;
+            errdefer body.deinit(allocator);
+            try body.print(allocator, "module.exports=(0,require({s})[{s}])();\n", .{ quoted_path, quoted_init });
+            for (raw.public_keys) |key| {
+                const quoted_key = try std.json.Stringify.valueAlloc(allocator, key, .{});
+                defer allocator.free(quoted_key);
+                // Node's lexical CJS discovery sees source public properties;
+                // the annotation must never execute or mutate frozen values.
+                try body.print(allocator, "0&&(module.exports[{s}]=0);\n", .{quoted_key});
+            }
+            for (raw.external_reexports) |specifier| {
+                const quoted = try std.json.Stringify.valueAlloc(allocator, specifier, .{});
+                defer allocator.free(quoted);
+                try body.print(allocator, "0&&(module.exports=require({s}));\n", .{quoted});
+            }
+            break :blk try body.toOwnedSlice(allocator);
+        },
+        .esm_default => |esm| blk: {
+            const quoted_namespace = try std.json.Stringify.valueAlloc(allocator, esm.namespace_key, .{});
+            defer allocator.free(quoted_namespace);
+            var bootstrap: std.ArrayListUnmanaged(u8) = .empty;
+            defer bootstrap.deinit(allocator);
+            if (!esm.awaited) {
+                if (esm.guard) |guard| {
+                    const guard_path = guard_implementation_path orelse return error.InvalidPublicEntryFacadeOwner;
+                    const guard_relative = try computeRelativePath(allocator, std.fs.path.dirname(facade.public_path) orelse "", guard_path, "");
+                    defer allocator.free(guard_relative);
+                    const quoted_guard_path = try std.json.Stringify.valueAlloc(allocator, guard_relative, .{});
+                    defer allocator.free(quoted_guard_path);
+                    const quoted_guard_key = try std.json.Stringify.valueAlloc(allocator, guard.public_key, .{});
+                    defer allocator.free(quoted_guard_key);
+                    try bootstrap.print(allocator, "require({s})[{s}](implementation[{s}]);", .{ quoted_guard_path, quoted_guard_key, quoted_init });
+                } else try bootstrap.print(allocator, "(0,implementation[{s}])();", .{quoted_init});
+            }
+            break :blk if (esm.awaited)
+                try std.fmt.allocPrint(allocator, "module.exports=require({s}).then(function(namespace){{return namespace[\"default\"];}});\n", .{quoted_path})
+            else
+                try std.fmt.allocPrint(allocator, "module.exports=(function(implementation){{{s}return implementation[{s}][\"default\"];}})(require({s}));\n", .{ bootstrap.items, quoted_namespace, quoted_path });
+        },
+    };
+    defer allocator.free(raw_code);
+    const program = try @import("../compiler_output_program.zig").Program.create(allocator, raw_code);
+    errdefer program.destroy();
+    const code = try program.emit(allocator);
+    errdefer allocator.free(code);
+    const path = try allocator.dupe(u8, facade.public_path);
+    errdefer allocator.free(path);
+    const source_path = try allocator.dupe(u8, source_owner_path);
+    errdefer allocator.free(source_path);
+    const imports = try allocator.alloc([]const u8, if (facade.entryGuard() != null) 2 else 1);
+    errdefer allocator.free(imports);
+    imports[0] = try allocator.dupe(u8, implementation_path);
+    errdefer allocator.free(imports[0]);
+    if (facade.entryGuard() != null) imports[1] = try allocator.dupe(u8, guard_implementation_path orelse return error.InvalidPublicEntryFacadeOwner);
+    errdefer if (facade.entryGuard() != null) allocator.free(imports[1]);
+    const raw_keys: []const []const u8 = switch (facade.projection) {
+        .cjs_result => |raw| raw.public_keys,
+        .esm_default => &.{},
+    };
+    const exports = try allocator.alloc([]const u8, raw_keys.len + 1);
+    var filled_exports: usize = 0;
+    errdefer {
+        for (exports[0..filled_exports]) |key| allocator.free(key);
+        allocator.free(exports);
+    }
+    exports[0] = try allocator.dupe(u8, "default");
+    filled_exports = 1;
+    for (raw_keys) |key| {
+        exports[filled_exports] = try allocator.dupe(u8, key);
+        filled_exports += 1;
+    }
+    return .{
+        .path = path,
+        .contents = code,
+        .compiler_output_program = program,
+        .imports = imports,
+        .exports = exports,
+        .public_entry_facade = .{ .module_index = facade.module_index, .implementation_chunk = facade.chunk_index, .source_path = source_path },
+    };
+}
+
+fn hasSinglePublicDefault(linker: *Linker, owner: *const Module) !bool {
+    var owned: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (owned.items) |item| linker.allocator.free(item);
+        owned.deinit(linker.allocator);
+    }
+    const entries = (try linker.buildFinalExports(true, owner.index.toU32(), owner.export_bindings, &owned)) orelse return false;
+    defer linker.allocator.free(entries);
+    return entries.len == 1 and !try @import("entry_exports.zig").needsCjsEntryDescriptors(linker.allocator, entries, .auto);
+}
+
+/// Actual post-shake public-facade bootstrap demand owns the existing builtin
+/// guard export, even though PM has no source bootstrap-call artifact module.
+pub fn needsPreservedDefaultFacadeGuard(graph: *const ModuleGraph, linker: *Linker, options: anytype, shaker: ?*const TreeShaker) !bool {
+    if (!options.preserve_modules or options.format != .cjs or options.output_exports != .auto or !options.entry_error_guard) return false;
+    var modules = graph.modulesIterator();
+    while (modules.next()) |owner| {
+        if (shaker) |s| if (!s.isIncluded(owner.index.toU32())) continue;
+        if (!owner.is_entry_point or owner.wrap_kind != .esm or owner.in_async_cone or !owner.shouldGuard(true)) continue;
+        if (try hasSinglePublicDefault(linker, owner)) return true;
+    }
+    return false;
+}
+
 fn emitChunksImpl(
     io: ?std.Io,
     allocator: std.mem.Allocator,
@@ -829,6 +1169,167 @@ fn emitChunksImpl(
     chunk_graph: *const ChunkGraph,
     options: *const EmitOptions,
     linker: ?*Linker,
+) ![]OutputFile {
+    var facades: std.ArrayListUnmanaged(PublicEntryFacade) = .empty;
+    defer {
+        for (facades.items) |facade| facade.deinit(allocator);
+        facades.deinit(allocator);
+    }
+    if (options.preserve_modules and options.format == .cjs) {
+        const l = linker orelse return error.MissingPublicEntryFacadeLinker;
+        for (chunk_graph.chunks.items) |*chunk| {
+            const source = preserveModulesWrapperChunk(chunk, graph, options) orelse continue;
+            const owner = graph.getModule(source) orelse return error.InvalidPublicEntryFacadeOwner;
+            if (!owner.is_entry_point or !owner.wrap_kind.isWrapped()) continue;
+            const raw_cjs = owner.wrap_kind == .cjs;
+            if (!raw_cjs and options.output_exports != .auto) continue;
+            if (chunk.modules.items.len != 1 or chunk.modules.items[0] != source or
+                chunk_graph.getModuleChunk(source) != chunk.index)
+                return error.InvalidPublicEntryFacadeOwner;
+            if (!raw_cjs and !try hasSinglePublicDefault(l, owner)) continue;
+            const semantic = owner.semantic orelse return error.InvalidPublicEntryFacadeOwner;
+            if (semantic.owner_token == .unassigned) return error.InvalidPublicEntryFacadeOwner;
+            const init_identity = if (raw_cjs)
+                SymbolID.make(owner.index, @backingInt(owner.require_symbol orelse return error.InvalidPublicEntryFacadeOwner))
+            else
+                try owner.esmInitSymbol();
+            const namespace_identity = if (raw_cjs) null else try owner.esmNamespaceSymbol();
+            const namespace_key = if (namespace_identity) |id| try allocator.dupe(u8, try owner.esmWrapperName(id, null)) else null;
+            errdefer if (namespace_key) |key| allocator.free(key);
+            const init_key = try allocator.dupe(u8, if (raw_cjs)
+                owner.getRequireName(null) orelse return error.InvalidPublicEntryFacadeOwner
+            else
+                try owner.esmWrapperName(init_identity, null));
+            errdefer allocator.free(init_key);
+            var guard: ?FacadeGuard = null;
+            if (!raw_cjs and !owner.in_async_cone and owner.shouldGuard(options.entry_error_guard)) {
+                const target = try @import("../runtime_entry_guard_ast.zig").exactBinding(graph);
+                const provider = graph.getModule(target.module) orelse return error.InvalidPublicEntryFacadeOwner;
+                if (provider.semantic == null or provider.export_bindings.len != 1) return error.InvalidPublicEntryFacadeOwner;
+                const provider_chunk = chunk_graph.getModuleChunk(provider.index);
+                if (provider_chunk.isNone()) return error.InvalidPublicEntryFacadeOwner;
+                const key = try @import("../public_export_key.zig").fromSyntax(allocator, provider.export_bindings[0].exported_name);
+                defer key.deinit(allocator);
+                guard = .{ .target = target, .owner = provider.semantic.?.owner_token, .chunk_index = provider_chunk, .public_key = try allocator.dupe(u8, key.text) };
+            }
+            errdefer if (guard) |proof| allocator.free(proof.public_key);
+            const public_path = if (chunk.explicit_file_name) |path|
+                try allocator.dupe(u8, path)
+            else
+                try computePreserveModulesPath(allocator, chunk.rel_dir orelse return error.InvalidPublicEntryFacadeOwner, options.out_extension_js orelse ".js", options.preserve_modules_root);
+            errdefer allocator.free(public_path);
+            // Use the existing generated-chunk naming/hash allocator without
+            // creating a second entry role or changing source chunk ownership.
+            var naming_view = chunk.*;
+            naming_view.explicit_file_name = null;
+            naming_view.name_dir = null;
+            var naming_options = options.*;
+            naming_options.entry_names = options.chunk_names;
+            var stem: std.ArrayListUnmanaged(u8) = .empty;
+            defer stem.deinit(allocator);
+            try chunkPlaceholderStem(&naming_view, &stem, allocator, &naming_options);
+            const implementation_path = try std.fmt.allocPrint(allocator, "{s}{s}", .{ stem.items, options.out_extension_js orelse ".js" });
+            errdefer allocator.free(implementation_path);
+            if (std.mem.eql(u8, implementation_path, public_path)) return error.PublicEntryFacadePathCollision;
+            const raw_keys = if (raw_cjs) try collectRawFacadeKeys(allocator, graph, source) else null;
+            errdefer if (raw_keys) |keys| keys.deinit(allocator);
+            try facades.append(allocator, .{
+                .module_index = source,
+                .chunk_index = chunk.index,
+                .init_identity = init_identity,
+                .owner_token = semantic.owner_token,
+                .public_path = public_path,
+                .implementation_path = implementation_path,
+                .init_key = init_key,
+                .projection = if (raw_cjs) .{ .cjs_result = raw_keys.? } else .{ .esm_default = .{
+                    .namespace_identity = namespace_identity.?,
+                    .namespace_key = namespace_key.?,
+                    .awaited = owner.in_async_cone,
+                    .guard = guard,
+                } },
+            });
+        }
+    }
+    if (facades.items.len == 0)
+        return emitChunksWithoutFacades(io, allocator, graph, chunk_graph, options, linker, &.{});
+
+    const chunks = try allocator.dupe(Chunk, chunk_graph.chunks.items);
+    defer allocator.free(chunks);
+    var view = chunk_graph.*;
+    view.chunks = .empty;
+    view.chunks.items = chunks;
+    view.chunks.capacity = chunks.len;
+    for (facades.items) |facade| {
+        const index = @backingInt(facade.chunk_index);
+        if (index >= chunks.len or chunks[index].index != facade.chunk_index) return error.InvalidPublicEntryFacadeOwner;
+        chunks[index].explicit_file_name = facade.implementation_path;
+    }
+    const body_outputs = try emitChunksWithoutFacades(io, allocator, graph, &view, options, linker, facades.items);
+    var outputs: std.ArrayList(OutputFile) = .empty;
+    errdefer {
+        for (outputs.items) |output| output.deinit(allocator);
+        outputs.deinit(allocator);
+    }
+    outputs.appendSlice(allocator, body_outputs) catch |err| {
+        for (body_outputs) |output| output.deinit(allocator);
+        allocator.free(body_outputs);
+        return err;
+    };
+    allocator.free(body_outputs);
+    const sorted = try sortedChunkIndices(allocator, &view);
+    defer allocator.free(sorted);
+    var physical_paths: std.StringHashMapUnmanaged(void) = .empty;
+    defer physical_paths.deinit(allocator);
+    for (outputs.items) |output| {
+        const reserved = try physical_paths.getOrPut(allocator, output.path);
+        if (reserved.found_existing) return error.PublicEntryFacadePathCollision;
+    }
+    for (facades.items) |facade| {
+        const owner = try facade.checkedOwner(graph, chunk_graph);
+        // Match the actual chunk emission order, not filenames or source names.
+        var ordinal: usize = 0;
+        var body: ?*const OutputFile = null;
+        for (sorted) |ci| {
+            if (chunkRestrictSkip(&chunks[ci], ci, options.restrict_to_chunk)) continue;
+            if (chunks[ci].index == facade.chunk_index) {
+                if (ordinal >= outputs.items.len) return error.InvalidPublicEntryFacadeOwner;
+                body = &outputs.items[ordinal];
+                break;
+            }
+            ordinal += 1;
+        }
+        const implementation = body orelse continue;
+        const reserved = try physical_paths.getOrPut(allocator, facade.public_path);
+        if (reserved.found_existing) return error.PublicEntryFacadePathCollision;
+        var guard_path: ?[]const u8 = null;
+        if (facade.entryGuard()) |guard| {
+            var guard_ordinal: usize = 0;
+            for (sorted) |ci| {
+                if (chunkRestrictSkip(&chunks[ci], ci, options.restrict_to_chunk)) continue;
+                if (chunks[ci].index == guard.chunk_index) {
+                    if (guard_ordinal >= outputs.items.len) return error.InvalidPublicEntryFacadeOwner;
+                    guard_path = outputs.items[guard_ordinal].path;
+                    break;
+                }
+                guard_ordinal += 1;
+            }
+            if (guard_path == null) return error.InvalidPublicEntryFacadeOwner;
+        }
+        const facade_output = try makePublicEntryFacadeOutput(allocator, facade, owner.path, implementation.path, guard_path);
+        errdefer facade_output.deinit(allocator);
+        try outputs.append(allocator, facade_output);
+    }
+    return outputs.toOwnedSlice(allocator);
+}
+
+fn emitChunksWithoutFacades(
+    io: ?std.Io,
+    allocator: std.mem.Allocator,
+    graph: *const ModuleGraph,
+    chunk_graph: *const ChunkGraph,
+    options: *const EmitOptions,
+    linker: ?*Linker,
+    facades: []const PublicEntryFacade,
 ) ![]OutputFile {
     const module_count = graph.moduleCount();
     // 청크 경계 해석 방식별 허용 포맷(RFC_CJS_IIFE_CODE_SPLITTING.md):
@@ -927,9 +1428,8 @@ fn emitChunksImpl(
 
     // 청크를 exec_order 순으로 정렬하여 결정론적 출력 순서 보장.
     // 엔트리 청크가 먼저, 공통 청크가 나중에 오도록 정렬한다.
-    const sorted_indices = try allocator.alloc(usize, chunk_graph.chunkCount());
+    const sorted_indices = try sortedChunkIndices(allocator, chunk_graph);
     defer allocator.free(sorted_indices);
-    for (sorted_indices, 0..) |*idx, i| idx.* = i;
 
     // IIFE splitting(P3-B PR3): 런타임 레지스트리 활성화. 안정 모듈 ID 의
     // root = preserve_modules_root ?? 모든 entry-point 청크 모듈 절대경로의
@@ -974,21 +1474,6 @@ fn emitChunksImpl(
         iife_emit_opts.iife_split_factory = true;
     }
 
-    const SortCtx = struct {
-        chunks: []const Chunk,
-        fn lessThan(ctx: @This(), a: usize, b: usize) bool {
-            const ca = ctx.chunks[a];
-            const cb = ctx.chunks[b];
-            // 엔트리 청크 우선
-            const a_is_entry: u1 = if (ca.isEntryPoint()) 0 else 1;
-            const b_is_entry: u1 = if (cb.isEntryPoint()) 0 else 1;
-            if (a_is_entry != b_is_entry) return a_is_entry < b_is_entry;
-            // 같은 종류 내에서는 exec_order 순
-            return ca.exec_order < cb.exec_order;
-        }
-    };
-    std.mem.sort(usize, sorted_indices, SortCtx{ .chunks = chunk_graph.chunks.items }, SortCtx.lessThan);
-
     for (sorted_indices) |ci| {
         const chunk = &chunk_graph.chunks.items[ci];
         // PR-3b-i: restrict_to_chunk 면 그 청크 하나만 emit(force — lazy seed skip 우회).
@@ -1005,6 +1490,12 @@ fn emitChunksImpl(
         }.less);
 
         var chunk_output: std.ArrayList(u8) = .empty;
+        var compiler_snippets: std.ArrayListUnmanaged(*@import("../compiler_output_program.zig").Program) = .empty;
+        defer {
+            for (compiler_snippets.items) |program| program.destroy();
+            compiler_snippets.deinit(allocator);
+        }
+
         var initialized_namespaces: std.AutoHashMapUnmanaged(SymbolID, void) = .empty;
         defer initialized_namespaces.deinit(allocator);
         errdefer chunk_output.deinit(allocator);
@@ -1295,6 +1786,11 @@ fn emitChunksImpl(
             const owner = graph.getModule(chunk.modules.items[0]) orelse break :blk null;
             break :blk if (owner.wrap_kind == .esm and owner.in_async_cone) owner.index else null;
         } else null;
+        const pm_sync_facade_owner: ?ModuleIndex = blk: {
+            for (facades) |facade| if (facade.chunk_index == chunk.index and !facade.isAwaited()) break :blk facade.module_index;
+            break :blk null;
+        };
+        const pm_instantiation_owner: ?ModuleIndex = if (pm_protocol_owner != null) pm_protocol_owner else pm_sync_facade_owner;
         const pm_readiness = if (pm_protocol_owner != null)
             try readinessHelperExpression(allocator, graph, chunk_graph, chunk, options, linker orelse return error.MissingTlaReadinessHelper, reg_ids)
         else
@@ -1323,7 +1819,7 @@ fn emitChunksImpl(
         // dir 를 놓침.
         var importer_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer importer_buf.deinit(allocator);
-        try chunkPlaceholderStem(chunk, &importer_buf, allocator, options);
+        try appendChunkOutputPath(chunk, &importer_buf, allocator, options);
         const importer_dir = std.fs.path.dirname(importer_buf.items) orelse "";
 
         // (#4532 증상4) unwrapped pm-cjs 순환에서 function-decl export 를 require 블록 **앞**에 hoist 할
@@ -1363,9 +1859,9 @@ fn emitChunksImpl(
                 // 위치를 무시하면 runtime resolve 가 importer dir 기준으로 잘못 해석.
                 try computeRelativePath(allocator, importer_dir, efn, "")
             else if (options.preserve_modules) blk: {
-                const src_path = chunk.rel_dir orelse "./";
-                const dep_path = dep_chunk.rel_dir orelse "./";
-                break :blk try computeRelativeImportPath(allocator, src_path, dep_path, ext, options.preserve_modules_root);
+                const dep_path = try computePreserveModulesPath(allocator, dep_chunk.rel_dir orelse "./", ext, options.preserve_modules_root);
+                defer allocator.free(dep_path);
+                break :blk try computeRelativePath(allocator, importer_dir, dep_path, "");
             } else blk: {
                 break :blk try computeRelativePath(allocator, importer_dir, dep_stem, ext);
             };
@@ -1378,7 +1874,7 @@ fn emitChunksImpl(
                 else
                     false;
                 if (async_dep) {
-                    const quoted = try std.json.Stringify.valueAlloc(allocator, resolved_path, .{});
+                    const quoted = try quoteChunkPath(allocator, resolved_path);
                     defer allocator.free(quoted);
                     const state = try std.fmt.allocPrint(allocator, "{s}.state(require({s}))", .{ helper_expr, quoted });
                     errdefer allocator.free(state);
@@ -2171,6 +2667,13 @@ fn emitChunksImpl(
             if (entry_mod_idx == null) return error.MissingAsyncEntryExportOwner;
             pm_emit_options.defer_async_entry_exports = &pm_deferred_exports;
             pm_deferred_exports.pm_protocol = pm_protocol_owner != null;
+            // The implementation remains a namespace/readiness provider. Only
+            // its separately planned public facade projects the default scalar.
+            for (facades) |facade| if (facade.chunk_index == chunk.index) {
+                if (pm_protocol_owner != facade.module_index) return error.InvalidPublicEntryFacadeOwner;
+                pm_deferred_exports.cjs_value = false;
+                break;
+            };
         }
         var split_deferred_exports: parent.DeferredAsyncEntryExports = .{ .module_index = entry_mod_idx orelse 0, .cjs_value = !chunk_is_user_entry or options.format == .cjs };
         defer if (split_deferred_exports.value) |value| allocator.free(value);
@@ -2200,7 +2703,43 @@ fn emitChunksImpl(
         else
             false;
         if (internal_readiness_helper) pm_emit_options.output_exports = .named;
-        const module_emit_options = if (pm_async_import_depth > 0 or pm_protocol_owner != null or internal_readiness_helper) &pm_emit_options else if (split_needs_readiness) &split_emit_options else if (reg_split) &iife_emit_opts else options;
+        const base_module_emit_options = if (pm_async_import_depth > 0 or pm_protocol_owner != null or internal_readiness_helper) &pm_emit_options else if (split_needs_readiness) &split_emit_options else if (reg_split) &iife_emit_opts else options;
+        var compiler_literals: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+        defer {
+            var values = compiler_literals.valueIterator();
+            while (values.next()) |value| allocator.free(value.*);
+            compiler_literals.deinit(allocator);
+        }
+        for (chunk.modules.items) |index| {
+            const owner = graph.getModule(index) orelse return error.InvalidPmNamespaceCallsite;
+            for (owner.import_records) |record| {
+                const proof = record.pm_namespace_projection orelse continue;
+                if (!options.preserve_modules or options.format != .cjs or chunk.modules.items.len != 1) return error.InvalidPmNamespaceCallsite;
+                try @import("../pm_dynamic_namespace.zig").validate(graph, owner, record);
+                const helper = graph.tla_readiness_all orelse return error.InvalidPmNamespaceCallsite;
+                const helper_chunk = chunk_graph.getModuleChunk(helper.module_index);
+                const target_chunk = chunk_graph.getModuleChunk(record.resolved);
+                if (helper_chunk.isNone() or target_chunk.isNone()) return error.InvalidPmNamespaceCallsite;
+                var helper_path: std.ArrayListUnmanaged(u8) = .empty;
+                defer helper_path.deinit(allocator);
+                var target_path: std.ArrayListUnmanaged(u8) = .empty;
+                defer target_path.deinit(allocator);
+                try appendChunkOutputPath(chunk_graph.getChunk(helper_chunk), &helper_path, allocator, options);
+                try appendChunkOutputPath(chunk_graph.getChunk(target_chunk), &target_path, allocator, options);
+                const relative = try computeRelativePath(allocator, std.fs.path.dirname(helper_path.items) orelse "", target_path.items, "");
+                defer allocator.free(relative);
+                const target = graph.getModule(record.resolved) orelse return error.InvalidPmNamespaceCallsite;
+                const quoted = try quoteChunkPath(allocator, relative);
+                try putCompilerLiteral(&compiler_literals, allocator, @backingInt(proof.path_node), quoted);
+                const init_key = try std.json.Stringify.valueAlloc(allocator, try target.esmWrapperName(try target.esmInitSymbol(), null), .{});
+                try putCompilerLiteral(&compiler_literals, allocator, @backingInt(proof.init_node), init_key);
+                const namespace_key = try std.json.Stringify.valueAlloc(allocator, try target.esmWrapperName(try target.esmNamespaceSymbol(), null), .{});
+                try putCompilerLiteral(&compiler_literals, allocator, @backingInt(proof.namespace_node), namespace_key);
+            }
+        }
+        var literal_emit_options = base_module_emit_options.*;
+        if (compiler_literals.count() != 0) literal_emit_options.compiler_literal_overrides = &compiler_literals;
+        const module_emit_options = &literal_emit_options;
         const parallelism: usize = @max(1, if (graph.max_threads != 0)
             @as(usize, @intCast(graph.max_threads))
         else
@@ -2289,7 +2828,7 @@ fn emitChunksImpl(
                 const module_preamble_lines = module_result.preamble_lines;
 
                 // 동적 import 경로 리라이트: import('./page') → import('./page.js')
-                const rewritten_code = try rewriteDynamicImports(allocator, raw_code, m, graph, chunk_graph, options.public_path, ext, options, reg_ids, linker);
+                const rewritten_code = try rewriteDynamicImports(allocator, raw_code, m, graph, chunk_graph, options.public_path, ext, options, reg_ids, linker, &compiler_snippets);
                 defer if (rewritten_code) |code| allocator.free(code);
                 const code = rewritten_code orelse raw_code;
 
@@ -2314,11 +2853,11 @@ fn emitChunksImpl(
                     if (module_line) |*ml| ml.* += @intCast(std.mem.count(u8, chunk_output.items[before_len..], "\n"));
                 }
 
-                const pm_mapping_base: ?u32 = if (pm_protocol_owner != null and chunk_sm != null)
+                const pm_mapping_base: ?u32 = if (pm_instantiation_owner != null and chunk_sm != null)
                     @intCast(std.mem.count(u8, chunk_output.items[0..pm_definition_pos], "\n") + std.mem.count(u8, pm_definition_code.items, "\n"))
                 else
                     null;
-                const definition_output = if (pm_protocol_owner != null) &pm_definition_code else &chunk_output;
+                const definition_output = if (pm_instantiation_owner != null) &pm_definition_code else &chunk_output;
                 if (!options.minify_whitespace) {
                     try definition_output.appendSlice(allocator, "//#region ");
                     try definition_output.appendSlice(allocator, std.fs.path.basename(m.path));
@@ -2351,8 +2890,8 @@ fn emitChunksImpl(
                     });
                 };
 
-                if (pm_protocol_owner) |owner| {
-                    if (m.index != owner or m.wrap_kind != .esm) return error.InvalidAsyncEntryExportOwner;
+                if (pm_instantiation_owner) |owner| {
+                    if (m.index != owner or !m.wrap_kind.isWrapped() or (pm_protocol_owner != null and m.wrap_kind != .esm)) return error.InvalidAsyncEntryExportOwner;
                     // Instantiation definitions precede recursive require;
                     // evaluation stays behind the registered initializer.
                     try pm_definition_code.appendSlice(allocator, stripped);
@@ -2512,17 +3051,19 @@ fn emitChunksImpl(
             // 먼저 평가되는 쪽이 아직 미평가인 상대의 `var require_X`(=undefined)를 불러
             // TypeError 다 — node 는 require 가 dynamic 이라 되지만 ESM 출력으로는 흉내낼 수
             // 없다. 그건 별도 이슈로 남긴다(예전엔 본문이 아예 안 돌아 **조용히** 틀렸다).
-            const pm_entry_call = em.is_entry_point and em.wrap_kind.isWrapped() and pm_protocol_owner == null;
+            const pm_entry_call = em.is_entry_point and em.wrap_kind.isWrapped() and pm_protocol_owner == null and pm_sync_facade_owner == null;
 
             if (options.format == .cjs) {
-                // 청크가 `require()` 로 소비되므로 exports 객체에 깐다.
+                // Instantiate the exact source init/namespace transport before
+                // recursive requires. Only the public facade evaluates it.
+                const transport_output = if (pm_sync_facade_owner != null) &pm_definition_code else &chunk_output;
                 for ([_]?[]const u8{ names.a, names.b }) |maybe| {
                     const n = maybe orelse continue;
-                    try chunk_output.appendSlice(allocator, "exports.");
-                    try chunk_output.appendSlice(allocator, n);
-                    try chunk_output.appendSlice(allocator, if (min) "=" else " = ");
-                    try chunk_output.appendSlice(allocator, n);
-                    try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
+                    try transport_output.appendSlice(allocator, "exports.");
+                    try transport_output.appendSlice(allocator, n);
+                    try transport_output.appendSlice(allocator, if (min) "=" else " = ");
+                    try transport_output.appendSlice(allocator, n);
+                    try transport_output.appendSlice(allocator, if (min) ";" else ";\n");
                 }
                 if (pm_entry_call) {
                     if (em.wrap_kind == .cjs) {
@@ -3079,6 +3620,8 @@ fn emitChunksImpl(
             }
         }
 
+        if (pm_sync_facade_owner != null)
+            try chunk_output.insertSlice(allocator, pm_definition_pos, pm_definition_code.items);
         if (pm_protocol_owner != null) {
             const helper_expr = pm_readiness orelse return error.MissingTlaReadinessHelper;
             const namespace = pm_deferred_exports.namespace_name orelse return error.MissingAsyncEntryExportValue;
@@ -3247,8 +3790,14 @@ fn emitChunksImpl(
         else
             null;
 
+        const snippets = try compiler_snippets.toOwnedSlice(allocator);
+        errdefer {
+            for (snippets) |program| program.destroy();
+            allocator.free(snippets);
+        }
         try outputs.append(allocator, .{
             .path = filename,
+            .compiler_output_snippets = snippets,
             .contents = try chunk_output.toOwnedSlice(allocator),
             .module_ids = module_ids,
             .exports = export_names,
@@ -3370,7 +3919,7 @@ fn emitRunBeforeMainCrossImports(
     var importer_buf: std.ArrayListUnmanaged(u8) = .empty;
     defer importer_buf.deinit(allocator);
     const importer_dir = if (reg_split) "" else blk: {
-        try chunkPlaceholderStem(current_chunk, &importer_buf, allocator, options);
+        try appendChunkOutputPath(current_chunk, &importer_buf, allocator, options);
         break :blk std.fs.path.dirname(importer_buf.items) orelse "";
     };
     for (imports) |imp| {
@@ -3384,9 +3933,9 @@ fn emitRunBeforeMainCrossImports(
             // 출력 파일명과 일치(#4555 리뷰 [4]).
             if (dep_chunk.explicit_file_name) |efn| break :blk_path try computeRelativePath(allocator, importer_dir, efn, "");
             if (options.preserve_modules) {
-                const src_path = current_chunk.rel_dir orelse "./";
-                const dep_path = dep_chunk.rel_dir orelse "./";
-                break :blk_path try computeRelativeImportPath(allocator, src_path, dep_path, ext, options.preserve_modules_root);
+                const dep_path = try computePreserveModulesPath(allocator, dep_chunk.rel_dir orelse "./", ext, options.preserve_modules_root);
+                defer allocator.free(dep_path);
+                break :blk_path try computeRelativePath(allocator, importer_dir, dep_path, "");
             }
             try chunkPlaceholderStem(dep_chunk, &dep_buf, allocator, options);
             break :blk_path try computeRelativePath(allocator, importer_dir, dep_buf.items, ext);
@@ -3615,11 +4164,13 @@ fn rewriteDynamicImports(
     emit_options: *const EmitOptions,
     reg_ids: []const []const u8,
     linker: ?*const Linker,
+    compiler_snippets: *std.ArrayListUnmanaged(*@import("../compiler_output_program.zig").Program),
 ) !?[]const u8 {
     // 경로 정보나 출력 버퍼를 준비하기 전에 리라이트 대상부터 확인한다. 동적 import 가
     // 없거나 모두 이 청크에 없는 대상이면 호출자는 원본 코드를 그대로 쓸 수 있다.
     var has_dynamic = false;
     for (module.import_records) |rec| {
+        if (rec.pm_namespace_projection != null) continue;
         // #4616: external 동적 import 는 `resolved == .none` 이라 아래 판정에 안 걸린다.
         // `--external-alias` 대상이면 지정자를 바꿔야 하므로 여기서도 켠다.
         if (rec.kind == .dynamic_import and rec.resolved == .none and rec.external_specifier != null) {
@@ -3654,7 +4205,7 @@ fn rewriteDynamicImports(
     const src_chunk_dir: []const u8 = if (src_chunk_idx.isNone())
         ""
     else blk: {
-        try chunkPlaceholderStem(chunk_graph.getChunk(src_chunk_idx), &importer_stem_buf, allocator, emit_options);
+        try appendChunkOutputPath(chunk_graph.getChunk(src_chunk_idx), &importer_stem_buf, allocator, emit_options);
         break :blk std.fs.path.dirname(importer_stem_buf.items) orelse "";
     };
 
@@ -3667,6 +4218,7 @@ fn rewriteDynamicImports(
     const source_chunk_idx = chunk_graph.getModuleChunk(module.index);
 
     for (module.import_records) |rec| {
+        if (rec.pm_namespace_projection != null) continue;
         if (rec.kind != .dynamic_import) continue;
         if (rec.resolved == .none) {
             // external: 청크가 없으므로 호출 전체를 바꾸지 않고 **지정자 문자열만** 바꾼다.
@@ -3826,6 +4378,78 @@ fn rewriteDynamicImports(
             continue;
         }
 
+        if (emit_options.format == .cjs and emit_options.preserve_modules) pm_dynamic_esm: {
+            const target = graph.getModule(rec.resolved) orelse return error.InvalidDynamicNamespaceOwner;
+            if (target.wrap_kind != .esm) break :pm_dynamic_esm;
+            if (src_chunk_idx.isNone()) return error.InvalidDynamicNamespaceOwner;
+            // A with/attributes boundary retains the original native import
+            // and its option evaluation. Its projector has its own analyzed
+            // local scope and no foreign lexical reads in the user's scope.
+            const l = linker orelse return error.MissingTlaReadinessHelper;
+            const provider = try parent.checkedReadinessAllProvider(graph, l);
+            const helper_chunk = chunk_graph.getModuleChunk(provider.module.index);
+            const projection_target_chunk = chunk_graph.getModuleChunk(target.index);
+            if (helper_chunk.isNone() or projection_target_chunk.isNone()) return error.InvalidDynamicNamespaceOwner;
+            var importer_file: std.ArrayListUnmanaged(u8) = .empty;
+            defer importer_file.deinit(allocator);
+            var helper_file: std.ArrayListUnmanaged(u8) = .empty;
+            defer helper_file.deinit(allocator);
+            var target_file: std.ArrayListUnmanaged(u8) = .empty;
+            defer target_file.deinit(allocator);
+            try appendChunkOutputPath(chunk_graph.getChunk(src_chunk_idx), &importer_file, allocator, emit_options);
+            try appendChunkOutputPath(chunk_graph.getChunk(helper_chunk), &helper_file, allocator, emit_options);
+            try appendChunkOutputPath(chunk_graph.getChunk(projection_target_chunk), &target_file, allocator, emit_options);
+            const helper_relative = try computeRelativePath(allocator, std.fs.path.dirname(importer_file.items) orelse "", helper_file.items, "");
+            defer allocator.free(helper_relative);
+            const target_relative = try computeRelativePath(allocator, std.fs.path.dirname(helper_file.items) orelse "", target_file.items, "");
+            defer allocator.free(target_relative);
+            const quoted_helper = try quoteChunkPath(allocator, helper_relative);
+            defer allocator.free(quoted_helper);
+            const quoted_target = try quoteChunkPath(allocator, target_relative);
+            defer allocator.free(quoted_target);
+            const helper_key = try std.json.Stringify.valueAlloc(allocator, provider.binding.exported_name, .{});
+            defer allocator.free(helper_key);
+            const init_key = try std.json.Stringify.valueAlloc(allocator, try target.esmWrapperName(try target.esmInitSymbol(), null), .{});
+            defer allocator.free(init_key);
+            const namespace_key = try std.json.Stringify.valueAlloc(allocator, try target.esmWrapperName(try target.esmNamespaceSymbol(), null), .{});
+            defer allocator.free(namespace_key);
+            const source = try std.fmt.allocPrint(allocator, "module.exports=function(){{return import(\"\").then(function(namespace){{return namespace.default[{s}].importNamespace(\"\",{s},{s},{s});}});}};", .{ helper_key, init_key, namespace_key, if (target.in_async_cone) "true" else "false" });
+            defer allocator.free(source);
+            const program = try @import("../compiler_output_program.zig").Program.create(allocator, source);
+            var owned = false;
+            defer if (!owned) program.destroy();
+            var helper_path_node: ?NodeIndex = null;
+            var provider_path_node: ?NodeIndex = null;
+            for (program.ast.nodes.items) |node| {
+                if (node.tag == .import_expression) {
+                    if (helper_path_node != null) return error.InvalidCompilerOutputProgram;
+                    helper_path_node = node.data.binary.left;
+                }
+                if (node.tag != .call_expression) continue;
+                const callee = program.ast.getNode(program.ast.readExtraNode(node.data.extra, 0));
+                if (callee.tag != .static_member_expression) continue;
+                const property = program.ast.getNode(program.ast.readExtraNode(callee.data.extra, 1));
+                if (!std.mem.eql(u8, program.ast.identifierNameText(property), "importNamespace")) continue;
+                if (provider_path_node != null or program.ast.readExtra(node.data.extra, 2) != 4) return error.InvalidCompilerOutputProgram;
+                provider_path_node = @fromBackingInt(program.ast.extra_data.items[program.ast.readExtra(node.data.extra, 1)]);
+            }
+            try program.bindLiteral(.native_helper_path, helper_path_node orelse return error.InvalidCompilerOutputProgram, quoted_helper);
+            try program.bindLiteral(.provider_path, provider_path_node orelse return error.InvalidCompilerOutputProgram, quoted_target);
+            const callback = try program.emitValue(allocator);
+            defer allocator.free(callback);
+            const suffix = try std.fmt.allocPrint(allocator, ".then({s})", .{callback});
+            defer allocator.free(suffix);
+            const updated = (try rewriteImportCallAppendSuffix(allocator, result, rec.specifier, replacement, suffix)) orelse return error.InvalidDynamicNamespaceCallsite;
+            compiler_snippets.append(allocator, program) catch |err| {
+                allocator.free(updated);
+                return err;
+            };
+            owned = true;
+            allocator.free(result);
+            result = updated;
+            continue;
+        }
+
         const cjs_split = emit_options.format == .cjs and !emit_options.preserve_modules;
         if (cjs_split) {
             const inner_req = try std.fmt.allocPrint(allocator, "require(\"{s}\"){s}", .{ replacement, unwrap });
@@ -3854,7 +4478,9 @@ fn rewriteDynamicImports(
             // 그래서 소비자가 썽크를 호출해 namespace 를 만든다: `__toESM(m.require_X())`.
             const thunk = try tm.allocRequireName(allocator, if (linker) |l| &l.rename_table else null);
             defer allocator.free(thunk);
-            const suffix = try std.fmt.allocPrint(allocator, ".then((m)=>{s}(m.{s}()))", .{ toesm, thunk });
+            // Native import() always provides default = raw module.exports,
+            // including objects carrying an authored __esModule property.
+            const suffix = try std.fmt.allocPrint(allocator, ".then((m)=>{s}(m.{s}(),1))", .{ toesm, thunk });
             defer allocator.free(suffix);
             if (try rewriteImportCallAppendSuffix(
                 allocator,
@@ -4265,9 +4891,25 @@ fn rewriteImportCallToWrapper(
     specifier: []const u8,
     replacement: []const u8,
 ) !?[]u8 {
-    const spec_pos = std.mem.indexOf(u8, code, specifier) orelse return null;
-    const span = importCallSpanAt(code, spec_pos, specifier.len) orelse return null;
-    return try std.mem.concat(allocator, u8, &.{ code[0..span.call_start], replacement, code[span.call_end..] });
+    if (specifier.len == 0) return null;
+    var output: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer output.deinit(allocator);
+    var copied: usize = 0;
+    var scan: usize = 0;
+    var changed = false;
+    while (std.mem.indexOfPos(u8, code, scan, specifier)) |position| {
+        scan = position + specifier.len;
+        const span = importCallSpanAt(code, position, specifier.len) orelse continue;
+        if (span.call_start < copied) continue;
+        try output.appendSlice(allocator, code[copied..span.call_start]);
+        try output.appendSlice(allocator, replacement);
+        copied = span.call_end;
+        scan = span.call_end;
+        changed = true;
+    }
+    if (!changed) return null;
+    try output.appendSlice(allocator, code[copied..]);
+    return try output.toOwnedSlice(allocator);
 }
 
 /// `import("K")` 의 **지정자 문자열만** `V` 로 바꾼다 (#4616 external alias).
@@ -4797,6 +5439,20 @@ fn chunkRestrictSkip(chunk: *const Chunk, ci: usize, restrict_to_chunk: ?usize) 
         return chunk.modules.items.len == 0;
     }
     return chunk.modules.items.len == 0 or chunk.is_lazy_seed;
+}
+
+/// Filename authority shared by physical output and importer location. A PM
+/// facade's implementation uses an allocated chunk path, not its source path.
+fn appendChunkOutputPath(chunk: *const Chunk, out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, options: *const EmitOptions) !void {
+    out.clearRetainingCapacity();
+    if (chunk.explicit_file_name) |path| return out.appendSlice(allocator, path);
+    if (options.preserve_modules and chunk.rel_dir != null) {
+        const path = try computePreserveModulesPath(allocator, chunk.rel_dir.?, options.out_extension_js orelse ".js", options.preserve_modules_root);
+        defer allocator.free(path);
+        return out.appendSlice(allocator, path);
+    }
+    try chunkPlaceholderStem(chunk, out, allocator, options);
+    try out.appendSlice(allocator, options.out_extension_js orelse ".js");
 }
 
 fn chunkPlaceholderStem(
@@ -6860,4 +7516,790 @@ test "PM ordinary import target rejects a replaced source export carrier" {
     selected.symbol = other.symbol;
     selected.local_symbol_node = other.local_symbol_node;
     try std.testing.expect(linker.ordinaryCanonicalImportTarget(canonical) == null);
+}
+
+test "public entry default-only PM facade preserves scalar and internal namespace ownership" {
+    const Bundler = @import("../bundler.zig").Bundler;
+    const helpers = @import("../test_helpers.zig");
+    const compat = @import("../../transformer/compat.zig");
+    const providers = [_][]const u8{
+        "globalThis.facadeRuns=(globalThis.facadeRuns||0)+1;export default 42;",
+        "globalThis.facadeRuns=(globalThis.facadeRuns||0)+1;export default null;",
+        "globalThis.facadeRuns=(globalThis.facadeRuns||0)+1;export default Object.freeze(function read(){return 42});",
+        "await Promise.resolve();globalThis.facadeRuns=(globalThis.facadeRuns||0)+1;export default 42;",
+        "import './consumer.mjs';globalThis.facadeRuns=(globalThis.facadeRuns||0)+1;export default function read(){return 42};",
+        "await Promise.resolve();globalThis.facadeRuns=(globalThis.facadeRuns||0)+1;export default 42;",
+    };
+    for (providers, 0..) |source, scenario| for ([_]compat.ESTarget{ .es5, .esnext }) |target| for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "nested/provider.mjs", source);
+        try helpers.writeFile(tmp.dir, "nested/consumer.mjs", if (scenario == 5)
+            "export default async function load(){const namespace=await import('./provider.mjs');return [Object.keys(namespace).sort(),namespace.default]};"
+        else
+            "import value from './provider.mjs';export default function read(){return typeof value==='function'?value():value};");
+        const provider = try helpers.absPath(&tmp, "nested/provider.mjs");
+        defer std.testing.allocator.free(provider);
+        const consumer = try helpers.absPath(&tmp, "nested/consumer.mjs");
+        defer std.testing.allocator.free(consumer);
+        const root = try helpers.absPath(&tmp, ".");
+        defer std.testing.allocator.free(root);
+        const provider_uri = try std.json.Stringify.valueAlloc(a, try std.fmt.allocPrint(a, "file://{s}", .{provider}), .{});
+        const consumer_uri = try std.json.Stringify.valueAlloc(a, try std.fmt.allocPrint(a, "file://{s}", .{consumer}), .{});
+        const observe = "console.log(JSON.stringify({kind:value===null?'null':typeof value,value:typeof value==='function'?value():value,frozen:typeof value==='function'?Object.isFrozen(value):null,consumer:await read(),runs:globalThis.facadeRuns}));";
+        const native_script = try std.fmt.allocPrint(a, "const read=(await import({s})).default;const value=(await import({s})).default;{s}", .{ consumer_uri, provider_uri, observe });
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", native_script } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        var bundler = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{ consumer, provider },
+            .platform = .react_native,
+            .format = .cjs,
+            .preserve_modules = true,
+            .code_splitting = true,
+            .preserve_modules_root = root,
+            .unsupported = compat.fromESTarget(target),
+            // Prove actual requested masks; the RN preset otherwise replaces
+            // unsupported with the Hermes version-matrix feature mask.
+            .rn_version_matrix = compat.fromESTarget(target),
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+            .minify_whitespace = minify,
+            .metafile = true,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        var public_count: usize = 0;
+        var provider_bodies: usize = 0;
+        var consumer_bodies: usize = 0;
+        for (result.outputs orelse return error.TestUnexpectedResult) |file| {
+            try helpers.writeFile(tmp.dir, file.path, file.contents);
+            if (file.public_entry_facade) |facade| {
+                public_count += 1;
+                try std.testing.expect(!facade.module_index.isNone());
+                try std.testing.expect(!facade.implementation_chunk.isNone());
+                try std.testing.expectEqual(@as(usize, 0), file.module_ids.len);
+                try std.testing.expectEqual(@as(usize, 1), file.imports.len);
+                try std.testing.expect(!std.mem.eql(u8, file.path, file.imports[0]));
+            }
+            for (file.module_ids) |id| {
+                if (std.mem.eql(u8, id, provider)) provider_bodies += 1;
+                if (std.mem.eql(u8, id, consumer)) consumer_bodies += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 2), public_count);
+        try std.testing.expectEqual(@as(usize, 1), provider_bodies);
+        try std.testing.expectEqual(@as(usize, 1), consumer_bodies);
+        const metafile = result.metafile_json orelse return error.TestUnexpectedResult;
+        try std.testing.expect(std.mem.indexOf(u8, metafile, "\"entryPoint\"") != null);
+        const provider_output = try helpers.absPath(&tmp, "nested/provider.js");
+        defer std.testing.allocator.free(provider_output);
+        const consumer_output = try helpers.absPath(&tmp, "nested/consumer.js");
+        defer std.testing.allocator.free(consumer_output);
+        const quoted_provider = try std.json.Stringify.valueAlloc(a, provider_output, .{});
+        const quoted_consumer = try std.json.Stringify.valueAlloc(a, consumer_output, .{});
+        const actual_script = try std.fmt.allocPrint(a, "(async function(){{const read=await require({s});const value=await require({s});{s}}})().catch(function(error){{console.error(error);process.exitCode=1}});", .{ quoted_consumer, quoted_provider, observe });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", actual_script } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, actual.stdout, native.stdout)) {
+            std.debug.print("public default facade scenario={} target={s} minify={} native={s} actual={s} stderr={s}\n", .{ scenario, @tagName(target), minify, native.stdout, actual.stdout, actual.stderr });
+            for (result.outputs.?) |file| std.debug.print("public default facade output {s}:\n{s}\n", .{ file.path, file.contents });
+        }
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("", actual.stderr);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    };
+}
+
+// Test-only inspection of the complete raw output program. Its dead lexical
+// annotations intentionally make it a multi-statement program, unlike the
+// single host-value expression accepted by Program.hostExportValue/emitValue.
+const RawFacadeProgramCheck = struct {
+    const Program = @import("../compiler_output_program.zig").Program;
+    const Kind = @import("../../lexer/token.zig").Kind;
+
+    fn node(program: *const Program, index: NodeIndex, tag: ast_mod.Node.Tag) !ast_mod.Node {
+        try std.testing.expect(!index.isNone() and @backingInt(index) < program.ast.nodes.items.len);
+        const value = program.ast.getNode(index);
+        try std.testing.expectEqual(tag, value.tag);
+        return value;
+    }
+    fn unparen(program: *const Program, index: NodeIndex) NodeIndex {
+        var current = index;
+        while (program.ast.getNode(current).tag == .parenthesized_expression)
+            current = program.ast.getNode(current).data.unary.operand;
+        return current;
+    }
+    fn zero(program: *const Program, index: NodeIndex) !void {
+        const value = try node(program, index, .numeric_literal);
+        try std.testing.expectEqualStrings("0", program.ast.getText(value.span));
+    }
+    fn global(program: *const Program, index: NodeIndex, name: []const u8) !void {
+        const value = try node(program, index, .identifier_reference);
+        try std.testing.expectEqualStrings(name, program.ast.identifierNameText(value));
+        try std.testing.expect(@backingInt(index) < program.analysis.symbol_ids.items.len);
+        try std.testing.expect(program.analysis.symbol_ids.items[@backingInt(index)] == null);
+    }
+    fn member(program: *const Program, index: NodeIndex, computed: bool) ![2]NodeIndex {
+        const value = try node(program, index, if (computed) .computed_member_expression else .static_member_expression);
+        try std.testing.expect(program.ast.hasExtra(value.data.extra, 2));
+        try std.testing.expectEqual(@as(u32, 0), program.ast.readExtra(value.data.extra, 2));
+        return .{ program.ast.readExtraNode(value.data.extra, 0), program.ast.readExtraNode(value.data.extra, 1) };
+    }
+    fn host(program: *const Program, index: NodeIndex) !void {
+        const parts = try member(program, index, false);
+        try global(program, parts[0], "module");
+        const key = try node(program, parts[1], .identifier_reference);
+        try std.testing.expectEqualStrings("exports", program.ast.identifierNameText(key));
+    }
+    fn string(program: *const Program, allocator: std.mem.Allocator, index: NodeIndex, expected: []const u8) !void {
+        _ = try node(program, index, .string_literal);
+        const value = (try program.ast.staticKeyName(allocator, index)) orelse return error.TestUnexpectedResult;
+        defer allocator.free(value);
+        try std.testing.expectEqualStrings(expected, value);
+    }
+    fn assignment(program: *const Program, index: NodeIndex) !ast_mod.Node {
+        const value = try node(program, unparen(program, index), .assignment_expression);
+        try std.testing.expectEqual(@as(u32, @backingInt(Kind.eq)), value.data.binary.flags);
+        return value;
+    }
+    fn requireCall(program: *const Program, allocator: std.mem.Allocator, index: NodeIndex, expected: []const u8) !void {
+        const call = try node(program, index, .call_expression);
+        try std.testing.expect(program.ast.hasExtra(call.data.extra, 3));
+        try std.testing.expectEqual(@as(u32, 0), program.ast.readExtra(call.data.extra, 3));
+        try global(program, program.ast.readExtraNode(call.data.extra, 0), "require");
+        try std.testing.expectEqual(@as(u32, 1), program.ast.readExtra(call.data.extra, 2));
+        const start = program.ast.readExtra(call.data.extra, 1);
+        try std.testing.expect(start < program.ast.extra_data.items.len);
+        try string(program, allocator, @fromBackingInt(program.ast.extra_data.items[start]), expected);
+    }
+    fn run(program: *const Program, allocator: std.mem.Allocator, facade: PublicEntryFacade, raw: RawFacadeKeys) !void {
+        try program.validate();
+        const root = try node(program, program.root, .program);
+        try std.testing.expectEqual(@as(usize, 1) + raw.public_keys.len + raw.external_reexports.len, @as(usize, root.data.list.len));
+        var statements = program.ast.iterateExtraList(root.data.list);
+        const first = try node(program, statements.next() orelse return error.TestUnexpectedResult, .expression_statement);
+        const exported = try assignment(program, first.data.unary.operand);
+        try host(program, exported.data.binary.left);
+        const invoke = try node(program, exported.data.binary.right, .call_expression);
+        try std.testing.expect(program.ast.hasExtra(invoke.data.extra, 3));
+        try std.testing.expectEqual(@as(u32, 0), program.ast.readExtra(invoke.data.extra, 2));
+        try std.testing.expectEqual(@as(u32, 0), program.ast.readExtra(invoke.data.extra, 3));
+        const callee = try node(program, unparen(program, program.ast.readExtraNode(invoke.data.extra, 0)), .sequence_expression);
+        try std.testing.expectEqual(@as(u32, 2), callee.data.list.len);
+        var sequence = program.ast.iterateExtraList(callee.data.list);
+        try zero(program, sequence.next() orelse return error.TestUnexpectedResult);
+        const thunk = try member(program, sequence.next() orelse return error.TestUnexpectedResult, true);
+        const relative = try computeRelativePath(allocator, std.fs.path.dirname(facade.public_path) orelse "", facade.implementation_path, "");
+        defer allocator.free(relative);
+        try requireCall(program, allocator, thunk[0], relative);
+        try string(program, allocator, thunk[1], facade.init_key);
+        for (0..raw.public_keys.len + raw.external_reexports.len) |index| {
+            const statement = try node(program, statements.next() orelse return error.TestUnexpectedResult, .expression_statement);
+            const dead = try node(program, statement.data.unary.operand, .logical_expression);
+            try std.testing.expectEqual(@as(u32, @backingInt(Kind.amp2)), dead.data.binary.flags);
+            try zero(program, dead.data.binary.left);
+            const value = try assignment(program, dead.data.binary.right);
+            if (index < raw.public_keys.len) {
+                const property = try member(program, value.data.binary.left, true);
+                try host(program, property[0]);
+                try string(program, allocator, property[1], raw.public_keys[index]);
+                try zero(program, value.data.binary.right);
+            } else {
+                try host(program, value.data.binary.left);
+                try requireCall(program, allocator, value.data.binary.right, raw.external_reexports[index - raw.public_keys.len]);
+            }
+        }
+        try std.testing.expect(statements.next() == null);
+    }
+};
+
+fn checkPublicFacadeOutputAllocation(allocator: std.mem.Allocator, facade: PublicEntryFacade, source_path: []const u8) !void {
+    const output = try makePublicEntryFacadeOutput(allocator, facade, source_path, facade.implementation_path, null);
+    defer output.deinit(allocator);
+    try std.testing.expectEqualStrings(facade.public_path, output.path);
+    try std.testing.expectEqualStrings(source_path, output.public_entry_facade.?.source_path);
+    try std.testing.expectEqual(facade.module_index, output.public_entry_facade.?.module_index);
+    try std.testing.expectEqual(facade.chunk_index, output.public_entry_facade.?.implementation_chunk);
+    try std.testing.expectEqual(@as(usize, 0), output.module_ids.len);
+    try std.testing.expectEqualStrings(facade.implementation_path, output.imports[0]);
+    const raw_keys: []const []const u8 = switch (facade.projection) {
+        .esm_default => &.{},
+        .cjs_result => |raw| raw.public_keys,
+    };
+    try std.testing.expectEqual(raw_keys.len + 1, output.exports.len);
+    try std.testing.expectEqualStrings("default", output.exports[0]);
+    for (raw_keys, output.exports[1..]) |source_key, output_key| try std.testing.expectEqualStrings(source_key, output_key);
+    const program = output.compiler_output_program orelse return error.MissingCompilerOutputProgram;
+    switch (facade.projection) {
+        .esm_default => {
+            const value = try program.hostExportValue();
+            try std.testing.expect(program.ast.getNode(value).tag == .call_expression);
+        },
+        .cjs_result => |raw| try RawFacadeProgramCheck.run(program, allocator, facade, raw),
+    }
+    const parameter_count: usize = switch (facade.projection) {
+        .esm_default => 1,
+        .cjs_result => 0,
+    };
+    try std.testing.expectEqual(parameter_count, program.locals.len);
+    try std.testing.expectEqual(parameter_count, program.functions.len);
+}
+
+test "public entry facade owner rejects foreign roles and frees every artifact allocation" {
+    const a = std.testing.allocator;
+    const helpers = @import("../test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.mjs", "export default 42;");
+    try helpers.writeFile(tmp.dir, "foreign.mjs", "export default 42;");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    const foreign_path = try helpers.absPath(&tmp, "foreign.mjs");
+    defer a.free(foreign_path);
+    const entries = [_][]const u8{ entry, foreign_path };
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    // Use the real wrap-all and wrapper-symbol birth producers, never attach
+    // guessed SymbolIds to a fabricated namespace/initializer.
+    graph.dev_mode = true;
+    try graph.build(std.testing.io, &entries);
+    var linker = Linker.init(a, &graph, .cjs);
+    defer linker.deinit();
+    try linker.link();
+    var chunks = try chunk_mod.generatePreserveModulesChunks(a, &graph, &entries, null);
+    defer chunks.deinit();
+    const owner = graph.findModuleByPath(entry) orelse return error.TestUnexpectedResult;
+    const foreign = graph.findModuleByPath(foreign_path) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(WrapKind.esm, owner.wrap_kind);
+    const init_identity = try owner.esmInitSymbol();
+    const namespace_identity = try owner.esmNamespaceSymbol();
+    const facade: PublicEntryFacade = .{
+        .module_index = owner.index,
+        .chunk_index = chunks.getModuleChunk(owner.index),
+        .owner_token = owner.semantic.?.owner_token,
+        .init_identity = init_identity,
+        .projection = .{ .esm_default = .{
+            .namespace_identity = namespace_identity,
+            .namespace_key = try a.dupe(u8, try owner.esmWrapperName(namespace_identity, null)),
+            .awaited = owner.in_async_cone,
+        } },
+        .init_key = try a.dupe(u8, try owner.esmWrapperName(init_identity, null)),
+        .public_path = try a.dupe(u8, "nested/entry.js"),
+        .implementation_path = try a.dupe(u8, "chunks/entry-body.js"),
+    };
+    defer facade.deinit(a);
+    try std.testing.expect((try facade.checkedOwner(&graph, &chunks)) == owner);
+    var poison = facade;
+    poison.module_index = foreign.index;
+    try std.testing.expectError(error.InvalidPublicEntryFacadeOwner, poison.checkedOwner(&graph, &chunks));
+    poison = facade;
+    poison.chunk_index = chunks.getModuleChunk(foreign.index);
+    try std.testing.expectError(error.InvalidPublicEntryFacadeOwner, poison.checkedOwner(&graph, &chunks));
+    poison = facade;
+    poison.owner_token = foreign.semantic.?.owner_token;
+    try std.testing.expectError(error.InvalidPublicEntryFacadeOwner, poison.checkedOwner(&graph, &chunks));
+    poison = facade;
+    poison.init_identity = namespace_identity;
+    try std.testing.expectError(error.InvalidPublicEntryFacadeOwner, poison.checkedOwner(&graph, &chunks));
+    poison = facade;
+    poison.projection.esm_default.namespace_identity = init_identity;
+    try std.testing.expectError(error.InvalidPublicEntryFacadeOwner, poison.checkedOwner(&graph, &chunks));
+    poison = facade;
+    poison.projection.esm_default.namespace_key = "foreign_namespace";
+    try std.testing.expectError(error.InvalidPublicEntryFacadeOwner, poison.checkedOwner(&graph, &chunks));
+    poison = facade;
+    poison.projection.esm_default.awaited = !facade.isAwaited();
+    try std.testing.expectError(error.InvalidPublicEntryFacadeOwner, poison.checkedOwner(&graph, &chunks));
+    try checkPublicFacadeOutputAllocation(a, facade, owner.path);
+    try std.testing.checkAllAllocationFailures(a, checkPublicFacadeOutputAllocation, .{ facade, owner.path });
+    try std.testing.expect((try facade.checkedOwner(&graph, &chunks)) == owner);
+}
+
+test "public entry facade rejects implementation and public filename collisions" {
+    const a = std.testing.allocator;
+    const helpers = @import("../test_helpers.zig");
+    for ([_]bool{ false, true }) |public_collision| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "import './provider.mjs';globalThis.entryEffects=1;export default 42;");
+        try helpers.writeFile(tmp.dir, "provider.mjs", "globalThis.providerEffects=1;export default 43;");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer a.free(entry);
+        const provider = try helpers.absPath(&tmp, "provider.mjs");
+        defer a.free(provider);
+        const entries = [_][]const u8{ entry, provider };
+        var bundler = @import("../bundler.zig").Bundler.init(a, .{
+            .entry_points = &entries,
+            .platform = .react_native,
+            .format = .cjs,
+            .preserve_modules = true,
+            .code_splitting = true,
+            .preserve_modules_root = std.fs.path.dirname(entry),
+            .chunk_names = if (public_collision) "[name]" else "collision",
+        });
+        defer bundler.deinit();
+        try std.testing.expectError(error.PublicEntryFacadePathCollision, bundler.bundle(std.testing.io));
+    }
+}
+
+test "public entry facade owns one cyclic bootstrap in either public entry order" {
+    const a = std.testing.allocator;
+    const helpers = @import("../test_helpers.zig");
+    const compat = @import("../../transformer/compat.zig");
+    for ([_]bool{ false, true }) |reverse| for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(a);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "provider.mjs", "import './consumer.mjs';(globalThis.__zntcFacadeEvents4746||(globalThis.__zntcFacadeEvents4746=[])).push('provider');export default function readProvider(){return 42};");
+        try helpers.writeFile(tmp.dir, "consumer.mjs", "import readProvider from './provider.mjs';(globalThis.__zntcFacadeEvents4746||(globalThis.__zntcFacadeEvents4746=[])).push('consumer');export default function readConsumer(){return readProvider()};");
+        const provider = try helpers.absPath(&tmp, "provider.mjs");
+        defer a.free(provider);
+        const consumer = try helpers.absPath(&tmp, "consumer.mjs");
+        defer a.free(consumer);
+        const entries = if (reverse) [_][]const u8{ provider, consumer } else [_][]const u8{ consumer, provider };
+        var native_code: std.ArrayListUnmanaged(u8) = .empty;
+        var actual_code: std.ArrayListUnmanaged(u8) = .empty;
+        try actual_code.appendSlice(scratch, "(async function(){");
+        for (entries) |entry| {
+            const name = if (std.mem.eql(u8, entry, provider)) "provider" else "consumer";
+            const uri = try std.json.Stringify.valueAlloc(scratch, try std.fmt.allocPrint(scratch, "file://{s}", .{entry}), .{});
+            try native_code.print(scratch, "const {s}=(await import({s})).default;", .{ name, uri });
+            const output_path = try std.fmt.allocPrint(scratch, "{s}/{s}.js", .{ std.fs.path.dirname(entry).?, name });
+            const quoted = try std.json.Stringify.valueAlloc(scratch, output_path, .{});
+            try actual_code.print(scratch, "const {s}=await require({s});", .{ name, quoted });
+        }
+        const observe = "console.log(JSON.stringify([provider(),consumer(),globalThis.__zntcFacadeEvents4746]));";
+        try native_code.appendSlice(scratch, observe);
+        try actual_code.appendSlice(scratch, observe);
+        try actual_code.appendSlice(scratch, "})().catch(function(error){console.error(error);process.exitCode=1});");
+        const native = try std.process.run(scratch, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", native_code.items } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        var bundler = @import("../bundler.zig").Bundler.init(a, .{
+            .entry_points = &entries,
+            .platform = .react_native,
+            .format = .cjs,
+            .preserve_modules = true,
+            .code_splitting = true,
+            .preserve_modules_root = std.fs.path.dirname(provider),
+            .unsupported = compat.fromESTarget(.es5),
+            .rn_version_matrix = compat.fromESTarget(.es5),
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+            .minify_whitespace = minify,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(a);
+        try std.testing.expect(!result.hasErrors());
+        for (result.outputs.?) |output| try helpers.writeFile(tmp.dir, output.path, output.contents);
+        const actual = try std.process.run(scratch, std.testing.io, .{ .argv = &.{ "node", "-e", actual_code.items } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+            std.debug.print("public facade cycle reverse={} minify={} native={s} actual={s} stderr={s}\n", .{ reverse, minify, native.stdout, actual.stdout, actual.stderr });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("", actual.stderr);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    };
+}
+
+test "public entry facade guards a throwing initializer exactly once" {
+    const a = std.testing.allocator;
+    const helpers = @import("../test_helpers.zig");
+    const compat = @import("../../transformer/compat.zig");
+    for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(a);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "export default 42;globalThis.effects=(globalThis.effects||0)+1;throw Error('expected entry failure');");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer a.free(entry);
+        var bundler = @import("../bundler.zig").Bundler.init(a, .{
+            .entry_points = &.{entry},
+            .platform = .react_native,
+            .format = .cjs,
+            .preserve_modules = true,
+            .code_splitting = true,
+            .preserve_modules_root = std.fs.path.dirname(entry),
+            .entry_error_guard = true,
+            .unsupported = compat.fromESTarget(.es5),
+            .rn_version_matrix = compat.fromESTarget(.es5),
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+            .minify_whitespace = minify,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(a);
+        try std.testing.expect(!result.hasErrors());
+        for (result.outputs.?) |output| try helpers.writeFile(tmp.dir, output.path, output.contents);
+        const output_path = try helpers.absPath(&tmp, "entry.js");
+        defer a.free(output_path);
+        const quoted = try std.json.Stringify.valueAlloc(scratch, output_path, .{});
+        const script = try std.fmt.allocPrint(scratch, "let reports=0;globalThis.ErrorUtils={{reportFatalError(error){{if(error.message!=='expected entry failure')throw error;reports++}}}};const first=require({s});const second=require({s});console.log(JSON.stringify([first,second,globalThis.effects,reports]));", .{ quoted, quoted });
+        const actual = try std.process.run(scratch, std.testing.io, .{ .argv = &.{ "node", "-e", script } });
+        if (actual.term != .exited or actual.term.exited != 0)
+            std.debug.print("public facade guarded minify={} stderr={s}\n", .{ minify, actual.stderr });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("", actual.stderr);
+        try std.testing.expectEqualStrings("[42,42,1,1]\n", actual.stdout);
+    }
+}
+
+test "public entry PM dynamic ESM selects exact namespace while raw CJS keeps its contract" {
+    const a = std.testing.allocator;
+    const helpers = @import("../test_helpers.zig");
+    const compat = @import("../../transformer/compat.zig");
+    for (0..6) |scenario| for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(a);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const raw_cjs = scenario == 3;
+        const provider_name = if (raw_cjs) "provider.cjs" else "provider.mjs";
+        try helpers.writeFile(tmp.dir, provider_name, switch (scenario) {
+            1 => "export const then=7;export default 42;",
+            3 => "module.exports=42;",
+            4 => "await Promise.resolve();throw Error('expected dependency');export default 42;",
+            else => "export default 42;",
+        });
+        const source = try std.fmt.allocPrint(scratch, "{s}export default function load({s}){{return import('./{s}').then(function(namespace){{return {s};}})}};", .{
+            if (scenario == 2) "const Promise={get tag(){globalThis.shadowReads=(globalThis.shadowReads||0)+1;return 7},resolve(){throw Error('used source Promise')}};" else "",
+            if (scenario == 5) "require,module,Promise,__tlaReadyAll,__tlaNamespaceState,a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z" else "",
+            provider_name,
+            if (scenario == 5) "[namespace.default,[require,module,Promise,__tlaReadyAll,__tlaNamespaceState,a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z].reduce(function(sum,value){return sum+value},0)]" else if (raw_cjs) "[typeof namespace.default,namespace.default]" else if (scenario == 2) "[Object.keys(namespace).sort(),namespace.default,Promise.tag]" else "[Object.keys(namespace).sort(),namespace.default]",
+        });
+        try helpers.writeFile(tmp.dir, "consumer.mjs", source);
+        const provider = try helpers.absPath(&tmp, provider_name);
+        defer a.free(provider);
+        const consumer = try helpers.absPath(&tmp, "consumer.mjs");
+        defer a.free(consumer);
+        const uri = try std.json.Stringify.valueAlloc(scratch, try std.fmt.allocPrint(scratch, "file://{s}", .{consumer}), .{});
+        const observe = "let syncThrow=false,pending;try{pending=load.apply(null,Array(31).fill(7))}catch(error){syncThrow=true;pending=Promise.reject(error)}const value=await pending.then(function(result){return ['ok',result]},function(error){return ['error',error.message]});console.log(JSON.stringify([syncThrow,value,globalThis.shadowReads||0]));";
+        const native_script = try std.fmt.allocPrint(scratch, "const load=(await import({s})).default;{s}", .{ uri, observe });
+        const native = try std.process.run(scratch, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", native_script } });
+        if (native.term != .exited or native.term.exited != 0) std.debug.print("dynamic native scenario={} stderr={s}\n", .{ scenario, native.stderr });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        const entries = [_][]const u8{ consumer, provider };
+        var bundler = @import("../bundler.zig").Bundler.init(a, .{
+            .entry_points = if (raw_cjs) entries[0..1] else &entries,
+            .platform = .react_native,
+            .format = .cjs,
+            .preserve_modules = true,
+            .code_splitting = true,
+            .preserve_modules_root = std.fs.path.dirname(consumer),
+            .unsupported = compat.fromESTarget(.es5),
+            .rn_version_matrix = compat.fromESTarget(.es5),
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+            .minify_whitespace = minify,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(a);
+        try std.testing.expect(!result.hasErrors());
+        for (result.outputs.?) |output| try helpers.writeFile(tmp.dir, output.path, output.contents);
+        const output_path = try helpers.absPath(&tmp, "consumer.js");
+        defer a.free(output_path);
+        const quoted = try std.json.Stringify.valueAlloc(scratch, output_path, .{});
+        const actual_script = try std.fmt.allocPrint(scratch, "(async function(){{const load=await require({s});{s}}})().catch(function(error){{console.error(error);process.exitCode=1}});", .{ quoted, observe });
+        const actual = try std.process.run(scratch, std.testing.io, .{ .argv = &.{ "node", "-e", actual_script } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) {
+            std.debug.print("PM dynamic namespace scenario={} minify={} native={s} actual={s} stderr={s}\n", .{ scenario, minify, native.stdout, actual.stdout, actual.stderr });
+            for (result.outputs.?) |output| std.debug.print("PM dynamic output {s}:\n{s}\n", .{ output.path, output.contents });
+        }
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("", actual.stderr);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    };
+}
+
+test "public entry PM native with and import attributes preserve their exact boundary" {
+    const a = std.testing.allocator;
+    const helpers = @import("../test_helpers.zig");
+    const cases = [_]struct { filename: []const u8, source: []const u8 }{
+        .{ .filename = "consumer.cjs", .source = "module.exports=function load(){with({require:7,module:7,Promise:7,__tlaReadyAll:7,__tlaNamespaceState:7}){return import('./provider.mjs').then(function(namespace){return namespace.default})}};" },
+        .{ .filename = "consumer.mjs", .source = "export default function load(require){const options={get with(){globalThis.optionReads=(globalThis.optionReads||0)+1;return {}}};return import('./provider.mjs',options).then(namespace=>[namespace.default,globalThis.optionReads,require])}" },
+        .{ .filename = "consumer.mjs", .source = "export default function load(require){const options={get with(){globalThis.optionReads=(globalThis.optionReads||0)+1;return {type:'json'}}};return import('./provider.mjs',options).then(()=>['unexpected'],error=>[error.code,globalThis.optionReads,require])}" },
+        .{ .filename = "consumer.mjs", .source = "export default function load(){const options={get with(){globalThis.optionReads=(globalThis.optionReads||0)+1;return {type:'json'}}};return import('./data.json',options).then(namespace=>[namespace.default.answer,globalThis.optionReads])}" },
+    };
+    for (cases, 0..) |case, index| for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(a);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "provider.mjs", "export default 42;");
+        if (index == 3) try helpers.writeFile(tmp.dir, "data.json", "{\"answer\":42}");
+        try helpers.writeFile(tmp.dir, case.filename, case.source);
+        const entry = try helpers.absPath(&tmp, case.filename);
+        defer a.free(entry);
+        const uri = try std.json.Stringify.valueAlloc(scratch, try std.fmt.allocPrint(scratch, "file://{s}", .{entry}), .{});
+        const native_script = try std.fmt.allocPrint(scratch, "const load=(await import({s})).default;console.log(JSON.stringify(await load(7)));", .{uri});
+        const native = try std.process.run(scratch, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", native_script } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        var bundler = @import("../bundler.zig").Bundler.init(a, .{
+            .entry_points = &.{entry},
+            .platform = .react_native,
+            .rn_version_matrix = @import("../../transformer/compat.zig").fromESTarget(.esnext),
+            .entry_error_guard = false,
+            .format = .cjs,
+            .preserve_modules = true,
+            .code_splitting = true,
+            .preserve_modules_root = std.fs.path.dirname(entry),
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+            .minify_whitespace = minify,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(a);
+        try std.testing.expect(!result.hasErrors());
+        var snippets: usize = 0;
+        for (result.outputs.?) |output| {
+            try helpers.writeFile(tmp.dir, output.path, output.contents);
+            for (output.compiler_output_snippets) |program| {
+                try program.validate();
+                try std.testing.expectEqual(@as(usize, 1), program.locals.len);
+                try std.testing.expectEqual(@as(usize, 2), program.functions.len);
+                snippets += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, if (index == 3) 0 else 1), snippets);
+        const output_path = try helpers.absPath(&tmp, "consumer.js");
+        defer a.free(output_path);
+        const quoted = try std.json.Stringify.valueAlloc(scratch, output_path, .{});
+        const script = try std.fmt.allocPrint(scratch, "(async()=>console.log(JSON.stringify(await require({s})(7))))().catch(error=>{{console.error(error);process.exitCode=1}});", .{quoted});
+        const actual = try std.process.run(scratch, std.testing.io, .{ .argv = &.{ "node", "-e", script } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) {
+            std.debug.print("PM native boundary index={} minify={} native={s} actual={s} stderr={s}\n", .{ index, minify, native.stdout, actual.stdout, actual.stderr });
+            for (result.outputs.?) |output| std.debug.print("PM native boundary output {s}:\n{s}\n", .{ output.path, output.contents });
+        }
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        try std.testing.expectEqualStrings("", actual.stderr);
+    };
+}
+
+test "public entry raw CJS facade preserves source values lexical keys and internal transport across all modes" {
+    const a = std.testing.allocator;
+    const helpers = @import("../test_helpers.zig");
+    const compat = @import("../../transformer/compat.zig");
+    const OutputExports = @import("../bundler.zig").OutputExports;
+    const sources = [_][]const u8{
+        "globalThis.__rawProviderEvaluations4746=(globalThis.__rawProviderEvaluations4746||0)+1;module.exports=42;",
+        "globalThis.__rawProviderEvaluations4746=(globalThis.__rawProviderEvaluations4746||0)+1;module.exports=null;",
+        "globalThis.__rawProviderEvaluations4746=(globalThis.__rawProviderEvaluations4746||0)+1;module.exports=Object.freeze(function answer(){return 42});",
+        "globalThis.__rawProviderEvaluations4746=(globalThis.__rawProviderEvaluations4746||0)+1;exports.answer=42;exports.update=function(){exports.answer=43};",
+        "globalThis.__rawProviderEvaluations4746=(globalThis.__rawProviderEvaluations4746||0)+1;Object.defineProperty(exports,'answer',{value:42,enumerable:true,configurable:false});",
+        "globalThis.__rawProviderEvaluations4746=(globalThis.__rawProviderEvaluations4746||0)+1;var answer=42;Object.defineProperty(exports,'answer',{get:function(){return answer},enumerable:true});exports.update=function(){answer=43};",
+        "globalThis.__rawProviderEvaluations4746=(globalThis.__rawProviderEvaluations4746||0)+1;Object.defineProperty(exports,'__proto__',{value:42,enumerable:true});Object.defineProperty(exports,'__esModule',{value:7,enumerable:true});exports.answer=42;",
+        "globalThis.__rawProviderEvaluations4746=(globalThis.__rawProviderEvaluations4746||0)+1;module.exports={answer:42,[\"__proto__\"]:42,__esModule:7};",
+        "globalThis.__rawProviderEvaluations4746=(globalThis.__rawProviderEvaluations4746||0)+1;module.exports=Object.freeze({answer:42});",
+        "globalThis.__rawProviderEvaluations4746=(globalThis.__rawProviderEvaluations4746||0)+1;module.exports=Object.freeze([40,2]);",
+    };
+    const consumer_source = "module.exports=function load(){return import('./provider.cjs').then(function(namespace){const value=namespace.default;return [typeof value,value===null,typeof value==='function'?value():value&&value.answer===42?42:value,globalThis.__rawProviderEvaluations4746]})};";
+    const observer = "import{createRequire}from'node:module';import{pathToFileURL}from'node:url';const require=createRequire(import.meta.url);function describe(value){const boxed=Object(value);return {type:typeof value,isNull:value===null,frozen:Object.isFrozen(value),call:typeof value==='function'?value():null,keys:Object.keys(boxed).sort(),arrayValues:Array.isArray(value)?Array.from(value):null,answer:boxed.answer===undefined?null:boxed.answer,protoOwn:Object.hasOwn(boxed,'__proto__'),protoValue:Object.hasOwn(boxed,'__proto__')?boxed.__proto__:null,markerOwn:Object.hasOwn(boxed,'__esModule'),markerValue:Object.hasOwn(boxed,'__esModule')?boxed.__esModule:null}};const value=require(process.argv[2]);const namespace=await import(pathToFileURL(process.argv[2]).href);const before=describe(value);if(typeof value?.update==='function')value.update();const after=describe(value);const load=require(process.argv[3]);const dynamic=await load();console.log(JSON.stringify({before,after,namespaceKeys:Object.keys(namespace).sort(),namespaceAnswer:namespace.answer??null,same:namespace.default===value,effects:globalThis.__rawProviderEvaluations4746,dynamic}));";
+    for (sources, 0..) |source, scenario| for ([_]OutputExports{ .auto, .named, .default_, .none }) |mode| for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(a);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "provider.cjs", source);
+        try helpers.writeFile(tmp.dir, "consumer.cjs", consumer_source);
+        try helpers.writeFile(tmp.dir, "observe.mjs", observer);
+        const provider = try helpers.absPath(&tmp, "provider.cjs");
+        defer a.free(provider);
+        const consumer = try helpers.absPath(&tmp, "consumer.cjs");
+        defer a.free(consumer);
+        const observer_path = try helpers.absPath(&tmp, "observe.mjs");
+        defer a.free(observer_path);
+        const root = try helpers.absPath(&tmp, ".");
+        defer a.free(root);
+        const native = try std.process.run(scratch, std.testing.io, .{ .argv = &.{ "node", observer_path, provider, consumer } });
+        if (native.term != .exited or native.term.exited != 0) std.debug.print("raw facade source scenario={} stderr={s}\n", .{ scenario, native.stderr });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        var bundler = @import("../bundler.zig").Bundler.init(a, .{
+            .entry_points = &.{ consumer, provider },
+            .platform = .react_native,
+            .format = .cjs,
+            .output_exports = mode,
+            .preserve_modules = true,
+            .code_splitting = true,
+            .preserve_modules_root = root,
+            .unsupported = compat.fromESTarget(.esnext),
+            .rn_version_matrix = compat.fromESTarget(.esnext),
+            .entry_error_guard = false,
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+            .minify_whitespace = minify,
+            .metafile = true,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(a);
+        try std.testing.expect(!result.hasErrors());
+        var public_artifacts: usize = 0;
+        var provider_bodies: usize = 0;
+        for (result.outputs orelse return error.TestUnexpectedResult) |output| {
+            try helpers.writeFile(tmp.dir, output.path, output.contents);
+            if (output.public_entry_facade) |proof| {
+                try std.testing.expect(output.module_ids.len == 0);
+                try std.testing.expect(output.compiler_output_program != null);
+                if (std.mem.eql(u8, proof.source_path, provider) or std.mem.eql(u8, proof.source_path, consumer)) public_artifacts += 1;
+            }
+            for (output.module_ids) |id| if (std.mem.eql(u8, id, provider)) {
+                provider_bodies += 1;
+            };
+        }
+        try std.testing.expectEqual(@as(usize, 2), public_artifacts);
+        try std.testing.expectEqual(@as(usize, 1), provider_bodies);
+        const actual_provider = try helpers.absPath(&tmp, "provider.js");
+        defer a.free(actual_provider);
+        const actual_consumer = try helpers.absPath(&tmp, "consumer.js");
+        defer a.free(actual_consumer);
+        const actual = try std.process.run(scratch, std.testing.io, .{ .argv = &.{ "node", observer_path, actual_provider, actual_consumer } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) {
+            std.debug.print("raw facade scenario={} mode={s} minify={} native={s} actual={s} stderr={s}\n", .{ scenario, @tagName(mode), minify, native.stdout, actual.stdout, actual.stderr });
+            for (result.outputs.?) |output| std.debug.print("raw facade output {s}:\n{s}\n", .{ output.path, output.contents });
+        }
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("", actual.stderr);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    };
+}
+
+test "public entry raw CJS facade validates its actual wrapper owner and projection before allocation" {
+    const a = std.testing.allocator;
+    const helpers = @import("../test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.cjs", "exports.answer=42;Object.defineProperty(exports,'__proto__',{value:7,enumerable:true});");
+    try helpers.writeFile(tmp.dir, "foreign.cjs", "exports.answer=99;");
+    const entry = try helpers.absPath(&tmp, "entry.cjs");
+    defer a.free(entry);
+    const foreign_path = try helpers.absPath(&tmp, "foreign.cjs");
+    defer a.free(foreign_path);
+    const entries = [_][]const u8{ entry, foreign_path };
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    graph.dev_mode = true;
+    graph.preserve_modules = true;
+    try graph.build(std.testing.io, &entries);
+    var linker = Linker.init(a, &graph, .cjs);
+    defer linker.deinit();
+    try linker.link();
+    var chunks = try chunk_mod.generatePreserveModulesChunks(a, &graph, &entries, null);
+    defer chunks.deinit();
+    const owner = graph.findModuleByPath(entry) orelse return error.TestUnexpectedResult;
+    const foreign = graph.findModuleByPath(foreign_path) orelse return error.TestUnexpectedResult;
+    const require_id = owner.require_symbol orelse return error.TestUnexpectedResult;
+    const facade: PublicEntryFacade = .{
+        .module_index = owner.index,
+        .chunk_index = chunks.getModuleChunk(owner.index),
+        .owner_token = owner.semantic.?.owner_token,
+        .init_identity = SymbolID.make(owner.index, @backingInt(require_id)),
+        .init_key = try a.dupe(u8, owner.getRequireName(null) orelse return error.TestUnexpectedResult),
+        .public_path = try a.dupe(u8, "entry.js"),
+        .implementation_path = try a.dupe(u8, "chunks/entry-body.js"),
+        .projection = .{ .cjs_result = try collectRawFacadeKeys(a, &graph, owner.index) },
+    };
+    defer facade.deinit(a);
+    try std.testing.expect((try facade.checkedOwner(&graph, &chunks)) == owner);
+    try std.testing.expectEqual(@as(usize, 2), facade.projection.cjs_result.public_keys.len);
+    var poison = facade;
+    poison.init_identity = SymbolID.make(foreign.index, @backingInt(foreign.require_symbol.?));
+    try std.testing.expectError(error.InvalidPublicEntryFacadeOwner, poison.checkedOwner(&graph, &chunks));
+    poison = facade;
+    poison.init_key = foreign.getRequireName(null).?;
+    try std.testing.expectError(error.InvalidPublicEntryFacadeOwner, poison.checkedOwner(&graph, &chunks));
+    poison = facade;
+    poison.owner_token = foreign.semantic.?.owner_token;
+    try std.testing.expectError(error.InvalidPublicEntryFacadeOwner, poison.checkedOwner(&graph, &chunks));
+    poison = facade;
+    poison.projection.cjs_result.public_keys = &.{"unrelated"};
+    try std.testing.expectError(error.InvalidPublicEntryFacadeOwner, poison.checkedOwner(&graph, &chunks));
+    poison = facade;
+    poison.projection.cjs_result.external_reexports = &.{"node:fs"};
+    try std.testing.expectError(error.InvalidPublicEntryFacadeOwner, poison.checkedOwner(&graph, &chunks));
+    try checkPublicFacadeOutputAllocation(a, facade, owner.path);
+    try std.testing.checkAllAllocationFailures(a, checkPublicFacadeOutputAllocation, .{ facade, owner.path });
+    try std.testing.expect((try facade.checkedOwner(&graph, &chunks)) == owner);
+}
+
+test "public entry raw CJS facade retains cycle ordering and direct throw retry ownership" {
+    const a = std.testing.allocator;
+    const helpers = @import("../test_helpers.zig");
+    const compat = @import("../../transformer/compat.zig");
+    for ([_]bool{ false, true }) |throwing| for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(a);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "provider.cjs", if (throwing)
+            "globalThis.rawRuns=(globalThis.rawRuns||0)+1;throw Error('expected raw throw');"
+        else
+            "exports.before=40;const peer=require('./consumer.cjs');exports.answer=peer.read()+2;");
+        try helpers.writeFile(tmp.dir, "consumer.cjs", if (throwing)
+            "module.exports=7;"
+        else
+            "const provider=require('./provider.cjs');exports.read=function(){return provider.before};");
+        const provider = try helpers.absPath(&tmp, "provider.cjs");
+        defer a.free(provider);
+        const consumer = try helpers.absPath(&tmp, "consumer.cjs");
+        defer a.free(consumer);
+        const root = try helpers.absPath(&tmp, ".");
+        defer a.free(root);
+        const quoted_source = try std.json.Stringify.valueAlloc(scratch, provider, .{});
+        const observe = if (throwing)
+            "globalThis.ErrorUtils={reportFatalError(){globalThis.swallowed=(globalThis.swallowed||0)+1}};let failures=[];for(let count=0;count<2;count++){try{require(PATH)}catch(error){failures.push(error.message)}}console.log(JSON.stringify([failures,globalThis.rawRuns,globalThis.swallowed||0]));"
+        else
+            "console.log(JSON.stringify(require(PATH).answer));";
+        const source_script = try std.mem.replaceOwned(u8, scratch, observe, "PATH", quoted_source);
+        const native = try std.process.run(scratch, std.testing.io, .{ .argv = &.{ "node", "-e", source_script } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        var bundler = @import("../bundler.zig").Bundler.init(a, .{
+            .entry_points = &.{ provider, consumer },
+            .platform = .react_native,
+            .format = .cjs,
+            .preserve_modules = true,
+            .code_splitting = true,
+            .preserve_modules_root = root,
+            .unsupported = compat.fromESTarget(.es5),
+            .rn_version_matrix = compat.fromESTarget(.es5),
+            .entry_error_guard = true,
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+            .minify_whitespace = minify,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(a);
+        try std.testing.expect(!result.hasErrors());
+        for (result.outputs orelse return error.TestUnexpectedResult) |output| try helpers.writeFile(tmp.dir, output.path, output.contents);
+        const target = try helpers.absPath(&tmp, "provider.js");
+        defer a.free(target);
+        const quoted_target = try std.json.Stringify.valueAlloc(scratch, target, .{});
+        const actual_script = try std.mem.replaceOwned(u8, scratch, observe, "PATH", quoted_target);
+        const actual = try std.process.run(scratch, std.testing.io, .{ .argv = &.{ "node", "-e", actual_script } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) {
+            std.debug.print("raw CJS bootstrap throwing={} minify={} native={s} actual={s} stderr={s}\n", .{ throwing, minify, native.stdout, actual.stdout, actual.stderr });
+            for (result.outputs.?) |output| std.debug.print("raw CJS bootstrap output {s}:\n{s}\n", .{ output.path, output.contents });
+        }
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    };
 }

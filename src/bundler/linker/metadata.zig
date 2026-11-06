@@ -930,7 +930,28 @@ pub fn buildMetadataForAstWithHolderReservations(
             if (ib.callsite_target) |target| {
                 const local = @import("../binding_scanner.zig").resolveImportLocalSymbol(ib, .{ .module_index = m.index, .ast = ast, .symbol_ids = sem.symbol_ids, .symbols = sem.symbols.items });
                 const raw = local.semanticIndex() orelse return error.InvalidCallsiteBinding;
-                const name = try self.callsiteTargetName(target);
+                const name = if (target.role == .readiness_all and self.graph.preserve_modules and
+                    self.isCrossChunkConsumer(module_index, target.symbol.module.toU32()))
+                selected_import: {
+                    // The cross-chunk writer already published the actual local
+                    // declaration. A provider's own minified name belongs to a
+                    // different file and cannot name this consumer's binding.
+                    try @import("../runtime_callsite_targets.zig").validateTargetRole(self.graph, target);
+                    const helper = self.graph.tla_readiness_all orelse return error.InvalidCallsiteTarget;
+                    const provider = self.getModule(helper.module_index.toU32()) orelse return error.InvalidCallsiteTarget;
+                    const provider_sem = provider.semantic orelse return error.InvalidCallsiteTarget;
+                    if (helper.module_index != target.symbol.module or helper.symbol_id != target.symbol.inner or
+                        helper.owner_token != target.owner or provider_sem.owner_token != target.owner or
+                        helper.export_index >= provider.export_bindings.len or
+                        ib.local_role != .import_binding or !m.importBindingOwnsSource(ib, ast) or
+                        !ib.symbol.eql(target.symbol.toRef()) or
+                        (ib.local_symbol.isValid() and !ib.local_symbol.eql(local))) return error.InvalidCallsiteBinding;
+                    const public_binding = provider.export_bindings[helper.export_index];
+                    if (provider.exportBindingSemanticIndex(public_binding) != @as(?u32, @backingInt(target.symbol.inner))) return error.InvalidCallsiteTarget;
+                    const published = self.getConsumerImportTarget(helper.module_index.toU32(), public_binding.exported_name) orelse return error.MissingCallsiteImportDeclaration;
+                    if (published.role != .binding) return error.InvalidCallsiteImportDeclaration;
+                    break :selected_import published.text;
+                } else try self.callsiteTargetName(target);
                 try putOwnedRename(self, &renames, &owned_nested_renames, raw, name);
                 if (target.declaration.isNone() or @backingInt(target.declaration) >= ast.nodes.items.len) return error.InvalidCallsiteBinding;
                 skip_nodes.set(@backingInt(target.declaration));

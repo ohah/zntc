@@ -1897,7 +1897,7 @@ pub const Bundler = struct {
             if (self.options.code_splitting and !self.options.preserve_modules and !self.options.dev_mode and
                 self.options.entry_error_guard and (self.options.format == .esm or self.options.format == .cjs))
                 try @import("runtime_entry_guard_calls.zig").prepare(graph, io);
-            if (self.options.code_splitting and self.options.preserve_modules and !self.options.dev_mode and
+            if (self.options.preserve_modules and !self.options.dev_mode and
                 self.options.entry_error_guard and (self.options.format == .esm or self.options.format == .cjs))
                 try @import("runtime_entry_guard_calls.zig").prepareProvider(graph, io);
 
@@ -1990,7 +1990,10 @@ pub const Bundler = struct {
                 defer analyze_scope.end();
                 try s.analyze(self.options.entry_points);
             }
-            if (graph.entry_guard_invocations.items.len != 0) try @import("runtime_entry_guard_ast.zig").activate(graph, &s);
+            var facade_guard_demand = false;
+            if (linker) |*l| facade_guard_demand = try emitter.needsPreservedDefaultFacadeGuard(graph, l, self.options, &s);
+            if (graph.entry_guard_invocations.items.len != 0 or facade_guard_demand)
+                try @import("runtime_entry_guard_ast.zig").activate(graph, &s);
 
             // metadata builder + collectUnifiedInput 가 `Module.is_included` 를 신뢰해
             // tree-shake 된 모듈의 preamble emit + mangle candidate 를 건너뛸 수 있도록
@@ -1998,6 +2001,7 @@ pub const Bundler = struct {
             // 활성화된다.
             if (linker) |*l| l.tree_shaker_active = true;
             if (linker) |*l| try @import("emitter/runtime_helpers.zig").activateSingleBundleInterop(graph, l, &s, self.options.format, self.options.output_exports);
+            try @import("pm_dynamic_namespace.zig").lower(graph, self.options.format);
             if (linker) |*l| try @import("interop_callsite.zig").lower(graph, l, &s);
             if (linker) |*l| try @import("static_import_callsite.zig").lower(graph, l);
             if (linker) |*l| try @import("guarded_import_callsite.zig").lower(graph, l, &s);
@@ -2044,9 +2048,13 @@ pub const Bundler = struct {
             break :blk s;
         } else null;
         if (!will_tree_shake) {
-            if (graph.entry_guard_invocations.items.len != 0) try @import("runtime_entry_guard_ast.zig").activate(graph, null);
+            var facade_guard_demand = false;
+            if (linker) |*l| facade_guard_demand = try emitter.needsPreservedDefaultFacadeGuard(graph, l, self.options, null);
+            if (graph.entry_guard_invocations.items.len != 0 or facade_guard_demand)
+                try @import("runtime_entry_guard_ast.zig").activate(graph, null);
             if (linker) |*l| try @import("emitter/runtime_helpers.zig").activateSingleBundleInterop(graph, l, null, self.options.format, self.options.output_exports);
             if (linker) |*l| {
+                try @import("pm_dynamic_namespace.zig").lower(graph, self.options.format);
                 try @import("interop_callsite.zig").lower(graph, l, null);
                 try @import("static_import_callsite.zig").lower(graph, l);
                 try @import("guarded_import_callsite.zig").lower(graph, l, null);
@@ -2452,14 +2460,7 @@ pub const Bundler = struct {
                 if (linker) |*l| l else null,
             );
             errdefer if (outputs) |outs| {
-                for (outs) |o| {
-                    self.allocator.free(o.path);
-                    self.allocator.free(o.contents);
-                    // dev+split per-module HMR code (PR-1): 아래 평탄화가 일부 OutputFile
-                    // 만 null 로 비운 뒤 OOM 나면 남은 청크의 dev codes 가 누수되므로 해제.
-                    // 평탄화로 이미 null 된 항목은 no-op.
-                    if (o.module_dev_codes) |codes| types.ModuleDevCode.freeAll(codes, self.allocator);
-                }
+                for (outs) |o| o.deinit(self.allocator);
                 self.allocator.free(outs);
             };
 
@@ -3065,6 +3066,18 @@ fn generateMetafileJson(
             try appendJsonString(&buf, allocator, o.path);
             try buf.appendSlice(allocator, ": { \"bytes\": ");
             try appendInt(&buf, allocator, o.contents.len);
+            if (o.public_entry_facade) |facade| {
+                try buf.appendSlice(allocator, ", \"entryPoint\": ");
+                try appendJsonString(&buf, allocator, facade.source_path);
+                try buf.appendSlice(allocator, ", \"imports\": [");
+                for (o.imports, 0..) |path, index| {
+                    if (index != 0) try buf.appendSlice(allocator, ", ");
+                    try buf.appendSlice(allocator, "{\"path\":");
+                    try appendJsonString(&buf, allocator, path);
+                    try buf.appendSlice(allocator, ",\"kind\":\"require-call\"}");
+                }
+                try buf.appendSlice(allocator, "]");
+            }
             try buf.appendSlice(allocator, " }");
         }
     } else if (single_output.len > 0) {

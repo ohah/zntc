@@ -660,6 +660,7 @@ pub fn emitEsmWrappedModule(
     var hoist_preamble_lines: u32 = 0;
     if (hoisted_stmts.items.len > 0) {
         var hoist_cg = Codegen.initWithOptions(arena_alloc, esm_ast, .{
+            .compiler_literal_overrides = options.compiler_literal_overrides,
             .minify_whitespace = options.minify_whitespace,
             .minify_syntax = options.minify_syntax,
             .keep_names = options.keep_names,
@@ -983,6 +984,7 @@ pub fn emitEsmWrappedModule(
     var func_names: []const []const u8 = &.{};
     var func_preamble_lines: u32 = 0;
     var body_cg = Codegen.initWithOptions(arena_alloc, esm_ast, .{
+        .compiler_literal_overrides = options.compiler_literal_overrides,
         .minify_whitespace = options.minify_whitespace,
         .minify_syntax = options.minify_syntax,
         .module_format = .cjs,
@@ -1019,6 +1021,7 @@ pub fn emitEsmWrappedModule(
     var func_code: []const u8 = "";
     if (body_func_stmts.items.len > 0) {
         var func_cg = Codegen.initWithOptions(arena_alloc, esm_ast, .{
+            .compiler_literal_overrides = options.compiler_literal_overrides,
             .minify_whitespace = options.minify_whitespace,
             .minify_syntax = options.minify_syntax,
             .module_format = .cjs,
@@ -1234,7 +1237,7 @@ pub fn emitEsmWrappedModule(
         }
     }
 
-    var directive_codegen = Codegen.initWithOptions(arena_alloc, esm_ast, .{ .minify_whitespace = options.minify_whitespace });
+    var directive_codegen = Codegen.initWithOptions(arena_alloc, esm_ast, .{ .compiler_literal_overrides = options.compiler_literal_overrides, .minify_whitespace = options.minify_whitespace });
     const directive_code = try directive_codegen.generateStatements(root, directive_stmts.items);
 
     // 6. __esm 래핑 — preamble(의존 모듈 init 호출)을 body 맨 앞에 삽입하여

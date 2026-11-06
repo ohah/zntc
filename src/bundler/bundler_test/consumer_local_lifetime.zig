@@ -54,6 +54,10 @@ fn runFixture(case: Case, profile: Profile) !void {
             if (std.mem.endsWith(u8, output.path, "entry.js")) std.debug.print("PM entry output:\n{s}\n", .{output.contents});
         };
     }
+    if (!std.mem.eql(u8, native.stdout, actual.stdout)) {
+        std.debug.print("PM lifetime value mismatch case={s} native={s} actual={s}\n", .{ case.name, native.stdout, actual.stdout });
+        if (result.outputs) |outputs| for (outputs) |output| std.debug.print("PM lifetime output {s}:\n{s}\n", .{ output.path, output.contents });
+    }
     try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
     try std.testing.expectEqualStrings(native.stdout, actual.stdout);
     if (profile.preserve) {

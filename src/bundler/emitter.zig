@@ -233,6 +233,7 @@ pub const DeferredAsyncEntryExports = struct {
 };
 
 pub const EmitOptions = struct {
+    compiler_literal_overrides: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null,
     defer_async_entry_exports: ?*DeferredAsyncEntryExports = null,
     deferred_module_exports: ?[]DeferredAsyncEntryExports = null,
     /// Existing namespace storage initialized by this output instance before CJS requires.
@@ -448,6 +449,16 @@ pub const EmitOptions = struct {
 };
 
 pub const OutputFile = struct {
+    /// A public facade is not another source-body chunk. Its source identity and
+    /// implementation chunk are retained separately from module_ids.
+    compiler_output_program: ?*@import("compiler_output_program.zig").Program = null,
+    compiler_output_snippets: []*@import("compiler_output_program.zig").Program = &.{},
+    public_entry_facade: ?struct {
+        module_index: ModuleIndex,
+        implementation_chunk: types.ChunkIndex,
+        source_path: []const u8,
+    } = null,
+
     path: []const u8,
     contents: []const u8,
     /// code splitting 시 이 chunk 에 포함된 모듈들의 절대경로 (rolldown `chunk.moduleIds` 호환).
@@ -478,6 +489,10 @@ pub const OutputFile = struct {
     pub const Kind = enum { chunk, asset };
 
     pub fn deinit(self: OutputFile, allocator: std.mem.Allocator) void {
+        if (self.compiler_output_program) |program| program.destroy();
+        for (self.compiler_output_snippets) |program| program.destroy();
+        if (self.compiler_output_snippets.len != 0) allocator.free(self.compiler_output_snippets);
+        if (self.public_entry_facade) |facade| allocator.free(facade.source_path);
         allocator.free(self.path);
         allocator.free(self.contents);
         for (self.module_ids) |id| allocator.free(id);
@@ -967,7 +982,8 @@ pub fn emitWithTreeShaking(
     // cached shared-namespace restoration mutate the emission registry.
     // A hit restores code but cannot replay the actual entry writer's owned
     // deferred-value publication. Keep this context entirely out of the cache.
-    const active_compiled_cache = if (per_module_options.defer_async_entry_exports == null and per_module_options.deferred_module_exports == null) options.compiled_cache else null;
+    const active_compiled_cache = if (cache_mod.canCacheModule(per_module_options)) options.compiled_cache else null;
+    std.debug.assert(per_module_options.compiler_literal_overrides == null or active_compiled_cache == null);
     const options_hash: u64 = if (active_compiled_cache != null) blk: {
         if (linker) |l| try holder_reservations.seed(l);
         const base_hash = cache_mod.computeOptionsHash(options);
@@ -1768,6 +1784,7 @@ fn shouldSkipLazyBarrelEmit(
 const chunks = @import("emitter/chunks.zig");
 pub const emitChunks = chunks.emitChunks;
 pub const emitChunksWithIo = chunks.emitChunksWithIo;
+pub const needsPreservedDefaultFacadeGuard = chunks.needsPreservedDefaultFacadeGuard;
 pub const contentHash = chunks.contentHash;
 pub const applyNamingPattern = chunks.applyNamingPattern;
 pub const applyNamingPatternWithDir = chunks.applyNamingPatternWithDir;
@@ -2815,6 +2832,7 @@ pub fn emitModuleWithHolderReservations(
     } else .{};
 
     var cg = Codegen.initWithOptions(arena_alloc, transformer.ast, .{
+        .compiler_literal_overrides = options.compiler_literal_overrides,
         .minify_whitespace = options.minify_whitespace,
         .cjs_exports_name = cjs_ex_name,
         .cjs_module_name = cjs_mod_name,

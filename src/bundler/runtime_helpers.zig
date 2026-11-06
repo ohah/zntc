@@ -717,6 +717,18 @@ fn readinessAllRuntime(comptime name: []const u8) []const u8 {
         name ++ ".state = function(value) {\n" ++
         "  return __tlaReadinessStates && value !== null && (typeof value === 'object' || typeof value === 'function') ? __tlaReadinessStates.get(value) : void 0;\n" ++
         "};\n" ++
+        name ++ ".importNamespace = function(path, initKey, namespaceKey, asynchronous) {\n" ++
+        "  return Promise.all([]).then(function() {\n" ++
+        "    var implementation = require(path);\n" ++
+        "    if (asynchronous) {\n" ++
+        "      var state = " ++ name ++ ".state(implementation);\n" ++
+        "      if (!state || !state.ready) throw new TypeError('Missing TLA namespace readiness');\n" ++
+        "      return state.ready.then(function() { return state.namespace; });\n" ++
+        "    }\n" ++
+        "    (0, implementation[initKey])();\n" ++
+        "    return implementation[namespaceKey];\n" ++
+        "  });\n" ++
+        "};\n" ++
         name ++ ".publish = function(hostExports, hostModule, initialize, dependencies, readValue, assignHost) {\n" ++
         "  var state = __tlaReadinessStates && __tlaReadinessStates.get(hostExports);\n" ++
         "  if (!state || state.internals !== hostExports || !state.initializing || state.ready !== null) throw new TypeError('Invalid TLA publication owner');\n" ++

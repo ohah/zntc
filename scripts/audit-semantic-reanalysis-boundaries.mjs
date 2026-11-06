@@ -713,6 +713,168 @@ function tryReject(fn, label) {
   requireCondition(rejected, `${label} was not detected`);
 }
 
+// Independent compiler-owned output ASTs are a FIRST-analysis domain, not
+// a permission to repair a transformed source module's semantic graph.
+// Keep this function standalone so current-main's stricter retained-graph
+// gates can receive this addition without replacing their older call sites.
+function auditCompilerOutputProgram(program, chunks, emitter) {
+  const label = 'src/bundler/compiler_output_program.zig';
+  const masked = maskZigNonCode(program);
+  const create = functionBody(masked, 'create', label).body.replace(/\s+/g, '');
+  const initSites = analyzerInitSites(program, true).sites;
+  requireCondition(initSites.length === 1, `${label}: expected one independent first analyzer`);
+  requireCondition(
+    [...masked.matchAll(/\.\s*analyze\s*\(/g)].length === 1,
+    `${label}: analysis must happen only once at owned program creation`,
+  );
+  requireCondition(
+    create.includes('.owner=Owner.newOwner()'),
+    `${label}: each independent program must own a fresh domain`,
+  );
+  const stages = [
+    'constbytes=trya.dupe(u8,source);',
+    'Scanner.init(a,bytes)',
+    'self.root=tryparser.parse();',
+    'if(parser.errors.items.len!=0)returnerror.InvalidCompilerOutputProgram;',
+    'self.ast=parser.ast;',
+    'self.analysis=Analyzer.init(a,&self.ast);',
+    'self.analysis.enable_exact_declaration_anchors=true;',
+    'self.analysis.collect_unresolved_reference_nodes=true;',
+    'self.analysis.enable_source_external_origins=true;',
+    'tryself.analysis.analyze();',
+    'if(self.analysis.errors.items.len!=0)returnerror.InvalidCompilerOutputProgram;',
+  ];
+  let previous = -1;
+  for (const stage of stages) {
+    const position = create.indexOf(stage);
+    requireCondition(
+      position > previous,
+      `${label}: missing/out-of-order owned first-analysis stage ${stage}`,
+    );
+    previous = position;
+  }
+  for (const exact of [
+    'self.ast.functionParamsList(node)',
+    'self.analysis.symbol_ids.items[@backingInt(binding)]',
+    'symbol.kind!=.parameter',
+    'tryself.names.put(a,sid,name);',
+    'for(self.analysis.scope_maps.items)',
+    'self.analysis.unresolved_references.keyIterator()',
+    'reservations.makeUniqueName(preferred)',
+    'self.analysis.scopes.items[scope_raw].blocksMangling()',
+    '.binding=binding,.symbol=@fromBackingInt(sid),.scope=symbol.scope_id,.function_owner=function_owner',
+  ])
+    requireCondition(
+      create.includes(exact),
+      `${label}: missing actual parameter/SID role ${exact}`,
+    );
+  auditAnalyzerFreePath(
+    program,
+    ['validate', 'hostExportValue', 'bindLiteral', 'emit', 'emitValue', 'destroy'],
+    label,
+  );
+  for (const method of ['emit', 'emitValue']) {
+    const body = functionBody(masked, method, label).body.replace(/\s+/g, '');
+    for (const exact of [
+      '.semantic_symbol_ids=self.analysis.symbol_ids.items',
+      '.semantic_symbols=self.analysis.symbols.items',
+      '.semantic_scope_maps=self.analysis.scope_maps.items',
+      '.semantic_symbol_name_overrides=&self.names',
+      '.compiler_literal_overrides=&self.literals',
+    ])
+      requireCondition(body.includes(exact), `${label}:${method}: missing owned consumer ${exact}`);
+  }
+  const chunkCode = maskZigNonCode(chunks);
+  requireCondition(
+    [...chunkCode.matchAll(/\bProgram\s*\.\s*create\s*\(/g)].length === 2,
+    'compiler output programs: expected exactly facade and dynamic callback production creation sites',
+  );
+  for (const method of ['makePublicEntryFacadeOutput', 'rewriteDynamicImports']) {
+    const body = functionBody(chunkCode, method, 'emitter/chunks.zig').body;
+    requireCondition(
+      /\bProgram\s*\.\s*create\s*\(/.test(body),
+      `compiler output programs: missing actual creator ${method}`,
+    );
+  }
+  const outputCode = maskZigNonCode(emitter).replace(/\s+/g, '');
+  requireCondition(
+    outputCode.includes('if(self.compiler_output_program)|program|program.destroy();') &&
+      outputCode.includes('for(self.compiler_output_snippets)|program|program.destroy();') &&
+      outputCode.includes('allocator.free(self.compiler_output_snippets)'),
+    'compiler output programs: OutputFile must own facade/snippet lifetimes',
+  );
+}
+
+function selfTestCompilerOutputProgram() {
+  const program = readFileSync(join(root, 'src/bundler/compiler_output_program.zig'), 'utf8');
+  const chunks = readFileSync(join(root, 'src/bundler/emitter/chunks.zig'), 'utf8');
+  const emitter = readFileSync(join(root, 'src/bundler/emitter.zig'), 'utf8');
+  auditCompilerOutputProgram(program, chunks, emitter);
+  const poisons = [
+    [
+      'program',
+      'self.analysis = Analyzer.init(a, &self.ast);',
+      'self.analysis = Analyzer.init(a, &parser.ast);',
+    ],
+    ['program', 'const bytes = try a.dupe(u8, source);', 'const bytes = source;'],
+    ['program', 'self.ast = parser.ast;', 'self.ast = undefined;'],
+    [
+      'program',
+      'if (parser.errors.items.len != 0) return error.InvalidCompilerOutputProgram;',
+      'if (false) return error.InvalidCompilerOutputProgram;',
+    ],
+    [
+      'program',
+      'self.analysis.enable_exact_declaration_anchors = true;',
+      'self.analysis.enable_exact_declaration_anchors = false;',
+    ],
+    [
+      'program',
+      'self.analysis.symbol_ids.items[@backingInt(binding)]',
+      'self.analysis.symbol_ids.items[0]',
+    ],
+    [
+      'program',
+      '.semantic_symbol_ids = self.analysis.symbol_ids.items,',
+      '.semantic_symbol_ids = &.{},',
+    ],
+    [
+      'program',
+      '.semantic_symbol_name_overrides = &self.names,',
+      '.semantic_symbol_name_overrides = null,',
+    ],
+    ['chunks', 'Program.create(allocator, raw_code)', 'Program.missing(allocator, raw_code)'],
+    ['emitter', 'if (self.compiler_output_program) |program| program.destroy();', 'if (false) {}'],
+    ['program', '.owner = Owner.newOwner()', '.owner = .unassigned'],
+    ['program', 'for (self.analysis.scope_maps.items)', 'for (&.{})'],
+    ['program', 'self.analysis.unresolved_references.keyIterator()', 'self.names.keyIterator()'],
+    ['program', 'reservations.makeUniqueName(preferred)', 'a.dupe(u8, preferred)'],
+    [
+      'program',
+      'const value = try self.hostExportValue();',
+      'try self.analysis.analyze(); const value = try self.hostExportValue();',
+    ],
+  ];
+  for (const [target, before, after] of poisons) {
+    const inputs = { program, chunks, emitter };
+    requireCondition(
+      inputs[target].includes(before),
+      `compiler program self-test anchor missing: ${before}`,
+    );
+    inputs[target] = inputs[target].replace(before, after);
+    let rejected = false;
+    try {
+      auditCompilerOutputProgram(inputs.program, inputs.chunks, inputs.emitter);
+    } catch {
+      rejected = true;
+    }
+    requireCondition(rejected, `compiler program self-test accepted ${target}: ${before}`);
+  }
+  console.log(
+    'independent compiler output program audit self-test PASS (15 hostile mutations rejected)',
+  );
+}
+
 function selfTest() {
   const sourceInit = '    analyzer_storage = SemanticAnalyzer.init(arena_alloc, &parser.ast);';
   const sourceAnalyze = '    analyzer.analyze() catch return error.SemanticError;';
@@ -721,6 +883,7 @@ function selfTest() {
   const outputNormalFormOptions =
     '.{ .require_declaration_anchors = true, .pre_transform_scope_count = source_scope_count, .pre_transform_scope_history_event_count = source_history_epoch }';
   const standaloneGateFixture = `fn standaloneOutputNormalForm() { return cov.checkOutputNormalFormQuiet(&origins, ${outputNormalFormOptions}, &source_owned_retirements); }\n`;
+  selfTestCompilerOutputProgram();
   const transpile =
     standaloneGateFixture +
     `fn transpile() { transpileWithCallbackInternal(); }\n` +
@@ -1812,6 +1975,11 @@ try {
   );
   const treeShaker = readFileSync(join(root, 'src/bundler/tree_shaker.zig'), 'utf8');
 
+  auditCompilerOutputProgram(
+    readFileSync(join(root, 'src/bundler/compiler_output_program.zig'), 'utf8'),
+    readFileSync(join(root, 'src/bundler/emitter/chunks.zig'), 'utf8'),
+    readFileSync(join(root, 'src/bundler/emitter.zig'), 'utf8'),
+  );
   auditTranspile(transpile);
   auditSingleInitialAnalysis(
     parseModule,

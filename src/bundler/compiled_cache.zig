@@ -100,7 +100,7 @@ pub const InputHasher = struct {
 ///   emit_module_pass 의 per-module 결과 (dev_codes / compiled_cache entry) 는 동일하므로
 ///   module-level cache key 에 영향 없음. dev_mode incremental rebuild 가 first=false 만
 ///   set 해도 first build 의 entry 와 동일 input_hash → cache hit.
-const expected_emit_options_field_count: usize = 63;
+const expected_emit_options_field_count: usize = 64;
 const intentionally_unhashed_fields = [_][]const u8{
     "skip_bundle_output",
     // PR-3b-i: 어느 청크를 outputs 로 쓸지(chunk 선택)만 거르고 per-module 컴파일 결과는
@@ -121,6 +121,23 @@ comptime {
 
 /// EmitOptions 의 emit 결과에 영향을 주는 모든 필드를 순차 hash.
 pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
+    // Final compiler path projections affect bytes. Hash node/value content,
+    // never map addresses or iteration order. The emitter additionally refuses
+    // module-cache reuse while a final artifact projection is installed.
+    h.addBool(options.compiler_literal_overrides != null);
+    if (options.compiler_literal_overrides) |literals| {
+        h.addU64(@intCast(literals.count()));
+        var combined: u64 = 0;
+        var iterator = literals.iterator();
+        while (iterator.next()) |entry| {
+            var item = InputHasher.init(0);
+            item.addU32(entry.key_ptr.*);
+            item.addStr(entry.value_ptr.*);
+            combined ^= item.final();
+        }
+        h.addU64(combined);
+    }
+
     h.addU32(@backingInt(options.format));
     // Deferred emission has an owned writer result as well as code bytes.
     // Hash its role, never a transient output pointer or previously written value.
@@ -295,6 +312,12 @@ pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     } else {
         h.addU64(0);
     }
+}
+
+/// Cached code cannot replay an owned deferred writer or a current output
+/// artifact's exact literal projection. This gate precedes cache lookup/write.
+pub fn canCacheModule(options: *const EmitOptions) bool {
+    return options.defer_async_entry_exports == null and options.deferred_module_exports == null and options.compiler_literal_overrides == null;
 }
 
 /// 전체 emit 에 1회만 계산하면 되는 options_hash 를 캐싱용으로 반환.
@@ -634,4 +657,27 @@ test "CompiledOutputCache: invalidate 는 엔트리 제거" {
 
     cache.invalidate("/path/a.ts");
     try std.testing.expect(cache.tryHit("/path/a.ts", 1) == null);
+}
+
+test "public entry compiler path literals exclude module caching and hash their contents" {
+    const a = std.testing.allocator;
+    var left: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    defer left.deinit(a);
+    var right: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    defer right.deinit(a);
+    const text = try a.dupe(u8, "\"./body.js\"");
+    defer a.free(text);
+    try left.put(a, 7, text);
+    try left.put(a, 9, "\"init\"");
+    try right.put(a, 9, "\"init\"");
+    try right.put(a, 7, "\"./body.js\"");
+    var first: EmitOptions = .{};
+    try std.testing.expect(canCacheModule(&first));
+    first.compiler_literal_overrides = &left;
+    const second: EmitOptions = .{ .compiler_literal_overrides = &right };
+    try std.testing.expect(!canCacheModule(&first));
+    try std.testing.expect(!canCacheModule(&second));
+    try std.testing.expectEqual(computeOptionsHash(&first), computeOptionsHash(&second));
+    try right.put(a, 7, "\"./other.js\"");
+    try std.testing.expect(computeOptionsHash(&first) != computeOptionsHash(&second));
 }

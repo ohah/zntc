@@ -27786,6 +27786,7 @@ pub fn materializeFromCachedAst(self: anytype, module: *Module, arena_alloc: std
         purity.markUserPureCalls(ast, self.pure);
     }
     try resyncModuleGraphMetadataAfterAstMutation(self, module, arena_alloc);
+    try @import("parser_metadata.zig").capturePublicCjsFacadeKeys(module, arena_alloc);
     module.prebuilt_stmt_info = if (ast.nodes.items.len > 0) try stmt_info_mod.buildFromSemantic(
         arena_alloc,
         ast,
@@ -35282,4 +35283,52 @@ test "class sidecar staged lazy owner birth preserves unassigned installed sourc
     try std.testing.expect(!try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
     installed.semantic.?.owner_token = .unassigned;
     try std.testing.expect(try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
+}
+
+test "public entry first-analysis publication preserves discovery-owned dynamic edges" {
+    const a = std.testing.allocator;
+    const Graph = @import("../graph.zig").ModuleGraph;
+    const Bundler = @import("../bundler.zig").Bundler;
+    var cache = Bundler.initResolveCacheFromOptions(a, .{ .entry_points = &.{"entry.mjs"} });
+    defer cache.deinit();
+    const graph = try a.create(Graph);
+    defer a.destroy(graph);
+    graph.* = Graph.init(a, &cache);
+    defer graph.deinit();
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const source = "export default 42;";
+    const fixture = try runtimeHelperReanalysisTestFixture(arena.allocator(), source);
+    const target_index = ModuleIndex.fromUsize(0);
+    const importer_index = ModuleIndex.fromUsize(1);
+    var target = Module.init(target_index, "provider.mjs");
+    target.source = source;
+    target.ast = fixture.ast;
+    target.semantic = fixture.semantic;
+    target.state = .ready;
+    try graph.modules.append(a, target);
+    try graph.modules.append(a, Module.init(importer_index, "consumer.mjs"));
+    const installed = graph.moduleAtMut(target_index).?;
+    var prepared = try PreparedGenericPrepass.init(installed, arena.allocator());
+    defer prepared.discard(a);
+    // This is the real discovery producer, deliberately interleaved between
+    // candidate capture and publication, without a timing-dependent race.
+    try graph.linkDynamicImport(importer_index, target_index);
+    try graph.linkDependency(importer_index, target_index);
+    const dynamic_backing = installed.dynamic_importers.items.ptr;
+    const static_backing = installed.importers.items.ptr;
+    const topology_free = snapshotTransformModule(installed);
+    try std.testing.expectEqual(@as(usize, 0), topology_free.dynamic_importers.items.len);
+    try std.testing.expectEqual(@as(usize, 0), topology_free.importers.items.len);
+    try std.testing.expectEqual(installed.index, topology_free.index);
+    try std.testing.expectEqualStrings(installed.path, topology_free.path);
+    try std.testing.expect(try prepared.isCurrent(arena.allocator()));
+    prepared.publish(a);
+    try std.testing.expect(installed.dynamic_importers.items.ptr == dynamic_backing);
+    try std.testing.expect(installed.importers.items.ptr == static_backing);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{importer_index}, installed.dynamic_importers.items);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{importer_index}, installed.importers.items);
+    const importer = graph.getModule(importer_index).?;
+    try std.testing.expectEqualSlices(ModuleIndex, &.{target_index}, importer.dynamic_imports.items);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{target_index}, importer.dependencies.items);
 }

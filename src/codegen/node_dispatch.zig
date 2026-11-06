@@ -189,7 +189,11 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
 
         .string_literal => {
             try self.addSourceMapping(node.span);
-            try self.writeStringLiteral(node.span);
+            if (self.options.compiler_literal_overrides) |overrides| {
+                if (overrides.get(@backingInt(idx))) |quoted| {
+                    try self.write(quoted);
+                } else try self.writeStringLiteral(node.span);
+            } else try self.writeStringLiteral(node.span);
         },
 
         // Identifiers — 번들 모드에서 symbol_id 기반 리네임 적용

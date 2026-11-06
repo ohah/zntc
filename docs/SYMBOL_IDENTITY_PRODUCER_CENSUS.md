@@ -123,3 +123,33 @@ The exact new and retired function-level census entries since the historical bas
 | transformer/tagged_template.zig::lowerTaggedTemplate / lowerTaggedTemplateImpl | -1/+1 makeExactSyntheticBinding (implementation split) |
 
 This refresh pins callsite inventory only. The 37 added expressions now have a row-by-row owner, exact SID handoff, final-name consumer, and fallback review in the [current-main delta audit](./SYMBOL_IDENTITY_PRODUCER_DELTA_AUDIT.md); that review found no missing exact-ID handoff among those rows on supported semantic-graph paths. This bounded result does not classify other producer families or close the broader retained-graph/output-consumer matrix. Keep #4819 and #6193 open.
+
+
+## Outside-census identity domains (2026-11-07)
+
+The 138 transformer constructor expressions and 41 `SyntheticKind` roles are
+bounded inventories. They do not enumerate every independent parsed program or
+foreign-module callsite. These additions are separate domains, not new rows
+silently absorbed into that constructor count:
+
+| Domain / handoff                                              | Actual authority and final consumer                                                                                                                                                                                                                                                    | Validation boundary                                                                                                                                                                                                                                |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Compiler-owned output program (`compiler_output_program.zig`) | `Program.create` owns a copy of compiler-generated facade/callback source, its fresh Parser AST, one first Analyzer, and a fresh output-domain owner. Actual function parameter child edges select binding/SID/scope/function-owner handles; one SID name table feeds `Codegen`.       | `validate`, exact literal-role binding, cold/warm owners, allocation-failure tests; `audit-semantic-reanalysis-boundaries.mjs` separately pins this first-analysis role. It never permits reanalysis of a transformed user module.                 |
+| Public facade / dynamic callback artifact                     | `makePublicEntryFacadeOutput` and `rewriteDynamicImports` are the two actual `Program.create` callers. `emit` emits a complete independent file; `emitValue` emits a typed callback value. Native-helper/provider paths bind exact string-node roles rather than identifier spellings. | `OutputFile.compiler_output_program` and `compiler_output_snippets` own these arenas until output destruction. Carrier destruction and error cleanup are part of the contract. No independent program is cached as a user module's semantic graph. |
+| PM dynamic namespace callsite                                 | `pm_dynamic_namespace.lower` uses the existing source AST/editor and an actual helper module owner/export SID via `Builder.importedWithOwner`. The import record retains exact helper read/SID/scope and provider namespace/init owners.                                               | `validate` precedes chunk emission; the normal name selector consumes the attached source reference. This is a typed cross-module source callsite, not another first Analyzer domain. Cold/warm owner relocation must be tested independently.     |
+| Worklet clone → class-key IIFE                                | The initial source external origin stays immutable. An actual Worklet Creator ties exact source/target owner, leaf, and execution frames; the following class-key transfer proves that clone's reserved IIFE and completed body.                                                       | Existing clone/cache/COW/OOM hostile tests and the paired computed-key composition tests exercise these separate transitions. A detached Node VM executes the serialized payload with its actual `__closure`; this is not an RN/JSI/UI test.       |
+
+The old external 123-gateway ledger is pinned to `08bb86d99`; it must not be
+presented as an exhaustive current count without adding these concrete gateways
+and re-running its extractor on the final integrated source. Source classification,
+source-audit self-mutations, native runtime tests, public API/cache matrices, and
+implementation mutation campaigns remain separate evidence. In particular, a
+bounded Worklet cohort cannot certify unexecuted PM or independent-program cache
+paths, and no source inventory alone closes #4819/#6193.
+
+The independent program's one SID name table also reserves all actual analyzed
+scope-map bindings and unresolved global reads before selecting names. These are
+spelling reservations only: physical parameter edges still select the SymbolId.
+The existing unique-name allocator handles collisions, including escaped names;
+direct-eval/with scopes retain their actual source parameter names. A fresh name
+such as `__zntcArtifact0` must never capture an existing free read of that name.

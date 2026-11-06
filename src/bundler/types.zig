@@ -788,6 +788,23 @@ pub const ImportRecord = struct {
     /// Exact source import() expression, assigned when its AST node is created.
     call_node: @import("../parser/ast.zig").NodeIndex = .none,
     callsite_lowered: bool = false,
+    /// Exact compiler-created PM namespace callsite; no name-based recovery.
+    pm_namespace_projection: ?struct {
+        path_node: @import("../parser/ast.zig").NodeIndex,
+        init_node: @import("../parser/ast.zig").NodeIndex,
+        namespace_node: @import("../parser/ast.zig").NodeIndex,
+        asynchronous_node: @import("../parser/ast.zig").NodeIndex,
+        target_owner: @import("module.zig").SemanticOwnerToken,
+        target_init: @import("../semantic/symbol.zig").SymbolId,
+        target_namespace: @import("../semantic/symbol.zig").SymbolId,
+
+        helper_read: @import("../parser/ast.zig").NodeIndex,
+        call_node: @import("../parser/ast.zig").NodeIndex,
+        helper_local: @import("../semantic/symbol.zig").SymbolId,
+        scope: @import("../semantic/scope.zig").ScopeId,
+        helper_owner: @import("module.zig").SemanticOwnerToken,
+    } = null,
+
     /// 원본 import 경로 (예: "./foo", "react", "../utils")
     specifier: []const u8,
     /// import 종류
