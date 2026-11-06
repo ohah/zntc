@@ -135,27 +135,27 @@ const EXACT_MATRIX_REPORT_PREFIX_BY_KIND = {
   post: 'zntc: symbol-identity-post-minify ',
 } as const;
 const EXACT_MATRIX_OBSERVATION_FINGERPRINT =
-  '8c9c6651c8f1e6b942e586534bb91a335471fb7c3592b0870639979ed1431dca';
+  '3045393cae9133792c6918d8bb91d583227e75a318df651844d9fc77ebc9d441';
 // The 4730 using-module fixture now has a separate class-self binding leaf
 // when using lowering copies its named class declaration into an expression.
 // This exact identity contributes one generated binding across four lowered
 // targets and three minify modes, without changing emitted output.
 const EXACT_MATRIX_OBSERVATION_TOTALS = {
-  'exact.generated_bindings': 15330,
-  'exact.generated_references': 48396,
-  'exact.generated_scope_owners_checked': 13413,
-  'exact.external': 15147,
-  'exact.declaration_anchors_checked': 49458,
+  'exact.generated_bindings': 14871,
+  'exact.generated_references': 47466,
+  'exact.generated_scope_owners_checked': 12969,
+  'exact.external': 15399,
+  'exact.declaration_anchors_checked': 49200,
   'exact.namespace_iife_params': 270,
   'exact.enum_iife_params': 36,
-  'coverage.new_user_idents': 8199,
-  'strict.bound': 61491,
-  'strict.external': 2067,
-  'strict.marked_synthetic': 53514,
-  'post.bindings': 50931,
-  'post.references': 115681,
-  'post.external': 15051,
-  'post.helpers': 8490,
+  'coverage.new_user_idents': 8241,
+  'strict.bound': 60123,
+  'strict.external': 2085,
+  'strict.marked_synthetic': 52059,
+  'post.bindings': 50708,
+  'post.references': 115287,
+  'post.external': 15303,
+  'post.helpers': 8292,
   'post.preserved_transform_refs': 204,
 } as const;
 // These module entries intentionally contain top-level await. The identity
@@ -2254,12 +2254,12 @@ describe('symbol identity coverage gate (#4819)', () => {
     const fixtureInventory = createHash('sha256')
       .update(fixtureNames.join('\n') + '\n')
       .digest('hex');
-    expect(fixtureNames).toHaveLength(321);
+    expect(fixtureNames).toHaveLength(322);
     expect(fixtureInventory).toBe(
-      '5eb0c79014556a16c3a4f779488b1692745645af61bcea045fface5b82f2ea03',
+      '12c6f248a80f5cc95de0d36683b881cb7acb3807925dd854e9efcba04f2e87ae',
     );
     expect(fixtureContentFingerprint(fixtures, FIXTURE_DIR)).toBe(
-      'e952da1b7c6425520f2d11b03e0949ab8e9d2781e06f5b5dc11666ef8ee4572e',
+      '70d2359998c1191717a3afc904184e6317d7d51f392f12909636d436d358f0a3',
     );
     expect(TARGETS).toEqual([
       { name: 'es5', arg: '--target=es5' },
