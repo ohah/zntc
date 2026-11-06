@@ -133,6 +133,24 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       await runDefaultParameterMinifyCase(['--minify-whitespace', '--minify-identifiers']);
     });
 
+    test('chained default params keep earlier parameter references under full minification', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            function sum(first = 1, second = first + 2, third = second + 4) {
+              return first + second + third;
+            }
+            console.log(sum(), sum(2));
+          `,
+        },
+        'index.ts',
+        ['--target=es5', '--minify'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('11 14');
+    });
+
     test('default parameter self TDZ는 ReferenceError', async () => {
       const result = await bundleAndRun(
         {
