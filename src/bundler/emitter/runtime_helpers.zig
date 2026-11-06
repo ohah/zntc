@@ -35,12 +35,29 @@ pub fn asyncReadyMarkerCandidate(graph: *const ModuleGraph, module: *const Modul
     return has_default;
 }
 
-pub fn activateSingleBundleInterop(graph: *ModuleGraph, linker: *Linker, shaker: ?*@import("../tree_shaker.zig").TreeShaker) !void {
+/// Public ESM-backed named namespaces need own live properties even when
+/// there is no import interop or async wrapper in the output.
+pub fn cjsEntryDescriptorCandidate(graph: *const ModuleGraph, module: *const Module, format: @import("../types.zig").Format, mode: @import("../bundler.zig").OutputExports) !bool {
+    if (format != .cjs or mode == .none or mode == .default_ or module.wrap_kind == .cjs or
+        (!module.is_entry_point and !graph.preserve_modules) or module.export_bindings.len == 0) return false;
+    if (mode == .named) return true;
+    for (module.export_bindings) |binding| {
+        const keys = @import("../public_export_key.zig");
+        const key = if (binding.public_key_literal) |literal| try keys.fromLiteralSyntax(graph.allocator, literal) else try keys.fromSyntax(graph.allocator, binding.exported_name);
+        defer key.deinit(graph.allocator);
+        if (!std.mem.eql(u8, key.text, "default")) return true;
+    }
+    return false;
+}
+
+pub fn activateSingleBundleInterop(graph: *ModuleGraph, linker: *Linker, shaker: ?*@import("../tree_shaker.zig").TreeShaker, format: @import("../types.zig").Format, mode: @import("../bundler.zig").OutputExports) !void {
     const provider = graph.interop_ast_provider orelse return;
     const old_shaker = linker.tree_shaker;
     linker.tree_shaker = shaker;
     defer linker.tree_shaker = old_shaker;
     var needs = false;
+    var needs_interop = false;
+    var needs_descriptor = false;
     var wrapped = false;
     var modules = graph.modulesIterator();
     while (modules.next()) |module| {
@@ -65,12 +82,15 @@ pub fn activateSingleBundleInterop(graph: *ModuleGraph, linker: *Linker, shaker:
         const module_needs = module_wrapped or moduleNeedsToEsmInterop(module, graph, linker) or
             moduleReExportsCjsDefaultNeedsToEsm(module, graph, linker) or live_dynamic or
             try asyncReadyMarkerCandidate(graph, module);
-        if (!module_needs) continue;
+        const descriptor = try cjsEntryDescriptorCandidate(graph, module, format, mode);
+        if (!module_needs and !descriptor) continue;
         needs = true;
+        needs_interop = needs_interop or module_needs;
+        needs_descriptor = needs_descriptor or descriptor;
         wrapped = wrapped or module_wrapped;
         try graph.linkDependency(module.index, provider.module_index);
     }
-    if (needs) try @import("../runtime_interop_ast.zig").activate(graph, wrapped, shaker);
+    if (needs) try @import("../runtime_interop_ast.zig").activateForConsumers(graph, wrapped, needs_interop, needs_descriptor, shaker);
 }
 
 /// 번들 레벨 런타임 헬퍼 주입 (CJS interop + decorator + async).
@@ -91,6 +111,7 @@ pub fn emitBundleRuntimeHelpers(
     for (sorted_modules) |m| {
         if (m.wrap_kind == .cjs) needs_cjs_runtime = true;
         if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
+        if (try cjsEntryDescriptorCandidate(graph, m, options.format, options.output_exports)) needs_to_esm_runtime = true;
         if (moduleNeedsToEsmInterop(m, graph, linker)) needs_to_esm_runtime = true;
         // (#4120) entry 가 `export { default } from './cjs'`(non can_skip)면 buildFinalExports 가
         // `var _default = __toESM(require_X()).default` 를 materialize 한다 — default 를 import 하는
@@ -465,6 +486,7 @@ pub fn emitChunkRuntimeHelpers(
         const m = graph.getModule(mod_idx) orelse continue;
         if (m.wrap_kind == .cjs) needs_cjs_runtime = true;
         if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
+        if (try cjsEntryDescriptorCandidate(graph, m, options.format, options.output_exports)) needs_to_esm_runtime = true;
         if (moduleNeedsToEsmInterop(m, graph, linker)) needs_to_esm_runtime = true;
         for (m.import_records) |record| {
             if (Module.esmRecordWrapperUse(record.kind) != .init_and_namespace or record.resolved.isNone()) continue;

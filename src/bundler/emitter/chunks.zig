@@ -2673,7 +2673,7 @@ fn emitChunksImpl(
             // entry 모듈 export 가 아닌 cross-chunk 심볼(예: 호이스팅된 다른
             // 모듈 심볼)만 남겨 합집합을 정확히 1회 emit. 전부 제거 시 블록 생략.
             // cross-chunk 소비자는 codegen 이 낸 동일 `export {}` 로 바인딩.
-            if (!cjs_x or (pm_wrapped_esm_provider and options.output_exports == .named)) {
+            if (!cjs_x or pm_wrapped_esm_provider) {
                 if (entry_mod_idx) |ei| {
                     if (graph.getModule(ModuleIndex.fromUsize(@intCast(ei)))) |em| if (!em.wrap_kind.isWrapped() or (options.preserve_modules and em.wrap_kind == .esm)) {
                         var public_owned: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -2688,32 +2688,40 @@ fn emitChunksImpl(
                         else
                             null;
                         defer if (public_entries) |entries| if (linker) |l| l.allocator.free(entries);
-                        var key_arena = std.heap.ArenaAllocator.init(allocator);
-                        defer key_arena.deinit();
-                        var public_keys: std.StringHashMapUnmanaged(void) = .empty;
-                        defer public_keys.deinit(allocator);
-                        for (em.export_bindings) |binding| {
-                            const key = try @import("../public_export_key.zig").fromSyntax(key_arena.allocator(), binding.exported_name);
-                            try public_keys.put(allocator, key.text, {});
-                        }
-                        if (public_entries) |entries| for (entries) |entry| {
-                            const key = try @import("../public_export_key.zig").fromSyntax(key_arena.allocator(), entry.exported);
-                            try public_keys.put(allocator, key.text, {});
-                        };
-                        var w: usize = 0;
-                        for (export_names.items) |nm| {
-                            const emitted_key = if (pm_wrapped_esm_provider)
-                                if (linker) |l| l.getCrossChunkGlobalName(@intCast(ei), nm) orelse nm else nm
-                            else
-                                nm;
-                            const key = try @import("../public_export_key.zig").fromSyntax(allocator, emitted_key);
-                            defer key.deinit(allocator);
-                            if (!public_keys.contains(key.text)) {
-                                export_names.items[w] = nm;
-                                w += 1;
+                        // The module public writer and this cross-chunk
+                        // exclusion must agree on the exact final-entry role.
+                        const owns_public = !cjs_x or if (public_entries) |entries|
+                            try @import("entry_exports.zig").needsCjsEntryDescriptors(allocator, entries, options.output_exports)
+                        else
+                            false;
+                        if (owns_public) {
+                            var key_arena = std.heap.ArenaAllocator.init(allocator);
+                            defer key_arena.deinit();
+                            var public_keys: std.StringHashMapUnmanaged(void) = .empty;
+                            defer public_keys.deinit(allocator);
+                            for (em.export_bindings) |binding| {
+                                const key = try @import("../public_export_key.zig").fromSyntax(key_arena.allocator(), binding.exported_name);
+                                try public_keys.put(allocator, key.text, {});
                             }
+                            if (public_entries) |entries| for (entries) |entry| {
+                                const key = try @import("../public_export_key.zig").fromSyntax(key_arena.allocator(), entry.exported);
+                                try public_keys.put(allocator, key.text, {});
+                            };
+                            var w: usize = 0;
+                            for (export_names.items) |nm| {
+                                const emitted_key = if (pm_wrapped_esm_provider)
+                                    if (linker) |l| l.getCrossChunkGlobalName(@intCast(ei), nm) orelse nm else nm
+                                else
+                                    nm;
+                                const key = try @import("../public_export_key.zig").fromSyntax(allocator, emitted_key);
+                                defer key.deinit(allocator);
+                                if (!public_keys.contains(key.text)) {
+                                    export_names.items[w] = nm;
+                                    w += 1;
+                                }
+                            }
+                            export_names.shrinkRetainingCapacity(w);
                         }
-                        export_names.shrinkRetainingCapacity(w);
                     };
                 }
                 if (export_names.items.len == 0) break :xchunk_exports;
@@ -6222,7 +6230,7 @@ test "PM barrel import target actual source canonical selected export tuple" {
     defer std.testing.allocator.free(entries);
     try std.testing.expectEqual(@as(usize, 1), entries.len);
     std.debug.print("PM barrel record kind={s} symbolTag={s} symbolModule={d} localCheckedSID={?d} localAnchor={?d} recordIndex={?d} providerTag={s} providerModule={d}\n", .{ @tagName(barrel.export_bindings[0].kind), @tagName(std.meta.activeTag(barrel.export_bindings[0].symbol)), barrel.export_bindings[0].symbol.moduleIndex().toU32(), barrel.exportBindingSemanticIndex(barrel.export_bindings[0]), if (barrel.export_bindings[0].local_symbol_node) |n| @as(?u32, @backingInt(n)) else null, barrel.export_bindings[0].import_record_index, @tagName(std.meta.activeTag(eb.symbol)), eb.symbol.moduleIndex().toU32() });
-    const output = try @import("entry_exports.zig").emitCjsEntryExports(std.testing.allocator, entries, .auto, null);
+    const output = try @import("entry_exports.zig").emitCjsEntryExports(std.testing.allocator, entries, .auto, null, "__defProp");
     defer std.testing.allocator.free(output);
     std.debug.print("PM barrel tuple sourceModule={d} sourceSID={d} sourceAnchor={?d} physical={d}/{s} canonical={d}/{s} providerSID={d} barrelSourceImports={d} barrelExportSID={?d} selected={s} role={s} finalLocal={s} output={s}\n", .{ em.index.toU32(), sid, if (source.local_symbol_node) |n| @as(?u32, @backingInt(n)) else null, physical.toU32(), source.imported_name, canonical.module_index.toU32(), canonical.export_name, provider_sid, barrel.import_bindings.len, barrel.export_bindings[0].symbol.semanticIndex(), selected, @tagName(target.role), entries[0].local, output });
     try std.testing.expectEqualStrings(selected, entries[0].local);

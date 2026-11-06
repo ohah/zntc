@@ -1804,7 +1804,7 @@ pub const Bundler = struct {
             var may_need_interop = false;
             var modules = graph.modulesIterator();
             while (modules.next()) |module| {
-                if (module.wrap_kind.isWrapped()) {
+                if (module.wrap_kind.isWrapped() or try @import("emitter/runtime_helpers.zig").cjsEntryDescriptorCandidate(graph, module, self.options.format, self.options.output_exports)) {
                     may_need_interop = true;
                     break;
                 }
@@ -1831,7 +1831,8 @@ pub const Bundler = struct {
         {
             var candidates = graph.modulesIterator();
             while (candidates.next()) |candidate| {
-                if (!try @import("emitter/runtime_helpers.zig").asyncReadyMarkerCandidate(graph, candidate)) continue;
+                if (!try @import("emitter/runtime_helpers.zig").asyncReadyMarkerCandidate(graph, candidate) and
+                    !try @import("emitter/runtime_helpers.zig").cjsEntryDescriptorCandidate(graph, candidate, self.options.format, self.options.output_exports)) continue;
                 try @import("runtime_interop_ast.zig").installCandidate(graph, io, .{
                     .minify = self.options.minify_whitespace,
                     .es5 = self.options.unsupported.arrow,
@@ -1995,7 +1996,7 @@ pub const Bundler = struct {
             // plug. post-shake finalize 보다 먼저 켜 두어야 collectUnifiedInput 가드가
             // 활성화된다.
             if (linker) |*l| l.tree_shaker_active = true;
-            if (linker) |*l| try @import("emitter/runtime_helpers.zig").activateSingleBundleInterop(graph, l, &s);
+            if (linker) |*l| try @import("emitter/runtime_helpers.zig").activateSingleBundleInterop(graph, l, &s, self.options.format, self.options.output_exports);
             if (linker) |*l| try @import("interop_callsite.zig").lower(graph, l, &s);
             if (linker) |*l| try @import("static_import_callsite.zig").lower(graph, l);
             if (linker) |*l| try @import("guarded_import_callsite.zig").lower(graph, l, &s);
@@ -2043,7 +2044,7 @@ pub const Bundler = struct {
         } else null;
         if (!will_tree_shake) {
             if (graph.entry_guard_invocations.items.len != 0) try @import("runtime_entry_guard_ast.zig").activate(graph, null);
-            if (linker) |*l| try @import("emitter/runtime_helpers.zig").activateSingleBundleInterop(graph, l, null);
+            if (linker) |*l| try @import("emitter/runtime_helpers.zig").activateSingleBundleInterop(graph, l, null, self.options.format, self.options.output_exports);
             if (linker) |*l| {
                 try @import("interop_callsite.zig").lower(graph, l, null);
                 try @import("static_import_callsite.zig").lower(graph, l);

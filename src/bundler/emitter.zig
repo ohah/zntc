@@ -2685,12 +2685,12 @@ pub fn emitModuleWithHolderReservations(
                 allocator.free(wrapped_code);
                 wrapped_code = combined;
             }
-        } else if (is_entry and options.preserve_modules and options.format == .cjs and options.output_exports == .named) {
-            if (metadata) |md| if (md.final_export_entries) |entries| {
+        } else if (is_entry and options.preserve_modules and options.format == .cjs) {
+            if (metadata) |md| if (md.final_export_entries) |entries| if (try entry_exports.needsCjsEntryDescriptors(allocator, entries, options.output_exports)) {
                 _ = try module.esmNamespaceSymbol();
                 const namespace_name = try module.allocExportsName(allocator, if (linker) |l| &l.rename_table else null);
                 defer allocator.free(namespace_name);
-                if (try entry_exports.appendWrappedCjsNamedEntryExports(allocator, wrapped_code, namespace_name, entries)) |combined| {
+                if (try entry_exports.appendWrappedCjsNamedEntryExports(allocator, wrapped_code, namespace_name, entries, try (linker orelse return error.MissingCjsEntryDescriptorIdentity).esmInteropRuntimeHelperName(.def_prop))) |combined| {
                     allocator.free(wrapped_code);
                     wrapped_code = combined;
                 }
@@ -3098,7 +3098,7 @@ pub fn emitModuleWithHolderReservations(
                 }
             }
             // mode (auto/named/default_/none) 별 emit 분기는 emitCjsEntryExports 에서 결정.
-            final_exports_buf = emitCjsEntryExports(allocator, entries, options.output_exports, &hoisted_fn_names) catch |err| switch (err) {
+            final_exports_buf = emitCjsEntryExports(allocator, entries, options.output_exports, &hoisted_fn_names, if (try entry_exports.needsCjsEntryDescriptors(allocator, entries, options.output_exports)) try (linker orelse return error.MissingCjsEntryDescriptorIdentity).esmInteropRuntimeHelperName(.def_prop) else null) catch |err| switch (err) {
                 error.OutputExportsDefaultRequiresSingleDefault => {
                     // default mode 인데 named 섞임 — Rollup 도 동일 케이스 throw.
                     // graph diagnostic 으로 emit (result.errors 노출, 사용자 fail-fast).
