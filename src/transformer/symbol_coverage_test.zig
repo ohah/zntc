@@ -8364,19 +8364,155 @@ test "strict exact coverage rejects counter and finding drift" {
     try std.testing.expect(!marked_count_drift.hasCompleteExactCoverage());
 }
 
+test "strict accepted identities require per-finding SymbolId and ScopeId evidence" {
+    const allocator = std.testing.allocator;
+    const accepted = [_]coverage.StrictFinding{
+        .{
+            .node = 1,
+            .name = "binding",
+            .tag = .binding_identifier,
+            .status = .bound,
+            .marked_synthetic = false,
+            .symbol_id = 4,
+            .expected_scope_id = 2,
+            .symbol_scope_id = 2,
+            .symbol_origin_scope_id = 1,
+        },
+        .{
+            .node = 2,
+            .name = "reference",
+            .tag = .identifier_reference,
+            .status = .bound,
+            .marked_synthetic = false,
+            .symbol_id = 4,
+            .reference_symbol_id = 4,
+            .expected_scope_id = 2,
+            .symbol_scope_id = 2,
+            .reference_scope_id = 2,
+        },
+        .{
+            .node = 3,
+            .name = "external",
+            .tag = .identifier_reference,
+            .status = .external,
+            .marked_synthetic = false,
+        },
+        .{
+            .node = 4,
+            .name = "lowered",
+            .tag = .binding_identifier,
+            .status = .scope_mismatch,
+            .marked_synthetic = false,
+            .symbol_id = 8,
+            .expected_scope_id = 3,
+            .symbol_scope_id = 2,
+            .symbol_origin_scope_id = 1,
+        },
+        .{
+            .node = 5,
+            .name = "retagged-binding",
+            .tag = .identifier_reference,
+            .status = .bound,
+            .marked_synthetic = false,
+            .is_binding = true,
+            .symbol_id = 9,
+            .expected_scope_id = 3,
+            .symbol_scope_id = 3,
+            .symbol_origin_scope_id = 2,
+        },
+        .{
+            .node = 6,
+            .name = "retagged-lowered-binding",
+            .tag = .identifier_reference,
+            .status = .scope_mismatch,
+            .marked_synthetic = false,
+            .is_binding = true,
+            .symbol_id = 10,
+            .expected_scope_id = 4,
+            .symbol_scope_id = 3,
+            .symbol_origin_scope_id = 2,
+        },
+    };
+    for (accepted) |finding| {
+        var report: coverage.StrictReport = .{};
+        defer report.deinit(allocator);
+        report.counts[@backingInt(finding.status)] = 1;
+        try report.findings.append(allocator, finding);
+        try std.testing.expect(report.isConsistent());
+        try std.testing.expect(report.hasCompleteSymbolIdentity());
+    }
+
+    const rejected = [_]coverage.StrictFinding{
+        .{ .node = 10, .name = "x", .tag = .binding_identifier, .status = .bound, .marked_synthetic = false },
+        .{ .node = 11, .name = "x", .tag = .binding_identifier, .status = .bound, .marked_synthetic = false, .symbol_id = 1 },
+        .{ .node = 12, .name = "x", .tag = .binding_identifier, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0 },
+        .{ .node = 13, .name = "x", .tag = .binding_identifier, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0 },
+        .{ .node = 14, .name = "x", .tag = .binding_identifier, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = @backingInt(ScopeId.none) },
+        .{ .node = 15, .name = "x", .tag = .binding_identifier, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .reference_symbol_id = 2, .expected_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 0, .reference_scope_id = 0 },
+        .{ .node = 16, .name = "x", .tag = .identifier_reference, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .reference_scope_id = 0 },
+        .{ .node = 17, .name = "x", .tag = .identifier_reference, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .reference_symbol_id = 2, .expected_scope_id = 0, .symbol_scope_id = 0, .reference_scope_id = 0 },
+        .{ .node = 18, .name = "x", .tag = .identifier_reference, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .reference_symbol_id = 1, .symbol_scope_id = 0, .reference_scope_id = 0 },
+        .{ .node = 19, .name = "x", .tag = .identifier_reference, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .reference_symbol_id = 1, .expected_scope_id = 0, .reference_scope_id = 0 },
+        .{ .node = 20, .name = "x", .tag = .identifier_reference, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .reference_symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0 },
+        .{ .node = 21, .name = "x", .tag = .identifier_reference, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .reference_symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .reference_scope_id = 1 },
+        .{ .node = 22, .name = "x", .tag = .identifier_reference, .status = .external, .marked_synthetic = false, .symbol_id = 1 },
+        .{ .node = 23, .name = "x", .tag = .identifier_reference, .status = .external, .marked_synthetic = false, .reference_symbol_id = 1, .reference_scope_id = 0 },
+        .{ .node = 24, .name = "x", .tag = .binding_identifier, .status = .scope_mismatch, .marked_synthetic = false },
+        .{ .node = 25, .name = "x", .tag = .binding_identifier, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0 },
+        .{ .node = 26, .name = "x", .tag = .binding_identifier, .status = .scope_mismatch, .marked_synthetic = false, .expected_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 0 },
+        .{ .node = 27, .name = "x", .tag = .identifier_reference, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .reference_symbol_id = 2, .expected_scope_id = 0, .symbol_scope_id = 0, .reference_scope_id = 1 },
+        .{ .node = 28, .name = "x", .tag = .identifier_reference, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .reference_symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .reference_scope_id = 0 },
+        .{ .node = 29, .name = "x", .tag = .binding_identifier, .status = .bound, .marked_synthetic = false, .expected_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 0 },
+        .{ .node = 30, .name = "x", .tag = .binding_identifier, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .symbol_scope_id = 0, .symbol_origin_scope_id = 0 },
+        .{ .node = 31, .name = "x", .tag = .identifier_reference, .status = .external, .marked_synthetic = false, .reference_symbol_id = 1 },
+        .{ .node = 32, .name = "x", .tag = .identifier_reference, .status = .external, .marked_synthetic = false, .reference_scope_id = 0 },
+        .{ .node = 33, .name = "x", .tag = .binding_identifier, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_origin_scope_id = 0 },
+        .{ .node = 34, .name = "x", .tag = .identifier_reference, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 0, .reference_scope_id = 0 },
+        .{ .node = 35, .name = "x", .tag = .identifier_reference, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 0 },
+        .{ .node = 36, .name = "x", .tag = .binding_identifier, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 0, .reference_symbol_id = 1 },
+        .{ .node = 37, .name = "x", .tag = .binding_identifier, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 0, .reference_scope_id = 0 },
+        .{ .node = 38, .name = "x", .tag = .identifier_reference, .status = .external, .marked_synthetic = false, .is_binding = true },
+        .{ .node = 39, .name = "x", .tag = .identifier_reference, .status = .external, .marked_synthetic = false, .symbol_scope_id = 0 },
+        .{ .node = 40, .name = "x", .tag = .identifier_reference, .status = .external, .marked_synthetic = false, .symbol_origin_scope_id = 0 },
+        .{ .node = 41, .name = "x", .tag = .binding_identifier, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 0, .reference_symbol_id = 1, .reference_scope_id = 1 },
+        .{ .node = 42, .name = "x", .tag = .identifier_reference, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .reference_symbol_id = 1, .expected_scope_id = 0, .reference_scope_id = 1 },
+        .{ .node = 43, .name = "x", .tag = .identifier_reference, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .reference_symbol_id = 1, .symbol_scope_id = 0, .reference_scope_id = 1 },
+        .{ .node = 44, .name = "x", .tag = .identifier_reference, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .reference_symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0 },
+        .{ .node = 45, .name = "x", .tag = .identifier_reference, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .reference_scope_id = 1 },
+        .{ .node = 46, .name = "x", .tag = .binding_identifier, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .symbol_scope_id = 0, .symbol_origin_scope_id = 0 },
+        .{ .node = 47, .name = "x", .tag = .binding_identifier, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_origin_scope_id = 0 },
+    };
+    for (rejected) |finding| {
+        var report: coverage.StrictReport = .{};
+        defer report.deinit(allocator);
+        report.counts[@backingInt(finding.status)] = 1;
+        try report.findings.append(allocator, finding);
+        try std.testing.expect(!report.isConsistent());
+        try std.testing.expect(!report.hasCompleteSymbolIdentity());
+    }
+}
+
 test "strict symbol identity delegates only binding scope traces" {
     const allocator = std.testing.allocator;
     inline for (std.meta.tags(coverage.StrictStatus)) |status| {
         var report: coverage.StrictReport = .{};
         defer report.deinit(allocator);
         report.counts[@backingInt(status)] = 1;
-        try report.findings.append(allocator, .{
+        const finding: coverage.StrictFinding = .{
             .node = 1,
             .name = "x",
             .tag = if (status == .scope_mismatch) .binding_identifier else .identifier_reference,
             .status = status,
             .marked_synthetic = false,
-        });
+            .is_binding = status == .scope_mismatch,
+            .symbol_id = if (status == .bound or status == .scope_mismatch) 1 else null,
+            .reference_symbol_id = if (status == .bound) 1 else null,
+            .expected_scope_id = if (status == .bound) 2 else if (status == .scope_mismatch) 3 else null,
+            .symbol_scope_id = if (status == .bound) 2 else if (status == .scope_mismatch) 2 else null,
+            .symbol_origin_scope_id = if (status == .scope_mismatch) 1 else null,
+            .reference_scope_id = if (status == .bound) 2 else null,
+        };
+        try report.findings.append(allocator, finding);
 
         try std.testing.expect(report.isConsistent());
         const expected_complete = status == .bound or status == .external or status == .scope_mismatch;
@@ -8393,6 +8529,11 @@ test "strict symbol identity delegates only binding scope traces" {
         .tag = .identifier_reference,
         .status = .scope_mismatch,
         .marked_synthetic = false,
+        .symbol_id = 1,
+        .reference_symbol_id = 1,
+        .expected_scope_id = 1,
+        .symbol_scope_id = 0,
+        .reference_scope_id = 0,
     });
     try std.testing.expect(bad_reference_scope.isConsistent());
     try std.testing.expect(!bad_reference_scope.hasCompleteSymbolIdentity());
