@@ -129,6 +129,11 @@ test "class heritage eval preflight preserves syntax boundaries before editing" 
         const extra_count = transformer.ast.extra_data.items.len;
         const string_count = transformer.ast.string_table.items.len;
         try std.testing.expectEqual(case.rejects, try preflight(&transformer, root));
+        if (case.rejects) {
+            const expected_call = if (std.mem.indexOf(u8, case.source, "(eval)('Base')") != null) "(eval)('Base')" else "eval('Base')";
+            const actual_span = transformer.unsupported_class_heritage_eval_span orelse return error.TestExpectedEqual;
+            try std.testing.expectEqualStrings(expected_call, transformer.ast.getText(actual_span));
+        }
         try std.testing.expectEqual(node_count, transformer.ast.nodes.items.len);
         try std.testing.expectEqual(extra_count, transformer.ast.extra_data.items.len);
         try std.testing.expectEqual(string_count, transformer.ast.string_table.items.len);
