@@ -21704,6 +21704,8 @@ test "generic prepass run publishes transformed output and preserves parser AST"
 
 fn genericPreparedOutputHasNormalForm(
     allocator: std.mem.Allocator,
+    source_classes: @import("../../semantic/class_self_sidecars.zig").Source,
+    source_receipt: *const @import("../../semantic/class_self_sidecars.zig").Receipt,
     module: *const Module,
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
@@ -21731,7 +21733,18 @@ fn genericPreparedOutputHasNormalForm(
             source_reachable.set(raw);
         }
     }
-    if (!genericPrepassOutputSidecarsRemainReachable(module, semantic, &reachable, &source_reachable)) return false;
+    var class_sidecars = (try @import("../../semantic/class_self_sidecars.zig").prepare(
+        allocator,
+        module,
+        source_classes,
+        source_receipt,
+        root,
+        &reachable,
+        &source_reachable,
+        transformer,
+    )) orelse return false;
+    defer class_sidecars.deinit(allocator);
+    if (!outputGraphSidecarsRemainReachableWithSourceClassOwners(module, semantic, &reachable, &source_reachable, &class_sidecars)) return false;
 
     var roots: std.ArrayListUnmanaged(u32) = .empty;
     for (module.import_bindings) |binding| {
@@ -21829,7 +21842,9 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     var candidate_completed = false;
     var candidate_diagnosed = false;
     var published_exact: ?@import("../../transformer/symbol_coverage.zig").ExactReport = null;
-    runCandidate(self, &prepared.candidate, arena_alloc, &candidate_completed, &candidate_diagnosed, &published_exact);
+    const source_classes: @import("../../semantic/class_self_sidecars.zig").Source = .{ .tree = &prepared.source_ast_snapshot, .semantic = &prepared.source_semantic_snapshot };
+    const source_receipt = @import("../../semantic/class_self_sidecars.zig").Receipt.capture(prepared.source, &prepared.candidate, source_classes);
+    runCandidate(self, &prepared.candidate, source_classes, &source_receipt, arena_alloc, &candidate_completed, &candidate_diagnosed, &published_exact);
     if (!candidate_completed) {
         if (!candidate_diagnosed)
             self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Generic prepass transaction failed", "The staged transform did not complete; the installed module was left unchanged.");
@@ -21885,6 +21900,8 @@ fn refreshFoldedDefaultFacadeFacts(module: *Module, allocator: std.mem.Allocator
 
 fn completeGenericPrepassCandidate(
     self: anytype,
+    source_classes: @import("../../semantic/class_self_sidecars.zig").Source,
+    source_receipt: *const @import("../../semantic/class_self_sidecars.zig").Receipt,
     module: *Module,
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
@@ -21899,6 +21916,8 @@ fn completeGenericPrepassCandidate(
 ) void {
     const has_normal_form = genericPreparedOutputHasNormalForm(
         arena_alloc,
+        source_classes,
+        source_receipt,
         module,
         transformer,
         root,
@@ -22138,7 +22157,7 @@ fn minifyGenericPrepassGraph(
     };
 }
 
-fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, candidate_completed: *bool, candidate_diagnosed: *bool, published_exact: *?@import("../../transformer/symbol_coverage.zig").ExactReport) void {
+fn runCandidate(self: anytype, module: *Module, source_classes: @import("../../semantic/class_self_sidecars.zig").Source, source_receipt: *const @import("../../semantic/class_self_sidecars.zig").Receipt, arena_alloc: std.mem.Allocator, candidate_completed: *bool, candidate_diagnosed: *bool, published_exact: *?@import("../../transformer/symbol_coverage.zig").ExactReport) void {
     if (module.ast == null) return;
     const ast_ptr = &(module.ast.?);
 
@@ -23124,6 +23143,8 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
         refreshTlaPromiseReference(module);
         completeGenericPrepassCandidate(
             self,
+            source_classes,
+            source_receipt,
             module,
             &transformer,
             root,
@@ -26206,7 +26227,7 @@ pub fn outputGraphSidecarsRemainReachable(
     semantic: anytype,
     reachable: *const std.DynamicBitSet,
 ) bool {
-    return outputGraphSidecarsRemainReachableWithSourceClassOwners(module, semantic, reachable, null);
+    return outputGraphSidecarsRemainReachableWithSourceClassOwners(module, semantic, reachable, null, null);
 }
 
 pub fn genericPrepassOutputSidecarsRemainReachable(
@@ -26220,6 +26241,7 @@ pub fn genericPrepassOutputSidecarsRemainReachable(
         semantic,
         output_reachable,
         source_reachable,
+        null,
     );
 }
 
@@ -26295,6 +26317,7 @@ fn outputGraphSidecarsRemainReachableWithSourceClassOwners(
     semantic: anytype,
     reachable: *const std.DynamicBitSet,
     source_reachable: ?*const std.DynamicBitSet,
+    class_sidecars: ?*const @import("../../semantic/class_self_sidecars.zig").Proof,
 ) bool {
     var class_self_owners = semantic.class_self_symbol_map.iterator();
     while (class_self_owners.next()) |entry| {
@@ -26303,6 +26326,12 @@ fn outputGraphSidecarsRemainReachableWithSourceClassOwners(
         // Only the generic prepass supplies source reachability. Buffer and
         // const-fold candidates must keep every class-self owner in output.
         const source = source_reachable orelse return false;
+        if (class_sidecars) |proof| {
+            if (proof.allows(module, semantic, entry.key_ptr.*, entry.value_ptr.*)) continue;
+            // A query with an actual input snapshot must consume its exact
+            // owner/SID proof, never fall back to current spelling inference.
+            return false;
+        }
         if (!classSelfSidecarHasExactSourceOwner(
             module,
             semantic,
@@ -34929,4 +34958,259 @@ test "generic prepass snapshot includes Flow runtime-transform metadata" {
     try std.testing.expect(try sameGenericPrepassAstContents(&snapshot, &source, allocator));
     source.has_flow_runtime_transform = true;
     try std.testing.expect(!try sameGenericPrepassAstContents(&snapshot, &source, allocator));
+}
+
+fn sidecarProofCheck(a: std.mem.Allocator, m: *const Module, source: @import("../../semantic/class_self_sidecars.zig").Source, receipt: *const @import("../../semantic/class_self_sidecars.zig").Receipt, root: ast_mod.NodeIndex, output: *const std.DynamicBitSet, original: *const std.DynamicBitSet) !bool {
+    var proof = (try @import("../../semantic/class_self_sidecars.zig").prepare(a, m, source, receipt, root, output, original, null)) orelse return false;
+    defer proof.deinit(a);
+    return outputGraphSidecarsRemainReachableWithSourceClassOwners(m, &m.semantic.?, output, original, &proof);
+}
+
+test "class sidecar registered clone proofs reject fifteen foreign roles and cross Prepared swaps" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const input = "class A{__workletClass=true;read(){return 3}}class B{__workletClass=true;read(){return 39}}console.log(A,B);";
+    const Sidecars = @import("../../semantic/class_self_sidecars.zig");
+    const fixture = try genericPrepassTestFixture(a, input, false);
+    var installed = Module.init(@fromBackingInt(@as(u32, 0)), "input.cjs");
+    installed.source = input;
+    installed.module_type = .js;
+    installed.state = .ready;
+    installed.ast = fixture.ast;
+    installed.semantic = fixture.semantic;
+    _ = installed.semantic.?.captureOwnerToken();
+    var prepared = try PreparedGenericPrepass.init(&installed, a);
+    defer prepared.discard(std.testing.allocator);
+    const module = &prepared.candidate;
+    const source: Sidecars.Source = .{ .tree = &prepared.source_ast_snapshot, .semantic = &prepared.source_semantic_snapshot };
+    const receipt = Sidecars.Receipt.capture(&installed, module, source);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.worklet_transform = true;
+    graph.transform_options_base.unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5);
+    var completed = false;
+    var diagnosed = false;
+    var exact: ?@import("../../transformer/symbol_coverage.zig").ExactReport = null;
+    runCandidate(&graph, module, source, &receipt, a, &completed, &diagnosed, &exact);
+    if (!completed) for (graph.diagnostics.items) |diag| std.debug.print("class sidecar poison setup {s}\n", .{diag.message});
+    try std.testing.expect(completed);
+    const tree = &module.ast.?;
+    const semantic = &module.semantic.?;
+    const root = tree.transformed_root orelse return error.MissingClassSidecarOutput;
+    const source_root: ast_mod.NodeIndex = @fromBackingInt(@as(u32, @intCast(source.tree.nodes.items.len - 1)));
+    var output = try std.DynamicBitSet.initEmpty(a, tree.nodes.items.len);
+    for (try ast_walk.collectReachableNodeIndicesFrom(a, tree, root)) |raw| output.set(raw);
+    var original = try std.DynamicBitSet.initEmpty(a, tree.nodes.items.len);
+    for (try ast_walk.collectReachableNodeIndicesFrom(a, tree, source_root)) |raw| original.set(raw);
+    try std.testing.expect(try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
+    try std.testing.expect(!outputGraphSidecarsRemainReachable(module, semantic, &output));
+    const original_history = semantic.scope_history;
+    const original_source = prepared.source_semantic_snapshot;
+    const creators = try a.dupe(@import("../../semantic/lowered_worklet_class.zig").Creator, original_history.worklet_class_creators);
+    const witnesses = try a.dupe(@import("../../semantic/lowered_worklet_class.zig").Witness, original_history.lowered_worklet_classes);
+    try std.testing.expectEqual(@as(usize, 2), creators.len);
+    try std.testing.expectEqual(@as(usize, 2), witnesses.len);
+    const Poison = enum { source_node, source_sid, target_sid, factory_scope, creator_epoch, ctor_sid, ctor_scope, iife_parent, lowered_epoch, source_map_sid, source_owner_body, orphan_owner, foreign_source_header, foreign_output_header, foreign_semantic_owner };
+    for (std.enums.values(Poison)) |poison| {
+        semantic.scope_history = original_history;
+        @memcpy(creators, original_history.worklet_class_creators);
+        @memcpy(witnesses, original_history.lowered_worklet_classes);
+        semantic.scope_history.worklet_class_creators = creators;
+        semantic.scope_history.lowered_worklet_classes = witnesses;
+        prepared.source_semantic_snapshot = original_source;
+        const saved_map = semantic.class_self_symbol_map;
+        semantic.class_self_symbol_map = try saved_map.clone(a);
+        var foreign_header = installed;
+        var altered_receipt = receipt;
+        switch (poison) {
+            .source_node => creators[0].source.node = creators[1].source.node,
+            .source_sid => creators[0].source.self = creators[1].source.self,
+            .target_sid => creators[0].target.self = creators[1].target.self,
+            .factory_scope => creators[0].factory_scope = creators[1].factory_scope,
+            .creator_epoch => creators[0].epoch = @intCast(original_history.events.len + 1),
+            .ctor_sid => witnesses[0].constructor.symbol = witnesses[1].constructor.symbol,
+            .ctor_scope => witnesses[0].constructor.scope = witnesses[1].constructor.scope,
+            .iife_parent => witnesses[0].iife.parent = witnesses[0].wrapper_scope,
+            .lowered_epoch => witnesses[0].lowered_epoch = @intCast(original_history.events.len + 1),
+            .source_map_sid => {
+                prepared.source_semantic_snapshot.class_self_symbol_map = try original_source.class_self_symbol_map.clone(a);
+                try prepared.source_semantic_snapshot.class_self_symbol_map.put(a, @backingInt(creators[0].source.node), @backingInt(creators[1].source.self));
+            },
+            .source_owner_body => {
+                const owners = try a.dupe(@import("../../semantic/scope_frame_history.zig").OwnerBinding, original_source.scope_history.source_owners);
+                prepared.source_semantic_snapshot.scope_history.source_owners = owners;
+                var changed = false;
+                for (owners) |*owner| if (owner.owner.node == creators[0].source.node) {
+                    owner.edges.body = .none;
+                    changed = true;
+                };
+                try std.testing.expect(changed);
+            },
+            .orphan_owner => try semantic.class_self_symbol_map.put(a, std.math.maxInt(u32), @backingInt(creators[0].source.self)),
+            .foreign_source_header => altered_receipt.input = &foreign_header,
+            .foreign_output_header => altered_receipt.candidate = &foreign_header,
+            .foreign_semantic_owner => altered_receipt.input_semantic = &foreign_header.semantic.?,
+        }
+        const accepted = try sidecarProofCheck(a, module, source, &altered_receipt, root, &output, &original);
+        semantic.class_self_symbol_map = saved_map;
+        prepared.source_semantic_snapshot = original_source;
+        if (accepted) {
+            std.debug.print("class sidecar accepted poison {s}\n", .{@tagName(poison)});
+            return error.TestUnexpectedResult;
+        }
+    }
+    semantic.scope_history = original_history;
+    try std.testing.expect(try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
+
+    // A second real parse/analyze/Prepared transaction of the exact same bytes
+    // proves the independent receipt is not just another self-consistent tuple.
+    const second_fixture = try genericPrepassTestFixture(a, input, false);
+    var second_installed = Module.init(@fromBackingInt(@as(u32, 0)), "input.cjs");
+    second_installed.source = input;
+    second_installed.module_type = .js;
+    second_installed.state = .ready;
+    second_installed.ast = second_fixture.ast;
+    second_installed.semantic = second_fixture.semantic;
+    _ = second_installed.semantic.?.captureOwnerToken();
+    var second = try PreparedGenericPrepass.init(&second_installed, a);
+    defer second.discard(std.testing.allocator);
+    const second_source: Sidecars.Source = .{ .tree = &second.source_ast_snapshot, .semantic = &second.source_semantic_snapshot };
+    const second_receipt = Sidecars.Receipt.capture(&second_installed, &second.candidate, second_source);
+    completed = false;
+    diagnosed = false;
+    runCandidate(&graph, &second.candidate, second_source, &second_receipt, a, &completed, &diagnosed, &exact);
+    try std.testing.expect(completed);
+    try std.testing.expectEqualStrings(source.tree.source, second_source.tree.source);
+    try std.testing.expect(source.tree != second_source.tree and source.semantic != second_source.semantic);
+    try std.testing.expect(!try sidecarProofCheck(a, module, source, &second_receipt, root, &output, &original));
+    try std.testing.expect(!try sidecarProofCheck(a, module, second_source, &receipt, root, &output, &original));
+}
+
+test "class sidecar ordinary storage rejects foreign valid origins without changing source birth" {
+    const Sidecars = @import("../../semantic/class_self_sidecars.zig");
+    for ([_]@import("../../transformer/compat.zig").ESTarget{ .es5, .esnext }) |target| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const input = "class A{static read(){return A===this?42:0}}console.log(A.read());";
+        const fixture = try genericPrepassTestFixture(a, input, false);
+        var installed = Module.init(@fromBackingInt(@as(u32, 0)), "ordinary.cjs");
+        installed.source = input;
+        installed.module_type = .js;
+        installed.state = .ready;
+        installed.ast = fixture.ast;
+        installed.semantic = fixture.semantic;
+        var prepared = try PreparedGenericPrepass.init(&installed, a);
+        defer prepared.discard(a);
+        const source: Sidecars.Source = .{ .tree = &prepared.source_ast_snapshot, .semantic = &prepared.source_semantic_snapshot };
+        const receipt = Sidecars.Receipt.capture(&installed, &prepared.candidate, source);
+        var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+        defer cache.deinit();
+        var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.transform_options_base.minify_syntax = true;
+        graph.transform_options_base.unsupported = @import("../../transformer/compat.zig").fromESTarget(target);
+        var completed = false;
+        var diagnosed = false;
+        var exact: ?@import("../../transformer/symbol_coverage.zig").ExactReport = null;
+        runCandidate(&graph, &prepared.candidate, source, &receipt, a, &completed, &diagnosed, &exact);
+        try std.testing.expect(completed);
+        const module = &prepared.candidate;
+        const tree = &module.ast.?;
+        const semantic = &module.semantic.?;
+        const root = tree.transformed_root.?;
+        var output = try std.DynamicBitSet.initEmpty(a, tree.nodes.items.len);
+        for (try ast_walk.collectReachableNodeIndicesFrom(a, tree, root)) |raw| output.set(raw);
+        var original = try std.DynamicBitSet.initEmpty(a, tree.nodes.items.len);
+        const source_root: ast_mod.NodeIndex = @fromBackingInt(@as(u32, @intCast(source.tree.nodes.items.len - 1)));
+        for (try ast_walk.collectReachableNodeIndicesFrom(a, tree, source_root)) |raw| original.set(raw);
+        try std.testing.expect(try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
+        try std.testing.expectEqual(@as(u32, 1), source.semantic.class_self_symbol_map.count());
+        var source_self = source.semantic.class_self_symbol_map.valueIterator();
+        const sid = source_self.next().?.*;
+        const saved = semantic.symbols.items[sid].origin_scope;
+        const storage = semantic.symbols.items[sid].scope_id;
+        const birth = source.semantic.symbols.items[sid].origin_scope;
+        var tested: usize = 0;
+        for (semantic.scopes, 0..) |_, raw| {
+            const foreign: @import("../../semantic/scope.zig").ScopeId = @fromBackingInt(@as(u32, @intCast(raw)));
+            if (foreign == saved or foreign == storage or foreign == birth) continue;
+            semantic.symbols.items[sid].origin_scope = foreign;
+            try std.testing.expect(!try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
+            semantic.symbols.items[sid].origin_scope = saved;
+            tested += 1;
+        }
+        try std.testing.expect(tested > 0);
+        try std.testing.expectEqual(birth, source.semantic.symbols.items[sid].origin_scope);
+        try std.testing.expect(try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
+    }
+}
+
+test "class sidecar native Creator copies reject ten cross-role substitutions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Sidecars = @import("../../semantic/class_self_sidecars.zig");
+    const input = "class A{__workletClass=true;read(){return 3}}class B{__workletClass=true;read(){return 39}}console.log(A,B);";
+    const fixture = try genericPrepassTestFixture(a, input, false);
+    var installed = Module.init(@fromBackingInt(@as(u32, 0)), "native-worklet.cjs");
+    installed.source = input;
+    installed.module_type = .js;
+    installed.state = .ready;
+    installed.ast = fixture.ast;
+    installed.semantic = fixture.semantic;
+    var prepared = try PreparedGenericPrepass.init(&installed, a);
+    defer prepared.discard(a);
+    const module = &prepared.candidate;
+    const source: Sidecars.Source = .{ .tree = &prepared.source_ast_snapshot, .semantic = &prepared.source_semantic_snapshot };
+    const receipt = Sidecars.Receipt.capture(&installed, module, source);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.worklet_transform = true;
+    graph.transform_options_base.minify_syntax = true;
+    graph.transform_options_base.unsupported = @import("../../transformer/compat.zig").fromESTarget(.esnext);
+    var completed = false;
+    var diagnosed = false;
+    var exact: ?@import("../../transformer/symbol_coverage.zig").ExactReport = null;
+    runCandidate(&graph, module, source, &receipt, a, &completed, &diagnosed, &exact);
+    try std.testing.expect(completed);
+    const tree = &module.ast.?;
+    const semantic = &module.semantic.?;
+    const root = tree.transformed_root.?;
+    var output = try std.DynamicBitSet.initEmpty(a, tree.nodes.items.len);
+    for (try ast_walk.collectReachableNodeIndicesFrom(a, tree, root)) |raw| output.set(raw);
+    var original = try std.DynamicBitSet.initEmpty(a, tree.nodes.items.len);
+    const source_root: ast_mod.NodeIndex = @fromBackingInt(@as(u32, @intCast(source.tree.nodes.items.len - 1)));
+    for (try ast_walk.collectReachableNodeIndicesFrom(a, tree, source_root)) |raw| original.set(raw);
+    try std.testing.expectEqual(@as(usize, 0), semantic.scope_history.lowered_worklet_classes.len);
+    const creators = semantic.scope_history.worklet_class_creators;
+    try std.testing.expectEqual(@as(usize, 2), creators.len);
+    const changed = try a.dupe(@TypeOf(creators[0]), creators);
+    semantic.scope_history.worklet_class_creators = changed;
+    try std.testing.expect(try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
+    const Poison = enum { source_node, source_self, source_scope, target_node, target_self, target_scope, factory, factory_binding, factory_symbol, wrapper_scope };
+    for (std.enums.values(Poison)) |poison| {
+        @memcpy(changed, creators);
+        switch (poison) {
+            .source_node => changed[0].source.node = creators[1].source.node,
+            .source_self => changed[0].source.self = creators[1].source.self,
+            .source_scope => changed[0].source.scope = creators[1].source.scope,
+            .target_node => changed[0].target.node = creators[1].target.node,
+            .target_self => changed[0].target.self = creators[1].target.self,
+            .target_scope => changed[0].target.scope = creators[1].target.scope,
+            .factory => changed[0].factory = creators[1].factory,
+            .factory_binding => changed[0].factory_binding = creators[1].factory_binding,
+            .factory_symbol => changed[0].factory_symbol = creators[1].factory_symbol,
+            .wrapper_scope => changed[0].wrapper_scope = creators[1].wrapper_scope,
+        }
+        try std.testing.expect(!std.meta.eql(changed[0], creators[0]));
+        try std.testing.expect(!try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
+    }
+    @memcpy(changed, creators);
+    try std.testing.expect(try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
 }
