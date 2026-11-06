@@ -31,9 +31,14 @@ pub const Receipt = struct {
     symbols: []const @import("symbol.zig").Symbol,
 
     pub fn capture(input: *const Module, candidate: *Module, source: Source) Receipt {
-        // Mint only in the staged header. Input ownership stays lazy on abort,
-        // and later certificate producers must reuse this exact reserved label.
-        const candidate_owner = candidate.semantic.?.captureOwnerToken();
+        // Reserve only for the immutable input's actual class-owner domain.
+        // Class-free prepasses retain the existing zero-owner fast path.
+        // Input ownership stays lazy on abort; later class certificates reuse
+        // this exact staged label instead of minting an unrelated one.
+        const has_source_class = for (source.semantic.scope_history.source_owners) |binding| {
+            if (binding.owner.tag == .class_declaration or binding.owner.tag == .class_expression) break true;
+        } else false;
+        const candidate_owner = if (has_source_class) candidate.semantic.?.captureOwnerToken() else candidate.semantic.?.owner_token;
         return .{ .input = input, .candidate = candidate, .candidate_owner = candidate_owner, .input_ast = &input.ast.?, .input_semantic = &input.semantic.?, .owner = input.codegen_output_owner, .tree = source.tree, .semantic = source.semantic, .nodes = source.tree.nodes.items, .extras = source.tree.extra_data.items, .ids = source.semantic.symbol_ids, .symbols = source.semantic.symbols.items };
     }
     fn matches(self: *const Receipt, module: *const Module, source: Source) bool {
