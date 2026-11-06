@@ -39889,6 +39889,183 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('NAPI onAstFunction copies parameterless arrows with exact captured identities', () => {
+    const trailingStatements = [
+      'const read0 = () => new Box().value; console.log(read0());',
+      'const read1 = () => (new Box()).value; console.log(read1());',
+      'const read2 = () => new Box().value + shared; console.log(read2());',
+      'const read3 = () => shared ? new Box().value : 0; console.log(read3());',
+      'const read4 = () => [new Box().value, shared][0]; console.log(read4());',
+      'const read5 = () => ({ value: new Box().value }).value; console.log(read5());',
+      'const read6 = () => (0, new Box().value); console.log(read6());',
+      'const read7 = () => shared && new Box().value; console.log(read7());',
+      'const read8 = () => new Box().value - shared; console.log(read8());',
+      'const read9 = () => new Box().value + (shared + 1); console.log(read9());',
+      'const read10 = () => new Box().value + injectedValue; console.log(read10());',
+      'const read11 = () => (() => new Box().value)(); console.log(read11());',
+    ];
+    const trailingCode = [
+      ...trailingStatements.slice(0, 10),
+      'const injectedValue = 5;',
+      ...trailingStatements.slice(10),
+    ];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-arrow-capture-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      entry,
+      'let shared = 2; function outer(Box) { function marker() {} marker(); } outer(class { constructor() { this.value = 40; } });',
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const baseOptions = JSON.stringify({
+      entryPoints: [entry],
+      platform: 'node',
+      format: 'cjs',
+      target: 'esnext',
+      minifySyntax: false,
+      minifyIdentifiers: true,
+      write: false,
+    });
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build({ ...${baseOptions}, plugins: [{ name: 'arrow-capture-identity', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: ${JSON.stringify(trailingCode)} } : null); } }] });`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+
+    try {
+      const buildResult = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      expect(buildResult.status, buildResult.stderr).toBe(0);
+      const stderr = buildResult.stderr ?? '';
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
+        );
+      expect(mode, stderr).toContain('semantic_graph=retained');
+      const identity = stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry));
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity ?? ''), identity).toEqual([]);
+      expect(identity).toContain(`external=${trailingStatements.length}`);
+
+      const outputs = JSON.parse(buildResult.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      const emitted = outputs[0];
+      const arrowDeclarations = [
+        ...emitted.matchAll(/(?:\b(?:const|let|var)\s+|,\s*)([\w$]+)\s*=\s*\(\)\s*=>[^;]+;/g),
+      ];
+      expect(arrowDeclarations).toHaveLength(trailingStatements.length);
+      const calls = [...emitted.matchAll(/console\.log\(([^;]*)\);/g)];
+      expect(calls).toHaveLength(trailingStatements.length);
+      writeFileSync(output, emitted);
+
+      const execute = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(execute.status, execute.stderr).toBe(0);
+      expect(execute.stdout).toBe('40\n40\n42\n40\n40\n40\n40\n40\n38\n43\n45\n40\n');
+
+      for (let index = 0; index < arrowDeclarations.length; index += 1) {
+        const statement = arrowDeclarations[index]![0];
+        const className = statement.match(/new ([\w$]+)\(/)?.[1];
+        expect(className, `arrow capture ${index} class binding`).toBeDefined();
+        const hostileName = `missing_arrow_class_${index}`;
+        const mutated = emitted.replace(
+          statement,
+          statement.replace(`new ${className}(`, `new ${hostileName}(`),
+        );
+        expect(mutated, hostileName).not.toBe(emitted);
+        writeFileSync(output, mutated);
+        const syntax = spawnSync('node', ['--check', output], { encoding: 'utf8' });
+        expect(syntax.status, `${hostileName}: ${syntax.stderr}`).toBe(0);
+        const hostile = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(hostile.status, hostileName).not.toBe(0);
+        expect(hostile.stderr, hostileName).toContain(
+          `ReferenceError: ${hostileName} is not defined`,
+        );
+      }
+
+      const generatedCapture = arrowDeclarations.findLast((declaration) =>
+        declaration[0].includes('+'),
+      )![0];
+      const generatedBinding = generatedCapture.match(/\+\s*([\w$]+)\s*;/)?.[1];
+      expect(generatedBinding, 'injected declaration captured by the arrow').toBeDefined();
+      const hostileName = 'missing_generated_arrow_binding';
+      const mutated = emitted.replace(
+        generatedCapture,
+        generatedCapture.replace(`+ ${generatedBinding};`, `+ ${hostileName};`),
+      );
+      expect(mutated, hostileName).not.toBe(emitted);
+      writeFileSync(output, mutated);
+      const syntax = spawnSync('node', ['--check', output], { encoding: 'utf8' });
+      expect(syntax.status, `${hostileName}: ${syntax.stderr}`).toBe(0);
+      const hostile = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(hostile.status, hostileName).not.toBe(0);
+      expect(hostile.stderr, hostileName).toContain(
+        `ReferenceError: ${hostileName} is not defined`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('NAPI onAstFunction rejects arrows that need an unrepresented function scope', () => {
+    const rejectedCode = [
+      'console.log((value) => value);',
+      'console.log(() => { const local = 1; return local; });',
+      'console.log(() => this);',
+      'console.log(() => arguments);',
+      'console.log(async () => 1);',
+      'console.log(() => );',
+    ];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-arrow-reject-'));
+    const entry = join(dir, 'entry.js');
+    writeFileSync(entry, 'function outer() { function marker() {} marker(); } outer();');
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const baseOptions = JSON.stringify({
+      entryPoints: [entry],
+      platform: 'node',
+      format: 'cjs',
+      target: 'esnext',
+      write: false,
+    });
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const codes = ${JSON.stringify(rejectedCode)};`,
+      'const results = [];',
+      'for (const trailingCode of codes) {',
+      `  const result = await build({ ...${baseOptions}, plugins: [{ name: 'arrow-scope-reject', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: [trailingCode] } : null); } }] });`,
+      '  results.push({ hasErrors: result.hasErrors, errors: result.errors.map((error) => error.code) });',
+      '}',
+      'process.stdout.write(JSON.stringify(results));',
+    ].join('\n');
+
+    try {
+      const buildResult = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        encoding: 'utf8',
+      });
+      expect(buildResult.status, buildResult.stderr).toBe(0);
+      const results = JSON.parse(buildResult.stdout) as Array<{
+        hasErrors: boolean;
+        errors: string[];
+      }>;
+      expect(results).toHaveLength(rejectedCode.length);
+      for (const [index, result] of results.entries()) {
+        expect(result.hasErrors, rejectedCode[index]).toBe(true);
+        expect(result.errors, rejectedCode[index]).toContain('plugin_error');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('NAPI onAstFunction rejects generated console lookups inside direct eval calls', () => {
     const trailingCalls = [
       "console.log(eval('shared'));",

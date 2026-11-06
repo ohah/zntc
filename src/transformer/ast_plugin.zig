@@ -309,7 +309,7 @@ pub const AstTransformCtx = struct {
     /// JS AST 플러그인의 trailingCode 문자열을 AST 노드로 변환하는 데 사용.
     /// 반환된 슬라이스는 caller가 getAllocator().free()로 해제해야 한다.
     pub fn parseAndInjectStatements(self: *AstTransformCtx, code: []const u8) PluginError![]const NodeIndex {
-        if (!self.trailing_statements_allowed) return error.PluginFailed;
+        if (!self.trailing_statements_allowed) return self.rejectInjectedCode();
         const Parser = @import("../parser/parser.zig").Parser;
         const alloc = self.transformer.allocator;
 
@@ -328,10 +328,11 @@ pub const AstTransformCtx = struct {
         }
 
         _ = parser_ptr.parse() catch return error.OutOfMemory;
+        if (parser_ptr.errors.items.len != 0) return self.rejectInjectedCode();
 
         const root_idx = parser_ptr.ast.nodes.items.len - 1;
         const root = parser_ptr.ast.nodes.items[root_idx];
-        if (root.tag != .program) return &.{};
+        if (root.tag != .program) return self.rejectInjectedCode();
 
         const list = root.data.list;
         if (list.len == 0) return &.{};
@@ -346,9 +347,12 @@ pub const AstTransformCtx = struct {
             const stmt_idx: NodeIndex = @fromBackingInt(@intCast(stmt_raw));
             if (stmt_idx.isNone()) continue;
 
+            if (!(try self.isCopyableInjectedTree(&parser_ptr.ast, stmt_idx)))
+                return self.rejectInjectedCode();
+
             // 파싱된 AST의 노드를 transformer AST에 복사
-            const copied = self.copyNodeFromParsedAst(&parser_ptr.ast, stmt_idx) catch continue;
-            if (copied.isNone()) continue;
+            const copied = try self.copyNodeFromParsedAst(&parser_ptr.ast, stmt_idx);
+            if (copied.isNone()) return self.rejectInjectedCode();
             result[count] = copied;
             count += 1;
         }
@@ -366,6 +370,8 @@ pub const AstTransformCtx = struct {
             generated_symbol_names.deinit(alloc);
         }
 
+        for (result[0..count]) |statement| try self.registerInjectedFunctionScopes(statement);
+
         // Register every generated declaration before binding any reference
         // in the snippet. This preserves forward references and TDZ identity
         // when a plugin injects multiple statements at once.
@@ -373,6 +379,159 @@ pub const AstTransformCtx = struct {
         for (result[0..count]) |statement| try self.bindInjectedReferences(statement, &generated_symbols);
         try self.recordInjectedDynamicLookups(result[0..count]);
         return result[0..count];
+    }
+
+    fn rejectInjectedCode(self: *AstTransformCtx) PluginError![]const NodeIndex {
+        self.transformer.plugin_injection_failed = true;
+        return error.PluginFailed;
+    }
+
+    /// Validate all tags before recursive copying. Some older copy arms are
+    /// intentionally compact and assume parser-produced child layouts, so a
+    /// whole-tree gate keeps a nested unsupported node from becoming a
+    /// partially populated parent.
+    fn isCopyableInjectedTree(self: *AstTransformCtx, source: *const Ast, root: NodeIndex) Error!bool {
+        const reachable = try ast_walk.collectReachableNodeIndicesFrom(self.transformer.allocator, source, root);
+        defer self.transformer.allocator.free(reachable);
+
+        for (reachable) |raw| {
+            if (raw >= source.nodes.items.len) return false;
+            const node = source.nodes.items[raw];
+            if (!isCopyableInjectedTag(node.tag)) return false;
+            switch (node.tag) {
+                .formal_parameters => {
+                    const list = node.data.list;
+                    if (list.len != 0 or list.start > source.extra_data.items.len or
+                        list.len > source.extra_data.items.len - list.start) return false;
+                },
+                .arrow_function_expression => if (!(try self.isCaptureOnlyArrow(source, @fromBackingInt(@intCast(raw))))) return false,
+                else => {},
+            }
+        }
+        return true;
+    }
+
+    /// A parameterless concise arrow has no local bindings. For this narrow
+    /// form, its identifier references are captures from insertion_scope and
+    /// can safely receive the exact source SymbolIds there. Reject lexical
+    /// `this`/`arguments`, direct eval, async functions, and nested bindings:
+    /// they need a distinct function environment that this injector does not
+    /// construct.
+    fn isCaptureOnlyArrow(self: *AstTransformCtx, source: *const Ast, arrow_idx: NodeIndex) Error!bool {
+        if (arrow_idx.isNone() or @backingInt(arrow_idx) >= source.nodes.items.len) return false;
+        const arrow = source.getNode(arrow_idx);
+        if (arrow.tag != .arrow_function_expression) return false;
+        const extra = arrow.data.extra;
+        if (extra > source.extra_data.items.len or source.extra_data.items.len - extra < 3) return false;
+        const params_idx = source.readExtraNode(extra, ast_mod.ArrowExtra.params);
+        const body_idx = source.readExtraNode(extra, ast_mod.ArrowExtra.body);
+        const flags = source.extra_data.items[extra + ast_mod.ArrowExtra.flags];
+        if (flags != 0 or params_idx.isNone() or body_idx.isNone() or
+            @backingInt(params_idx) >= source.nodes.items.len or @backingInt(body_idx) >= source.nodes.items.len) return false;
+        const params = source.getNode(params_idx);
+        if (params.tag != .formal_parameters or params.data.list.len != 0 or
+            params.data.list.start > source.extra_data.items.len or
+            params.data.list.len > source.extra_data.items.len - params.data.list.start) return false;
+        if (source.getNode(body_idx).tag == .block_statement) return false;
+
+        const reachable = try ast_walk.collectReachableNodeIndicesFrom(self.transformer.allocator, source, body_idx);
+        defer self.transformer.allocator.free(reachable);
+        for (reachable) |raw| {
+            if (raw >= source.nodes.items.len) return false;
+            const node = source.nodes.items[raw];
+            switch (node.tag) {
+                .this_expression,
+                .variable_declaration,
+                .variable_declarator,
+                .binding_identifier,
+                .assignment_target_identifier,
+                .expression_statement,
+                .return_statement,
+                .throw_statement,
+                => return false,
+                .identifier_reference => {
+                    const name = source.getText(node.data.string_ref);
+                    if (Scanner.identifierNamesEqual(name, "arguments") or Scanner.identifierNamesEqual(name, "eval")) return false;
+                },
+                .arrow_function_expression => if (!(try self.isCaptureOnlyArrow(source, @fromBackingInt(@intCast(raw))))) return false,
+                else => {},
+            }
+        }
+        return true;
+    }
+
+    fn isCopyableInjectedTag(tag: Tag) bool {
+        return switch (tag) {
+            .identifier_reference,
+            .binding_identifier,
+            .string_literal,
+            .numeric_literal,
+            .boolean_literal,
+            .null_literal,
+            .this_expression,
+            .template_element,
+            .expression_statement,
+            .return_statement,
+            .throw_statement,
+            .spread_element,
+            .unary_expression,
+            .update_expression,
+            .assignment_expression,
+            .binary_expression,
+            .logical_expression,
+            .object_property,
+            .object_expression,
+            .array_expression,
+            .sequence_expression,
+            .template_literal,
+            .computed_property_key,
+            .conditional_expression,
+            .parenthesized_expression,
+            .formal_parameters,
+            .arrow_function_expression,
+            .variable_declaration,
+            .variable_declarator,
+            .static_member_expression,
+            .computed_member_expression,
+            .call_expression,
+            .new_expression,
+            .tagged_template_expression,
+            => true,
+            else => false,
+        };
+    }
+
+    fn registerInjectedFunctionScopes(self: *AstTransformCtx, root: NodeIndex) Error!void {
+        const transformer = self.transformer;
+        if (!transformer.semantic_edit_enabled) return;
+        if (self.insertion_scope.isNone())
+            std.debug.panic("injected arrow scope has no exact insertion ScopeId", .{});
+
+        const Work = struct { node: NodeIndex, scope: ScopeId };
+        const allocator = transformer.allocator;
+        const visited = try allocator.alloc(bool, transformer.ast.nodes.items.len);
+        defer allocator.free(visited);
+        @memset(visited, false);
+
+        var stack: std.ArrayList(Work) = .empty;
+        defer stack.deinit(allocator);
+        try stack.append(allocator, .{ .node = root, .scope = self.insertion_scope });
+        while (stack.pop()) |work| {
+            if (work.node.isNone()) continue;
+            const raw = @backingInt(work.node);
+            if (raw >= transformer.ast.nodes.items.len or visited[raw]) continue;
+            visited[raw] = true;
+
+            const node = transformer.ast.nodes.items[raw];
+            var child_scope = work.scope;
+            if (node.tag == .arrow_function_expression) {
+                child_scope = try transformer.addInjectedFunctionScope(work.scope, work.node);
+            }
+            var children = ast_walk.children(transformer.ast, node);
+            while (children.next()) |child| {
+                if (!child.isNone()) try stack.append(allocator, .{ .node = child, .scope = child_scope });
+            }
+        }
     }
 
     fn recordInjectedDynamicLookups(self: *AstTransformCtx, statements: []const NodeIndex) Error!void {
@@ -453,7 +612,9 @@ pub const AstTransformCtx = struct {
     /// Collect only identifier nodes that occur in lexical reference positions.
     /// The parser also tags static member and object property names as
     /// `identifier_reference`; those names must not resolve to lexical symbols.
-    fn collectInjectedReferenceNodeIndices(self: *AstTransformCtx, root: NodeIndex) Error![]u32 {
+    const InjectedReference = struct { raw: u32, scope: ScopeId };
+
+    fn collectInjectedReferenceNodeIndices(self: *AstTransformCtx, root: NodeIndex) Error![]InjectedReference {
         const transformer = self.transformer;
         const allocator = transformer.allocator;
         const ast = transformer.ast;
@@ -463,13 +624,15 @@ pub const AstTransformCtx = struct {
         defer allocator.free(visited);
         @memset(visited, false);
 
-        var references: std.ArrayList(u32) = .empty;
+        var references: std.ArrayList(InjectedReference) = .empty;
         errdefer references.deinit(allocator);
-        var stack: std.ArrayList(NodeIndex) = .empty;
+        const Work = struct { node: NodeIndex, scope: ScopeId };
+        var stack: std.ArrayList(Work) = .empty;
         defer stack.deinit(allocator);
-        try stack.append(allocator, root);
+        try stack.append(allocator, .{ .node = root, .scope = self.insertion_scope });
 
-        while (stack.pop()) |idx| {
+        while (stack.pop()) |work| {
+            const idx = work.node;
             if (idx.isNone()) continue;
             const raw = @backingInt(idx);
             if (raw >= ast.nodes.items.len or visited[raw]) continue;
@@ -478,7 +641,7 @@ pub const AstTransformCtx = struct {
             const node = ast.nodes.items[raw];
             switch (node.tag) {
                 .identifier_reference, .assignment_target_identifier, .jsx_identifier => {
-                    try references.append(allocator, raw);
+                    try references.append(allocator, .{ .raw = raw, .scope = work.scope });
                     continue;
                 },
                 .static_member_expression => {
@@ -487,7 +650,7 @@ pub const AstTransformCtx = struct {
                     const extra = node.data.extra;
                     if (extra < ast.extra_data.items.len) {
                         const object: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
-                        if (!object.isNone()) try stack.append(allocator, object);
+                        if (!object.isNone()) try stack.append(allocator, .{ .node = object, .scope = work.scope });
                     }
                     continue;
                 },
@@ -500,18 +663,26 @@ pub const AstTransformCtx = struct {
                     if (!key.isNone()) {
                         const key_node = ast.getNode(key);
                         if (value.isNone() or key_node.tag == .computed_property_key)
-                            try stack.append(allocator, key);
+                            try stack.append(allocator, .{ .node = key, .scope = work.scope });
                     }
-                    if (!value.isNone()) try stack.append(allocator, value);
+                    if (!value.isNone()) try stack.append(allocator, .{ .node = value, .scope = work.scope });
                     continue;
                 },
                 else => {},
             }
 
+            var child_scope = work.scope;
+            if (node.tag == .arrow_function_expression and transformer.semantic_edit_enabled) {
+                const editor = transformer.semantic_editor orelse
+                    std.debug.panic("injected arrow scope has no semantic editor", .{});
+                const scope_raw = editor.scope_owner_map.get(raw) orelse
+                    std.debug.panic("injected arrow has no exact function scope owner", .{});
+                child_scope = @fromBackingInt(scope_raw);
+            }
             var children = ast_walk.children(ast, node);
             while (children.next()) |child| {
                 if (!child.isNone() and @backingInt(child) < ast.nodes.items.len)
-                    try stack.append(allocator, child);
+                    try stack.append(allocator, .{ .node = child, .scope = child_scope });
             }
         }
 
@@ -543,7 +714,8 @@ pub const AstTransformCtx = struct {
         const references = try self.collectInjectedReferenceNodeIndices(root);
         defer transformer.allocator.free(references);
 
-        for (references) |raw| {
+        for (references) |injected_reference| {
+            const raw = injected_reference.raw;
             if (raw >= transformer.ast.nodes.items.len) continue;
             const reference: NodeIndex = @fromBackingInt(@intCast(raw));
             const node = transformer.ast.nodes.items[raw];
@@ -561,7 +733,7 @@ pub const AstTransformCtx = struct {
             }
             if (generated_symbols.get(name)) |symbol_id| {
                 try self.bindReferenceToSymbol(reference, symbol_id);
-            } else if (transformer.lexicalSymbolIdAtScope(name, self.insertion_scope)) |raw_id| {
+            } else if (transformer.lexicalSymbolIdAtScope(name, injected_reference.scope)) |raw_id| {
                 if (transformer.semantic_edit_enabled) {
                     try transformer.trackExactOutputReference(reference, raw_id);
                 } else {
@@ -681,6 +853,7 @@ pub const AstTransformCtx = struct {
             .array_expression,
             .sequence_expression,
             .template_literal,
+            .formal_parameters,
             => blk: {
                 const src_list = src_node.data.list;
                 if (src_list.start > src_ast.extra_data.items.len or
@@ -897,6 +1070,26 @@ pub const AstTransformCtx = struct {
                 const flags = src_ast.extra_data.items[e + 2];
                 break :blk self.addExtraNode(.tagged_template_expression, new_span, &.{
                     @backingInt(tag), @backingInt(template), flags,
+                });
+            },
+
+            // Empty-parameter concise arrows capture every lexical identifier
+            // from the surrounding insertion scope. Their separate function
+            // scope has no bindings to register, so retaining the arrow node
+            // preserves both syntax and exact captured SymbolIds.
+            .arrow_function_expression => blk: {
+                if (!(try self.isCaptureOnlyArrow(src_ast, src_idx))) break :blk .none;
+                const e = src_node.data.extra;
+                if (e > src_ast.extra_data.items.len or src_ast.extra_data.items.len - e < 3) break :blk .none;
+                const params_source = src_ast.readExtraNode(e, ast_mod.ArrowExtra.params);
+                const body_source = src_ast.readExtraNode(e, ast_mod.ArrowExtra.body);
+                if (params_source.isNone() or body_source.isNone()) break :blk .none;
+                const params = try self.copyNodeFromParsedAst(src_ast, params_source);
+                const body = try self.copyNodeFromParsedAst(src_ast, body_source);
+                if (params.isNone() or body.isNone()) break :blk .none;
+                const flags = src_ast.extra_data.items[e + ast_mod.ArrowExtra.flags];
+                break :blk self.addExtraNode(.arrow_function_expression, new_span, &.{
+                    @backingInt(params), @backingInt(body), flags,
                 });
             },
 

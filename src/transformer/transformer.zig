@@ -487,6 +487,10 @@ pub const Transformer = struct {
     generator_native_var_scope: ScopeId = .none,
     /// 첫 합성 바인딩이 필요할 때만 기존 의미 정보를 복사한다.
     semantic_edit_enabled: bool = false,
+    /// An AST plugin supplied trailing code that could not be copied with
+    /// exact syntax and lexical identity. The graph prepass turns this into a
+    /// diagnostic so generated code is never silently omitted.
+    plugin_injection_failed: bool = false,
     semantic_editor: ?SemanticEditor = null,
     /// 선언보다 먼저 만들어진 nullish temp 참조. 생성 Span으로 hoist와 연결한다.
     pending_temp_refs: std.ArrayListUnmanaged(struct {
@@ -1289,6 +1293,7 @@ pub const Transformer = struct {
     pub const programScope = @import("transformer/semantic_edit.zig").programScope;
     pub const markOpaqueDefineScopeChain = @import("transformer/semantic_edit.zig").markOpaqueDefineScopeChain;
     pub const markInjectedDirectEvalScopeChain = @import("transformer/semantic_edit.zig").markInjectedDirectEvalScopeChain;
+    pub const addInjectedFunctionScope = @import("transformer/semantic_edit.zig").addInjectedFunctionScope;
     pub const nearestVarScope = @import("transformer/semantic_edit.zig").nearestVarScope;
     pub const syntheticTempOutputScopeIsDeferred = @import("transformer/semantic_edit.zig").syntheticTempOutputScopeIsDeferred;
     pub const tempOutputScopeIsDeferredIgnoringStateMachine = @import("transformer/semantic_edit.zig").tempOutputScopeIsDeferredIgnoringStateMachine;

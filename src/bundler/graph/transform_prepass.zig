@@ -21818,6 +21818,19 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     }
 
     const root = transformer.transform() catch return;
+    if (transformer.plugin_injection_failed) {
+        self.addDiag(
+            .plugin_error,
+            .@"error",
+            module.path,
+            Span.EMPTY,
+            .parse,
+            "An AST plugin supplied trailing code that cannot be copied safely; the generated code was rejected.",
+            "Use syntax supported by the AST plugin injection path or simplify the injected function body.",
+        );
+        candidate_diagnosed.* = true;
+        return;
+    }
     if (transformer.unsupported_generator_native_lexical) |finding| {
         const is_resume = finding.reason == .across_resume;
         const code: @import("../types.zig").BundlerDiagnostic.ErrorCode = if (is_resume) .generator_native_lexical_resume else .generator_native_lexical_nesting;
