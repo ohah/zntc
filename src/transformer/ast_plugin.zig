@@ -276,8 +276,18 @@ pub const AstTransformCtx = struct {
     /// 현재 노드 뒤에 문장을 삽입한다.
     /// visitExtraList의 trailing_nodes 메커니즘을 통해 부모 리스트에 추가.
     pub fn addTrailingStatement(self: *AstTransformCtx, stmt: NodeIndex) PluginError!void {
-        if (!self.trailing_statements_allowed) return error.PluginFailed;
-        try self.transformer.trailing_nodes.append(self.transformer.allocator, stmt);
+        return self.addTrailingStatements(&.{stmt});
+    }
+
+    /// Append one parsed batch atomically. ArrayList reserves capacity before
+    /// changing its length, so an allocation failure cannot leave a prefix of
+    /// the plugin's generated statements attached to the function.
+    pub fn addTrailingStatements(self: *AstTransformCtx, statements: []const NodeIndex) PluginError!void {
+        if (!self.trailing_statements_allowed) {
+            self.transformer.plugin_injection_failed = true;
+            return error.PluginFailed;
+        }
+        try self.transformer.trailing_nodes.appendSlice(self.transformer.allocator, statements);
     }
 
     /// body 앞에 문장들을 삽입한 새 body를 반환.
@@ -1806,4 +1816,42 @@ test "NAPI plugin var redeclarations reuse the exact existing SymbolId" {
     const post_parameter_ref_id = post_transform_analyzer.symbol_ids.items[@backingInt(state.parameter_reference)] orelse
         return error.TestUnexpectedResult;
     try std.testing.expectEqual(post_parameter_id, post_parameter_ref_id);
+}
+
+test "plugin trailing statement batches remain empty when append allocation fails" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var scanner = try Scanner.init(alloc, "function marker() {}");
+    var parser = @import("../parser/parser.zig").Parser.init(alloc, &scanner);
+    _ = try parser.parse();
+    const program_idx: NodeIndex = @fromBackingInt(@intCast(parser.ast.nodes.items.len - 1));
+    const program = parser.ast.getNode(program_idx);
+    const statement_raw = parser.ast.extra_data.items[program.data.list.start];
+    const statement: NodeIndex = @fromBackingInt(@intCast(statement_raw));
+
+    var transformer = try Transformer.init(alloc, &parser.ast, .{});
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = 1,
+        .resize_fail_index = 0,
+    });
+    const failing_alloc = failing.allocator();
+    const existing = try failing_alloc.alloc(NodeIndex, 1);
+    existing[0] = statement;
+    transformer.trailing_nodes = .{
+        .items = existing,
+        .capacity = existing.len,
+        .pointer_stability = .{},
+    };
+    transformer.allocator = failing_alloc;
+    defer transformer.trailing_nodes.deinit(failing_alloc);
+    var api = AstTransformCtx{
+        .transformer = &transformer,
+        .trailing_statements_allowed = true,
+    };
+
+    try std.testing.expectError(error.OutOfMemory, api.addTrailingStatements(&.{ statement, statement }));
+    try std.testing.expectEqual(@as(usize, 1), transformer.trailing_nodes.items.len);
+    try std.testing.expectEqual(statement, transformer.trailing_nodes.items[0]);
 }

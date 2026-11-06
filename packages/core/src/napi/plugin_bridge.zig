@@ -910,7 +910,7 @@ fn NapiPluginAdapter(comptime Self: type) type {
         ) PluginError!void {
             const self: *Self = @ptrCast(@alignCast(ctx.?));
 
-            const json = serializeFunctionInfo(api, func) catch return;
+            const json = serializeFunctionInfo(api, func) catch return error.OutOfMemory;
             defer native_alloc.free(json);
 
             const resp = self.callHook(.astFunction, json, null) orelse return;
@@ -919,15 +919,25 @@ fn NapiPluginAdapter(comptime Self: type) type {
             if (resp.is_failure) return error.PluginFailed;
 
             if (resp.strip_directive != null) {
-                _ = api.stripDirective(func.body_idx) catch return;
+                _ = try api.stripDirective(func.body_idx);
             }
             if (resp.trailing_code) |codes| {
+                const alloc = api.getAllocator();
+                var statements: std.ArrayList(zntc_lib.parser.ast.NodeIndex) = .empty;
+                defer statements.deinit(alloc);
                 for (codes) |code_str| {
-                    const stmts = api.parseAndInjectStatements(code_str) catch continue;
-                    for (stmts) |stmt| {
-                        api.addTrailingStatement(stmt) catch continue;
-                    }
+                    const parsed = api.parseAndInjectStatements(code_str) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.PluginFailed => return error.PluginFailed,
+                    };
+                    statements.appendSlice(alloc, parsed) catch {
+                        alloc.free(parsed);
+                        return error.OutOfMemory;
+                    };
+                    alloc.free(parsed);
                 }
+                if (api.transformer.plugin_injection_failed) return error.PluginFailed;
+                try api.addTrailingStatements(statements.items);
             }
         }
 
