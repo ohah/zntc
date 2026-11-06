@@ -133,9 +133,12 @@ fn preservedEagerTarget(graph: anytype, linker: anytype, module: *const Module, 
 
 fn preservedEagerBindingTargets(graph: anytype, linker: anytype, module: *const Module, binding: Binding, sid: u32) !?Initializers {
     if (binding.is_helper or binding.callsite_target != null or binding.source_type_only == true or binding.guarded_eager_init_lowered) return null;
-    if (!binding.importsDefault() and binding.kind != .namespace and !hasLiveLocalExport(module, sid)) return null;
     const record = module.import_records[binding.import_record_index];
     const direct = graph.getModule(record.resolved) orelse return error.InvalidGuardedImportBinding;
+    // An explicit sideEffects contract vetoes lazy named reads. Its original
+    // import still owns eager initialization, with the same typed guard and
+    // initializer identities as default/namespace imports.
+    if (!binding.importsDefault() and binding.kind != .namespace and !hasLiveLocalExport(module, sid) and !direct.isUserDeclaredSideEffectful()) return null;
     if (binding.kind == .namespace) {
         if (!preservedEagerTarget(graph, linker, module, direct)) return null;
         _ = try direct.esmNamespaceSymbol();
@@ -1345,4 +1348,55 @@ test "guarded namespace enum calls project actual IIFE parameter and engine coor
         // Every case has its implicit parameter even without an arguments read.
         try std.testing.expect(checked >= 1);
     }
+}
+
+test "preserved side effectful named imports own eager guarded identities in cycles" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const helpers = @import("test_helpers.zig");
+    for ([_]bool{ false, true }) |guard| for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "import {read} from \"./left.mjs\";import {events} from \"./trace.mjs\";console.log(JSON.stringify([read(),events]));");
+        try helpers.writeFile(tmp.dir, "left.mjs", "import {readRight} from \"./right.mjs\";import {events} from \"./trace.mjs\";events.push(\"left body\");export function left(){return \"left\";}export function read(){return readRight()+left();}");
+        try helpers.writeFile(tmp.dir, "package.json", "{\"type\":\"commonjs\",\"sideEffects\":true}");
+        try helpers.writeFile(tmp.dir, "right.mjs", "import {left} from \"./left.mjs\";import {events} from \"./trace.mjs\";events.push(\"right body\");events.push(left());export function readRight(){return left()+\"right\";}");
+        try helpers.writeFile(tmp.dir, "trace.mjs", "export const events=[];");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", entry }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        try std.testing.expectEqual(@as(u8, 0), native.term.exited);
+        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .cjs, .code_splitting = true, .preserve_modules = true, .entry_error_guard = guard, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const output = try bundler.bundle(std.testing.io);
+        defer output.deinit(std.testing.allocator);
+        try std.testing.expect(!output.hasErrors());
+        const module = graph.getModule(graph.path_to_module.get(entry).?).?;
+        var named_owned: usize = 0;
+        var guard_owned: usize = 0;
+        for (module.import_bindings) |binding| {
+            if (!binding.is_helper and binding.kind == .named and binding.guarded_eager_init_lowered) named_owned += 1;
+            if (binding.callsite_target) |target| {
+                try @import("runtime_callsite_targets.zig").validateTargetRole(&graph, target);
+                if (target.role == .entry_guard) guard_owned += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 2), named_owned);
+        try std.testing.expectEqual(@as(usize, if (guard) 1 else 0), guard_owned);
+        for (output.outputs.?) |file| try helpers.writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+        const emitted = try helpers.absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(emitted);
+        const execution = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", emitted }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        defer std.testing.allocator.free(execution.stdout);
+        defer std.testing.allocator.free(execution.stderr);
+        if (execution.term != .exited or execution.term.exited != 0) std.debug.print("{s}\n", .{execution.stderr});
+        try std.testing.expectEqual(@as(u8, 0), execution.term.exited);
+        try std.testing.expectEqualStrings(native.stdout, execution.stdout);
+    };
 }
