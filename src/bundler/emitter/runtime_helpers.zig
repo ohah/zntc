@@ -38,10 +38,12 @@ pub fn asyncReadyMarkerCandidate(graph: *const ModuleGraph, module: *const Modul
 /// Public ESM-backed named namespaces need own live properties even when
 /// there is no import interop or async wrapper in the output.
 pub fn cjsEntryDescriptorCandidate(graph: *const ModuleGraph, module: *const Module, format: @import("../types.zig").Format, mode: @import("../bundler.zig").OutputExports) !bool {
+    // Registry factories also publish this compiler provider as named CJS,
+    // irrespective of their IIFE/UMD/AMD outer library format.
     // The compiler readiness provider is its own named CJS output even when
     // it is not a user entry and the user requested a scalar/no public export.
     // Use its captured producer tuple, never its generated helper spelling.
-    if (format == .cjs) if (graph.tla_readiness_all) |known| {
+    if (format == .cjs or format.isWrappedFormat()) if (graph.tla_readiness_all) |known| {
         if (module.index == known.module_index) {
             if (graph.getModule(known.module_index) != module) return error.InvalidTlaReadinessHelper;
             const semantic = module.semantic orelse return error.InvalidTlaReadinessHelper;
