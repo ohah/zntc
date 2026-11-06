@@ -86,7 +86,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
             const tmp_span = try es_helpers.makeTempVarSpan(self);
             new_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
             if (self.semantic_edit_enabled) {
-                prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx);
+                prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx, new_name);
                 const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, prepared_wrapper_scope) orelse
                     std.debug.panic("anonymous static-private class name has no direct SymbolId", .{});
                 es_helpers.markStandaloneLateSyntheticTemp(self, id, prepared_wrapper_scope);
@@ -112,7 +112,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
             new_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
             es_helpers.consumeTempVarSpan(self, tmp_span);
             if (self.semantic_edit_enabled) {
-                prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx);
+                prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx, new_name);
                 const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, prepared_wrapper_scope) orelse
                     std.debug.panic("anonymous static-block class name has no direct SymbolId", .{});
                 es_helpers.markStandaloneLateSyntheticTemp(self, id, prepared_wrapper_scope);
@@ -146,7 +146,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
             (classBodyHasLowerableMember(self, _anon_body_idx, _lower_pm_pre, _lower_pf_pre, false) or
                 (self.options.unsupported.class_static_block and classBodyHasLowerableMember(self, _anon_body_idx, false, false, true))))
         {
-            prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx);
+            prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx, new_name);
         }
 
         const saved_super_class = self.current_super_class;
@@ -209,7 +209,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                     // and reparent the real output scope before transforming
                     // methods that read the alias.
                     if (as_expression and prepared_wrapper_scope.isNone())
-                        prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx);
+                        prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx, new_name);
                     alias_scope = if (as_expression)
                         prepared_wrapper_scope
                     else blk: {
@@ -696,7 +696,7 @@ pub fn wrapClassExprInIIFE(
 ) Error!NodeIndex {
     const wrapper_scope: ScopeId = if (self.semantic_edit_enabled)
         (if (prepared_wrapper_scope.isNone())
-            try prepareClassExprWrapperScope(self, source_idx)
+            try prepareClassExprWrapperScope(self, source_idx, new_name)
         else
             prepared_wrapper_scope)
     else
@@ -808,7 +808,7 @@ fn wrapperClassRef(self: *Transformer, class_binding_symbol_id: ?u32, name_span:
 /// Reserve and attach the class-expression body scope before static postlude
 /// references are built, so those references can be recorded in their actual
 /// IIFE scope rather than the source class-body scope.
-pub fn prepareClassExprWrapperScope(self: *Transformer, source_idx: NodeIndex) Error!ScopeId {
+pub fn prepareClassExprWrapperScope(self: *Transformer, source_idx: NodeIndex, selected_name: NodeIndex) Error!ScopeId {
     if (!self.semantic_edit_enabled) return .none;
     const class_scope = self.outputOwnedScope(source_idx) orelse
         std.debug.panic("private helper class expression has no source scope", .{});
@@ -824,7 +824,11 @@ pub fn prepareClassExprWrapperScope(self: *Transformer, source_idx: NodeIndex) E
         if (self.scope_owner_origins.get(source_raw)) |origin|
             own_self = self.class_self_symbol_map.get(origin);
     }
-    if (own_self) |id| {
+    // Dropping an unused source name can select a new, not-yet-declared
+    // replacement. Its old source self remains in its original class frame.
+    const selected_sid: ?u32 = if (selected_name.isNone()) null else self.getSymbolIdAt(selected_name);
+    const selected_self: ?u32 = if (selected_sid != null and selected_sid == own_self) own_self else null;
+    if (selected_self) |id| {
         const class_binding = self.ast.readExtraNode(self.ast.getNode(source_idx).data.extra, ast_mod.ClassExtra.name);
         const worklet = @import("../worklet_class_clone.zig");
         const move = worklet.prepareClassSelfStorageMove(self, source_idx, class_binding, @fromBackingInt(id), wrapper_scope) catch |err| switch (err) {
