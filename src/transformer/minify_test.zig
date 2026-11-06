@@ -556,8 +556,46 @@ test "minify: conditional false" {
     );
 }
 
+// These source expressions select a value, so the exact surviving AST must
+// retain GetValue even when the old flat output spelling looked shorter.
+fn expectLogicalSelectedValue(input: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, input);
+    var parser = Parser.init(a, &scanner);
+    const root = try parser.parse();
+    var selected: NodeIndex = .none;
+    var logical: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| if (node.tag == .logical_expression) {
+        try std.testing.expect(logical.isNone());
+        logical = @fromBackingInt(@as(u32, @intCast(raw)));
+        selected = node.data.binary.right;
+    };
+    try std.testing.expect(!logical.isNone());
+    minify_mod.minify(&parser.ast, .empty, a, root);
+    const result = parser.ast.getNode(logical);
+    try std.testing.expectEqual(.sequence_expression, result.tag);
+    try std.testing.expectEqual(@as(u32, 2), result.data.list.len);
+    const zero = parser.ast.getNode(parser.ast.readExtraNode(result.data.list.start, 0));
+    try std.testing.expectEqual(.numeric_literal, zero.tag);
+    try std.testing.expectEqualStrings("0", parser.ast.getText(zero.span));
+    try std.testing.expectEqual(selected, parser.ast.readExtraNode(result.data.list.start, 1));
+    var codegen = Codegen.initWithOptions(a, &parser.ast, .{ .minify_whitespace = true });
+    const emitted = try codegen.generate(root);
+    const prefix = "const events=[];const kept=(0,function(){return 42});Object.defineProperty(globalThis,'foo',{get(){events.push('get');return kept},configurable:true});";
+    const observe = "console.log(JSON.stringify([x===kept,x(),x.name,events]));";
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", try std.fmt.allocPrint(a, "{s}{s}{s}", .{ prefix, input, observe }) } });
+    const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", try std.fmt.allocPrint(a, "{s}{s}{s}", .{ prefix, emitted, observe }) } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("[true,42,\"\",[\"get\"]]\n", native.stdout);
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+}
+
 test "minify: logical and true" {
-    try expectMinify("const x = true && foo;", "const x = foo;");
+    try expectLogicalSelectedValue("const x = true && foo;");
 }
 
 test "minify: logical and false" {
@@ -569,7 +607,7 @@ test "minify: logical or true" {
 }
 
 test "minify: logical or false" {
-    try expectMinify("const x = false || foo;", "const x = foo;");
+    try expectLogicalSelectedValue("const x = false || foo;");
 }
 
 test "minify: nullish coalescing null" {
@@ -628,10 +666,57 @@ test "minify: X===void 0||X===null → X==null (순서 무관)" {
 }
 
 test "minify: X===undefined||X===null → X==null (undefined 식별자)" {
-    try expectMinify(
-        "const r = n === undefined || n === null ? 1 : 2;",
-        "const r = n == null ? 1 : 2;",
-    );
+    const input = "const r = n === undefined || n === null ? 1 : 2;";
+    // A graphless helper has no evidence that this name denotes the global.
+    try expectMinify(input, input);
+    for ([_]bool{ false, true }) |shadow| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const source = try std.fmt.allocPrint(a, "const builtin=typeof undefined;function read(n{s}){{{s}return r}}console.log(JSON.stringify([read(null{s}),read(void 0{s}),read(42{s})]));", .{
+            if (shadow) ",undefined" else "", input,
+            if (shadow) ",42" else "",        if (shadow) ",42" else "",
+            if (shadow) ",42" else "",
+        });
+        var scanner = try Scanner.init(a, source);
+        var parser = Parser.init(a, &scanner);
+        const root = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+        try analyzer.analyze();
+        var logical: NodeIndex = .none;
+        var undefined_read: NodeIndex = .none;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag == .logical_expression) logical = @fromBackingInt(@as(u32, @intCast(raw)));
+            if (node.tag == .binary_expression and parser.ast.getNode(node.data.binary.right).tag == .identifier_reference and
+                std.mem.eql(u8, parser.ast.identifierNameText(parser.ast.getNode(node.data.binary.right)), "undefined")) undefined_read = node.data.binary.right;
+        }
+        try std.testing.expect(!logical.isNone() and !undefined_read.isNone());
+        try std.testing.expect(analyzer.unresolved_references.contains("undefined"));
+        const sid = analyzer.symbol_ids.items[@backingInt(undefined_read)];
+        if (shadow) {
+            try std.testing.expect(sid != null);
+            try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.parameter, analyzer.symbols.items[sid.?].kind);
+        } else try std.testing.expect(sid == null);
+        minify_mod.minify(&parser.ast, .{
+            .symbols = analyzer.symbols.items,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .scopes = analyzer.scopes.items,
+            .unresolved_globals = &analyzer.unresolved_references,
+            .references = analyzer.references.items,
+        }, a, root);
+        const folded = parser.ast.getNode(logical);
+        try std.testing.expectEqual(if (shadow) @import("../parser/ast.zig").Node.Tag.logical_expression else .binary_expression, folded.tag);
+        try std.testing.expectEqual(@as(u16, @backingInt(if (shadow) @import("../lexer/token.zig").Kind.pipe2 else .eq2)), folded.data.binary.flags);
+        var codegen = Codegen.initWithOptions(a, &parser.ast, .{});
+        const output = try codegen.generate(root);
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", output } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings(if (shadow) "[1,2,1]\n" else "[1,1,2]\n", native.stdout);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+    }
 }
 
 test "minify: 다른 식별자면 fold 안 함 (a===null||b===void 0)" {
