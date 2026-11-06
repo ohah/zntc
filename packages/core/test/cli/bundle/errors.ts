@@ -152,10 +152,7 @@ describe('CLI: bundle diagnostics do not weaken publication', () => {
     }
   }
 
-  for (const logging of [
-    ['--log-level', 'silent'],
-    ['--log-limit', '1'],
-  ]) {
+  for (const logging of [['--log-level=silent'], ['--log-limit=1']]) {
     test(`fatal worker preserves output and metafile sentinels: ${logging.join(' ')}`, () => {
       fixture((dir) => {
         mkdirSync(join(dir, 'out'));
@@ -179,9 +176,9 @@ describe('CLI: bundle diagnostics do not weaken publication', () => {
         expect(readFileSync(join(dir, 'out', 'sentinel.txt'), 'utf8')).toBe('keep output');
         expect(readFileSync(join(dir, 'meta.json'), 'utf8')).toBe('keep metafile');
         expect(existsSync(join(dir, 'out', 'bundle.js'))).toBe(false);
-        if (logging[1] === 'silent') expect(result.stderr).toBe('');
+        if (logging[0] === '--log-level=silent') expect(result.stderr).toBe('');
         else expect(result.stderr.match(/^error:/gm)?.length).toBe(1);
-      }, logging[0] === '--log-limit');
+      }, logging[0] === '--log-limit=1');
     });
   }
 
@@ -189,13 +186,13 @@ describe('CLI: bundle diagnostics do not weaken publication', () => {
     fixture((dir) => {
       writeFileSync(join(dir, 'output.js'), 'keep outfile');
       const output = runCli(
-        ['--bundle', 'entry.js', '--outfile', 'output.js', '--log-level', 'silent'],
+        ['--bundle', 'entry.js', '--outfile', 'output.js', '--log-level=silent'],
         { cwd: dir },
       );
       expect(output.exitCode).toBe(1);
       expect(output.stderr).toBe('');
       expect(readFileSync(join(dir, 'output.js'), 'utf8')).toBe('keep outfile');
-      const stdout = runCli(['--bundle', 'entry.js', '--log-level', 'silent'], { cwd: dir });
+      const stdout = runCli(['--bundle', 'entry.js', '--log-level=silent'], { cwd: dir });
       expect(stdout.exitCode).toBe(1);
       expect(stdout.stdout).toBe('');
       expect(stdout.stderr).toBe('');
@@ -206,7 +203,7 @@ describe('CLI: bundle diagnostics do not weaken publication', () => {
     fixture((dir) => {
       writeFileSync(join(dir, 'entry.js'), 'console.log(42);\n');
       const result = runCli(
-        ['--bundle', 'entry.js', '--outfile', 'output.js', '--log-level', 'silent'],
+        ['--bundle', 'entry.js', '--outfile', 'output.js', '--log-level=silent'],
         { cwd: dir },
       );
       expect(result.exitCode).toBe(0);
@@ -219,7 +216,7 @@ describe('CLI: bundle diagnostics do not weaken publication', () => {
     fixture((dir) => {
       writeFileSync(join(dir, 'entry.js'), 'import "./missing.js"; console.log(42);\n');
       const result = runCli(
-        ['--bundle', 'entry.js', '--outfile', 'output.js', '--log-level', 'silent'],
+        ['--bundle', 'entry.js', '--outfile', 'output.js', '--log-level=silent'],
         { cwd: dir },
       );
       expect(result.exitCode).toBe(1);
