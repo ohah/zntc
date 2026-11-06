@@ -22508,29 +22508,27 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     }
 }
 
-/// AST mutation 이후 module 의 graph-facing metadata 를 같은 AST 기준으로 재동기화한다.
+/// AST mutation 이후 graph-facing module metadata 를 현재 AST 에 맞춘다.
 ///
-/// 이 함수는 단순 semantic refresh 가 아니다. transformed/minified AST 를 기준으로
-/// semantic symbol table, StmtInfo, import/require records, import/export bindings,
+/// 이 함수는 semantic graph 를 재분석하거나 `SymbolId`/`ScopeId` 를 교체하지 않는다.
+/// caller 가 유지한 graph 를 사용해 import/require records, import/export bindings,
 /// namespace access, exported_names, ESM/CJS classification, synthetic JSX imports,
-/// alias table 을 다시 맞춘다.
+/// alias table 을 동기화한다. `StmtInfo` 는 필요한 caller 가 그 retained graph 에서
+/// 별도로 다시 만든다.
 ///
 /// 호출 후 invariant:
-/// - `module.ast`, `module.semantic`, `module.prebuilt_stmt_info`,
-///   `module.import_records`, `module.import_bindings`, `module.export_bindings`,
-///   `module.exported_names`, `module.alias_table` 은 모두 같은 AST snapshot 기준이다.
+/// - `module.ast`, caller 가 관리하는 `module.semantic`, graph-facing import/export/module
+///   metadata 및 `module.alias_table` 은 같은 AST/retained graph 상태를 나타낸다.
+/// - 이 함수는 `module.prebuilt_stmt_info` 를 갱신하지 않는다.
 /// - runtime helper virtual module 내부의 helper 이름은 unresolved global 에 남지 않는다.
 ///
-/// 이 중앙 resync 경로를 우회해서 record/binding 만 수동 보정하면 linker, tree-shaker,
-/// chunking 이 서로 다른 AST/semantic 상태를 보게 되므로 여기서만 metadata 재구축
-/// 정책을 확장해야 한다 (#1913).
-/// Re-analysis replaces the semantic symbol array, so old SymbolIDs cannot be
-/// reused directly. Carry a rename only through a surviving declaration/facade
-/// node with the same NodeIndex in both semantic snapshots. References are not
-/// anchors because re-analysis can resolve one to a different binding. Names,
-/// declaration spans, and synthetic-name strings are not identity. Ambiguous
-/// mappings are dropped instead of guessing which new symbol inherited the old
-/// identity.
+/// 이 중앙 경로를 우회해 record/binding 만 수동 보정하면 linker 와 tree-shaker 가 서로
+/// 다른 AST 상태를 보게 된다. graph-facing metadata 재동기화 정책은 여기서 확장한다
+/// (#1913).
+///
+/// 아래 rename remap 설명은 test-only fresh-analysis oracle 에만 해당한다. 그 oracle 은
+/// 새 semantic snapshot 에서 같은 `NodeIndex` 의 declaration/facade 를 찾아 rename 을
+/// 비교한다. production pre-pass 는 retained graph 를 게시하므로 이 remap을 사용하지 않는다.
 fn isRenameAnchorNode(tag: NodeTag, old_symbol: SemanticSymbol, new_symbol: SemanticSymbol) bool {
     if (old_symbol.kind != new_symbol.kind) return false;
     return switch (tag) {

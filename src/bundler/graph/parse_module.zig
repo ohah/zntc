@@ -504,9 +504,10 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
 
     // #1961/#1913: transformer pre-pass. helper module 을 graph 의 1급 모듈로
     // 분배하려면 helper import 가 link 단계 전에 import_records 에 등록되어야 한다.
-    // transformer 를 여기서 1회 실행해 final AST 를 module.ast 에 저장하고, 그 AST
-    // 기준으로 semantic/import/export/StmtInfo 를 다시 만든다. emitter 는
-    // module.transform_cache hit 시 transform skip.
+    // transformer pre-pass 는 prepared candidate 의 AST 와 기존 semantic graph 를
+    // 함께 갱신하고 import/export/module metadata 를 동기화한다. StmtInfo 는 유지된
+    // graph 에서 만든다. exact output proof 를 통과한 candidate 만 게시하며 semantic
+    // 재분석은 하지 않는다. emitter 는 module.transform_cache hit 시 transform 을 건너뛴다.
     {
         var prepass_scope = profile.begin(.graph_discover_pm_prepass);
         defer prepass_scope.end();
