@@ -25572,7 +25572,7 @@ fn isNodeReachableInMinifiedGraph(raw: u32, reachable: *const std.DynamicBitSet)
     return raw < reachable.capacity() and reachable.isSet(raw);
 }
 
-fn minifiedConstGraphSidecarsRemainReachable(
+pub fn constMaterializedGraphSidecarsRemainReachable(
     module: *const Module,
     semantic: anytype,
     reachable: *const std.DynamicBitSet,
@@ -25686,7 +25686,7 @@ fn exactRetainedClassSelfDeclarationOwner(
     return owner;
 }
 
-const MinifiedConstSidecarMutation = enum {
+const ConstMaterializedSidecarMutation = enum {
     all_live,
     stale_class_self_owner,
     invalid_namespace_member_symbol,
@@ -25706,7 +25706,7 @@ const MinifiedConstSidecarMutation = enum {
     stale_destructuring_temp,
 };
 
-const MinifiedConstTestSemantic = struct {
+const ConstMaterializedTestSemantic = struct {
     symbols: struct { items: []SemanticSymbol },
     symbol_ids: []const ?u32,
     class_self_symbol_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
@@ -25714,7 +25714,7 @@ const MinifiedConstTestSemantic = struct {
     namespace_declaration_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
 };
 
-fn minifiedConstSidecarsAreValidForTest(mutation: MinifiedConstSidecarMutation) !bool {
+fn constMaterializedSidecarsAreValidForTest(mutation: ConstMaterializedSidecarMutation) !bool {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -25730,7 +25730,7 @@ fn minifiedConstSidecarsAreValidForTest(mutation: MinifiedConstSidecarMutation) 
     var symbol_ids = try allocator.alloc(?u32, 16);
     @memset(symbol_ids, null);
     symbol_ids[5] = 0;
-    var semantic: MinifiedConstTestSemantic = .{
+    var semantic: ConstMaterializedTestSemantic = .{
         .symbols = .{ .items = symbols },
         .symbol_ids = symbol_ids,
     };
@@ -25813,12 +25813,12 @@ fn minifiedConstSidecarsAreValidForTest(mutation: MinifiedConstSidecarMutation) 
         .stale_destructuring_temp => try cache.destructuring_temp_bindings.put(allocator, 31, {}),
     }
     module.transform_cache = cache;
-    return minifiedConstGraphSidecarsRemainReachable(&module, &semantic, &reachable);
+    return constMaterializedGraphSidecarsRemainReachable(&module, &semantic, &reachable);
 }
 
-test "minified const graph rejects stale or invalid sidecar identities" {
-    inline for (std.meta.tags(MinifiedConstSidecarMutation)) |mutation| {
-        const valid = try minifiedConstSidecarsAreValidForTest(mutation);
+test "const graph rejects stale or invalid sidecar identities" {
+    inline for (std.meta.tags(ConstMaterializedSidecarMutation)) |mutation| {
+        const valid = try constMaterializedSidecarsAreValidForTest(mutation);
         try std.testing.expectEqual(mutation == .all_live, valid);
     }
 }
@@ -25871,7 +25871,7 @@ fn prepareConstMaterializationMinifiedGraph(
         if (raw >= ast.nodes.items.len) return false;
         reachable.set(raw);
     }
-    if (!minifiedConstGraphSidecarsRemainReachable(module, semantic, &reachable)) return false;
+    if (!constMaterializedGraphSidecarsRemainReachable(module, semantic, &reachable)) return false;
 
     // A scope owner can become unreachable only because syntax minification
     // removed its subtree. Accept only the exact owner/scope pairs captured
