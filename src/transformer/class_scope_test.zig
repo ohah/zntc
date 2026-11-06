@@ -4402,3 +4402,45 @@ test "class wrapper fresh private self with public fields matches native evaluat
     try std.testing.expectEqual(@as(usize, 8), attempted);
     try std.testing.expectEqual(@as(usize, 0), failures);
 }
+
+test "class wrapper receipt index preserves sibling and nested construction order" {
+    const helpers = @import("../bundler/test_helpers.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var siblings: std.ArrayList(u8) = .empty;
+    try siblings.appendSlice(a, "const cs=[");
+    for (0..64) |i| {
+        if (i != 0) try siblings.append(a, ',');
+        try siblings.appendSlice(a, try std.fmt.allocPrint(a, "class{{static{{this.x={d}}}}}", .{i}));
+    }
+    try siblings.appendSlice(a, "];console.log(JSON.stringify(cs.map(C=>C.x)));");
+    const sources = [_][]const u8{
+        siblings.items,
+        "const cs=[class{static x=1;make(){return class{static{this.y=42}}}}];console.log(new cs[0]().make().y);",
+    };
+    for (sources) |source| {
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]bool{ false, true }) |minify| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try helpers.writeFile(tmp.dir, "entry.mjs", source);
+            const entry = try helpers.absPath(&tmp, "entry.mjs");
+            defer std.testing.allocator.free(entry);
+            var bundler = @import("../bundler/bundler.zig").Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm, .platform = .node, .unsupported = @import("compat.zig").fromESTarget(.es2015), .minify_syntax = minify, .minify_identifiers = minify, .minify_whitespace = minify });
+            defer bundler.deinit();
+            const result = try bundler.bundle(std.testing.io);
+            defer result.deinit(std.testing.allocator);
+            try std.testing.expect(!result.hasErrors());
+            const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+            defer std.testing.allocator.free(actual.stdout);
+            defer std.testing.allocator.free(actual.stderr);
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+            try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+        }
+    }
+}
