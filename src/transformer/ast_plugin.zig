@@ -636,6 +636,21 @@ pub const AstTransformCtx = struct {
                 });
             },
 
+            // Update operators use the same extra = [operand, operator]
+            // layout, while their operand is an assignment target.
+            .update_expression => blk: {
+                const e = src_node.data.extra;
+                if (e > src_ast.extra_data.items.len or src_ast.extra_data.items.len - e < 2) break :blk .none;
+                const operand_source = src_ast.readExtraNode(e, 0);
+                if (operand_source.isNone()) break :blk .none;
+                const operand = try self.copyNodeFromParsedAst(src_ast, operand_source);
+                if (operand.isNone()) break :blk .none;
+                const operator = src_ast.extra_data.items[e + 1];
+                break :blk self.addExtraNode(.update_expression, new_span, &.{
+                    @backingInt(operand), operator,
+                });
+            },
+
             // 이항: left/right 재귀 복사
             .assignment_expression,
             .binary_expression,
