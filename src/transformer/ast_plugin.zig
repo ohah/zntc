@@ -473,6 +473,7 @@ pub const AstTransformCtx = struct {
             .binding_identifier,
             .string_literal,
             .numeric_literal,
+            .bigint_literal,
             .boolean_literal,
             .null_literal,
             .regexp_literal,
@@ -787,6 +788,14 @@ pub const AstTransformCtx = struct {
                 .tag = src_node.tag,
                 .span = new_span,
                 .data = .{ .string_ref = new_span },
+            }),
+
+            // BigInt literals are source-span values with no target lowering.
+            // Keep the parser's data variant intact while relocating the span.
+            .bigint_literal => self.transformer.ast.addNode(.{
+                .tag = .bigint_literal,
+                .span = new_span,
+                .data = src_node.data,
             }),
 
             // Injected statements are appended after their containing function
