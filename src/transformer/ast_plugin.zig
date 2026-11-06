@@ -411,8 +411,23 @@ pub const AstTransformCtx = struct {
                         list.len > source.extra_data.items.len - list.start) return false;
                 },
                 .arrow_function_expression => if (!(try self.isCaptureOnlyArrow(source, @fromBackingInt(@intCast(raw))))) return false,
+                .switch_statement => if (!(try self.isSwitchDeclarationFree(source, @fromBackingInt(@intCast(raw))))) return false,
+                .break_statement => if (!node.data.unary.operand.isNone()) return false,
                 else => {},
             }
+        }
+        return true;
+    }
+
+    /// A switch creates its own lexical scope for case declarations. This
+    /// copier only models the insertion scope, so reject declarations anywhere
+    /// inside the switch while allowing declaration-free cases and bare breaks.
+    fn isSwitchDeclarationFree(self: *AstTransformCtx, source: *const Ast, switch_idx: NodeIndex) Error!bool {
+        const reachable = try ast_walk.collectReachableNodeIndicesFrom(self.transformer.allocator, source, switch_idx);
+        defer self.transformer.allocator.free(reachable);
+        for (reachable) |raw| {
+            if (raw >= source.nodes.items.len) return false;
+            if (source.nodes.items[raw].tag == .variable_declaration) return false;
         }
         return true;
     }
@@ -481,6 +496,9 @@ pub const AstTransformCtx = struct {
             .template_element,
             .expression_statement,
             .if_statement,
+            .switch_statement,
+            .switch_case,
+            .break_statement,
             .return_statement,
             .throw_statement,
             .spread_element,
@@ -822,6 +840,7 @@ pub const AstTransformCtx = struct {
             .expression_statement,
             .return_statement,
             .throw_statement,
+            .break_statement,
             .spread_element,
             => blk: {
                 const source_operand = src_node.data.unary.operand;
@@ -934,6 +953,65 @@ pub const AstTransformCtx = struct {
                     .tag = .if_statement,
                     .span = new_span,
                     .data = .{ .ternary = .{ .a = test_expr, .b = consequent, .c = alternate } },
+                });
+            },
+
+            // The switch-scope gate above excludes declarations, leaving the
+            // discriminant, case tests, and case statements in insertion scope.
+            .switch_statement => blk: {
+                const e = src_node.data.extra;
+                if (e > src_ast.extra_data.items.len or src_ast.extra_data.items.len - e < 3) break :blk .none;
+                const discriminant_source = src_ast.readExtraNode(e, 0);
+                if (discriminant_source.isNone()) break :blk .none;
+                const discriminant = try self.copyNodeFromParsedAst(src_ast, discriminant_source);
+                if (discriminant.isNone()) break :blk .none;
+
+                const cases_start = src_ast.extra_data.items[e + 1];
+                const cases_len = src_ast.extra_data.items[e + 2];
+                if (cases_start > src_ast.extra_data.items.len or cases_len > src_ast.extra_data.items.len - cases_start)
+                    break :blk .none;
+
+                var cases: std.ArrayList(NodeIndex) = .empty;
+                defer cases.deinit(self.transformer.allocator);
+                var i: u32 = 0;
+                while (i < cases_len) : (i += 1) {
+                    const raw = src_ast.extra_data.items[cases_start + i];
+                    if (raw >= src_ast.nodes.items.len) break :blk .none;
+                    const copied = try self.copyNodeFromParsedAst(src_ast, @fromBackingInt(@intCast(raw)));
+                    if (copied.isNone()) break :blk .none;
+                    try cases.append(self.transformer.allocator, copied);
+                }
+                const cases_list = try self.transformer.ast.addNodeList(cases.items);
+                break :blk self.addExtraNode(.switch_statement, new_span, &.{
+                    @backingInt(discriminant), cases_list.start, cases_list.len,
+                });
+            },
+
+            .switch_case => blk: {
+                const e = src_node.data.extra;
+                if (e > src_ast.extra_data.items.len or src_ast.extra_data.items.len - e < 3) break :blk .none;
+                const test_source = src_ast.readExtraNode(e, 0);
+                const test_node = try self.copyNodeFromParsedAst(src_ast, test_source);
+                if (!test_source.isNone() and test_node.isNone()) break :blk .none;
+
+                const statements_start = src_ast.extra_data.items[e + 1];
+                const statements_len = src_ast.extra_data.items[e + 2];
+                if (statements_start > src_ast.extra_data.items.len or
+                    statements_len > src_ast.extra_data.items.len - statements_start) break :blk .none;
+
+                var statements: std.ArrayList(NodeIndex) = .empty;
+                defer statements.deinit(self.transformer.allocator);
+                var i: u32 = 0;
+                while (i < statements_len) : (i += 1) {
+                    const raw = src_ast.extra_data.items[statements_start + i];
+                    if (raw >= src_ast.nodes.items.len) break :blk .none;
+                    const copied = try self.copyNodeFromParsedAst(src_ast, @fromBackingInt(@intCast(raw)));
+                    if (copied.isNone()) break :blk .none;
+                    try statements.append(self.transformer.allocator, copied);
+                }
+                const statement_list = try self.transformer.ast.addNodeList(statements.items);
+                break :blk self.addExtraNode(.switch_case, new_span, &.{
+                    @backingInt(test_node), statement_list.start, statement_list.len,
                 });
             },
 
