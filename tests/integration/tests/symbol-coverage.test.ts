@@ -40016,12 +40016,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
 
   test('NAPI onAstFunction rejects arrows that need an unrepresented function scope', () => {
     const rejectedCode = [
-      'console.log((value) => value);',
-      'console.log(() => { const local = 1; return local; });',
-      'console.log(() => this);',
-      'console.log(() => arguments);',
-      'console.log(async () => 1);',
-      'console.log(() => );',
+      ['console.log((value) => value);'],
+      ['console.log(() => { const local = 1; return local; });'],
+      ['console.log(() => this);'],
+      ['console.log(() => arguments);'],
+      ['console.log(async () => 1);'],
+      ['console.log(() => );'],
+      ['console.log("partial_plugin_statement");', 'console.log((value) => value);'],
     ];
     const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-arrow-reject-'));
     const entry = join(dir, 'entry.js');
@@ -40040,8 +40041,8 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       `const codes = ${JSON.stringify(rejectedCode)};`,
       'const results = [];',
       'for (const trailingCode of codes) {',
-      `  const result = await build({ ...${baseOptions}, plugins: [{ name: 'arrow-scope-reject', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: [trailingCode] } : null); } }] });`,
-      '  results.push({ hasErrors: result.hasErrors, errors: result.errors.map((error) => error.code) });',
+      `  const result = await build({ ...${baseOptions}, plugins: [{ name: 'arrow-scope-reject', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode } : null); } }] });`,
+      '  results.push({ hasErrors: result.hasErrors, errors: result.errors.map((error) => error.code), output: result.outputFiles.map((file) => file.text).join("\\n") });',
       '}',
       'process.stdout.write(JSON.stringify(results));',
     ].join('\n');
@@ -40055,12 +40056,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       const results = JSON.parse(buildResult.stdout) as Array<{
         hasErrors: boolean;
         errors: string[];
+        output: string;
       }>;
       expect(results).toHaveLength(rejectedCode.length);
       for (const [index, result] of results.entries()) {
         expect(result.hasErrors, rejectedCode[index]).toBe(true);
         expect(result.errors, rejectedCode[index]).toContain('plugin_error');
       }
+      expect(results.at(-1)?.output).not.toContain('partial_plugin_statement');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
