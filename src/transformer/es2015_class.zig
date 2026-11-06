@@ -686,6 +686,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
             try self.bindReservedFunctionOwner(iife_scope, wrapper_fn);
+            try @import("../semantic/class_key_evaluation.zig").completeIife(self, source_idx, cm.accessor_key_memos.items, iife_scope, wrapper_fn);
             if (self.semantic_edit_enabled) self.class_factory_statement_lists_changed = true;
             try trackClassPrivateSymbols(self, wrapper_fn, cm, iife_scope);
 
@@ -1243,6 +1244,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const wrapper_extra = try self.ast.addExtras(&.{ none, @backingInt(wrapper_params_node2), @backingInt(iife_body), 0, none });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
             try self.bindReservedFunctionOwner(iife_scope, wrapper_fn);
+            try @import("../semantic/class_key_evaluation.zig").completeIife(self, source_idx, cm.accessor_key_memos.items, iife_scope, wrapper_fn);
             if (self.semantic_edit_enabled) self.class_factory_statement_lists_changed = true;
             try trackClassPrivateSymbols(self, wrapper_fn, cm, iife_scope);
             try @import("worklet_class_clone.zig").recordLoweredClass(self, source_idx, func_node, wrapper_fn, iife_scope);
