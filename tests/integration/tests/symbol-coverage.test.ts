@@ -39722,6 +39722,83 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('NAPI onAstFunction copies BigInt literals with exact source spans', () => {
+    const trailingStatements = [
+      'console.log(42n);',
+      'console.log(0x2an);',
+      'console.log(0b101n + 0o7n);',
+      'console.log(1_000n);',
+      'console.log(-12n);',
+    ];
+    const bigintLiterals = ['42n', '0x2an', '0b101n', '0o7n', '1_000n', '12n'];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-bigint-literal-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(entry, 'function outer() { function marker() {} marker(); } outer();');
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const baseOptions = JSON.stringify({
+      entryPoints: [entry],
+      platform: 'node',
+      format: 'cjs',
+      target: 'esnext',
+      minifySyntax: false,
+      minifyIdentifiers: true,
+      write: false,
+    });
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build({ ...${baseOptions}, plugins: [{ name: 'bigint-literal-copy', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: ${JSON.stringify(trailingStatements)} } : null); } }] });`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+
+    try {
+      const buildResult = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      expect(buildResult.status, buildResult.stderr).toBe(0);
+      const stderr = buildResult.stderr ?? '';
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
+        );
+      expect(mode, stderr).toContain('semantic_graph=retained');
+      const identity = stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry));
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity ?? ''), identity).toEqual([]);
+      expect(identity).toContain(`external=${trailingStatements.length}`);
+
+      const outputs = JSON.parse(buildResult.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      const emitted = outputs[0];
+      for (const literal of bigintLiterals) expect(emitted).toContain(literal);
+      writeFileSync(output, emitted);
+
+      const execute = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(execute.status, execute.stderr).toBe(0);
+      expect(execute.stdout).toBe('42n\n42n\n12n\n1000n\n-12n\n');
+
+      for (const [index, literal] of bigintLiterals.entries()) {
+        const mutated = emitted.replace(literal, '0n');
+        expect(mutated, `BigInt literal mutation ${index}`).not.toBe(emitted);
+        writeFileSync(output, mutated);
+        const syntax = spawnSync('node', ['--check', output], { encoding: 'utf8' });
+        expect(syntax.status, `BigInt mutation ${index}: ${syntax.stderr}`).toBe(0);
+        const altered = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(altered.status, `BigInt mutation ${index}: ${altered.stderr}`).toBe(0);
+        expect(altered.stdout, `BigInt mutation ${index}`).not.toBe(execute.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('NAPI onAstFunction copies assignment targets with exact captured identities', () => {
     const assignments = [
       'shared = shared + 1; console.log(shared);',
