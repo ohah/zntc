@@ -3988,9 +3988,11 @@ test "ES5 computed class key memo keeps exact source reference owners" {
     var analyzer = SemanticAnalyzer.init(a, &parser.ast);
     analyzer.enable_stmt_info = true;
     analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
     analyzer.collect_unresolved_reference_nodes = true;
     try analyzer.analyze();
     try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    const source_scope_count = analyzer.scopes.items.len;
     var source_class: NodeIndex = .none;
     var key_id: ?u32 = null;
     var global_key: NodeIndex = .none;
@@ -4037,6 +4039,46 @@ test "ES5 computed class key memo keeps exact source reference owners" {
     try std.testing.expectEqual(iife_scope, moved_global_provenance.scope);
     try std.testing.expectEqual(source_global_provenance.source_node, moved_global_provenance.source_node);
     try std.testing.expect(edited.symbol_ids[@backingInt(global_key)] == null);
+    const History = @import("../semantic/scope_frame_history.zig");
+    const Keys = @import("../semantic/class_key_evaluation.zig");
+    const External = @import("../semantic/source_external_origin.zig");
+    var index = try History.validateAndIndex(a, t.ast, edited.scopes, &edited.scope_owner_map, &edited.scope_history, null);
+    defer index.deinit(a);
+    try std.testing.expect(index.valid);
+    const origin = moved_global_provenance.source_external orelse return error.MissingClassKeyOrigin;
+    try std.testing.expectEqual(@as(usize, 1), origin.scope_moves.len);
+    const move = origin.scope_moves[0];
+    const transfer = move.class_key orelse return error.MissingClassKeyTransfer;
+    try std.testing.expectEqual(.class_key_evaluation, move.reason);
+    try std.testing.expect(Keys.validates(t.ast, &index, t.parser_node_count, origin, move, transfer));
+    try std.testing.expect(External.validate(t.ast, t.parser_node_count, edited.symbol_ids, edited.scopes, &analyzer.unresolved_reference_nodes, &edited.node_scope_provenance, &index));
+    // Keep the query in the same History domain; poison semantic owner edges
+    // and exact class-reparent evidence, not an unrelated pointer mismatch.
+    const events = try a.dupe(History.Event, edited.scope_history.events);
+    defer a.free(events);
+    var poisoned_history = edited.scope_history;
+    poisoned_history.events = events;
+    var poisoned_index = index;
+    poisoned_index.history = &poisoned_history;
+    const publication = transfer.capture_epoch - 1;
+    const before = events[publication];
+    events[publication].owner_edges.body = .none;
+    try std.testing.expect(!Keys.validates(t.ast, &poisoned_index, t.parser_node_count, origin, move, transfer));
+    events[publication] = before;
+    events[publication].owner_edges.parameters = .none;
+    try std.testing.expect(!Keys.validates(t.ast, &poisoned_index, t.parser_node_count, origin, move, transfer));
+    events[publication] = before;
+    events[publication].owner_after = null;
+    try std.testing.expect(!Keys.validates(t.ast, &poisoned_index, t.parser_node_count, origin, move, transfer));
+    events[publication] = before;
+    var wrong = transfer;
+    wrong.capture_epoch -= 1;
+    try std.testing.expect(!Keys.validates(t.ast, &index, t.parser_node_count, origin, move, wrong));
+    wrong = transfer;
+    wrong.evaluation_scope = class_scope;
+    try std.testing.expect(!Keys.validates(t.ast, &index, t.parser_node_count, origin, move, wrong));
+    try std.testing.expect(Keys.validates(t.ast, &poisoned_index, t.parser_node_count, origin, move, transfer));
+
     var moved: usize = 0;
     var preserved: usize = 0;
     for (reads.items) |read| {
@@ -4058,12 +4100,15 @@ test "ES5 computed class key memo keeps exact source reference owners" {
     }
     try std.testing.expectEqual(@as(usize, 1), moved);
     try std.testing.expectEqual(@as(usize, 2), preserved);
-    const report = try coverage.checkExact(a, t.ast, root, t.parser_node_count, edited.symbol_ids, edited.symbols.items, edited.scopes, edited.scope_maps, &edited.scope_owner_map, edited.references, t.helper_ref_nodes.items, &t.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &t.reference_origin_map);
+    var report = try coverage.checkOutputNormalFormQuiet(a, t.ast, root, t.parser_node_count, edited.symbol_ids, edited.symbols.items, edited.scopes, edited.scope_maps, &edited.scope_owner_map, edited.references, t.helper_ref_nodes.items, &edited.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &t.reference_origin_map, .{ .pre_transform_scope_count = source_scope_count, .pre_transform_scope_history_event_count = 0 }, &edited.source_owned_retirements, .{ .node_scope_provenance = &edited.node_scope_provenance, .scope_history = &edited.scope_history, .class_self_symbols = &t.class_self_symbol_map });
+    defer report.deinit(a);
+    if (!report.hasCompleteOutputIdentityBeforeNames()) std.debug.print("computed class full audit: exact={any} strict={any} retirement={d}\n", .{ report.exact, report.strict.counts, report.retirement_state_mismatch });
     try std.testing.expect(report.hasCompleteOutputIdentityBeforeNames());
 }
 
 test "ES5 computed class keys preserve iterator accessors fields heritage and nested functions" {
     const sources = [_][]const u8{
+        "function make(Box=class{[Symbol.iterator](){return [42][Symbol.iterator]()}}){return Box}const Box=make();console.log(JSON.stringify(Array.from(new Box())));",
         "class Box{[Symbol.iterator](){return [42][Symbol.iterator]()}}console.log(JSON.stringify(Array.from(new Box())));",
         "const Box=class{[Symbol.iterator](){return [42][Symbol.iterator]()}};console.log(JSON.stringify(Array.from(new Box())));",
         "const key='value';class Box{get [key](){return 42}}console.log(new Box().value);",
@@ -4093,4 +4138,98 @@ test "ES5 computed class keys preserve iterator accessors fields heritage and ne
             }
         }
     }
+}
+
+test "ES5 default parameter class key authenticates only its source function body bridge" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "function other(value=1){return value}function make(Box=class{[Symbol.iterator](){return [42][Symbol.iterator]()}}){return Box}";
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    var t = try Transformer.init(a, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    t.semantic_edit_enabled = true;
+    t.record_explicit_global_references = true;
+    _ = try t.transform();
+    const edited = (try t.finishSemanticEdit()).?;
+    const History = @import("../semantic/scope_frame_history.zig");
+    const Keys = @import("../semantic/class_key_evaluation.zig");
+    var index = try History.validateAndIndex(a, t.ast, edited.scopes, &edited.scope_owner_map, &edited.scope_history, null);
+    defer index.deinit(a);
+    try std.testing.expect(index.valid);
+    var checked: usize = 0;
+    var entries = edited.node_scope_provenance.iterator();
+    while (entries.next()) |entry| {
+        const origin = entry.value_ptr.source_external orelse continue;
+        for (origin.scope_moves) |move| {
+            const transfer = move.class_key orelse continue;
+            const captured = index.frameAt(move.to, transfer.capture_epoch).?;
+            const current = index.frameAt(move.to, @intCast(edited.scope_history.events.len)).?;
+            if (captured.parent == current.parent) continue;
+            try std.testing.expect(Keys.validates(t.ast, &index, t.parser_node_count, origin, move, transfer));
+            const owners = try a.dupe(History.OwnerBinding, edited.scope_history.source_owners);
+            const events = try a.dupe(History.Event, edited.scope_history.events);
+            const scopes = try a.dupe(@import("../semantic/scope.zig").Scope, edited.scope_history.source_scopes);
+            var history = edited.scope_history;
+            history.source_owners = owners;
+            history.events = events;
+            history.source_scopes = scopes;
+            var poisoned = index;
+            poisoned.history = &history;
+            var body_index: ?usize = null;
+            var foreign: ?History.OwnerBinding = null;
+            for (owners, 0..) |binding, i| {
+                if (binding.scope == current.parent) body_index = i;
+                if (binding.scope != current.parent and binding.owner.tag == .function_declaration) foreign = binding;
+            }
+            const bi = body_index orelse return error.MissingParameterBodyOwner;
+            const sibling = foreign orelse return error.MissingForeignFunctionOwner;
+            const original = owners[bi];
+            owners[bi].edges.parameters = sibling.edges.parameters;
+            try std.testing.expect(!Keys.validates(t.ast, &poisoned, t.parser_node_count, origin, move, transfer));
+            owners[bi] = original;
+            owners[bi].scope = sibling.scope;
+            try std.testing.expect(!Keys.validates(t.ast, &poisoned, t.parser_node_count, origin, move, transfer));
+            owners[bi] = original;
+            const body_before = scopes[current.parent.toIndex()];
+            scopes[current.parent.toIndex()].parent = sibling.scope;
+            try std.testing.expect(!Keys.validates(t.ast, &poisoned, t.parser_node_count, origin, move, transfer));
+            scopes[current.parent.toIndex()] = body_before;
+            var reparent_count: usize = 0;
+            for (events[transfer.capture_epoch..]) |*event| {
+                if (event.scope != move.to or event.kind != .frame) continue;
+                const before = event.before orelse continue;
+                if (before.parent == event.after.parent) continue;
+                const saved = event.*;
+                event.trigger_parent = sibling.scope;
+                try std.testing.expect(!Keys.validates(t.ast, &poisoned, t.parser_node_count, origin, move, transfer));
+                event.* = saved;
+                event.after.is_strict = !before.is_strict;
+                try std.testing.expect(!Keys.validates(t.ast, &poisoned, t.parser_node_count, origin, move, transfer));
+                event.* = saved;
+                reparent_count += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), reparent_count);
+            try std.testing.expect(Keys.validates(t.ast, &poisoned, t.parser_node_count, origin, move, transfer));
+            checked += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), checked);
 }
