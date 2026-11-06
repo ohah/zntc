@@ -475,6 +475,7 @@ pub const AstTransformCtx = struct {
             .numeric_literal,
             .boolean_literal,
             .null_literal,
+            .regexp_literal,
             .this_expression,
             .template_element,
             .expression_statement,
@@ -787,6 +788,18 @@ pub const AstTransformCtx = struct {
                 .span = new_span,
                 .data = .{ .string_ref = new_span },
             }),
+
+            // Injected statements are appended after their containing function
+            // has been visited, so copied regex literals must explicitly pass
+            // through the normal target-specific regex transform.
+            .regexp_literal => blk: {
+                const copied = try self.transformer.ast.addNode(.{
+                    .tag = .regexp_literal,
+                    .span = new_span,
+                    .data = .{ .string_ref = new_span },
+                });
+                break :blk try self.transformer.visitNode(copied);
+            },
 
             // Template chunks are leaves whose source span stores raw text.
             .template_element => self.transformer.ast.addNode(.{
