@@ -4444,3 +4444,60 @@ test "class wrapper receipt index preserves sibling and nested construction orde
         }
     }
 }
+
+test "class wrapper scope preparation preserves the enclosing self before postludes" {
+    const ast_mod = @import("../parser/ast.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "class Outer{make(){return class{static{this.value=42}}}}";
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const program = parser.ast.getNode(root);
+    try std.testing.expectEqual(.program, program.tag);
+    const outer: NodeIndex = @fromBackingInt(parser.ast.extra_data.items[program.data.list.start]);
+    try std.testing.expectEqual(.class_declaration, parser.ast.getNode(outer).tag);
+    const outer_body = parser.ast.readExtraNode(parser.ast.getNode(outer).data.extra, ast_mod.ClassExtra.body);
+    const method: NodeIndex = @fromBackingInt(parser.ast.extra_data.items[parser.ast.getNode(outer_body).data.list.start]);
+    try std.testing.expectEqual(.method_definition, parser.ast.getNode(method).tag);
+    const method_body = parser.ast.readExtraNode(parser.ast.getNode(method).data.extra, ast_mod.MethodExtra.body);
+    const statement: NodeIndex = @fromBackingInt(parser.ast.extra_data.items[parser.ast.getNode(method_body).data.list.start]);
+    try std.testing.expectEqual(.return_statement, parser.ast.getNode(statement).tag);
+    const inner = parser.ast.getNode(statement).data.unary.operand;
+    try std.testing.expectEqual(.class_expression, parser.ast.getNode(inner).tag);
+    try std.testing.expect(parser.ast.readExtraNode(parser.ast.getNode(inner).data.extra, ast_mod.ClassExtra.name).isNone());
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.enable_source_external_origins = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    const outer_self = analyzer.class_self_symbol_map.get(@backingInt(outer)) orelse return error.MissingOuterClassSelf;
+    try std.testing.expect(!analyzer.class_self_symbol_map.contains(@backingInt(inner)));
+    const before = analyzer.symbols.items[outer_self];
+    const inner_scope: ScopeId = @fromBackingInt(analyzer.scope_owner_map.get(@backingInt(inner)) orelse return error.MissingInnerClassScope);
+    var t = try Transformer.init(a, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es2015) });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    t.semantic_edit_enabled = true;
+    t.current_scope = analyzer.scopes.items[inner_scope.toIndex()].parent;
+    t.current_class_name_node = parser.ast.readExtraNode(parser.ast.getNode(outer).data.extra, ast_mod.ClassExtra.name);
+    t.current_class_self_symbol_id = outer_self;
+    const wrapper = try @import("transformer/class_visit.zig").prepareClassExprWrapperScope(&t, inner);
+    const editor = &t.semantic_editor.?;
+    try std.testing.expectEqual(before.scope_id, editor.symbols.items[outer_self].scope_id);
+    try std.testing.expectEqual(before.origin_scope, editor.symbols.items[outer_self].origin_scope);
+    try std.testing.expectEqual(wrapper, editor.scopes.items[inner_scope.toIndex()].parent);
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, editor.scopes.items[wrapper.toIndex()].kind);
+}
