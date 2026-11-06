@@ -122,6 +122,7 @@ test {
     _ = @import("minify_test.zig");
     _ = @import("minify/semantic_journal_test.zig");
     _ = @import("worklet_test.zig");
+    _ = @import("heritage_dynamic_scope.zig");
     _ = @import("worklet_babel_parity_test.zig");
     _ = @import("styled_components_test.zig");
     _ = @import("emotion_test.zig");
