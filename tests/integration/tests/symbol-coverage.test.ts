@@ -135,27 +135,28 @@ const EXACT_MATRIX_REPORT_PREFIX_BY_KIND = {
   post: 'zntc: symbol-identity-post-minify ',
 } as const;
 const EXACT_MATRIX_OBSERVATION_FINGERPRINT =
-  '3045393cae9133792c6918d8bb91d583227e75a318df651844d9fc77ebc9d441';
-// The 4730 using-module fixture now has a separate class-self binding leaf
-// when using lowering copies its named class declaration into an expression.
-// This exact identity contributes one generated binding across four lowered
-// targets and three minify modes, without changing emitted output.
+  'c7c9179a2667629f0a901bc97caca32353db81a4d6877107820a586ccbc8abda';
+// Qualified 325-fixture observations retain all invariant and field checks.
+// The original 321 inputs are unchanged; four suspension/class-key fixtures
+// add 72 cells. ES5 switch discriminants now have exact frozen producers,
+// and destructuring temps use their actual state-machine storage owner.
+// Refresh only with the row-level baseline/candidate attribution retained.
 const EXACT_MATRIX_OBSERVATION_TOTALS = {
-  'exact.generated_bindings': 14871,
-  'exact.generated_references': 47466,
-  'exact.generated_scope_owners_checked': 12969,
-  'exact.external': 15399,
-  'exact.declaration_anchors_checked': 49200,
+  'exact.generated_bindings': 15048,
+  'exact.generated_references': 48102,
+  'exact.generated_scope_owners_checked': 12972,
+  'exact.external': 15675,
+  'exact.declaration_anchors_checked': 49914,
   'exact.namespace_iife_params': 270,
   'exact.enum_iife_params': 36,
-  'coverage.new_user_idents': 8241,
-  'strict.bound': 60123,
-  'strict.external': 2085,
-  'strict.marked_synthetic': 52059,
-  'post.bindings': 50708,
-  'post.references': 115287,
-  'post.external': 15303,
-  'post.helpers': 8292,
+  'coverage.new_user_idents': 8313,
+  'strict.bound': 60912,
+  'strict.external': 2109,
+  'strict.marked_synthetic': 52776,
+  'post.bindings': 51422,
+  'post.references': 117642,
+  'post.external': 15579,
+  'post.helpers': 8379,
   'post.preserved_transform_refs': 204,
 } as const;
 // These module entries intentionally contain top-level await. The identity
@@ -2254,12 +2255,12 @@ describe('symbol identity coverage gate (#4819)', () => {
     const fixtureInventory = createHash('sha256')
       .update(fixtureNames.join('\n') + '\n')
       .digest('hex');
-    expect(fixtureNames).toHaveLength(322);
+    expect(fixtureNames).toHaveLength(325);
     expect(fixtureInventory).toBe(
-      '12c6f248a80f5cc95de0d36683b881cb7acb3807925dd854e9efcba04f2e87ae',
+      '0220a87448b27d83a0a2236e1e5d2d96484ba36c3d12a19ac4fddcb1bac03965',
     );
     expect(fixtureContentFingerprint(fixtures, FIXTURE_DIR)).toBe(
-      '70d2359998c1191717a3afc904184e6317d7d51f392f12909636d436d358f0a3',
+      '737d748361c53369e21721606443487a93b13256fc3ab7f6f8f140d5259b56ea',
     );
     expect(TARGETS).toEqual([
       { name: 'es5', arg: '--target=es5' },
