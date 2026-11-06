@@ -484,7 +484,8 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
     // (parse 직후) AST 여야 정합한다. best-effort: 쓰기 실패는 catch 로 흘려 캐시가 no-cache 보다
     // 빌드를 더 깨뜨리지 않게 한다(disk full 등). semantic 이 OOM 으로 null 이면 skip(부분 데이터
     // 저장 방지). 키는 parse 직전 동일 게이트(self.disk_cache != null)에서 이미 캡처됐다.
-    // 지금은 store 만 — load(parse 스킵)는 graph 통합 3 → 출력 영향 0(항상 parse 실행).
+    // load hit 은 위에서 이 parse-time AST+semantic 을 복원한 뒤 같은 transformer pre-pass 를
+    // 다시 실행한다. store/load 가 모두 pre-pass 전 snapshot 을 사용해야 cold/warm 이 정합한다.
     // self.allocator 는 worker 동시 호출에 안전(release=mimalloc / debug=DebugAllocator).
     if (self.disk_cache) |dc| {
         // #4438 ON==OFF: 진단을 낸 모듈은 store skip — load hit 이 parse 를 스킵해 그 진단을
