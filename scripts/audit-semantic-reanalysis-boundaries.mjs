@@ -138,6 +138,96 @@ function functionBody(code, name, label) {
   };
 }
 
+function matchingDelimiter(code, open, openChar, closeChar) {
+  let depth = 0;
+  for (let i = open; i < code.length; i++) {
+    if (code[i] === openChar) depth++;
+    if (code[i] === closeChar && --depth === 0) return i;
+  }
+  return -1;
+}
+
+function skipWhitespace(code, start) {
+  while (start < code.length && /\s/.test(code[start])) start++;
+  return start;
+}
+
+function statementEnd(code, start) {
+  const bodyStart = skipWhitespace(code, start);
+  if (code[bodyStart] === '{') {
+    const close = matchingBrace(code, bodyStart);
+    return close < 0 ? code.length : close + 1;
+  }
+  if (/^if\b/.test(code.slice(bodyStart))) return ifStatementEnd(code, bodyStart);
+
+  let parens = 0;
+  let brackets = 0;
+  let braces = 0;
+  for (let i = bodyStart; i < code.length; i++) {
+    switch (code[i]) {
+      case '(':
+        parens++;
+        break;
+      case ')':
+        parens--;
+        break;
+      case '[':
+        brackets++;
+        break;
+      case ']':
+        brackets--;
+        break;
+      case '{':
+        braces++;
+        break;
+      case '}':
+        if (braces === 0) return i;
+        braces--;
+        break;
+      case ';':
+        if (parens === 0 && brackets === 0 && braces === 0) return i + 1;
+        break;
+    }
+  }
+  return code.length;
+}
+
+function ifStatementEnd(code, start) {
+  const conditionOpen = code.indexOf('(', start + 2);
+  const conditionClose = conditionOpen < 0 ? -1 : matchingDelimiter(code, conditionOpen, '(', ')');
+  if (conditionClose < 0) return code.length;
+
+  let bodyStart = skipWhitespace(code, conditionClose + 1);
+  if (code[bodyStart] === '|') {
+    const payloadClose = code.indexOf('|', bodyStart + 1);
+    bodyStart = payloadClose < 0 ? code.length : skipWhitespace(code, payloadClose + 1);
+  }
+  const bodyEnd = statementEnd(code, bodyStart);
+  const elseStart = skipWhitespace(code, bodyEnd);
+  if (!/^else\b/.test(code.slice(elseStart))) return bodyEnd;
+  return statementEnd(code, elseStart + 'else'.length);
+}
+
+function coverageDiagnosticGuardRanges(code) {
+  const ranges = [];
+  for (const match of code.matchAll(/\bif\s*\(/g)) {
+    const conditionOpen = code.indexOf('(', match.index);
+    const conditionClose = matchingDelimiter(code, conditionOpen, '(', ')');
+    if (conditionClose < 0) continue;
+    const condition = code.slice(conditionOpen + 1, conditionClose);
+    if (!/\b(?:symbol_coverage_env|synthetic_coverage_env)\b/.test(condition)) continue;
+
+    let bodyStart = skipWhitespace(code, conditionClose + 1);
+    if (code[bodyStart] === '|') {
+      const payloadClose = code.indexOf('|', bodyStart + 1);
+      bodyStart = payloadClose < 0 ? code.length : skipWhitespace(code, payloadClose + 1);
+    }
+    const end = ifStatementEnd(code, match.index);
+    if (end > bodyStart) ranges.push([bodyStart, end]);
+  }
+  return ranges;
+}
+
 // Zig test blocks can be interleaved with production declarations and test
 // helpers can live outside the blocks. Follow same-file function calls from
 // production roots instead of treating everything after the first `test` as
@@ -209,7 +299,28 @@ function auditTranspile(source, label = 'src/transpile.zig') {
   const sourceCall = body.indexOf(
     'analyzer_storage = SemanticAnalyzer.init(arena_alloc, &parser.ast);',
   );
-  const sourceGraphGate = body.indexOf('requireStandaloneOutputNormalForm(', sourceCall);
+  const sourceGraphGateCalls = [
+    ...body.matchAll(
+      /\bif\s*\(\s*analyzer_storage\s*\)\s*\|\s*\*a\s*\|\s*try\s+requireStandaloneOutputNormalForm\s*\(/g,
+    ),
+  ];
+  const sourceGraphGate = sourceGraphGateCalls[0]?.index ?? -1;
+  const semanticBranches = [
+    ...body.matchAll(/\bif\s*\(\s*transform_plan\.semantic\s*==\s*\.full\s*\)\s*\{/g),
+  ];
+  const semanticOpen = semanticBranches[0]
+    ? semanticBranches[0].index + semanticBranches[0][0].lastIndexOf('{')
+    : -1;
+  const semanticClose = semanticOpen < 0 ? -1 : matchingBrace(body, semanticOpen);
+  const sourceAnalyzeCalls = [
+    ...body.matchAll(/\banalyzer\.analyze\(\)\s*catch\s*return\s*error\.SemanticError\s*;/g),
+  ];
+  const sourceAnalyze = sourceAnalyzeCalls[0]?.index ?? -1;
+  const diagnosticGuards = coverageDiagnosticGuardRanges(body);
+  const sourceGraphSites = [sourceCall, sourceAnalyze, sourceGraphGate];
+  const sourceGraphUnderDiagnosticGuard = sourceGraphSites.some(
+    (site) => site >= 0 && diagnosticGuards.some(([start, end]) => site >= start && site < end),
+  );
   const lateNameSelection = body.indexOf('buildStandaloneLateOutputNameOverrides(');
   const codegen = body.indexOf('Codegen.initWithOptions(');
   const guard =
@@ -223,8 +334,23 @@ function auditTranspile(source, label = 'src/transpile.zig') {
   const oraclePrint = body.indexOf('post_minify_coverage.printPostMinify(', oracleCall);
 
   requireCondition(
-    sourceCall >= 0 && sourceGraphGate > sourceCall,
-    `${label}: source graph must be analyzed before output identity validation`,
+    semanticBranches.length === 1 &&
+      semanticClose > semanticOpen &&
+      sourceCall > semanticOpen &&
+      sourceCall < semanticClose,
+    `${label}: source graph construction must stay inside the full-semantic branch`,
+  );
+  requireCondition(
+    sourceAnalyzeCalls.length === 1 &&
+      sourceAnalyze > sourceCall &&
+      sourceAnalyze < semanticClose &&
+      sourceGraphGateCalls.length === 1 &&
+      sourceGraphGate > sourceAnalyze,
+    `${label}: the parser AST must be fully analyzed before output identity validation`,
+  );
+  requireCondition(
+    !sourceGraphUnderDiagnosticGuard,
+    `${label}: source graph construction, analysis, and identity validation must not depend on coverage diagnostics`,
   );
   requireCondition(
     lateNameSelection > sourceGraphGate && codegen > sourceGraphGate,
@@ -371,11 +497,19 @@ function tryReject(fn, label) {
 }
 
 function selfTest() {
+  const sourceInit = '    analyzer_storage = SemanticAnalyzer.init(arena_alloc, &parser.ast);';
+  const sourceAnalyze = '    analyzer.analyze() catch return error.SemanticError;';
+  const sourceGraphGate =
+    '  if (analyzer_storage) |*a| try requireStandaloneOutputNormalForm(arena_alloc, file_path, &transformer, a, root, pre_transform_scope_count, pre_transform_scope_history_event_count);';
   const transpile =
     `fn transpile() { transpileWithCallbackInternal(); }\n` +
     `fn transpileWithCallbackInternal() {\n` +
-    `  analyzer_storage = SemanticAnalyzer.init(arena_alloc, &parser.ast);\n` +
-    `  requireStandaloneOutputNormalForm();\n` +
+    `  if (transform_plan.semantic == .full) {\n` +
+    `${sourceInit}\n` +
+    `    var analyzer = &analyzer_storage.?;\n` +
+    `${sourceAnalyze}\n` +
+    `  }\n` +
+    `${sourceGraphGate}\n` +
     `  if (symbol_coverage_env.enabled() and (options.minify_syntax or options.minify_identifiers)) {\n` +
     `    var post_minify_analyzer = SemanticAnalyzer.init(arena_alloc, transformer.ast);\n` +
     `    post_minify_analyzer.analyze() catch return error.SemanticError;\n` +
@@ -415,8 +549,8 @@ function selfTest() {
     () =>
       auditTranspile(
         transpile.replace(
-          'requireStandaloneOutputNormalForm();',
-          'var replacement = SemanticAnalyzer.init(arena_alloc, transformer.ast);',
+          sourceGraphGate,
+          '  var replacement = SemanticAnalyzer.init(arena_alloc, transformer.ast);',
         ),
       ),
     'new production analyzer in transpile',
@@ -425,8 +559,8 @@ function selfTest() {
     () =>
       auditTranspile(
         transpile.replace(
-          'requireStandaloneOutputNormalForm();',
-          'const FreshAnalyzer = SemanticAnalyzer; var replacement = FreshAnalyzer.init(arena_alloc, transformer.ast);',
+          sourceGraphGate,
+          '  const FreshAnalyzer = SemanticAnalyzer; var replacement = FreshAnalyzer.init(arena_alloc, transformer.ast);',
         ),
       ),
     'aliased production analyzer in transpile',
@@ -465,8 +599,8 @@ function selfTest() {
     () =>
       auditTranspile(
         transpile.replace(
-          'requireStandaloneOutputNormalForm();',
-          'buildStandaloneLateOutputNameOverrides(); requireStandaloneOutputNormalForm();',
+          sourceGraphGate,
+          `  buildStandaloneLateOutputNameOverrides();\n${sourceGraphGate}`,
         ),
       ),
     'standalone output gate moved after late-name selection',
@@ -474,12 +608,110 @@ function selfTest() {
   tryReject(
     () =>
       auditTranspile(
-        transpile.replace(
-          'requireStandaloneOutputNormalForm();',
-          'Codegen.initWithOptions(); requireStandaloneOutputNormalForm();',
-        ),
+        transpile.replace(sourceGraphGate, `  Codegen.initWithOptions();\n${sourceGraphGate}`),
       ),
     'standalone output gate moved after codegen setup',
+  );
+  for (const [index, env] of ['symbol_coverage_env', 'synthetic_coverage_env'].entries()) {
+    tryReject(
+      () =>
+        auditTranspile(
+          transpile.replace(sourceInit, `    if (${env}.enabled()) { ${sourceInit.trim()} }`),
+        ),
+      `source analyzer initialization gated by ${env} (${index + 1})`,
+    );
+    tryReject(
+      () =>
+        auditTranspile(
+          transpile.replace(sourceInit, `    if (${env}.enabled()) ${sourceInit.trim()}`),
+        ),
+      `source analyzer initialization inline-gated by ${env} (${index + 1})`,
+    );
+    tryReject(
+      () =>
+        auditTranspile(
+          transpile.replace(sourceAnalyze, `    if (${env}.enabled()) { ${sourceAnalyze.trim()} }`),
+        ),
+      `source analyzer execution gated by ${env} (${index + 1})`,
+    );
+    tryReject(
+      () =>
+        auditTranspile(
+          transpile.replace(sourceAnalyze, `    if (${env}.enabled()) ${sourceAnalyze.trim()}`),
+        ),
+      `source analyzer execution inline-gated by ${env} (${index + 1})`,
+    );
+    tryReject(
+      () =>
+        auditTranspile(
+          transpile.replace(
+            sourceAnalyze,
+            `    if (${env}.enabled()) {} else ${sourceAnalyze.trim()}`,
+          ),
+        ),
+      `source analyzer execution moved into ${env} else branch (${index + 1})`,
+    );
+    tryReject(
+      () =>
+        auditTranspile(
+          transpile.replace(
+            sourceGraphGate,
+            `  if (${env}.enabled()) {\n    ${sourceGraphGate.trim()}\n  }`,
+          ),
+        ),
+      `output identity gate gated by ${env} (${index + 1})`,
+    );
+    tryReject(
+      () =>
+        auditTranspile(
+          transpile.replace(sourceGraphGate, `  if (${env}.enabled()) ${sourceGraphGate.trim()}`),
+        ),
+      `output identity gate inline-gated by ${env} (${index + 1})`,
+    );
+  }
+  tryReject(
+    () =>
+      auditTranspile(
+        transpile.replace(
+          sourceGraphGate,
+          sourceGraphGate.replace(
+            'if (analyzer_storage) |*a|',
+            'if (analyzer_storage != null and false)',
+          ),
+        ),
+      ),
+    'output identity gate hidden behind a false graph-presence check',
+  );
+  tryReject(
+    () =>
+      auditTranspile(
+        transpile.replace(
+          'if (transform_plan.semantic == .full)',
+          'if (transform_plan.semantic == .bindings)',
+        ),
+      ),
+    'source identity analysis moved to the bindings-only path',
+  );
+  tryReject(
+    () => auditTranspile(transpile.replace(`${sourceAnalyze}\n`, '')),
+    'source analyzer execution removed',
+  );
+  tryReject(
+    () => auditTranspile(transpile.replace(sourceAnalyze, '    analyzer.analyze() catch {};')),
+    'source analyzer failure ignored',
+  );
+  tryReject(
+    () =>
+      auditTranspile(
+        transpile
+          .replace(`${sourceGraphGate}\n`, '')
+          .replace(sourceAnalyze, `${sourceGraphGate.trim()}\n${sourceAnalyze.trim()}`),
+      ),
+    'output identity validation moved before source analysis',
+  );
+  tryReject(
+    () => auditTranspile(transpile.replace('&parser.ast', '&transformer.ast')),
+    'source analyzer retargeted to the transformed AST',
   );
   tryReject(
     () =>
@@ -686,7 +918,7 @@ function selfTest() {
     'analyzer hidden behind a qualified same-file helper call',
   );
   console.log(
-    'semantic reanalysis and output-gate audit self-test PASS (29 hostile mutations rejected)',
+    'semantic reanalysis and output-gate audit self-test PASS (49 hostile mutations rejected)',
   );
 }
 
