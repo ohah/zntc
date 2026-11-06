@@ -4366,11 +4366,27 @@ fn expectRejectedTrailingCodeGraph(source: []const u8) !void {
     try std.testing.expectEqual(@as(usize, 1), state.parse_rejections);
     try std.testing.expectEqual(@as(usize, 1), state.binding_rejections);
     try std.testing.expectEqual(@as(usize, 1), state.append_rejections);
-    try expectVisitorGraphReady(&graph, entry);
-
     const module = graph.findModuleByPath(entry).?;
+    // A callback catching an insertion error cannot publish a partially
+    // transformed candidate. The installed source graph remains available,
+    // while the sticky plugin diagnostic prevents output publication.
+    try std.testing.expectEqual(Module.State.ready, module.state);
+    try std.testing.expect(module.ast != null and module.semantic != null);
+    try std.testing.expect(module.ast.?.transformed_root == null);
+    try std.testing.expect(module.transform_cache == null);
+    try std.testing.expectEqualStrings(source, module.source);
+    var rejected: usize = 0;
+    for (graph.diagnostics.items) |diagnostic| {
+        if (diagnostic.severity != .@"error") continue;
+        try std.testing.expectEqual(@import("types.zig").BundlerDiagnostic.ErrorCode.plugin_error, diagnostic.code);
+        try std.testing.expectEqualStrings(entry, diagnostic.file_path);
+        try std.testing.expect(std.mem.indexOf(u8, diagnostic.message, "generated code was rejected") != null);
+        rejected += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), rejected);
     const ast = &module.ast.?;
     const semantic = &module.semantic.?;
+    try std.testing.expectEqual(ast.nodes.items.len, semantic.symbol_ids.len);
     var decoy_bindings: usize = 0;
     var forbidden_references: usize = 0;
     for (semantic.symbols.items) |*symbol| {
@@ -4378,6 +4394,8 @@ fn expectRejectedTrailingCodeGraph(source: []const u8) !void {
         if (std.mem.eql(u8, symbol.nameText(ast.source), "syntheticBinding")) return error.UnexpectedSyntheticSymbol;
     }
     for (ast.nodes.items) |node| {
+        if (node.tag == .binding_identifier and Scanner.identifierNamesEqual(ast.getText(node.data.string_ref), "syntheticBinding"))
+            return error.UnpublishedBindingNodeLeaked;
         if (node.tag != .identifier_reference) continue;
         if (Scanner.identifierNamesEqual(ast.getText(node.data.string_ref), "secret")) forbidden_references += 1;
     }
@@ -4385,7 +4403,7 @@ fn expectRejectedTrailingCodeGraph(source: []const u8) !void {
     try std.testing.expectEqual(@as(usize, 0), forbidden_references);
 }
 
-test "graph function-hook caller: non-statement trailing injection is rejected before semantic edits" {
+test "graph function-hook caller: caught trailing injection errors leave the installed source unchanged" {
     const sources = [_][]const u8{
         "const secret=1; function decoy(){const injectedValue=99;} const holder={read(){}};",
         "const secret=1; function decoy(){const injectedValue=99;} class Holder{read(){}}",
