@@ -4098,6 +4098,10 @@ test "output normal form gate rejects every aggregate invariant counter" {
         .tag = .binding_identifier,
         .status = .scope_mismatch,
         .marked_synthetic = false,
+        .symbol_id = 1,
+        .expected_scope_id = 0,
+        .symbol_scope_id = 1,
+        .symbol_origin_scope_id = 0,
     });
     try std.testing.expect(allowed_binding_scope_delegation.strict.isConsistent());
     try std.testing.expect(!allowed_binding_scope_delegation.strict.hasCompleteExactCoverage());
@@ -6720,6 +6724,64 @@ const StrictStatusPolicy = enum {
     must_be_zero,
 };
 
+fn hasStrictScopeEvidence(scope_id: ?u32) bool {
+    const raw = scope_id orelse return false;
+    return raw != @backingInt(ScopeId.none);
+}
+
+fn strictFindingIsBinding(finding: StrictFinding) bool {
+    // Output declaration discovery can prove a binding even when lowering has
+    // changed the node's parser tag to an identifier reference.
+    return finding.is_binding or finding.tag == .binding_identifier;
+}
+
+/// Accepted finding statuses are only useful as a gate when their detail row
+/// still carries the identity evidence that justified the classification.
+/// The exact graph report checks range and lexical ownership; this check keeps
+/// missing or contradictory SymbolId/ScopeId fields from being hidden behind
+/// a `.bound`, `.external`, or delegated binding-scope status.
+fn strictFindingEvidenceIsConsistent(finding: StrictFinding) bool {
+    const is_binding = strictFindingIsBinding(finding);
+    switch (finding.status) {
+        .bound => {
+            const symbol_id = finding.symbol_id orelse return false;
+            if (!hasStrictScopeEvidence(finding.expected_scope_id) or
+                !hasStrictScopeEvidence(finding.symbol_scope_id)) return false;
+            if (is_binding) {
+                return hasStrictScopeEvidence(finding.symbol_origin_scope_id) and
+                    finding.reference_symbol_id == null and finding.reference_scope_id == null;
+            }
+            const reference_symbol_id = finding.reference_symbol_id orelse return false;
+            return reference_symbol_id == symbol_id and
+                hasStrictScopeEvidence(finding.reference_scope_id) and
+                finding.reference_scope_id == finding.expected_scope_id;
+        },
+        .external => return !is_binding and
+            finding.symbol_id == null and
+            finding.reference_symbol_id == null and
+            finding.symbol_scope_id == null and
+            finding.symbol_origin_scope_id == null and
+            finding.reference_scope_id == null,
+        .scope_mismatch => {
+            if (is_binding) {
+                return finding.symbol_id != null and
+                    hasStrictScopeEvidence(finding.expected_scope_id) and
+                    hasStrictScopeEvidence(finding.symbol_scope_id) and
+                    hasStrictScopeEvidence(finding.symbol_origin_scope_id) and
+                    finding.reference_symbol_id == null and finding.reference_scope_id == null;
+            }
+            const symbol_id = finding.symbol_id orelse return false;
+            const reference_symbol_id = finding.reference_symbol_id orelse return false;
+            if (reference_symbol_id != symbol_id or
+                !hasStrictScopeEvidence(finding.expected_scope_id) or
+                !hasStrictScopeEvidence(finding.symbol_scope_id) or
+                !hasStrictScopeEvidence(finding.reference_scope_id)) return false;
+            return finding.reference_scope_id != finding.expected_scope_id;
+        },
+        else => return true,
+    }
+}
+
 fn strictStatusPolicy(status: StrictStatus) StrictStatusPolicy {
     return switch (status) {
         .bound => .accepted_bound,
@@ -6746,6 +6808,7 @@ pub const StrictFinding = struct {
     tag: Node.Tag,
     status: StrictStatus,
     marked_synthetic: bool,
+    is_binding: bool = false,
     symbol_id: ?u32 = null,
     reference_symbol_id: ?u32 = null,
     expected_scope_id: ?u32 = null,
@@ -6808,6 +6871,7 @@ pub const StrictReport = struct {
         var observed_counts: [strict_status_count]usize = @splat(0);
         var observed_marked_synthetic: usize = 0;
         for (self.findings.items) |finding| {
+            if (!strictFindingEvidenceIsConsistent(finding)) return false;
             observed_counts[@backingInt(finding.status)] += 1;
             if (finding.marked_synthetic) observed_marked_synthetic += 1;
         }
@@ -6844,7 +6908,7 @@ pub const StrictReport = struct {
         if (!self.isConsistent()) return false;
         if (self.orphan_symbols != 0) return false;
         for (self.findings.items) |finding| {
-            if (finding.status == .scope_mismatch and finding.tag != .binding_identifier) return false;
+            if (finding.status == .scope_mismatch and !strictFindingIsBinding(finding)) return false;
         }
         for (self.counts, 0..) |count, status| {
             switch (strictStatusPolicy(@fromBackingInt(@intCast(status)))) {
@@ -6889,7 +6953,8 @@ const StrictCtx = struct {
         const marked = if (self.synthetic) |set| set.contains(raw) else false;
         const trace = self.node_scopes.get(raw);
         const reference = self.references.get(raw);
-        const status = self.classify(raw, node, name, sid, trace, reference);
+        const is_binding = node.tag == .binding_identifier or if (self.output_binding_nodes) |bindings| bindings.contains(raw) else false;
+        const status = self.classify(raw, node, name, sid, trace, reference, is_binding);
         self.report.counts[@backingInt(status)] += 1;
         if (marked) self.report.marked_synthetic += 1;
         self.report.findings.append(self.allocator, .{
@@ -6898,6 +6963,7 @@ const StrictCtx = struct {
             .tag = node.tag,
             .status = status,
             .marked_synthetic = marked,
+            .is_binding = is_binding,
             .symbol_id = sid,
             .reference_symbol_id = if (reference) |e| @backingInt(e.reference.symbol_id) else null,
             .expected_scope_id = if (trace) |s| s.scope_id else null,
@@ -6917,8 +6983,8 @@ const StrictCtx = struct {
         sid: ?u32,
         trace: ?ScopeTrace,
         reference: ?ReferenceEvidence,
+        is_binding: bool,
     ) StrictStatus {
-        const is_binding = node.tag == .binding_identifier or if (self.output_binding_nodes) |bindings| bindings.contains(raw) else false;
         const id = sid orelse {
             if (is_binding) return .missing_binding;
             if (self.external_evidence) |evidence| {
