@@ -624,6 +624,7 @@ pub const AstTransformCtx = struct {
             // 이항: left/right 재귀 복사
             .assignment_expression,
             .binary_expression,
+            .logical_expression,
             .object_property,
             => blk: {
                 const new_left = try self.copyNodeFromParsedAst(src_ast, src_node.data.binary.left);
