@@ -2982,6 +2982,201 @@ fn expectBuiltInTransformGraph(
     }
 }
 
+const FlowGraphIdentity = struct {
+    symbol_id: u32,
+    scope_id: u32,
+    reference_count: u32,
+};
+
+const FlowGeneratedRole = enum {
+    match_parameter,
+    ref_component_helper,
+};
+
+fn flowScopeContains(scopes: []const @import("../semantic/scope.zig").Scope, ancestor: ScopeId, child: ScopeId) bool {
+    if (ancestor.isNone() or child.isNone() or ancestor.toIndex() >= scopes.len or child.toIndex() >= scopes.len) return false;
+    var current = child;
+    var hops: usize = 0;
+    while (!current.isNone() and hops < scopes.len) : (hops += 1) {
+        if (current == ancestor) return true;
+        if (current.toIndex() >= scopes.len) return false;
+        current = scopes[current.toIndex()].parent;
+    }
+    return false;
+}
+
+fn expectFlowSourceBindingIdentity(module: *const Module, reachable: []const u32, name: []const u8) !u32 {
+    const ast = &module.ast.?;
+    const semantic = &module.semantic.?;
+    var binding: ?u32 = null;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, ast.getText(node.data.string_ref), name)) continue;
+        try std.testing.expect(binding == null);
+        binding = semantic.symbol_ids[raw] orelse return error.MissingFlowSourceBindingSymbol;
+    }
+    const symbol_id = binding orelse return error.MissingFlowSourceBinding;
+    try std.testing.expect(symbol_id < semantic.symbols.items.len);
+    var reference_count: u32 = 0;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, ast.getText(node.data.string_ref), name)) continue;
+        try std.testing.expectEqual(symbol_id, semantic.symbol_ids[raw] orelse return error.MissingFlowSourceReferenceSymbol);
+        var found_row = false;
+        for (semantic.references) |reference| {
+            if (reference.node_index != @as(ast_mod.NodeIndex, @fromBackingInt(raw))) continue;
+            try std.testing.expectEqual(@as(u32, symbol_id), @as(u32, @intCast(@backingInt(reference.symbol_id))));
+            try std.testing.expect(reference.flags.read or reference.flags.write);
+            found_row = true;
+            reference_count += 1;
+            break;
+        }
+        try std.testing.expect(found_row);
+    }
+    try std.testing.expect(reference_count > 0);
+    try std.testing.expectEqual(reference_count, semantic.symbols.items[symbol_id].reference_count);
+    return symbol_id;
+}
+
+fn expectFlowGeneratedIdentityForSymbol(
+    module: *const Module,
+    reachable: []const u32,
+    symbol_id: u32,
+    role: FlowGeneratedRole,
+) !FlowGraphIdentity {
+    const ast = &module.ast.?;
+    const semantic = &module.semantic.?;
+    const symbol = semantic.symbols.items[symbol_id];
+    try std.testing.expect(!symbol.scope_id.isNone());
+    try std.testing.expect(symbol.scope_id.toIndex() < semantic.scopes.len);
+    try std.testing.expect(symbol.scope_id.toIndex() < semantic.scope_maps.len);
+
+    var binding_count: usize = 0;
+    var ast_reference_count: u32 = 0;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag == .flow_match_expression or node.tag == .flow_component_wrapper)
+            return error.UnloweredFlowRuntimeNode;
+        if (node.tag == .binding_identifier and raw < semantic.symbol_ids.len and semantic.symbol_ids[raw] == symbol_id) {
+            binding_count += 1;
+            try std.testing.expectEqual(symbol_id, semantic.symbol_ids[raw].?);
+            const name = ast.getText(node.data.string_ref);
+            try std.testing.expectEqual(@as(?usize, @intCast(symbol_id)), semantic.scope_maps[symbol.scope_id.toIndex()].get(name));
+        }
+        if (node.tag == .identifier_reference and raw < semantic.symbol_ids.len and semantic.symbol_ids[raw] == symbol_id)
+            ast_reference_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), binding_count);
+
+    var semantic_reference_count: u32 = 0;
+    var semantic_read_count: u32 = 0;
+    var semantic_write_count: u32 = 0;
+    for (semantic.references) |reference| {
+        if (@backingInt(reference.symbol_id) != symbol_id or reference.flags.declare) continue;
+        if (reference.node_index.isNone() or @backingInt(reference.node_index) >= ast.nodes.items.len)
+            return error.FlowGeneratedReferenceLostNode;
+        const raw: u32 = @intCast(@backingInt(reference.node_index));
+        try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw) != null);
+        const node = ast.nodes.items[raw];
+        try std.testing.expect(node.tag == .identifier_reference or node.tag == .assignment_target_identifier);
+        try std.testing.expectEqual(symbol_id, semantic.symbol_ids[raw] orelse return error.FlowGeneratedReferenceLostSymbol);
+        try std.testing.expect(flowScopeContains(semantic.scopes, symbol.scope_id, reference.scope_id));
+        semantic_reference_count += 1;
+        if (reference.flags.read) semantic_read_count += 1;
+        if (reference.flags.write) semantic_write_count += 1;
+    }
+    try std.testing.expect(semantic_reference_count > 0);
+    try std.testing.expectEqual(ast_reference_count, semantic_read_count);
+    try std.testing.expectEqual(symbol.reference_count, semantic_read_count);
+    try std.testing.expectEqual(symbol.write_count, semantic_write_count);
+
+    if (role == .match_parameter) {
+        var exact_function_owners: usize = 0;
+        var owners = semantic.scope_owner_map.iterator();
+        while (owners.next()) |entry| {
+            const raw = entry.key_ptr.*;
+            if (raw >= ast.nodes.items.len or entry.value_ptr.* != @backingInt(symbol.scope_id)) continue;
+            if (ast.nodes.items[raw].tag == .function_expression) exact_function_owners += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), exact_function_owners);
+    }
+
+    return .{
+        .symbol_id = symbol_id,
+        .scope_id = @backingInt(symbol.scope_id),
+        .reference_count = semantic_read_count,
+    };
+}
+
+fn isFlowMatchParameter(module: *const Module, reachable: []const u32, symbol_id: u32) bool {
+    const ast = &module.ast.?;
+    const semantic = &module.semantic.?;
+    const symbol = semantic.symbols.items[symbol_id];
+    if (symbol.kind != .parameter or symbol.synthetic_name.len == 0) return false;
+
+    for (reachable) |raw| {
+        const call = ast.nodes.items[raw];
+        if (call.tag != .call_expression) continue;
+        const callee_idx = ast.readExtraNode(call.data.extra, 0);
+        if (callee_idx.isNone()) continue;
+        const callee = ast.getNode(callee_idx);
+        if (callee.tag != .function_expression) continue;
+        const params = ast.functionParamsList(callee);
+        if (params.len != 1) continue;
+        const parameter: ast_mod.NodeIndex = @fromBackingInt(ast.extra_data.items[params.start]);
+        const parameter_raw: u32 = @intCast(@backingInt(parameter));
+        if (parameter_raw < semantic.symbol_ids.len and semantic.symbol_ids[parameter_raw] == symbol_id) return true;
+    }
+    return false;
+}
+
+fn expectFlowGeneratedIdentities(module: *const Module, role: FlowGeneratedRole) ![]FlowGraphIdentity {
+    const ast = &module.ast.?;
+    const semantic = &module.semantic.?;
+    const root = ast.transformed_root orelse return error.MissingFlowTransformedRoot;
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
+    defer std.testing.allocator.free(reachable);
+
+    var identities: std.ArrayList(FlowGraphIdentity) = .empty;
+    for (semantic.symbols.items, 0..) |symbol, raw| {
+        const matches_role = switch (role) {
+            .match_parameter => isFlowMatchParameter(module, reachable, @intCast(raw)),
+            .ref_component_helper => symbol.kind == .function_decl and std.mem.startsWith(u8, symbol.synthetic_name, "Card_withRef"),
+        };
+        if (!matches_role) continue;
+        try identities.append(std.testing.allocator, try expectFlowGeneratedIdentityForSymbol(module, reachable, @intCast(raw), role));
+    }
+    if (identities.items.len == 0) return error.MissingFlowGeneratedSymbol;
+    return identities.toOwnedSlice(std.testing.allocator);
+}
+
+fn expectFlowGeneratedIdentity(module: *const Module, role: FlowGeneratedRole) !FlowGraphIdentity {
+    const identities = try expectFlowGeneratedIdentities(module, role);
+    defer std.testing.allocator.free(identities);
+    try std.testing.expectEqual(@as(usize, 1), identities.len);
+    return identities[0];
+}
+
+fn expectFlowQuotedPropertyComputed(module: *const Module, key_text: []const u8) !void {
+    const ast = &module.ast.?;
+    const root = ast.transformed_root orelse return error.MissingFlowTransformedRoot;
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
+    defer std.testing.allocator.free(reachable);
+
+    var matching_keys: usize = 0;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag != .computed_member_expression) continue;
+        const property_idx = ast.readExtraNode(node.data.extra, 1);
+        if (property_idx.isNone()) continue;
+        const property = ast.getNode(property_idx);
+        if (property.tag != .string_literal or !std.mem.eql(u8, ast.getText(property.span), key_text)) continue;
+        try std.testing.expect(std.mem.eql(u8, ast.getText(property.data.string_ref), key_text));
+        matching_keys += 1;
+    }
+    try std.testing.expect(matching_keys > 0);
+}
+
 fn expectColdParseVisitorRetainsGraph(kind: ColdParseVisitorKind, source: []const u8) !void {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -4273,6 +4468,221 @@ test "graph pre-pass predicate: Flow ref components trigger graph ownership" {
 
     try expectPrePassDecision(false, "// @flow\ncomponent Card(label: string) { return label; }", "flow-component-no-ref.js", .{});
     try expectPrePassDecision(false, "// @flow\nexport const value = 42;", "flow-component-unused.js", .{});
+}
+
+test "graph Flow caller: match and ref-component identities survive cold and cached ASTs" {
+    const quoted_component_keys = [_][]const u8{
+        "'data-value'",
+        "\"plain\"",
+        "'space key'",
+        "'dot.key'",
+        "'0'",
+        "'quote\"inside'",
+        "\"apostrophe'key\"",
+        "'escaped\\u0061'",
+        "'unicode-雪'",
+        "'line\\nkey'",
+    };
+    const match_expressions = [_][]const u8{
+        "match (value) { 1 => 'one', _ => fallback }",
+        "match (value) { { type: 'a', value: const item } => item, _ => fallback }",
+        "match (value) { [const head, ...const tail] => tail, _ => fallback }",
+        "match (value) { { type: 'a', ...const rest } if (rest.ok) => rest, _ => fallback }",
+        "match (value) { 1 | 2 | 3 => 'small', _ => fallback }",
+        "match (value) { const item if (item > 0) => item, _ => fallback }",
+        "match (value) { (1 | 2) as item => item, _ => fallback }",
+        "match (value) { Status.Ready => 1, Status.Done => 2, _ => fallback }",
+        "match (value) { 1 => { const next = value + 1; next }, _ => fallback }",
+        "match (value) { 1 => match (2) { 2 => value, _ => 0 }, _ => fallback }",
+    };
+    const match_parameter_counts = [_]usize{ 1, 1, 1, 1, 1, 1, 1, 1, 1, 2 };
+    const component_declarations = [_][]const u8{
+        "component Card(ref?: mixed, ...props: any) { return props; }",
+        "component Card(ref?: mixed, label: string, ...props: { extra?: boolean }) { return label; }",
+        "component Card<T>(ref?: mixed, value: T, ...props: any) { return value; }",
+        "function make() { const label = 'outer'; component Card(ref?: mixed, ...props: any) { return label; } return Card; }",
+        "export component Card(ref?: mixed, ...props: any) { return props; }",
+        "component Card(label: string, ref?: mixed, ...props: any) { return label; }",
+        "component Card(ref?: mixed = null, ...props: any) { return props; }",
+        "component Card(ref?: mixed, 'data-value' as value: string, ...props: any) { return value; }",
+        "component Card<T>(ref?: mixed, value: T, ...props: { extra?: boolean }) renders React.Node { return value; }",
+        "function outer() { const label = 'outer'; component Card(ref?: mixed, ...props: any) { return label; } return Card; }",
+    };
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const component_count = component_declarations.len + quoted_component_keys.len;
+    const entry_count = match_expressions.len + component_count + 1;
+    var entries: [entry_count][]const u8 = undefined;
+    var match_entries: [match_expressions.len][]const u8 = undefined;
+    var component_entries: [component_count][]const u8 = undefined;
+    for (match_expressions, 0..) |match_expression, index| {
+        const file_name = try std.fmt.allocPrint(std.testing.allocator, "match-{d}.js", .{index});
+        defer std.testing.allocator.free(file_name);
+        const source = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "// @flow\nconst fallback = 'outer'; const _a = 'user-a'; const _b = 'user-b';\nexport function read(value) {{ return {s}; }}\nexport const keep = _a + _b;",
+            .{match_expression},
+        );
+        defer std.testing.allocator.free(source);
+        try writeFile(tmp.dir, file_name, source);
+        match_entries[index] = try absPath(&tmp, file_name);
+        entries[index] = match_entries[index];
+    }
+    for (component_declarations, 0..) |component, index| {
+        const file_name = try std.fmt.allocPrint(std.testing.allocator, "component-{d}.js", .{index});
+        defer std.testing.allocator.free(file_name);
+        const invocation = if (index == 3 or index == 9) "" else "export const result = Card({ label: 'ok' });";
+        const source = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "// @flow\nconst Card_withRef = 'user-helper'; export const userHelper = Card_withRef;\n{s}\n{s}",
+            .{ component, invocation },
+        );
+        defer std.testing.allocator.free(source);
+        try writeFile(tmp.dir, file_name, source);
+        component_entries[index] = try absPath(&tmp, file_name);
+        entries[match_expressions.len + index] = component_entries[index];
+    }
+    for (quoted_component_keys, 0..) |key, key_index| {
+        const index = component_declarations.len + key_index;
+        const file_name = try std.fmt.allocPrint(std.testing.allocator, "component-{d}.js", .{index});
+        defer std.testing.allocator.free(file_name);
+        const component = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "component Card(ref?: mixed, {s} as value: string, ...props: any) {{ return value; }}",
+            .{key},
+        );
+        defer std.testing.allocator.free(component);
+        const invocation = try std.fmt.allocPrint(std.testing.allocator, "export const result = Card({{ {s}: 'ok' }});", .{key});
+        defer std.testing.allocator.free(invocation);
+        const source = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "// @flow\nconst Card_withRef = 'user-helper'; export const userHelper = Card_withRef;\n{s}\n{s}",
+            .{ component, invocation },
+        );
+        defer std.testing.allocator.free(source);
+        try writeFile(tmp.dir, file_name, source);
+        component_entries[index] = try absPath(&tmp, file_name);
+        entries[match_expressions.len + index] = component_entries[index];
+    }
+    try writeFile(tmp.dir, "flow-types-only.js", "// @flow\ntype Shape = { value: number }; export const value = 42;");
+    entries[entry_count - 1] = try absPath(&tmp, "flow-types-only.js");
+    defer {
+        for (entries) |entry| std.testing.allocator.free(entry);
+    }
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    var cold_match_identities: [match_expressions.len][]FlowGraphIdentity = undefined;
+    for (&cold_match_identities) |*identities| identities.* = &.{};
+    defer {
+        for (cold_match_identities) |identities| {
+            if (identities.len > 0) std.testing.allocator.free(identities);
+        }
+    }
+    var cold_component_identities: [component_count]FlowGraphIdentity = undefined;
+    const profile = @import("../profile.zig");
+    defer profile.resetForTest();
+    const expected_graph_module_count = entry_count + 1; // shared ES5 object-rest runtime module
+    for ([_]usize{ 0, expected_graph_module_count }) |expected_load_hits| {
+        profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.resync.semantic");
+
+        var cache = ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.disk_cache = &disk;
+        graph.disk_load_enabled = true;
+        graph.disk_options_hash = 0x4819_6193;
+        graph.disk_compiler_build_id = 0x4819_6876;
+        graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es5);
+        graph.max_threads = 1;
+
+        try graph.build(std.testing.io, &entries);
+
+        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+        try std.testing.expectEqual(expected_graph_module_count, graph.moduleCount());
+        var runtime_module_count: usize = 0;
+        var graph_modules = graph.modulesIterator();
+        while (graph_modules.next()) |graph_module| {
+            var is_source_entry = false;
+            for (entries) |entry| {
+                if (std.mem.eql(u8, graph_module.path, entry)) {
+                    is_source_entry = true;
+                    break;
+                }
+            }
+            if (is_source_entry) continue;
+            try std.testing.expect(std.mem.startsWith(u8, graph_module.path, "\x00zntc:runtime/"));
+            runtime_module_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), runtime_module_count);
+        try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+
+        for (match_entries, 0..) |entry, index| {
+            const module = graph.findModuleByPath(entry) orelse return error.MissingFlowMatchGraphModule;
+            try std.testing.expectEqual(Module.State.ready, module.state);
+            try std.testing.expect(module.ast.?.has_flow_runtime_transform);
+            try std.testing.expect(module.transform_cache != null);
+            try std.testing.expect(module.semantic != null);
+            const identities = try expectFlowGeneratedIdentities(module, .match_parameter);
+            defer std.testing.allocator.free(identities);
+            try std.testing.expectEqual(match_parameter_counts[index], identities.len);
+            const root = module.ast.?.transformed_root orelse return error.MissingFlowMatchGraphRoot;
+            const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, &module.ast.?, root);
+            defer std.testing.allocator.free(reachable);
+            _ = try expectFlowSourceBindingIdentity(module, reachable, "fallback");
+            _ = try expectFlowSourceBindingIdentity(module, reachable, "_a");
+            _ = try expectFlowSourceBindingIdentity(module, reachable, "_b");
+            if (expected_load_hits == 0) {
+                cold_match_identities[index] = try std.testing.allocator.dupe(FlowGraphIdentity, identities);
+            } else {
+                try std.testing.expectEqual(cold_match_identities[index].len, identities.len);
+                for (cold_match_identities[index], identities) |cold, warm| {
+                    try std.testing.expectEqual(cold.symbol_id, warm.symbol_id);
+                    try std.testing.expectEqual(cold.scope_id, warm.scope_id);
+                    try std.testing.expectEqual(cold.reference_count, warm.reference_count);
+                }
+            }
+        }
+        for (component_entries, 0..) |entry, index| {
+            const module = graph.findModuleByPath(entry) orelse return error.MissingFlowComponentGraphModule;
+            try std.testing.expectEqual(Module.State.ready, module.state);
+            try std.testing.expect(module.ast.?.has_flow_runtime_transform);
+            try std.testing.expect(module.transform_cache != null);
+            try std.testing.expect(module.semantic != null);
+            const identity = try expectFlowGeneratedIdentity(module, .ref_component_helper);
+            const root = module.ast.?.transformed_root orelse return error.MissingFlowComponentGraphRoot;
+            const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, &module.ast.?, root);
+            defer std.testing.allocator.free(reachable);
+            _ = try expectFlowSourceBindingIdentity(module, reachable, "Card");
+            _ = try expectFlowSourceBindingIdentity(module, reachable, "Card_withRef");
+            if (index == 7) try expectFlowQuotedPropertyComputed(module, "'data-value'");
+            if (index >= component_declarations.len) {
+                try expectFlowQuotedPropertyComputed(module, quoted_component_keys[index - component_declarations.len]);
+            }
+            if (expected_load_hits == 0) {
+                cold_component_identities[index] = identity;
+            } else {
+                try std.testing.expectEqual(cold_component_identities[index].symbol_id, identity.symbol_id);
+                try std.testing.expectEqual(cold_component_identities[index].scope_id, identity.scope_id);
+                try std.testing.expectEqual(cold_component_identities[index].reference_count, identity.reference_count);
+            }
+        }
+
+        const type_only = graph.findModuleByPath(entries[entry_count - 1]) orelse return error.MissingFlowTypeOnlyGraphModule;
+        try std.testing.expectEqual(Module.State.ready, type_only.state);
+        try std.testing.expect(!type_only.ast.?.has_flow_runtime_transform);
+        try std.testing.expect(type_only.transform_cache == null);
+        for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+    }
 }
 
 test "graph pre-pass predicate: worklet transforms stay gated by conservative AST signals" {

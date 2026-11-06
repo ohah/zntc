@@ -78,4 +78,63 @@ describe('bundle: Flow component syntax resolves React namespace import', () => 
       await fixture.cleanup();
     }
   });
+
+  test('ES5 Flow ref component preserves a quoted aliased prop key', async () => {
+    const keys = [
+      "'data-value'",
+      '"plain"',
+      "'space key'",
+      "'dot.key'",
+      "'0'",
+      "'quote\\\"inside'",
+      '"apostrophe\'key"',
+      "'escaped\\u0061'",
+      "'unicode-雪'",
+      "'line\\nkey'",
+    ];
+    const expected = keys.map((_, index) => `value-${index}`);
+    const declarations = keys.map(
+      (key, index) =>
+        `component Card${index}(ref?: mixed, ${key} as value: string, ...props: any) { return value; }`,
+    );
+    const calls = keys.map(
+      (key, index) => `Card${index}({ ${key}: ${JSON.stringify(expected[index])} })`,
+    );
+    const fixture = await createFixture({
+      'entry.js': `
+        /* @flow */
+        import * as React from 'react';
+
+        ${declarations.join('\n')}
+        console.log(JSON.stringify([${calls.join(', ')}]));
+      `,
+      'node_modules/react/package.json': JSON.stringify({ name: 'react', main: 'index.js' }),
+      'node_modules/react/index.js': `
+        module.exports = { forwardRef: function(fn) { return fn; } };
+      `,
+    });
+
+    try {
+      const entry = resolve(fixture.dir, 'entry.js');
+      const outputFile = resolve(fixture.dir, 'out.cjs');
+      const build = Bun.spawnSync([
+        ZNTC_BIN,
+        '--bundle',
+        '--platform=node',
+        '--format=cjs',
+        '--target=es5',
+        '--flow',
+        entry,
+        '-o',
+        outputFile,
+      ]);
+      expect(build.exitCode, build.stderr.toString()).toBe(0);
+
+      const run = Bun.spawnSync(['node', outputFile], { cwd: fixture.dir });
+      expect(run.exitCode, run.stderr.toString()).toBe(0);
+      expect(run.stdout.toString().trim()).toBe(JSON.stringify(expected));
+    } finally {
+      await fixture.cleanup();
+    }
+  });
 });
