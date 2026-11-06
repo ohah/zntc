@@ -757,11 +757,10 @@ pub const AstTransformCtx = struct {
                 });
             },
 
-            // Calls are needed for ordinary injected code such as
-            // `throw eval("name")`. Copy the callee and each argument so the
-            // post-transform graph audit can see dynamic name lookup instead
-            // of silently turning an unsupported call into an empty operand.
-            .call_expression => blk: {
+            // Calls and constructors share the same extra-data layout. Copy
+            // the callee and each argument so inserted references keep their
+            // exact identity through the output graph audit.
+            .call_expression, .new_expression => blk: {
                 const e = src_node.data.extra;
                 if (e > src_ast.extra_data.items.len or src_ast.extra_data.items.len - e < 4) break :blk .none;
                 const callee_source = src_ast.readExtraNode(e, 0);
@@ -784,7 +783,7 @@ pub const AstTransformCtx = struct {
                     try self.transformer.scratch.append(self.transformer.allocator, argument);
                 }
                 const args = try self.transformer.ast.addNodeList(self.transformer.scratch.items[scratch_top..]);
-                break :blk self.addExtraNode(.call_expression, new_span, &.{
+                break :blk self.addExtraNode(src_node.tag, new_span, &.{
                     @backingInt(callee), args.start, args.len, flags,
                 });
             },
