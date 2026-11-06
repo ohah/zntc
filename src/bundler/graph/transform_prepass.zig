@@ -35214,3 +35214,67 @@ test "class sidecar native Creator copies reject ten cross-role substitutions" {
     @memcpy(changed, creators);
     try std.testing.expect(try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
 }
+
+test "class sidecar staged lazy owner birth preserves unassigned installed source on discard" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Sidecars = @import("../../semantic/class_self_sidecars.zig");
+    const input = "class A{static read(){return A===this?42:0}}console.log(A.read());";
+    const fixture = try genericPrepassTestFixture(a, input, false);
+    var installed = Module.init(@fromBackingInt(@as(u32, 0)), "lazy-owner.cjs");
+    installed.source = input;
+    installed.module_type = .js;
+    installed.state = .ready;
+    installed.ast = fixture.ast;
+    installed.semantic = fixture.semantic;
+    const old_ids = installed.semantic.?.symbol_ids;
+    try std.testing.expectEqual(@import("../module.zig").SemanticOwnerToken.unassigned, installed.semantic.?.owner_token);
+    var prepared = try PreparedGenericPrepass.init(&installed, a);
+    defer prepared.discard(a);
+    const module = &prepared.candidate;
+    const source: Sidecars.Source = .{ .tree = &prepared.source_ast_snapshot, .semantic = &prepared.source_semantic_snapshot };
+    const receipt = Sidecars.Receipt.capture(&installed, module, source);
+    // The same API used by staged legacy/private certificates mints only on
+    // the candidate. Requiring pre-existing input ownership rejects this valid
+    // transition or would force an observable birth on an aborted input.
+    const born = module.semantic.?.captureOwnerToken();
+    try std.testing.expect(born != .unassigned);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.minify_syntax = true;
+    graph.transform_options_base.unsupported = @import("../../transformer/compat.zig").fromESTarget(.esnext);
+    var completed = false;
+    var diagnosed = false;
+    var exact: ?@import("../../transformer/symbol_coverage.zig").ExactReport = null;
+    runCandidate(&graph, module, source, &receipt, a, &completed, &diagnosed, &exact);
+    try std.testing.expect(completed);
+    try std.testing.expectEqual(born, module.semantic.?.owner_token);
+    try std.testing.expectEqual(@import("../module.zig").SemanticOwnerToken.unassigned, installed.semantic.?.owner_token);
+    try std.testing.expectEqual(@import("../module.zig").SemanticOwnerToken.unassigned, source.semantic.owner_token);
+    try std.testing.expect(old_ids.ptr == installed.semantic.?.symbol_ids.ptr);
+    try std.testing.expect(try prepared.isCurrent(a));
+    const tree = &module.ast.?;
+    const root = tree.transformed_root.?;
+    var output = try std.DynamicBitSet.initEmpty(a, tree.nodes.items.len);
+    for (try ast_walk.collectReachableNodeIndicesFrom(a, tree, root)) |raw| output.set(raw);
+    var original = try std.DynamicBitSet.initEmpty(a, tree.nodes.items.len);
+    const source_root: ast_mod.NodeIndex = @fromBackingInt(@as(u32, @intCast(source.tree.nodes.items.len - 1)));
+    for (try ast_walk.collectReachableNodeIndicesFrom(a, tree, source_root)) |raw| original.set(raw);
+    try std.testing.expect(try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
+    // A real label from another semantic domain is not the candidate's birth.
+    var foreign_semantic = (try genericPrepassTestFixture(a, input, false)).semantic;
+    const foreign_owner = foreign_semantic.captureOwnerToken();
+    try std.testing.expect(foreign_owner != born);
+    module.semantic.?.owner_token = foreign_owner;
+    try std.testing.expect(!try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
+    module.semantic.?.owner_token = born;
+    try std.testing.expect(try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
+    // A changed installed source is distinct from a staged candidate birth.
+    _ = installed.semantic.?.captureOwnerToken();
+    try std.testing.expect(!try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
+    installed.semantic.?.owner_token = .unassigned;
+    try std.testing.expect(try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
+}

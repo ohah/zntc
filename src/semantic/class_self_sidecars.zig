@@ -19,6 +19,7 @@ pub const Source = struct {
 pub const Receipt = struct {
     input: *const Module,
     candidate: *const Module,
+    candidate_owner: @import("../bundler/module.zig").SemanticOwnerToken,
     input_ast: *const ast.Ast,
     input_semantic: *const Semantic,
     owner: @import("../bundler/codegen_output_domain.zig").Owner,
@@ -29,12 +30,17 @@ pub const Receipt = struct {
     ids: []const ?u32,
     symbols: []const @import("symbol.zig").Symbol,
 
-    pub fn capture(input: *const Module, candidate: *const Module, source: Source) Receipt {
-        return .{ .input = input, .candidate = candidate, .input_ast = &input.ast.?, .input_semantic = &input.semantic.?, .owner = input.codegen_output_owner, .tree = source.tree, .semantic = source.semantic, .nodes = source.tree.nodes.items, .extras = source.tree.extra_data.items, .ids = source.semantic.symbol_ids, .symbols = source.semantic.symbols.items };
+    pub fn capture(input: *const Module, candidate: *Module, source: Source) Receipt {
+        // Mint only in the staged header. Input ownership stays lazy on abort,
+        // and later certificate producers must reuse this exact reserved label.
+        const candidate_owner = candidate.semantic.?.captureOwnerToken();
+        return .{ .input = input, .candidate = candidate, .candidate_owner = candidate_owner, .input_ast = &input.ast.?, .input_semantic = &input.semantic.?, .owner = input.codegen_output_owner, .tree = source.tree, .semantic = source.semantic, .nodes = source.tree.nodes.items, .extras = source.tree.extra_data.items, .ids = source.semantic.symbol_ids, .symbols = source.semantic.symbols.items };
     }
     fn matches(self: *const Receipt, module: *const Module, source: Source) bool {
-        return self.candidate == module and self.input.ast != null and self.input.semantic != null and
+        return self.candidate == module and module.semantic != null and
+            self.candidate_owner != .unassigned and self.candidate_owner == module.semantic.?.owner_token and self.input.ast != null and self.input.semantic != null and
             self.input_ast == &self.input.ast.? and self.input_semantic == &self.input.semantic.? and
+            self.input.semantic.?.owner_token == source.semantic.owner_token and
             self.owner == self.input.codegen_output_owner and self.owner == module.codegen_output_owner and
             self.tree == source.tree and self.semantic == source.semantic and
             self.nodes.ptr == source.tree.nodes.items.ptr and self.nodes.len == source.tree.nodes.items.len and
@@ -123,7 +129,8 @@ pub fn prepare(a: std.mem.Allocator, module: *const Module, source: Source, rece
         transferred = true;
         return result;
     }
-    if (!receipt.matches(module, source) or source.semantic.owner_token != sem.owner_token or
+    if (!receipt.matches(module, source) or
+        (source.semantic.owner_token != .unassigned and source.semantic.owner_token != sem.owner_token) or
         source.tree.source.ptr != tree.source.ptr or source.tree.source.len != tree.source.len) return null;
 
     var index = try History.validateAndIndex(a, tree, sem.scopes, &sem.scope_owner_map, &sem.scope_history, null);
@@ -205,7 +212,19 @@ pub fn prepare(a: std.mem.Allocator, module: *const Module, source: Source, rece
             actual.parser_node_count < source.tree.nodes.items.len or actual.parser_node_count > tree.nodes.items.len) return null;
         var copies = actual.scope_owner_origins.iterator();
         while (copies.next()) |copy| {
+            if (copy.key_ptr.* == copy.value_ptr.* or !sem.class_self_symbol_map.contains(copy.key_ptr.*)) continue;
             const original_owner = owners.get(copy.value_ptr.*) orelse continue;
+            // Some producers (using's declaration-to-expression handoff)
+            // retain an intermediate class-self carrier which is not the
+            // final History owner. Its authority is the actual Transformer's
+            // exact source-origin and owned-scope pair, not a scope search.
+            if (by_node.get(copy.value_ptr.*)) |known| {
+                if (known.node != original_owner.owner.node or known.scope != original_owner.scope or
+                    actual.transformed_scope_owner_map.get(copy.key_ptr.*) != @as(?u32, @backingInt(known.scope)) or
+                    copy.key_ptr.* >= tree.nodes.items.len) return null;
+                const tag = tree.nodes.items[copy.key_ptr.*].tag;
+                if (tag == .class_expression or tag == .class_declaration) try by_node.put(a, copy.key_ptr.*, known);
+            }
             const anonymous = inferred.get(@backingInt(original_owner.scope)) orelse continue;
             if (@backingInt(anonymous.node) != copy.value_ptr.*) return null;
             if (actual.transformed_scope_owner_map.get(copy.key_ptr.*) != @as(?u32, @backingInt(anonymous.scope))) return null;
