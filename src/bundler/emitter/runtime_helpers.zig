@@ -38,6 +38,29 @@ pub fn asyncReadyMarkerCandidate(graph: *const ModuleGraph, module: *const Modul
 /// Public ESM-backed named namespaces need own live properties even when
 /// there is no import interop or async wrapper in the output.
 pub fn cjsEntryDescriptorCandidate(graph: *const ModuleGraph, module: *const Module, format: @import("../types.zig").Format, mode: @import("../bundler.zig").OutputExports) !bool {
+    // The compiler readiness provider is its own named CJS output even when
+    // it is not a user entry and the user requested a scalar/no public export.
+    // Use its captured producer tuple, never its generated helper spelling.
+    if (format == .cjs) if (graph.tla_readiness_all) |known| {
+        if (module.index == known.module_index) {
+            if (graph.getModule(known.module_index) != module) return error.InvalidTlaReadinessHelper;
+            const semantic = module.semantic orelse return error.InvalidTlaReadinessHelper;
+            const origin = module.runtime_helper_source orelse return error.InvalidTlaReadinessHelper;
+            if (origin.catalog != .readiness_all or
+                !@import("../../runtime_helper_modules.zig").matchesConstructedSource(origin, graph.helper_plugin_opts, module.source))
+                return error.InvalidTlaReadinessHelper;
+            if (known.owner_token == .unassigned) return error.InvalidTlaReadinessHelper;
+            if (semantic.owner_token != known.owner_token) return error.InvalidTlaReadinessHelper;
+            if (known.export_index >= module.export_bindings.len) return error.InvalidTlaReadinessHelper;
+            if (@backingInt(known.symbol_id) >= semantic.symbols.items.len) return error.InvalidTlaReadinessHelper;
+            const binding = module.export_bindings[known.export_index];
+            if (module.exportBindingSemanticIndex(binding) != @as(?u32, @backingInt(known.symbol_id))) return error.InvalidTlaReadinessHelper;
+            if (semantic.symbols.items[@backingInt(known.symbol_id)].kind != .function_decl) return error.InvalidTlaReadinessHelper;
+            if (!std.mem.eql(u8, binding.exported_name, "__tlaReadyAll")) return error.InvalidTlaReadinessHelper;
+            if (module.wrap_kind != .none) return error.InvalidTlaReadinessHelper;
+            return true;
+        }
+    };
     if (format != .cjs or mode == .none or mode == .default_ or module.wrap_kind == .cjs or
         (!module.is_entry_point and !graph.preserve_modules) or module.export_bindings.len == 0) return false;
     if (mode == .named) return true;
