@@ -469,6 +469,7 @@ pub const AstTransformCtx = struct {
     fn isCopyableInjectedTag(tag: Tag) bool {
         return switch (tag) {
             .identifier_reference,
+            .assignment_target_identifier,
             .binding_identifier,
             .string_literal,
             .numeric_literal,
@@ -774,6 +775,7 @@ pub const AstTransformCtx = struct {
         return switch (src_node.tag) {
             // 리프 노드: data를 그대로 복사하되 span 갱신
             .identifier_reference,
+            .assignment_target_identifier,
             .binding_identifier,
             .string_literal,
             .numeric_literal,

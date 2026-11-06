@@ -39563,6 +39563,115 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('NAPI onAstFunction copies assignment targets with exact captured identities', () => {
+    const assignments = [
+      'shared = shared + 1; console.log(shared);',
+      'shared += 2; console.log(shared);',
+      'shared &&= 3; console.log(shared);',
+      'shared ||= 4; console.log(shared);',
+      'shared ??= 5; console.log(shared);',
+      '++shared; console.log(shared);',
+      'shared++; console.log(shared);',
+      '--shared; console.log(shared);',
+      'shared--; console.log(shared);',
+      'injected = shared; console.log(injected);',
+    ];
+    const trailingCode = ['let injected = 0;', ...assignments];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-assignment-target-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(entry, 'function outer(shared) { function marker() {} marker(); } outer(0);');
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const baseOptions = JSON.stringify({
+      entryPoints: [entry],
+      platform: 'node',
+      format: 'cjs',
+      target: 'esnext',
+      minifySyntax: false,
+      minifyIdentifiers: true,
+      write: false,
+    });
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build({ ...${baseOptions}, plugins: [{ name: 'assignment-target-identity', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: ${JSON.stringify(trailingCode)} } : null); } }] });`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+
+    try {
+      const buildResult = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      expect(buildResult.status, buildResult.stderr).toBe(0);
+      const stderr = buildResult.stderr ?? '';
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
+        );
+      expect(mode, stderr).toContain('semantic_graph=retained');
+      const identity = stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry));
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity ?? ''), identity).toEqual([]);
+      expect(identity).toContain(`external=${assignments.length}`);
+
+      const outputs = JSON.parse(buildResult.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      const emitted = outputs[0];
+      const calls = [...emitted.matchAll(/\bconsole\.log\(([^;]*)\);/g)];
+      expect(calls).toHaveLength(assignments.length);
+      writeFileSync(output, emitted);
+
+      const execute = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(execute.status, execute.stderr).toBe(0);
+      expect(execute.stdout).toBe('1\n3\n3\n3\n3\n4\n5\n4\n3\n3\n');
+
+      const sharedTarget = emitted.match(/([A-Za-z_$][\w$]*)\s*=\s*\1\s*\+\s*1/)?.[1] ?? '';
+      const injectedTarget =
+        emitted.match(/\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*0\b/)?.[1] ?? '';
+      expect(sharedTarget, emitted).not.toBe('');
+      expect(injectedTarget, emitted).not.toBe('');
+      const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const shared = escapeRegExp(sharedTarget);
+      const injected = escapeRegExp(injectedTarget);
+      const targetMutations = [
+        { target: sharedTarget, pattern: new RegExp(`${shared}\\s*=\\s*${shared}\\s*\\+\\s*1`) },
+        { target: sharedTarget, pattern: new RegExp(`${shared}\\s*\\+=\\s*2`) },
+        { target: sharedTarget, pattern: new RegExp(`${shared}\\s*&&=\\s*3`) },
+        { target: sharedTarget, pattern: new RegExp(`${shared}\\s*\\|\\|=\\s*4`) },
+        { target: sharedTarget, pattern: new RegExp(`${shared}\\s*\\?\\?=\\s*5`) },
+        { target: sharedTarget, pattern: new RegExp(`\\+\\+\\s*${shared}`) },
+        { target: sharedTarget, pattern: new RegExp(`${shared}\\s*\\+\\+`) },
+        { target: sharedTarget, pattern: new RegExp(`--\\s*${shared}`) },
+        { target: sharedTarget, pattern: new RegExp(`${shared}\\s*--`) },
+        { target: injectedTarget, pattern: new RegExp(`${injected}\\s*=\\s*${shared}\\s*;`) },
+      ];
+      for (const [index, mutation] of targetMutations.entries()) {
+        const original = mutation.pattern.exec(emitted)?.[0];
+        expect(original, `assignment target ${index}: ${emitted}`).toBeDefined();
+        const hostileName = `missing_assignment_target_${index}`;
+        const mutatedExpression = original!.replace(mutation.target, `${hostileName}.missing`);
+        const mutated = emitted.replace(original!, mutatedExpression);
+        expect(mutated, hostileName).not.toBe(emitted);
+        writeFileSync(output, mutated);
+        const syntax = spawnSync('node', ['--check', output], { encoding: 'utf8' });
+        expect(syntax.status, `${hostileName}: ${syntax.stderr}`).toBe(0);
+        const hostile = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(hostile.status, hostileName).not.toBe(0);
+        expect(hostile.stderr, hostileName).toContain(
+          `ReferenceError: ${hostileName} is not defined`,
+        );
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('NAPI onAstFunction copies spread elements with exact references', () => {
     const trailingStatements = [
       'console.log([...new Box().values][0]);',
@@ -40014,7 +40123,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
-  test('NAPI onAstFunction rejects arrows that need an unrepresented function scope', () => {
+  test('NAPI onAstFunction rejects unsupported arrows and destructuring targets', () => {
     const rejectedCode = [
       ['console.log((value) => value);'],
       ['console.log(() => { const local = 1; return local; });'],
@@ -40022,6 +40131,9 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       ['console.log(() => arguments);'],
       ['console.log(async () => 1);'],
       ['console.log(() => );'],
+      ['console.log(() => shared++);'],
+      ['[shared] = [1];'],
+      ['({ value: shared } = { value: 1 });'],
       ['console.log("partial_plugin_statement");', 'console.log((value) => value);'],
     ];
     const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-arrow-reject-'));
