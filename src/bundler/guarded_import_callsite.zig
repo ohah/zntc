@@ -1367,7 +1367,7 @@ test "preserved side effectful named imports own eager guarded identities in cyc
         defer std.testing.allocator.free(native.stdout);
         defer std.testing.allocator.free(native.stderr);
         try std.testing.expectEqual(@as(u8, 0), native.term.exited);
-        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .cjs, .code_splitting = true, .preserve_modules = true, .unsupported = if (es5) @import("../transformer/transformer.zig").TransformOptions.compat.fromESTarget(.es5) else .{}, .entry_error_guard = guard, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
+        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .cjs, .code_splitting = true, .preserve_modules = true, .unsupported = if (es5) @import("../transformer/transformer.zig").TransformOptions.compat.fromESTarget(.es5) else .{}, .rn_version_matrix = @import("../transformer/transformer.zig").TransformOptions.compat.fromESTarget(if (es5) .es5 else .esnext), .entry_error_guard = guard, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
         var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
         defer cache.deinit();
         var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
