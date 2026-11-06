@@ -612,8 +612,11 @@ pub const AstTransformCtx = struct {
             .expression_statement,
             .return_statement,
             .throw_statement,
+            .spread_element,
             => blk: {
-                const new_operand = try self.copyNodeFromParsedAst(src_ast, src_node.data.unary.operand);
+                const source_operand = src_node.data.unary.operand;
+                const new_operand = try self.copyNodeFromParsedAst(src_ast, source_operand);
+                if (!source_operand.isNone() and new_operand.isNone()) break :blk .none;
                 break :blk self.transformer.ast.addNode(.{
                     .tag = src_node.tag,
                     .span = new_span,
