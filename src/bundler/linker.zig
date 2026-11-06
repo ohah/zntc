@@ -3421,6 +3421,8 @@ pub const Linker = struct {
 
     fn moduleMayNeedEsmInteropRuntime(self: *const Linker, module: *const Module) bool {
         if (module.wrap_kind == .esm) return true;
+        if (self.format == .cjs and module.wrap_kind != .cjs and module.export_bindings.len != 0 and
+            (module.is_entry_point or self.graph.preserve_modules)) return true;
 
         for (module.import_bindings) |binding| {
             if (binding.kind != .namespace and !binding.importsDefault()) continue;

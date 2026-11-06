@@ -8,17 +8,32 @@ const LinkingMetadata = linker_mod.LinkingMetadata;
 const OutputExports = @import("../bundler.zig").OutputExports;
 const FinalExportEntry = LinkingMetadata.FinalExportEntry;
 
-fn appendOrdinaryCjsExport(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, entry: FinalExportEntry) !void {
+fn appendEntryKey(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, entry: FinalExportEntry) !void {
     const keys = @import("../public_export_key.zig");
-    const syntax = entry.public_key_literal orelse {
-        try out.print(allocator, "exports.{s} = {s};\n", .{ entry.exported, entry.local });
-        return;
-    };
-    const key = try keys.fromLiteralSyntax(allocator, syntax);
+    const key = if (entry.public_key_literal) |literal| try keys.fromLiteralSyntax(allocator, literal) else try keys.fromSyntax(allocator, entry.exported);
     defer key.deinit(allocator);
-    try out.appendSlice(allocator, "exports");
-    try keys.appendMember(allocator, out, key);
-    try out.print(allocator, " = {s};\n", .{entry.local});
+    try @import("../emitter.zig").appendJsonString(out, allocator, key.text);
+}
+
+fn entryIsDefault(allocator: std.mem.Allocator, entry: FinalExportEntry) !bool {
+    const keys = @import("../public_export_key.zig");
+    const key = if (entry.public_key_literal) |literal| try keys.fromLiteralSyntax(allocator, literal) else try keys.fromSyntax(allocator, entry.exported);
+    defer key.deinit(allocator);
+    return std.mem.eql(u8, key.text, "default");
+}
+
+fn appendOrdinaryCjsExport(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, entry: FinalExportEntry, def_prop_name: ?[]const u8) !void {
+    const def_prop = def_prop_name orelse return error.MissingCjsEntryDescriptorIdentity;
+    try out.print(allocator, "{s}(exports,", .{def_prop});
+    try appendEntryKey(out, allocator, entry);
+    try out.print(allocator, ",{{enumerable:true,get:function(){{return {s};}}}});\n", .{entry.local});
+}
+
+pub fn needsCjsEntryDescriptors(allocator: std.mem.Allocator, entries: []const FinalExportEntry, mode: OutputExports) !bool {
+    if (mode == .none or mode == .default_ or entries.len == 0) return false;
+    if (mode == .named) return true;
+    for (entries) |entry| if (!try entryIsDefault(allocator, entry)) return true;
+    return false;
 }
 
 /// (#4120) CJS interop entry 의 `var <local> = <interop>;` materialize 문을 export 코드 앞에 emit.
@@ -93,20 +108,22 @@ pub fn appendWrappedCjsNamedEntryExports(
     module_code: []const u8,
     namespace_name: []const u8,
     entries: []const FinalExportEntry,
+    def_prop_name: []const u8,
 ) !?[]const u8 {
     if (entries.len == 0) return null;
     var suffix: std.ArrayListUnmanaged(u8) = .empty;
     defer suffix.deinit(allocator);
     for (entries) |entry| {
-        try suffix.appendSlice(allocator, "Object.defineProperty(exports,");
-        try appendPublicKeyLiteral(&suffix, allocator, entry.exported);
+        try suffix.print(allocator, "{s}(exports,", .{def_prop_name});
+        try appendEntryKey(&suffix, allocator, entry);
         try suffix.print(allocator, ",{{enumerable:true,get:function(){{return {s}[", .{namespace_name});
-        try appendPublicKeyLiteral(&suffix, allocator, entry.exported);
+        try appendEntryKey(&suffix, allocator, entry);
         try suffix.appendSlice(allocator, "];}});\n");
     }
     // A real public __esModule export owns its key, including quoted aliases.
     // Only the absent compiler interop marker is added; no getter is evaluated.
-    try suffix.appendSlice(allocator, "if(Object.prototype.hasOwnProperty.call(exports,\"default\")&&!Object.prototype.hasOwnProperty.call(exports,\"__esModule\"))Object.defineProperty(exports,\"__esModule\",{value:true});\n");
+    if (try readyNamespaceNeedsMarker(allocator, entries, true, .named))
+        try suffix.print(allocator, "{s}(exports,\"__esModule\",{{value:true}});\n", .{def_prop_name});
     return try std.mem.concat(allocator, u8, &.{ module_code, suffix.items });
 }
 
@@ -163,13 +180,9 @@ pub fn emitWrappedEntryExports(
     for (entries, 0..) |e, i| {
         if (i > 0) try out.appendSlice(allocator, ",");
         if (!minify_whitespace) try out.append(allocator, ' ');
-        if (!e.isDefault() and std.mem.eql(u8, e.local, e.exported)) {
-            try out.appendSlice(allocator, e.local);
-        } else {
-            try out.appendSlice(allocator, e.exported);
-            try out.appendSlice(allocator, if (minify_whitespace) ":" else ": ");
-            try out.appendSlice(allocator, e.local);
-        }
+        try out.appendSlice(allocator, "get ");
+        try appendEntryKey(&out, allocator, e);
+        try out.print(allocator, "(){{return {s};}}", .{e.local});
     }
     try out.appendSlice(allocator, if (minify_whitespace) "};\n" else " };\n");
     return try out.toOwnedSlice(allocator);
@@ -299,6 +312,7 @@ pub fn emitCjsEntryExports(
     /// (#4532 증상4) require 앞에 hoist 된 function-decl export 명 집합 — bottom 방출서 제외(중복 방지).
     /// null 이면 제외 없음.
     skip_hoisted: ?*const std.StringHashMapUnmanaged(void),
+    def_prop_name: ?[]const u8,
 ) ![]const u8 {
     if (mode == .none) return try allocator.dupe(u8, "");
     if (entries.len == 0) return try allocator.dupe(u8, "");
@@ -313,7 +327,7 @@ pub fn emitCjsEntryExports(
     var default_local: ?[]const u8 = null;
     var has_named = false;
     for (entries) |e| {
-        if (e.isDefault()) {
+        if (try entryIsDefault(allocator, e)) {
             default_local = e.local;
         } else {
             has_named = true;
@@ -336,10 +350,11 @@ pub fn emitCjsEntryExports(
         .named => {
             for (entries) |e| {
                 if (skip(skip_hoisted, e)) continue;
-                try appendOrdinaryCjsExport(&out, allocator, e);
+                try appendOrdinaryCjsExport(&out, allocator, e, def_prop_name);
             }
-            if (default_local != null) {
-                try out.appendSlice(allocator, "Object.defineProperty(exports, \"__esModule\", {value: true});\n");
+            if (try readyNamespaceNeedsMarker(allocator, entries, true, mode)) {
+                const def_prop = def_prop_name orelse return error.MissingCjsEntryDescriptorIdentity;
+                try out.print(allocator, "{s}(exports,\"__esModule\",{{value:true}});\n", .{def_prop});
             }
         },
         .auto => {
@@ -351,15 +366,18 @@ pub fn emitCjsEntryExports(
                     // mixed — named 형태 + esModule flag
                     for (entries) |e| {
                         if (skip(skip_hoisted, e)) continue;
-                        try appendOrdinaryCjsExport(&out, allocator, e);
+                        try appendOrdinaryCjsExport(&out, allocator, e, def_prop_name);
                     }
-                    try out.appendSlice(allocator, "Object.defineProperty(exports, \"__esModule\", {value: true});\n");
+                    if (try readyNamespaceNeedsMarker(allocator, entries, true, mode)) {
+                        const def_prop = def_prop_name orelse return error.MissingCjsEntryDescriptorIdentity;
+                        try out.print(allocator, "{s}(exports,\"__esModule\",{{value:true}});\n", .{def_prop});
+                    }
                 }
             } else {
                 // named-only — esModule flag 없음 (Rollup 기본 auto 동작)
                 for (entries) |e| {
                     if (skip(skip_hoisted, e)) continue;
-                    try appendOrdinaryCjsExport(&out, allocator, e);
+                    try appendOrdinaryCjsExport(&out, allocator, e, def_prop_name);
                 }
             }
         },
@@ -370,7 +388,7 @@ pub fn emitCjsEntryExports(
 
 test "emitCjsEntryExports: auto mode default-only → module.exports" {
     const entries = &.{FinalExportEntry{ .local = "x", .exported = "default" }};
-    const out = try emitCjsEntryExports(std.testing.allocator, entries, .auto, null);
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .auto, null, "__defProp");
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("module.exports = x;\n", out);
 }
@@ -380,9 +398,9 @@ test "emitCjsEntryExports: auto mode named-only → exports.X (no esModule)" {
         FinalExportEntry{ .local = "a", .exported = "a" },
         FinalExportEntry{ .local = "b", .exported = "b" },
     };
-    const out = try emitCjsEntryExports(std.testing.allocator, entries, .auto, null);
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .auto, null, "__defProp");
     defer std.testing.allocator.free(out);
-    try std.testing.expectEqualStrings("exports.a = a;\nexports.b = b;\n", out);
+    try std.testing.expectEqualStrings("__defProp(exports,\"a\",{enumerable:true,get:function(){return a;}});\n__defProp(exports,\"b\",{enumerable:true,get:function(){return b;}});\n", out);
 }
 
 test "emitCjsEntryExports: auto mode mixed → exports.X + esModule" {
@@ -390,24 +408,24 @@ test "emitCjsEntryExports: auto mode mixed → exports.X + esModule" {
         FinalExportEntry{ .local = "a", .exported = "a" },
         FinalExportEntry{ .local = "b", .exported = "default" },
     };
-    const out = try emitCjsEntryExports(std.testing.allocator, entries, .auto, null);
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .auto, null, "__defProp");
     defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "exports.a = a;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "exports.default = b;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "__defProp(exports,\"a\",{enumerable:true,get:function(){return a;}});") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "__defProp(exports,\"default\",{enumerable:true,get:function(){return b;}});") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "__esModule") != null);
 }
 
 test "emitCjsEntryExports: named mode → 항상 named + esModule (default 있으면)" {
     const entries = &.{FinalExportEntry{ .local = "x", .exported = "default" }};
-    const out = try emitCjsEntryExports(std.testing.allocator, entries, .named, null);
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .named, null, "__defProp");
     defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "exports.default = x;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "__defProp(exports,\"default\",{enumerable:true,get:function(){return x;}});") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "__esModule") != null);
 }
 
 test "emitCjsEntryExports: default_ mode default-only → module.exports" {
     const entries = &.{FinalExportEntry{ .local = "x", .exported = "default" }};
-    const out = try emitCjsEntryExports(std.testing.allocator, entries, .default_, null);
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .default_, null, "__defProp");
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("module.exports = x;\n", out);
 }
@@ -417,7 +435,7 @@ test "emitCjsEntryExports: default_ mode named 섞이면 error" {
         FinalExportEntry{ .local = "a", .exported = "a" },
         FinalExportEntry{ .local = "b", .exported = "default" },
     };
-    const result = emitCjsEntryExports(std.testing.allocator, entries, .default_, null);
+    const result = emitCjsEntryExports(std.testing.allocator, entries, .default_, null, "__defProp");
     try std.testing.expectError(error.OutputExportsDefaultRequiresSingleDefault, result);
 }
 
@@ -426,7 +444,7 @@ test "emitCjsEntryExports: none mode → 빈 string" {
         FinalExportEntry{ .local = "a", .exported = "a" },
         FinalExportEntry{ .local = "b", .exported = "b" },
     };
-    const out = try emitCjsEntryExports(std.testing.allocator, entries, .none, null);
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .none, null, "__defProp");
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("", out);
 }
@@ -460,7 +478,7 @@ test "emitWrappedEntryExports: emits object return from typed entries" {
     };
     const out = try emitWrappedEntryExports(std.testing.allocator, entries, false);
     defer std.testing.allocator.free(out);
-    try std.testing.expectEqualStrings("return { a, b: b$1, default: x };\n", out);
+    try std.testing.expectEqualStrings("return { get \"a\"(){return a;}, get \"b\"(){return b$1;}, get \"default\"(){return x;} };\n", out);
 }
 
 test "emitWrappedEntryExports: minify 시 공백/newline 제거 (#3096)" {
@@ -470,7 +488,7 @@ test "emitWrappedEntryExports: minify 시 공백/newline 제거 (#3096)" {
     };
     const out = try emitWrappedEntryExports(std.testing.allocator, entries, true);
     defer std.testing.allocator.free(out);
-    try std.testing.expectEqualStrings("return{a,b:b$1};\n", out);
+    try std.testing.expectEqualStrings("return{get \"a\"(){return a;},get \"b\"(){return b$1;}};\n", out);
 }
 
 test "wrapped ESM entries publish their canonical default binding" {
@@ -544,16 +562,16 @@ fn checkWrappedCjsExportAllocation(allocator: std.mem.Allocator) !void {
         .{ .local = "must_not_be_evaluated", .exported = "default" },
         .{ .local = "must_not_be_evaluated", .exported = "'x-y'" },
     };
-    const combined = (try appendWrappedCjsNamedEntryExports(allocator, body, "namespace", &entries)).?;
+    const combined = (try appendWrappedCjsNamedEntryExports(allocator, body, "namespace", &entries, "__defProp")).?;
     defer allocator.free(combined);
-    try std.testing.expectEqualStrings("var namespace={};Object.defineProperty(exports,\"default\",{enumerable:true,get:function(){return namespace[\"default\"];}});\nObject.defineProperty(exports,'x-y',{enumerable:true,get:function(){return namespace['x-y'];}});\nif(Object.prototype.hasOwnProperty.call(exports,\"default\")&&!Object.prototype.hasOwnProperty.call(exports,\"__esModule\"))Object.defineProperty(exports,\"__esModule\",{value:true});\n", combined);
+    try std.testing.expectEqualStrings("var namespace={};__defProp(exports,\"default\",{enumerable:true,get:function(){return namespace[\"default\"];}});\n__defProp(exports,\"x-y\",{enumerable:true,get:function(){return namespace[\"x-y\"];}});\n__defProp(exports,\"__esModule\",{value:true});\n", combined);
     try std.testing.expectEqualStrings("var namespace={};", body);
     try std.testing.expect(std.mem.indexOf(u8, combined, "must_not_be_evaluated") == null);
 }
 
 test "preserved CJS public renderer borrows typed namespace and frees allocation failures" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, checkWrappedCjsExportAllocation, .{});
-    try std.testing.expectEqual(@as(?[]const u8, null), try appendWrappedCjsNamedEntryExports(std.testing.allocator, "body;", "namespace", &.{}));
+    try std.testing.expectEqual(@as(?[]const u8, null), try appendWrappedCjsNamedEntryExports(std.testing.allocator, "body;", "namespace", &.{}, "__defProp"));
 }
 
 test "preserved CJS public keys use one StringValue decoding pass" {
@@ -582,9 +600,9 @@ fn checkOrdinaryQuotedExportAllocation(allocator: std.mem.Allocator) !void {
         .{ .local = "known_local", .exported = "\"\\\\u0061\"", .public_key_literal = "\"\\\\u0061\"" },
         .{ .local = "other_local", .exported = "\"한글\"", .public_key_literal = "\"한글\"" },
     };
-    const emitted = try emitCjsEntryExports(allocator, &entries, .named, null);
+    const emitted = try emitCjsEntryExports(allocator, &entries, .named, null, "__defProp");
     defer allocator.free(emitted);
-    try std.testing.expectEqualStrings("exports[\"\\\\u0061\"] = known_local;\nexports.한글 = other_local;\n", emitted);
+    try std.testing.expectEqualStrings("__defProp(exports,\"\\\\u0061\",{enumerable:true,get:function(){return known_local;}});\n__defProp(exports,\"한글\",{enumerable:true,get:function(){return other_local;}});\n", emitted);
 }
 
 test "quoted ordinary CJS export writers preserve certified StringValue and allocation ownership" {
@@ -604,4 +622,160 @@ test "ready marker demand follows decoded final public keys and actual output ro
         .{ .local = "source_marker", .exported = "\"__esModule\"", .public_key_literal = "\"__esModule\"" },
     };
     try std.testing.expect(!try readyNamespaceNeedsMarker(a, &public_marker, true, .named));
+}
+
+const public_entry_observation = "const before=ns.value;ns.update();console.log(JSON.stringify({before,after:ns.value,proto:ns['__proto__'],own:Object.prototype.hasOwnProperty.call(ns,'__proto__'),keys:Object.keys(ns).sort(),result:typeof ns.default==='function'?ns.default():ns.default}));";
+
+test "public entry getters retain ESM live values and own proto keys across library formats" {
+    const Bundler = @import("../bundler.zig").Bundler;
+    const helpers = @import("../test_helpers.zig");
+    const Format = @import("../types.zig").Format;
+    const Target = @import("../../transformer/compat.zig").ESTarget;
+    const sources = [_][]const u8{
+        "export let value=1;export function update(){value++}const proto='own';export{proto as '__proto__'};export default 42;",
+        "const Object={tag:'object'},exports={tag:'exports'},module={tag:'module'},__defProp={tag:'helper'};export let value=1;export function update(){value++}const proto='own';export{proto as '__proto__'};export default function read(){return [Object.tag,exports.tag,module.tag,__defProp.tag,value]}",
+    };
+    for (sources) |source| for ([_]Format{ .cjs, .iife, .umd }) |format| for ([_]Target{ .es5, .esnext }) |target| for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", source);
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const uri = try std.fmt.allocPrint(a, "file://{s}", .{entry});
+        const quoted_uri = try std.json.Stringify.valueAlloc(a, uri, .{});
+        const native_script = try std.mem.concat(a, u8, &.{ "const ns=await import(", quoted_uri, ");", public_entry_observation });
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", native_script } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        var bundler = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .platform = .node,
+            .format = format,
+            .global_name = if (format == .cjs) null else "PublicEntry",
+            .unsupported = @import("../../transformer/compat.zig").fromESTarget(target),
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+            .minify_whitespace = minify,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        try helpers.writeFile(tmp.dir, "output.cjs", result.output);
+        const output = try helpers.absPath(&tmp, "output.cjs");
+        defer std.testing.allocator.free(output);
+        const quoted_output = try std.json.Stringify.valueAlloc(a, output, .{});
+        const load = if (format == .iife)
+            try std.mem.concat(a, u8, &.{ "const ctx={};require('vm').runInNewContext(require('fs').readFileSync(", quoted_output, ",'utf8'),ctx);const ns=ctx.PublicEntry;" })
+        else
+            try std.mem.concat(a, u8, &.{ "const ns=require(", quoted_output, ");" });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", try std.mem.concat(a, u8, &.{ load, public_entry_observation }) } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+            std.debug.print("public entry format={s} target={s} minify={} native={s} actual={s} stderr={s}\n", .{ @tagName(format), @tagName(target), minify, native.stdout, actual.stdout, actual.stderr });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("", actual.stderr);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    };
+}
+
+test "public entry auto mixed preserves wrapped PM namespace and transport" {
+    const Bundler = @import("../bundler.zig").Bundler;
+    const helpers = @import("../test_helpers.zig");
+    const Target = @import("../../transformer/compat.zig").ESTarget;
+    for ([_]Target{ .es5, .esnext }) |target| for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "import{value}from'./dep.mjs';export{value as 'x-y'};export default()=>value();");
+        try helpers.writeFile(tmp.dir, "dep.mjs", "export function value(){return 42}");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const uri = try std.json.Stringify.valueAlloc(a, try std.fmt.allocPrint(a, "file://{s}", .{entry}), .{});
+        const observe = "console.log(JSON.stringify({keys:Object.keys(ns).filter(k=>k==='default'||k==='x-y').sort(),values:[ns['x-y'](),ns.default()]}));";
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", try std.mem.concat(a, u8, &.{ "const ns=await import(", uri, ");", observe }) } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        var bundler = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .platform = .react_native,
+            .format = .cjs,
+            .code_splitting = true,
+            .preserve_modules = true,
+            .preserve_modules_root = std.fs.path.dirname(entry),
+            .strict_execution_order = true,
+            .output_exports = .auto,
+            .unsupported = @import("../../transformer/compat.zig").fromESTarget(target),
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+            .minify_whitespace = minify,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        for (result.outputs.?) |file| try helpers.writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+        const output = try helpers.absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(output);
+        const quoted = try std.json.Stringify.valueAlloc(a, output, .{});
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", try std.mem.concat(a, u8, &.{ "const ns=require(", quoted, ");if(typeof ns.init_entry!=='function'||typeof ns.exports_entry!=='object')throw new Error('lost PM transport');", observe }) } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) {
+            std.debug.print("public PM target={s} minify={} native={s} actual={s} stderr={s}\n", .{ @tagName(target), minify, native.stdout, actual.stdout, actual.stderr });
+            for (result.outputs.?) |file| std.debug.print("public PM output {s}:\n{s}\n", .{ file.path, file.contents });
+        }
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("", actual.stderr);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    };
+}
+
+test "public entry raw CJS keeps its writable snapshot contract" {
+    const Bundler = @import("../bundler.zig").Bundler;
+    const helpers = @import("../test_helpers.zig");
+    for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.cjs", "module.exports={value:1};");
+        const entry = try helpers.absPath(&tmp, "entry.cjs");
+        defer std.testing.allocator.free(entry);
+        var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .node, .format = .cjs, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        try helpers.writeFile(tmp.dir, "output.cjs", result.output);
+        const output = try helpers.absPath(&tmp, "output.cjs");
+        defer std.testing.allocator.free(output);
+        const quoted = try std.json.Stringify.valueAlloc(std.testing.allocator, output, .{});
+        defer std.testing.allocator.free(quoted);
+        const script = try std.fmt.allocPrint(std.testing.allocator, "const ns=require({s});const d=Object.getOwnPropertyDescriptor(ns,'value');ns.value=42;console.log(JSON.stringify([ns.value,d.writable,Object.keys(ns)]));", .{quoted});
+        defer std.testing.allocator.free(script);
+        const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", script } });
+        defer std.testing.allocator.free(actual.stdout);
+        defer std.testing.allocator.free(actual.stderr);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("[42,true,[\"value\"]]\n", actual.stdout);
+    }
+}
+
+test "public entry descriptor demand preserves quoted default and explicit marker ownership" {
+    const a = std.testing.allocator;
+    const only_default = [_]FinalExportEntry{.{ .local = "answer", .exported = "'default'", .public_key_literal = "'default'" }};
+    try std.testing.expect(!try needsCjsEntryDescriptors(a, &only_default, .auto));
+    const scalar = try emitCjsEntryExports(a, &only_default, .auto, null, null);
+    defer a.free(scalar);
+    try std.testing.expectEqualStrings("module.exports = answer;\n", scalar);
+    const named = [_]FinalExportEntry{.{ .local = "answer", .exported = "value" }};
+    try std.testing.expectError(error.MissingCjsEntryDescriptorIdentity, emitCjsEntryExports(a, &named, .auto, null, null));
+    const explicit_marker = [_]FinalExportEntry{
+        only_default[0],
+        .{ .local = "user_marker", .exported = "'__esModule'", .public_key_literal = "'__esModule'" },
+    };
+    const emitted = try emitCjsEntryExports(a, &explicit_marker, .auto, null, "owned_def_prop");
+    defer a.free(emitted);
+    try std.testing.expect(std.mem.indexOf(u8, emitted, "return user_marker;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, emitted, "{value:true}") == null);
+    try std.testing.expect(std.mem.indexOf(u8, emitted, "Object.defineProperty") == null);
 }

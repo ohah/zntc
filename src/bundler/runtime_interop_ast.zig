@@ -130,14 +130,27 @@ pub fn outputNames(graph: anytype, renames: anytype) !names.EsmInteropRuntimeNam
 /// Statement reachability follows exact local SymbolIds through ordinary
 /// StmtInfo edges; no export-name lookup or opaque whole-module seed occurs.
 pub fn activate(graph: anytype, wrapped: bool, shaker: ?*@import("tree_shaker.zig").TreeShaker) !void {
+    return activateForConsumers(graph, wrapped, true, false, shaker);
+}
+
+pub fn activateForConsumers(graph: anytype, wrapped: bool, interop: bool, descriptor: bool, shaker: ?*@import("tree_shaker.zig").TreeShaker) !void {
     const provider = if (graph.interop_ast_provider) |*value| value else return;
     const bindings = try resolveBindings(graph);
     const module = graph.moduleAtMut(provider.module_index) orelse return error.InvalidInteropIdentity;
     const arena = module.parse_arena.?.allocator();
     const infos = module.prebuilt_stmt_info orelse return error.InvalidInteropIdentity;
-    const seeds = [_]u32{ @backingInt(bindings[7].?.symbol_id), @backingInt(bindings[8].?.symbol_id), @backingInt(bindings[9].?.symbol_id) };
+    var seeds: std.ArrayList(u32) = .empty;
+    if (interop) {
+        try seeds.append(arena, @backingInt(bindings[@backingInt(names.EsmInteropRuntimeHelper.to_esm)].?.symbol_id));
+        if (wrapped) {
+            try seeds.append(arena, @backingInt(bindings[@backingInt(names.EsmInteropRuntimeHelper.export_helper)].?.symbol_id));
+            try seeds.append(arena, @backingInt(bindings[@backingInt(names.EsmInteropRuntimeHelper.to_common_js)].?.symbol_id));
+        }
+    }
+    if (descriptor) try seeds.append(arena, @backingInt(bindings[@backingInt(names.EsmInteropRuntimeHelper.def_prop)].?.symbol_id));
+    if (seeds.items.len == 0) return error.InvalidInteropIdentity;
     const reachable = try arena.create(std.DynamicBitSet);
-    reachable.* = try infos.computeReachable(arena, if (wrapped) &seeds else seeds[0..1]);
+    reachable.* = try infos.computeReachable(arena, seeds.items);
     // Clone before replacing any owned bitset or publishing a new mirror.
     // A failed repeated activation leaves the old state fully usable.
     const replacement: ?std.DynamicBitSet = if (shaker) |s| try reachable.clone(s.allocator) else null;
