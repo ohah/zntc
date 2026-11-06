@@ -39773,6 +39773,122 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('NAPI onAstFunction copies tagged templates with exact tag and interpolation references', () => {
+    const trailingStatements = [
+      'console.log(tag`value=${new Box().value}`);',
+      'console.log(tag`a${new Box().value}b`);',
+      'console.log(tag`a${new Box(1).value + 1}b`);',
+      'console.log(tag`x${new Box(true).value * 2}!`);',
+      'console.log(tag`pre ${shared} post`);',
+      'console.log(tag`${new Box(null).value}`);',
+      'console.log(tag`a${(new Box()).value}b`);',
+      'console.log(tag`v${new Box().value - 1}z`);',
+      'console.log(tag`${new Box().value + 0}!`);',
+      'console.log(tag`first ${new Box(1, 2).value} last`);',
+    ];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-tagged-template-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      entry,
+      'let shared = 40; class Box { value = shared; } function tag(strings, value) { return strings[0] + value + strings[1]; } function outer() { function marker() {} marker(); } outer();',
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const baseOptions = JSON.stringify({
+      entryPoints: [entry],
+      platform: 'node',
+      format: 'cjs',
+      target: 'es5',
+      minifySyntax: false,
+      minifyIdentifiers: true,
+      write: false,
+    });
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build({ ...${baseOptions}, plugins: [{ name: 'tagged-template-identity', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: ${JSON.stringify(trailingStatements)} } : null); } }] });`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+
+    try {
+      const buildResult = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      expect(buildResult.status, buildResult.stderr).toBe(0);
+      const stderr = buildResult.stderr ?? '';
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
+        );
+      expect(mode, stderr).toContain('semantic_graph=retained');
+      const identity = stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry));
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity ?? ''), identity).toEqual([]);
+      expect(identity).toContain(`external=${trailingStatements.length}`);
+
+      const outputs = JSON.parse(buildResult.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      const emitted = outputs[0];
+      expect(emitted).not.toMatch(/\bclass\s+Box\b/);
+      const calls = [...emitted.matchAll(/\bconsole\.log\(([^;]*)\);/g)];
+      expect(calls).toHaveLength(trailingStatements.length);
+      writeFileSync(output, emitted);
+
+      const execute = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(execute.status, execute.stderr).toBe(0);
+      expect(execute.stdout).toBe(
+        'value=40\na40b\na41b\nx80!\npre 40 post\n40\na40b\nv39z\n40!\nfirst 40 last\n',
+      );
+      const sharedBinding = emitted.match(/\bvar\s+([\w$]+)\s*=\s*40\b/)?.[1];
+      expect(sharedBinding, 'minified source binding').toBeDefined();
+
+      for (let index = 0; index < calls.length; index += 1) {
+        const statement = calls[index]![0];
+        const className = statement.match(/new ([\w$]+)\(/)?.[1];
+        const tagName = statement.match(/console\.log\(([\w$]+)`/)?.[1];
+        expect(tagName, `tagged template ${index} tag binding`).toBeDefined();
+        const tagStart = `${tagName}\``;
+        const hostileNames: string[] = [];
+        const mutations: string[] = [];
+        if (className) {
+          hostileNames.push(`missing_tagged_class_${index}`);
+          mutations.push(statement.replace(`new ${className}(`, `new ${hostileNames.at(-1)}(`));
+        }
+        hostileNames.push(`missing_tagged_console_${index}`);
+        mutations.push(statement.replace('console.log', `${hostileNames.at(-1)}.log`));
+        hostileNames.push(`missing_tagged_tag_${index}`);
+        mutations.push(statement.replace(tagStart, `${hostileNames.at(-1)}\``));
+        const sharedInterpolation = '${' + sharedBinding + '}';
+        if (statement.includes(sharedInterpolation)) {
+          hostileNames.push(`missing_tagged_source_${index}`);
+          mutations.push(statement.replace(sharedInterpolation, '${' + hostileNames.at(-1) + '}'));
+        }
+
+        for (let mutationIndex = 0; mutationIndex < mutations.length; mutationIndex += 1) {
+          const hostileName = hostileNames[mutationIndex];
+          const mutated = emitted.replace(statement, mutations[mutationIndex]);
+          expect(mutated, hostileName).not.toBe(emitted);
+          writeFileSync(output, mutated);
+          const syntax = spawnSync('node', ['--check', output], { encoding: 'utf8' });
+          expect(syntax.status, `${hostileName}: ${syntax.stderr}`).toBe(0);
+          const hostile = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(hostile.status, hostileName).not.toBe(0);
+          expect(hostile.stderr, hostileName).toContain(
+            `ReferenceError: ${hostileName} is not defined`,
+          );
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('NAPI onAstFunction rejects generated console lookups inside direct eval calls', () => {
     const trailingCalls = [
       "console.log(eval('shared'));",
