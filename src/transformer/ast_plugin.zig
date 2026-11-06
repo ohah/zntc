@@ -789,6 +789,24 @@ pub const AstTransformCtx = struct {
                 });
             },
 
+            // Computed member keys are evaluated expressions. Copy both the
+            // receiver and key so inserted references keep their source
+            // SymbolIds after the plugin AST is attached to the retained graph.
+            .computed_member_expression => blk: {
+                const e = src_node.data.extra;
+                if (e > src_ast.extra_data.items.len or src_ast.extra_data.items.len - e < 3) break :blk .none;
+                const object_source = src_ast.readExtraNode(e, 0);
+                const property_source = src_ast.readExtraNode(e, 1);
+                if (object_source.isNone() or property_source.isNone()) break :blk .none;
+                const object = try self.copyNodeFromParsedAst(src_ast, object_source);
+                const property = try self.copyNodeFromParsedAst(src_ast, property_source);
+                if (object.isNone() or property.isNone()) break :blk .none;
+                const flags = src_ast.extra_data.items[e + 2];
+                break :blk self.addExtraNode(.computed_member_expression, new_span, &.{
+                    @backingInt(object), @backingInt(property), flags,
+                });
+            },
+
             // Calls and constructors share the same extra-data layout. Copy
             // the callee and each argument so inserted references keep their
             // exact identity through the output graph audit.
