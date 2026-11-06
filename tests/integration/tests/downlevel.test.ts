@@ -151,6 +151,25 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(result.runOutput).toBe('11 14');
     });
 
+    test('base and derived constructor defaults preserve parameter identity under ES5 minification', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            class Base { constructor(baseValue = 3) { this.baseValue = baseValue; } }
+            class Derived extends Base {
+              constructor(value = 4) { super(value); this.value = value; }
+            }
+            console.log(new Derived().baseValue, new Derived().value, new Derived(8).value);
+          `,
+        },
+        'index.ts',
+        ['--target=es5', '--minify'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('4 4 8');
+    });
+
     test('default parameter self TDZ는 ReferenceError', async () => {
       const result = await bundleAndRun(
         {

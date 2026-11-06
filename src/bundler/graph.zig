@@ -5369,6 +5369,7 @@ const GraphDefaultParameterOptions = struct {
     minify_whitespace: bool = false,
     minify_syntax: bool = true,
     minify_identifiers: bool = true,
+    expected_additional_graph_modules: usize = 0,
 };
 
 fn expectES5DefaultParameterGraphCacheIdentity(
@@ -5404,7 +5405,7 @@ fn expectES5DefaultParameterGraphCacheIdentity(
     defer std.testing.allocator.free(cold_parameter_identities);
     var cold_fallback_identity: ?GraphSourceSymbolIdentity = null;
     defer profile.resetForTest();
-    for ([_]usize{ 0, entries.len }) |expected_load_hits| {
+    for ([_]usize{ 0, entries.len + options.expected_additional_graph_modules }) |expected_load_hits| {
         profile.resetForTest();
         profile.setIoForTest(std.testing.io);
         profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
@@ -5439,7 +5440,7 @@ fn expectES5DefaultParameterGraphCacheIdentity(
             try std.testing.expect(plugin_state.did_mutate);
         }
         try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
-        try std.testing.expectEqual(entries.len, graph.moduleCount());
+        try std.testing.expectEqual(entries.len + options.expected_additional_graph_modules, graph.moduleCount());
         try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
         var parameter_identity_offset: usize = 0;
         for (entries, 0..) |entry, index| {
@@ -5609,6 +5610,19 @@ test "graph ES5 chained default parameters preserve every binding identity" {
         },
     };
     try expectES5DefaultParameterGraphCacheIdentity(&cases, "chained", .{ .minify_whitespace = true });
+}
+
+test "graph ES5 base and derived constructor defaults preserve every binding identity" {
+    const cases = [_]GraphDefaultParameterCase{
+        .{
+            .source = "class Base { constructor(baseValue = 3) { this.baseValue = baseValue; } } export class Derived extends Base { constructor(value = 4) { super(value); this.value = value; } } export const result = new Derived().baseValue + new Derived().value;",
+            .parameter_names = &.{ "baseValue", "value" },
+        },
+    };
+    try expectES5DefaultParameterGraphCacheIdentity(&cases, "class-constructor", .{
+        .minify_whitespace = true,
+        .expected_additional_graph_modules = 4,
+    });
 }
 
 test "Flow ref-component identity survives minify modes on cold and cached ASTs" {
