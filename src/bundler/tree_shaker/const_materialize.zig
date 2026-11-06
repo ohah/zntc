@@ -741,6 +741,7 @@ fn prepareJournalConstMinification(
     const output_roots = try constModuleOutputRoots(a, m);
     const runtime_proof = @import("../../semantic/output_runtime_coverage.zig").forTarget(.{ .source = runtime_source, .module = m }) orelse return false;
     var normal_form = try coverage.checkOutputNormalFormQuiet(self.allocator, ast, root, @intCast(prepared.source.ast.?.nodes.items.len), sem.symbol_ids, sem.symbols.items, sem.scopes, sem.scope_maps, &sem.scope_owner_map, sem.references, helpers, &sem.helper_scope_map, &unresolved, &explicit, &origins, .{
+        .require_declaration_anchors = true,
         .namespace_member_owners = &sem.namespace_member_owners,
         .namespace_declaration_owners = &sem.namespace_declaration_owners,
         .pre_transform_scope_count = prepared.source.semantic.?.scopes.len,

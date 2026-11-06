@@ -282,6 +282,24 @@ function auditAnalyzerFreePath(source, roots, label) {
   );
 }
 
+function auditOutputNormalFormDeclarationAnchors(source, label) {
+  const code = maskZigNonCode(source);
+  const checks = [...code.matchAll(/\bcheckOutputNormalFormQuiet\s*\(/g)];
+  requireCondition(
+    checks.length === 1,
+    `${label}: expected exactly one output normal-form admission call; found ${checks.length}`,
+  );
+  const open = code.indexOf('(', checks[0].index);
+  const close = matchingDelimiter(code, open, '(', ')');
+  requireCondition(close > open, `${label}: output normal-form call is malformed`);
+  const args = code.slice(open + 1, close);
+  const options = [...args.matchAll(/\.require_declaration_anchors\s*=\s*(true|false)\b/g)];
+  requireCondition(
+    options.length === 1 && options[0][1] === 'true',
+    `${label}: output normal-form admission must explicitly require declaration anchors`,
+  );
+}
+
 function requireCondition(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -290,6 +308,8 @@ function auditTranspile(source, label = 'src/transpile.zig') {
   const code = maskZigNonCode(source);
   const sites = analyzerSitesReachableFrom(source, ['transpile'], label);
   const transpile = functionBody(code, 'transpileWithCallbackInternal', label);
+  const standaloneNormalForm = functionBody(code, 'standaloneOutputNormalForm', label);
+  auditOutputNormalFormDeclarationAnchors(standaloneNormalForm.body, `${label}: standalone gate`);
   const body = code.slice(transpile.start, transpile.end);
   requireCondition(
     sites.length === 2,
@@ -401,6 +421,7 @@ function auditPrepass(source, label = 'src/bundler/graph/transform_prepass.zig')
   const run = functionBody(code, 'run', label);
   const runCandidate = functionBody(code, 'runCandidate', label);
   const normalForm = functionBody(code, 'genericPreparedOutputHasNormalForm', label);
+  const bufferNormalForm = functionBody(code, 'bufferPreparedOutputHasNormalForm', label);
   const completeCandidate = functionBody(code, 'completeGenericPrepassCandidate', label);
   const oracle = functionBody(code, 'refreshSemanticAndStmtInfoAfterAstMutation', label);
   const wrapper = functionBody(code, 'resyncAfterAstMutationForTest', label);
@@ -444,6 +465,8 @@ function auditPrepass(source, label = 'src/bundler/graph/transform_prepass.zig')
       !/\breturn\s+true\s*;/.test(normalForm.body),
     `${label}: generic prepass must return the exact output normal-form result`,
   );
+  auditOutputNormalFormDeclarationAnchors(normalForm.body, `${label}: generic prepass gate`);
+  auditOutputNormalFormDeclarationAnchors(bufferNormalForm.body, `${label}: Buffer fold gate`);
   requireCondition(
     candidateGate >= 0 &&
       /const\s+has_normal_form\s*=\s*genericPreparedOutputHasNormalForm\s*\(/.test(
@@ -502,6 +525,7 @@ function selfTest() {
   const sourceGraphGate =
     '  if (analyzer_storage) |*a| try requireStandaloneOutputNormalForm(arena_alloc, file_path, &transformer, a, root, pre_transform_scope_count, pre_transform_scope_history_event_count);';
   const transpile =
+    'fn standaloneOutputNormalForm() { return cov.checkOutputNormalFormQuiet(&origins, .{ .require_declaration_anchors = true }, &source_owned_retirements); }\n' +
     `fn transpile() { transpileWithCallbackInternal(); }\n` +
     `fn transpileWithCallbackInternal() {\n` +
     `  if (transform_plan.semantic == .full) {\n` +
@@ -530,13 +554,17 @@ function selfTest() {
   const prepass =
     'pub fn run() { var candidate_completed = false; runCandidate(&candidate_completed); if (!candidate_completed) { return; } prepared.publish(self.allocator); }\n' +
     'fn runCandidate(candidate_completed: *bool) { completeGenericPrepassCandidate(candidate_completed); }\n' +
-    'fn genericPreparedOutputHasNormalForm() { const valid = report.hasCompleteOutputIdentityBeforeNames(); return valid; }\n' +
+    'fn genericPreparedOutputHasNormalForm() { const report = report_mod.checkOutputNormalFormQuiet(&origins, .{ .require_declaration_anchors = true }); const valid = report.hasCompleteOutputIdentityBeforeNames(); return valid; }\n' +
+    'fn bufferPreparedOutputHasNormalForm() { const report = report_mod.checkOutputNormalFormQuiet(&origins, .{ .require_declaration_anchors = true }); return report.hasCompleteOutputIdentityBeforeNames(); }\n' +
     'fn completeGenericPrepassCandidate(candidate_completed: *bool) { const has_normal_form = genericPreparedOutputHasNormalForm(); if (!has_normal_form) { return; } candidate_completed.* = true; }\n' +
     'test "earlier unit test" { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
     'fn refreshSemanticAndStmtInfoAfterAstMutation() { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
     'pub fn resyncAfterAstMutationForTest() { if (!@import("builtin").is_test) @compileError("test only"); refreshSemanticAndStmtInfoAfterAstMutation(); }\n' +
     'test "later unit test" { var a = SemanticAnalyzer.init(alloc, ast); }';
   auditPrepass(prepass);
+  const constMaterialize =
+    'fn materializeConstFacts() { const report = coverage.checkOutputNormalFormQuiet(&origins, .{ .require_declaration_anchors = true }, &sem.source_owned_retirements); }';
+  auditOutputNormalFormDeclarationAnchors(constMaterialize, 'fixture/const_materialize.zig');
   auditAnalyzerFreePath(
     'fn productionRoot() { safeHelper(); }\n' +
       'fn safeHelper() {}\n' +
@@ -611,6 +639,20 @@ function selfTest() {
         transpile.replace(sourceGraphGate, `  Codegen.initWithOptions();\n${sourceGraphGate}`),
       ),
     'standalone output gate moved after codegen setup',
+  );
+  tryReject(
+    () =>
+      auditTranspile(
+        transpile.replace(
+          '.require_declaration_anchors = true',
+          '.require_declaration_anchors = false',
+        ),
+      ),
+    'standalone output gate stopped requiring declaration anchors',
+  );
+  tryReject(
+    () => auditTranspile(transpile.replace('.require_declaration_anchors = true', '')),
+    'standalone output gate stopped explicitly pinning declaration anchors',
   );
   for (const [index, env] of ['symbol_coverage_env', 'synthetic_coverage_env'].entries()) {
     tryReject(
@@ -800,6 +842,59 @@ function selfTest() {
     'prepass normal-form result ignored',
   );
   tryReject(
+    () =>
+      auditPrepass(
+        prepass.replace(
+          '.require_declaration_anchors = true',
+          '.require_declaration_anchors = false',
+        ),
+      ),
+    'generic prepass admission stopped requiring declaration anchors',
+  );
+  tryReject(
+    () =>
+      auditPrepass(
+        prepass.replace(
+          'fn bufferPreparedOutputHasNormalForm() { const report = report_mod.checkOutputNormalFormQuiet(&origins, .{ .require_declaration_anchors = true });',
+          'fn bufferPreparedOutputHasNormalForm() { const report = report_mod.checkOutputNormalFormQuiet(&origins, .{ .require_declaration_anchors = false });',
+        ),
+      ),
+    'Buffer fold admission stopped requiring declaration anchors',
+  );
+  tryReject(
+    () => auditPrepass(prepass.replace('.require_declaration_anchors = true', '')),
+    'generic prepass admission stopped explicitly pinning declaration anchors',
+  );
+  tryReject(
+    () =>
+      auditPrepass(
+        prepass.replace(
+          'fn bufferPreparedOutputHasNormalForm() { const report = report_mod.checkOutputNormalFormQuiet(&origins, .{ .require_declaration_anchors = true });',
+          'fn bufferPreparedOutputHasNormalForm() { const report = report_mod.checkOutputNormalFormQuiet(&origins, .{});',
+        ),
+      ),
+    'Buffer fold admission stopped explicitly pinning declaration anchors',
+  );
+  tryReject(
+    () =>
+      auditOutputNormalFormDeclarationAnchors(
+        constMaterialize.replace(
+          '.require_declaration_anchors = true',
+          '.require_declaration_anchors = false',
+        ),
+        'fixture/const_materialize.zig',
+      ),
+    'const materialization stopped requiring declaration anchors',
+  );
+  tryReject(
+    () =>
+      auditOutputNormalFormDeclarationAnchors(
+        constMaterialize.replace('.require_declaration_anchors = true', ''),
+        'fixture/const_materialize.zig',
+      ),
+    'const materialization stopped explicitly pinning declaration anchors',
+  );
+  tryReject(
     () => auditPrepass(prepass.replace('if (!candidate_completed) { return; }', '')),
     'prepass transaction published without failed-candidate abort',
   );
@@ -918,7 +1013,7 @@ function selfTest() {
     'analyzer hidden behind a qualified same-file helper call',
   );
   console.log(
-    'semantic reanalysis and output-gate audit self-test PASS (49 hostile mutations rejected)',
+    'semantic reanalysis and output-gate audit self-test PASS (57 hostile mutations rejected)',
   );
 }
 
@@ -958,6 +1053,10 @@ try {
     'parse',
   );
   auditPrepass(prepass);
+  auditOutputNormalFormDeclarationAnchors(
+    constMaterialize,
+    'src/bundler/tree_shaker/const_materialize.zig',
+  );
   auditAnalyzerFreePath(
     prepass,
     ['materializeFromCachedAst', 'prepareNodeBufferCapabilityFold'],

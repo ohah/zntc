@@ -4829,6 +4829,7 @@ fn standaloneOutputNormalForm(
 ) std.mem.Allocator.Error!@import("transformer/symbol_coverage.zig").OutputNormalFormReport {
     const cov = @import("transformer/symbol_coverage.zig");
     return cov.checkOutputNormalFormQuiet(allocator, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, &analyzer.scope_owner_map, analyzer.references.items, transformer.helper_ref_nodes.items, &analyzer.helper_scope_map, &analyzer.unresolved_reference_nodes, &transformer.explicit_global_reference_nodes, &transformer.reference_origin_map, .{
+        .require_declaration_anchors = true,
         .known_output_names = if (transformer.block_rename_map) |*names| names else null,
         .namespace_member_owners = &analyzer.namespace_member_owners,
         .namespace_declaration_owners = &analyzer.namespace_declaration_owners,

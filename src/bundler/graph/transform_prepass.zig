@@ -26391,6 +26391,7 @@ fn bufferPreparedOutputHasNormalForm(
         &globals,
         &origins,
         .{
+            .require_declaration_anchors = true,
             .pre_transform_scope_count = pre_transform_scope_count,
             .pre_transform_scope_history_event_count = pre_transform_scope_history_event_count,
             .namespace_member_owners = &sem.namespace_member_owners,
