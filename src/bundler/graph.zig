@@ -507,6 +507,7 @@ pub const ModuleGraph = struct {
     const graph_diagnostics = @import("graph/diagnostics.zig");
     pub const addDiag = graph_diagnostics.addDiag;
     pub const addOwnedDiag = graph_diagnostics.addOwnedDiag;
+    pub const addOwnedDiagnostic = graph_diagnostics.addOwnedDiagnostic;
     pub const addPluginFailureDiag = graph_diagnostics.addPluginFailureDiag;
     const validatePluginSourceMaps = graph_diagnostics.validatePluginSourceMaps;
 };

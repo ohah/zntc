@@ -1752,6 +1752,8 @@ export interface AstFunctionResult {
 }
 
 export interface BuildResult {
+  /** Unfiltered build failure status, including JS lifecycle failures. */
+  hasErrors?: boolean;
   outputFiles: OutputFile[];
   errors: Diagnostic[];
   warnings: Diagnostic[];
@@ -2959,7 +2961,7 @@ export function resolveOutputPath(
  * write/outdir/outfile 옵션에 따라 빌드 결과를 디스크에 기록한다.
  */
 function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
-  if (result.errors.length > 0) return;
+  if (result.hasErrors === true || result.errors.length > 0) return;
   const shouldWrite = options.write ?? (options.outdir != null || options.outfile != null);
   if (!shouldWrite) return;
 
@@ -3024,6 +3026,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
     if (dispatcher) {
       for (const failure of dispatcher.takeLifecycleFailures()) {
         result.errors.push(pluginFailureToDiagnostic(failure));
+        result.hasErrors = true;
       }
       for (const warning of dispatcher.takePluginWarnings()) {
         result.warnings.push(warning);
@@ -3037,6 +3040,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
       await dispatcher('closeBundle', undefined, null);
       for (const failure of dispatcher.takeLifecycleFailures()) {
         result.errors.push(pluginFailureToDiagnostic(failure));
+        result.hasErrors = true;
       }
       for (const warning of dispatcher.takePluginWarnings()) {
         result.warnings.push(warning);
@@ -3067,6 +3071,7 @@ export function buildSync(options: BuildOptions): BuildResult {
     if (dispatcher) {
       for (const failure of dispatcher.takeLifecycleFailures()) {
         result.errors.push(pluginFailureToDiagnostic(failure));
+        result.hasErrors = true;
       }
       for (const warning of dispatcher.takePluginWarnings()) {
         result.warnings.push(warning);
@@ -3078,6 +3083,7 @@ export function buildSync(options: BuildOptions): BuildResult {
       dispatcher('closeBundle', undefined, null);
       for (const failure of dispatcher.takeLifecycleFailures()) {
         result.errors.push(pluginFailureToDiagnostic(failure));
+        result.hasErrors = true;
       }
       for (const warning of dispatcher.takePluginWarnings()) {
         result.warnings.push(warning);
@@ -3154,6 +3160,7 @@ async function buildMultiFormat(options: BuildOptions): Promise<BuildResult> {
   const { output: _omit, ...baseOpts } = options as BuildOptions & { output?: OutputOptions[] };
 
   const aggregated: BuildResult = {
+    hasErrors: false,
     outputFiles: [],
     errors: [],
     warnings: [],
@@ -3162,6 +3169,7 @@ async function buildMultiFormat(options: BuildOptions): Promise<BuildResult> {
 
   for (const cfg of outputs) {
     const r = await build(mergeOutput(baseOpts as BuildOptions, cfg));
+    aggregated.hasErrors ||= r.hasErrors === true || r.errors.length > 0;
     aggregated.errors.push(...r.errors);
     aggregated.warnings.push(...r.warnings);
     aggregated.outputsByFormat!.push({
@@ -3209,6 +3217,7 @@ export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
   if (dispatcher) {
     for (const failure of dispatcher.takeLifecycleFailures()) {
       result.errors.push(pluginFailureToDiagnostic(failure));
+      result.hasErrors = true;
     }
     for (const warning of dispatcher.takePluginWarnings()) {
       result.warnings.push(warning);
@@ -3216,6 +3225,7 @@ export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
     dispatcher('closeBundle', undefined, null);
     for (const failure of dispatcher.takeLifecycleFailures()) {
       result.errors.push(pluginFailureToDiagnostic(failure));
+      result.hasErrors = true;
     }
     for (const warning of dispatcher.takePluginWarnings()) {
       result.warnings.push(warning);

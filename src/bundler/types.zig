@@ -905,6 +905,16 @@ pub const ImportRecord = struct {
 /// 번들러 에러/경고.
 /// esbuild의 suggestion + Bun의 step enum 설계.
 pub const BundlerDiagnostic = struct {
+    /// Source location sealed while an isolated worker graph still owns its
+    /// source. Never interpret worker offsets against a parent module's text.
+    pub const CapturedLocation = struct {
+        span: Span,
+        source_length: usize,
+        line: u32,
+        column: u32,
+    };
+    captured_location: ?CapturedLocation = null,
+
     /// 에러 코드 (프로그래밍적 처리용)
     code: ErrorCode,
     /// 심각도
