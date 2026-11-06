@@ -608,6 +608,13 @@ pub const AstTransformCtx = struct {
                 .data = .{ .string_ref = new_span },
             }),
 
+            // Template chunks are leaves whose source span stores raw text.
+            .template_element => self.transformer.ast.addNode(.{
+                .tag = .template_element,
+                .span = new_span,
+                .data = .{ .none = src_node.data.none },
+            }),
+
             // 단항: operand 재귀 복사
             .expression_statement,
             .return_statement,
@@ -673,14 +680,19 @@ pub const AstTransformCtx = struct {
             .object_expression,
             .array_expression,
             .sequence_expression,
+            .template_literal,
             => blk: {
                 const src_list = src_node.data.list;
+                if (src_list.start > src_ast.extra_data.items.len or
+                    src_list.len > src_ast.extra_data.items.len - src_list.start) break :blk .none;
                 const scratch_top = self.transformer.scratch.items.len;
                 defer self.transformer.scratch.shrinkRetainingCapacity(scratch_top);
                 var i: u32 = 0;
                 while (i < src_list.len) : (i += 1) {
                     const elem_raw = src_ast.extra_data.items[src_list.start + i];
+                    if (elem_raw >= src_ast.nodes.items.len) break :blk .none;
                     const copied = try self.copyNodeFromParsedAst(src_ast, @fromBackingInt(@intCast(elem_raw)));
+                    if (copied.isNone()) break :blk .none;
                     try self.transformer.scratch.append(self.transformer.allocator, copied);
                 }
                 const new_list = try self.transformer.ast.addNodeList(
