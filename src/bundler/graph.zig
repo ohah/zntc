@@ -4103,6 +4103,8 @@ test "graph pre-pass predicate: syntax and options that mutate graph-visible sur
     try expectPrePassDecision(true, "namespace N { export const x = 1 } export const y = N.x;", "namespace.ts", .{});
     try expectPrePassDecision(true, "import Foo = require('foo'); export = Foo;", "import-equals.ts", .{});
     try expectPrePassDecision(true, "export const run = async () => await value;", "downlevel.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
+    try expectPrePassDecision(true, "export class Box { accessor value = 41; }", "auto-accessor.js", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es2022) } });
+    try expectPrePassDecision(false, "export class Box { accessor value = 41; }", "native-auto-accessor.js", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.esnext) } });
     try expectPrePassDecision(true, "export async function* g() { yield 1; await Promise.resolve(); }", "async-generator.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
     try expectPrePassDecision(true, "export function* ids() { yield 1; }", "generator.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
     try expectPrePassDecision(true, "export function read(value = fallback) { return value; }", "function-default-params.js", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
@@ -4192,6 +4194,28 @@ test "graph pre-pass predicate: ES5 arrow cover defaults trigger graph ownership
     try expectPrePassDecision(false, sources[0], "arrow-default-params-native.js", .{
         .transform_options = .{ .unsupported = arrow_without_default_lowering },
     });
+}
+
+test "graph pre-pass predicate: ES2022 auto-accessors trigger graph ownership" {
+    const es2022: PrePassPredicateTestOptions = .{
+        .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es2022) },
+    };
+    const sources = [_][]const u8{
+        "export class Box { accessor value = 41; }",
+        "export class Box { accessor value; }",
+        "export class Box { static accessor value = 41; }",
+        "export class Box { accessor ['value'] = 41; }",
+        "const key = 'value'; export class Box { accessor [key] = 41; }",
+        "export class Box { accessor left = 20; accessor right = 22; }",
+        "export const Box = class { accessor value = 41; };",
+        "export function create() { return class { accessor value = 41; }; }",
+        "class Base {} export class Box extends Base { accessor value = 41; }",
+        "export default class Box { accessor value = 41; }",
+    };
+    for (sources) |source| try expectPrePassDecision(true, source, "auto-accessor-forms.js", es2022);
+
+    try expectPrePassDecision(false, "export class Box { value = 41; }", "class-field.js", es2022);
+    try expectPrePassDecision(false, sources[0], "native-auto-accessor.js", .{});
 }
 
 test "graph pre-pass predicate: worklet transforms stay gated by conservative AST signals" {
