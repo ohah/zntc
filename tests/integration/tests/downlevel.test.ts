@@ -82,6 +82,19 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(result.runOutput).toBe('hello world');
     });
 
+    test('default params with whitespace-only minification', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': "const greet = (name = 'world') => 'hello ' + name; console.log(greet());",
+        },
+        'index.ts',
+        ['--target=es5', '--minify-whitespace'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('hello world');
+    });
+
     test('default parameter self TDZ는 ReferenceError', async () => {
       const result = await bundleAndRun(
         {
