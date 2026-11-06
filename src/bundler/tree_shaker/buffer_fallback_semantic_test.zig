@@ -1129,6 +1129,18 @@ test "Buffer transaction actual owner plan stages AST graph metadata before comm
     const plan = (try patterns.prepareNodeBufferCapabilityPlan(a, module)) orelse return error.MissingBufferPlan;
     try std.testing.expect(plan.isCurrent(module));
     try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(before_nodes), std.mem.sliceAsBytes(module.ast.?.nodes.items));
+    // This key is outside the AST. The normal-form identity check alone does
+    // not own validation of every graph sidecar, so exercise the candidate
+    // admission boundary with an otherwise untouched plan.
+    const orphan_class_owner = @as(u32, @intCast(module.ast.?.nodes.items.len + 17));
+    try module.semantic.?.class_self_symbol_map.put(a, orphan_class_owner, @backingInt(wrapper_ids[0]));
+    try std.testing.expect(plan.isCurrent(module));
+    try std.testing.expect((try prepass.prepareNodeBufferCapabilityFold(&graph, module, a, &plan)) == null);
+    try std.testing.expect(plan.isCurrent(module));
+    try std.testing.expectEqual(@intFromPtr(before_ids.ptr), @intFromPtr(module.semantic.?.symbol_ids.ptr));
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(before_nodes), std.mem.sliceAsBytes(module.ast.?.nodes.items));
+    try std.testing.expectEqual(@backingInt(wrapper_ids[0]), module.semantic.?.class_self_symbol_map.get(orphan_class_owner).?);
+    _ = module.semantic.?.class_self_symbol_map.remove(orphan_class_owner);
     // A removed-node claim cannot consume an actual retained reference.
     const staged_ast = (try plan.cloneForPublication(module, a)).?;
     const staged_live = try @import("../../parser/ast_walk.zig").collectReachableNodeIndices(a, &staged_ast);

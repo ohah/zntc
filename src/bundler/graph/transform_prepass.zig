@@ -25568,18 +25568,20 @@ fn prepareConstMaterializationGraph(
     );
 }
 
-fn isNodeReachableInMinifiedGraph(raw: u32, reachable: *const std.DynamicBitSet) bool {
+fn isNodeReachableInOutputGraph(raw: u32, reachable: *const std.DynamicBitSet) bool {
     return raw < reachable.capacity() and reachable.isSet(raw);
 }
 
-pub fn constMaterializedGraphSidecarsRemainReachable(
+/// Sidecar NodeIndex and SymbolId metadata is outside the direct AST identity
+/// walk, so every retained-graph publication gate validates its own backing.
+pub fn outputGraphSidecarsRemainReachable(
     module: *const Module,
     semantic: anytype,
     reachable: *const std.DynamicBitSet,
 ) bool {
     var class_self_owners = semantic.class_self_symbol_map.iterator();
     while (class_self_owners.next()) |entry| {
-        if (!isNodeReachableInMinifiedGraph(entry.key_ptr.*, reachable) or
+        if (!isNodeReachableInOutputGraph(entry.key_ptr.*, reachable) or
             entry.value_ptr.* >= semantic.symbols.items.len) return false;
     }
 
@@ -25597,11 +25599,11 @@ pub fn constMaterializedGraphSidecarsRemainReachable(
     }
 
     if (module.tla_iife_stmt) |raw| {
-        if (!isNodeReachableInMinifiedGraph(raw, reachable)) return false;
+        if (!isNodeReachableInOutputGraph(raw, reachable)) return false;
     }
     if (module.tla_promise_reference) |promise_ref| {
         const raw = promise_ref.binding_node_index;
-        if (!isNodeReachableInMinifiedGraph(raw, reachable) or raw >= semantic.symbol_ids.len) return false;
+        if (!isNodeReachableInOutputGraph(raw, reachable) or raw >= semantic.symbol_ids.len) return false;
         const symbol_id = semantic.symbol_ids[raw] orelse return false;
         if (symbol_id != @backingInt(promise_ref.symbol_id) or symbol_id >= semantic.symbols.items.len or
             semantic.symbols.items[symbol_id].scope_id != promise_ref.scope_id) return false;
@@ -25609,29 +25611,29 @@ pub fn constMaterializedGraphSidecarsRemainReachable(
 
     if (module.transform_cache) |cache| {
         for (cache.helper_ref_nodes) |raw| {
-            if (!isNodeReachableInMinifiedGraph(raw, reachable)) return false;
+            if (!isNodeReachableInOutputGraph(raw, reachable)) return false;
         }
         for (cache.explicit_global_ref_nodes) |raw| {
-            if (!isNodeReachableInMinifiedGraph(raw, reachable)) return false;
+            if (!isNodeReachableInOutputGraph(raw, reachable)) return false;
         }
         for (cache.opaque_define_scope_owner_nodes) |raw| {
-            if (!isNodeReachableInMinifiedGraph(raw, reachable)) return false;
+            if (!isNodeReachableInOutputGraph(raw, reachable)) return false;
         }
         for (cache.preserved_class_name_nodes) |raw| {
-            if (!isNodeReachableInMinifiedGraph(raw, reachable)) return false;
+            if (!isNodeReachableInOutputGraph(raw, reachable)) return false;
         }
         for (cache.worklet_factory_local_bindings) |binding| {
-            if (!isNodeReachableInMinifiedGraph(binding.node_index, reachable)) return false;
+            if (!isNodeReachableInOutputGraph(binding.node_index, reachable)) return false;
         }
         for (cache.post_graph_output_bindings) |binding| {
-            if (!isNodeReachableInMinifiedGraph(binding.node_index, reachable)) return false;
+            if (!isNodeReachableInOutputGraph(binding.node_index, reachable)) return false;
         }
         for (cache.runtime_helper_import_output_bindings) |binding| {
-            if (!isNodeReachableInMinifiedGraph(binding.node_index, reachable)) return false;
+            if (!isNodeReachableInOutputGraph(binding.node_index, reachable)) return false;
         }
         var destructuring_temps = cache.destructuring_temp_bindings.keyIterator();
         while (destructuring_temps.next()) |raw| {
-            if (!isNodeReachableInMinifiedGraph(raw.*, reachable)) return false;
+            if (!isNodeReachableInOutputGraph(raw.*, reachable)) return false;
         }
     }
     return true;
@@ -25671,7 +25673,7 @@ fn exactRetainedClassSelfDeclarationOwner(
         owner_raw = entry.key_ptr.*;
     }
     const owner = owner_raw orelse return null;
-    if (!isNodeReachableInMinifiedGraph(owner, reachable) or owner >= ast.nodes.items.len or
+    if (!isNodeReachableInOutputGraph(owner, reachable) or owner >= ast.nodes.items.len or
         ast.nodes.items[owner].tag != .class_declaration or
         scope_owner_map.get(owner) != @as(?u32, @intCast(scope_raw))) return null;
 
@@ -25813,7 +25815,7 @@ fn constMaterializedSidecarsAreValidForTest(mutation: ConstMaterializedSidecarMu
         .stale_destructuring_temp => try cache.destructuring_temp_bindings.put(allocator, 31, {}),
     }
     module.transform_cache = cache;
-    return constMaterializedGraphSidecarsRemainReachable(&module, &semantic, &reachable);
+    return outputGraphSidecarsRemainReachable(&module, &semantic, &reachable);
 }
 
 test "const graph rejects stale or invalid sidecar identities" {
@@ -25871,7 +25873,7 @@ fn prepareConstMaterializationMinifiedGraph(
         if (raw >= ast.nodes.items.len) return false;
         reachable.set(raw);
     }
-    if (!constMaterializedGraphSidecarsRemainReachable(module, semantic, &reachable)) return false;
+    if (!outputGraphSidecarsRemainReachable(module, semantic, &reachable)) return false;
 
     // A scope owner can become unreachable only because syntax minification
     // removed its subtree. Accept only the exact owner/scope pairs captured
@@ -26352,6 +26354,15 @@ fn bufferPreparedOutputHasNormalForm(
     const sem = if (module.semantic) |*value| value else return false;
     const parser_count = ast.transform_boundary orelse @as(u32, @intCast(ast.nodes.items.len));
     const root = ast.transformed_root orelse @as(ast_mod.NodeIndex, @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
+    const reachable_nodes = try ast_walk.collectReachableNodeIndicesFrom(a, ast, root);
+    defer a.free(reachable_nodes);
+    var reachable = try std.DynamicBitSet.initEmpty(a, ast.nodes.items.len);
+    defer reachable.deinit();
+    for (reachable_nodes) |raw| {
+        if (raw >= ast.nodes.items.len) return false;
+        reachable.set(raw);
+    }
+    if (!outputGraphSidecarsRemainReachable(module, sem, &reachable)) return false;
     var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     var globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;

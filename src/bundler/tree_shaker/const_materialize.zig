@@ -665,7 +665,7 @@ fn retainedConstCandidateHasNormalForm(
         if (raw >= ast.nodes.items.len) return false;
         reachable.set(raw);
     }
-    if (!@import("../graph/transform_prepass.zig").constMaterializedGraphSidecarsRemainReachable(
+    if (!@import("../graph/transform_prepass.zig").outputGraphSidecarsRemainReachable(
         m,
         sem,
         &reachable,

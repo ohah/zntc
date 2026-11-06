@@ -317,9 +317,7 @@ function auditRetainedConstCandidateGate(source, label) {
   const gate = functionBody(code, 'retainedConstCandidateHasNormalForm', label);
   auditOutputNormalFormAdmissionOptions(gate.body, `${label}: retained const gate`);
   requireCondition(
-    /if\s*\(\s*!@import\s*\(\s*[^)]*\)\s*\.constMaterializedGraphSidecarsRemainReachable\s*\(/.test(
-      gate.body,
-    ),
+    /if\s*\(\s*!@import\s*\(\s*[^)]*\)\s*\.outputGraphSidecarsRemainReachable\s*\(/.test(gate.body),
     `${label}: retained const gate must validate graph sidecar reachability`,
   );
   requireCondition(
@@ -477,6 +475,7 @@ function auditPrepass(source, label = 'src/bundler/graph/transform_prepass.zig')
   const runCandidate = functionBody(code, 'runCandidate', label);
   const normalForm = functionBody(code, 'genericPreparedOutputHasNormalForm', label);
   const bufferNormalForm = functionBody(code, 'bufferPreparedOutputHasNormalForm', label);
+  const bufferFold = functionBody(code, 'prepareNodeBufferCapabilityFold', label);
   const completeCandidate = functionBody(code, 'completeGenericPrepassCandidate', label);
   const oracle = functionBody(code, 'refreshSemanticAndStmtInfoAfterAstMutation', label);
   const wrapper = functionBody(code, 'resyncAfterAstMutationForTest', label);
@@ -522,6 +521,35 @@ function auditPrepass(source, label = 'src/bundler/graph/transform_prepass.zig')
   );
   auditOutputNormalFormAdmissionOptions(normalForm.body, `${label}: generic prepass gate`);
   auditOutputNormalFormAdmissionOptions(bufferNormalForm.body, `${label}: Buffer fold gate`);
+  const bufferSidecarGate = bufferNormalForm.body.indexOf('outputGraphSidecarsRemainReachable(');
+  const bufferIdentityGate = bufferNormalForm.body.indexOf('checkOutputNormalFormQuiet(');
+  requireCondition(
+    /if\s*\(\s*!outputGraphSidecarsRemainReachable\(module,\s*sem,\s*&reachable\)\)\s*return\s+false\s*;/.test(
+      bufferNormalForm.body,
+    ) &&
+      bufferSidecarGate >= 0 &&
+      bufferIdentityGate > bufferSidecarGate,
+    `${label}: Buffer fold gate must reject unreachable graph sidecars before output identity admission`,
+  );
+  const bufferCandidateGate = bufferFold.body.indexOf(
+    'if (!try bufferPreparedOutputHasNormalForm(arena_alloc, &prepared.candidate,',
+  );
+  const bufferCandidateReject = bufferFold.body.indexOf('prepared.discard();', bufferCandidateGate);
+  const bufferCandidateAbort = bufferFold.body.indexOf('return null;', bufferCandidateReject);
+  const bufferRuntimeRegistration = bufferFold.body.indexOf(
+    'prepared.runtime_registration =',
+    bufferCandidateGate,
+  );
+  const bufferCandidateGateArgs = bufferFold.body.slice(bufferCandidateGate, bufferCandidateReject);
+  requireCondition(
+    bufferCandidateGate >= 0 &&
+      /scope_boundary_count/.test(bufferCandidateGateArgs) &&
+      /scope_boundary_history_event_count/.test(bufferCandidateGateArgs) &&
+      bufferCandidateReject > bufferCandidateGate &&
+      bufferCandidateAbort > bufferCandidateReject &&
+      bufferRuntimeRegistration > bufferCandidateAbort,
+    `${label}: Buffer candidate sidecar and output gate must abort before runtime registration or publication`,
+  );
   requireCondition(
     candidateGate >= 0 &&
       /const\s+has_normal_form\s*=\s*genericPreparedOutputHasNormalForm\s*\(/.test(
@@ -610,12 +638,18 @@ function selfTest() {
     'parseModule',
   );
   const genericGateFixture = `fn genericPreparedOutputHasNormalForm() { const report = report_mod.checkOutputNormalFormQuiet(&origins, ${outputNormalFormOptions}); const valid = report.hasCompleteOutputIdentityBeforeNames(); return valid; }\n`;
-  const bufferGateFixture = `fn bufferPreparedOutputHasNormalForm() { const report = report_mod.checkOutputNormalFormQuiet(&origins, ${outputNormalFormOptions}); return report.hasCompleteOutputIdentityBeforeNames(); }\n`;
+  const bufferGateFixture = `fn bufferPreparedOutputHasNormalForm() { if (!outputGraphSidecarsRemainReachable(module, sem, &reachable)) return false; const report = report_mod.checkOutputNormalFormQuiet(&origins, ${outputNormalFormOptions}); return report.hasCompleteOutputIdentityBeforeNames(); }\n`;
+  const bufferFoldFixture =
+    'fn prepareNodeBufferCapabilityFold() !?PreparedBufferGraph { ' +
+    'var prepared = (try prepareBufferGraphForAst()) orelse return null; errdefer prepared.discard(); ' +
+    'if (!try bufferPreparedOutputHasNormalForm(arena_alloc, &prepared.candidate, .{ .source = &runtime_source, .module = &prepared.candidate }, scope_boundary_count, scope_boundary_history_event_count)) { prepared.discard(); return null; } ' +
+    'prepared.runtime_registration = try prepareRuntimeRegistration(); return prepared; }\n';
   const prepass =
     'pub fn run() { var candidate_completed = false; runCandidate(&candidate_completed); if (!candidate_completed) { return; } prepared.publish(self.allocator); }\n' +
     'fn runCandidate(candidate_completed: *bool) { completeGenericPrepassCandidate(candidate_completed); }\n' +
     genericGateFixture +
     bufferGateFixture +
+    bufferFoldFixture +
     'fn completeGenericPrepassCandidate(candidate_completed: *bool) { const has_normal_form = genericPreparedOutputHasNormalForm(); if (!has_normal_form) { return; } candidate_completed.* = true; }\n' +
     'test "earlier unit test" { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
     'fn refreshSemanticAndStmtInfoAfterAstMutation() { var a = SemanticAnalyzer.init(alloc, ast); }\n' +
@@ -626,7 +660,7 @@ function selfTest() {
   auditOutputNormalFormAdmissionOptions(constMaterialize, 'fixture/const_materialize.zig');
   const retainedConstGateFixture =
     `fn retainedConstCandidateHasNormalForm() !bool { ` +
-    `if (!@import("../graph/transform_prepass.zig").constMaterializedGraphSidecarsRemainReachable(m, sem, &reachable)) return false; ` +
+    `if (!@import("../graph/transform_prepass.zig").outputGraphSidecarsRemainReachable(m, sem, &reachable)) return false; ` +
     `const normal_form = try coverage.checkOutputNormalFormQuiet(&origins, ${outputNormalFormOptions}, &sem.source_owned_retirements); ` +
     `return normal_form.hasCompleteOutputIdentityBeforeNames(); }\n`;
   const retainedConstTransactionFixture =
@@ -958,6 +992,164 @@ function selfTest() {
       ),
     'Buffer fold admission stopped explicitly pinning declaration anchors',
   );
+  const bufferSidecarGuard =
+    'if (!outputGraphSidecarsRemainReachable(module, sem, &reachable)) return false;';
+  const bufferSidecarMutants = [
+    [bufferGateFixture.replace(`${bufferSidecarGuard} `, ''), 'removed the sidecar rejection'],
+    [
+      bufferGateFixture.replace(
+        bufferSidecarGuard,
+        'if (outputGraphSidecarsRemainReachable(module, sem, &reachable)) return false;',
+      ),
+      'inverted the sidecar rejection',
+    ],
+    [
+      bufferGateFixture.replace(
+        bufferSidecarGuard,
+        'if (!outputGraphSidecarsRemainReachable(module, sem, &reachable)) return true;',
+      ),
+      'accepted the candidate on a rejected sidecar',
+    ],
+    [
+      bufferGateFixture.replace(
+        bufferSidecarGuard,
+        '_ = outputGraphSidecarsRemainReachable(module, sem, &reachable);',
+      ),
+      'ignored the sidecar result',
+    ],
+    [
+      bufferGateFixture.replace(
+        bufferSidecarGuard,
+        'if (!outputGraphSidecarsRemainReachable(source_module, sem, &reachable)) return false;',
+      ),
+      'validated a different module than the candidate',
+    ],
+    [
+      bufferGateFixture.replace(
+        bufferSidecarGuard,
+        'if (!outputGraphSidecarsRemainReachable(module, source_semantic, &reachable)) return false;',
+      ),
+      'validated a different semantic graph than the candidate',
+    ],
+    [
+      bufferGateFixture.replace(
+        bufferSidecarGuard,
+        'if (!outputGraphSidecarsRemainReachable(module, sem, &empty_reachable)) return false;',
+      ),
+      'validated an unrelated reachability bitmap',
+    ],
+    [
+      bufferGateFixture
+        .replace(`${bufferSidecarGuard} `, '')
+        .replace(
+          'return report.hasCompleteOutputIdentityBeforeNames();',
+          `${bufferSidecarGuard} return report.hasCompleteOutputIdentityBeforeNames();`,
+        ),
+      'checked sidecars only after output identity admission',
+    ],
+    [
+      bufferGateFixture.replace(
+        bufferSidecarGuard,
+        'if (module.wrap_kind == .esm and !outputGraphSidecarsRemainReachable(module, sem, &reachable)) return false;',
+      ),
+      'skipped sidecar validation for CJS candidates',
+    ],
+    [
+      bufferGateFixture.replace(
+        bufferSidecarGuard,
+        'if (!outputGraphSidecarsRemainReachable(module, sem, &reachable)) {}',
+      ),
+      'continued after sidecar rejection',
+    ],
+  ];
+  for (const [mutant, label] of bufferSidecarMutants) {
+    tryReject(
+      () => auditPrepass(prepass.replace(bufferGateFixture, mutant)),
+      `Buffer fold admission ${label}`,
+    );
+  }
+  const bufferCandidateGuard =
+    'if (!try bufferPreparedOutputHasNormalForm(arena_alloc, &prepared.candidate, .{ .source = &runtime_source, .module = &prepared.candidate }, scope_boundary_count, scope_boundary_history_event_count)) { prepared.discard(); return null; }';
+  const bufferCandidateMutants = [
+    [bufferFoldFixture.replace(`${bufferCandidateGuard} `, ''), 'removed candidate admission'],
+    [
+      bufferFoldFixture.replace(
+        bufferCandidateGuard,
+        bufferCandidateGuard.replace('if (!try', 'if (try'),
+      ),
+      'inverted candidate admission',
+    ],
+    [
+      bufferFoldFixture.replace(
+        bufferCandidateGuard,
+        bufferCandidateGuard.replace('return null;', 'return prepared;'),
+      ),
+      'returned the candidate after sidecar rejection',
+    ],
+    [
+      bufferFoldFixture.replace(
+        bufferCandidateGuard,
+        bufferCandidateGuard.replace('prepared.discard(); ', ''),
+      ),
+      'skipped explicit candidate discard on rejection',
+    ],
+    [
+      bufferFoldFixture.replace(
+        bufferCandidateGuard,
+        bufferCandidateGuard.replace('return null;', ''),
+      ),
+      'continued after candidate rejection',
+    ],
+    [
+      bufferFoldFixture.replace(
+        bufferCandidateGuard,
+        bufferCandidateGuard.replace(
+          'bufferPreparedOutputHasNormalForm(arena_alloc, &prepared.candidate,',
+          'bufferPreparedOutputHasNormalForm(arena_alloc, module,',
+        ),
+      ),
+      'validated the source module instead of the candidate',
+    ],
+    [
+      bufferFoldFixture
+        .replace(`${bufferCandidateGuard} `, '')
+        .replace(
+          'prepared.runtime_registration = try prepareRuntimeRegistration();',
+          `prepared.runtime_registration = try prepareRuntimeRegistration(); ${bufferCandidateGuard}`,
+        ),
+      'registered runtime metadata before candidate admission',
+    ],
+    [
+      bufferFoldFixture.replace(
+        bufferCandidateGuard,
+        bufferCandidateGuard.replace('if (!try', 'if (external_reads.count() != 0 and !try'),
+      ),
+      'skipped candidate admission when no external reads were erased',
+    ],
+    [
+      bufferFoldFixture.replace(
+        bufferCandidateGuard,
+        bufferCandidateGuard.replace('if (!try', 'if (false and !try'),
+      ),
+      'disabled candidate admission behind a false condition',
+    ],
+    [
+      bufferFoldFixture.replace(
+        bufferCandidateGuard,
+        bufferCandidateGuard.replace(
+          'scope_boundary_count, scope_boundary_history_event_count',
+          'null, null',
+        ),
+      ),
+      'dropped both retained source scope boundaries',
+    ],
+  ];
+  for (const [mutant, label] of bufferCandidateMutants) {
+    tryReject(
+      () => auditPrepass(prepass.replace(bufferFoldFixture, mutant)),
+      `Buffer candidate transaction ${label}`,
+    );
+  }
   tryReject(
     () =>
       auditOutputNormalFormAdmissionOptions(
@@ -980,7 +1172,7 @@ function selfTest() {
   const retainedMutants = [
     [
       retainedConst.replace(
-        'if (!@import("../graph/transform_prepass.zig").constMaterializedGraphSidecarsRemainReachable(m, sem, &reachable)) return false;',
+        'if (!@import("../graph/transform_prepass.zig").outputGraphSidecarsRemainReachable(m, sem, &reachable)) return false;',
         'if (true) {}',
       ),
       'retained const gate accepted an orphan graph sidecar',
@@ -1212,7 +1404,7 @@ function selfTest() {
     'analyzer hidden behind a qualified same-file helper call',
   );
   console.log(
-    'semantic reanalysis and output-gate audit self-test PASS (85 hostile mutations rejected)',
+    'semantic reanalysis and output-gate audit self-test PASS (105 hostile mutations rejected)',
   );
 }
 
