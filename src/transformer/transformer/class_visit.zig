@@ -814,7 +814,17 @@ pub fn prepareClassExprWrapperScope(self: *Transformer, source_idx: NodeIndex) E
         std.debug.panic("private helper class expression has no source scope", .{});
     const wrapper_scope = try self.reserveGeneratedFunctionScope(self.outputScopeParent(class_scope));
     try self.reparentGeneratedScope(class_scope, wrapper_scope);
-    if (self.current_class_self_symbol_id) |id| {
+    // This helper may run before visitClass installs the inner context.
+    // A nested anonymous class must not move its enclosing class's self cell.
+    // Match bindClassSelfStorage: exact output identity first, then the actual
+    // producer's copied-owner origin; never inherit the ambient current cell.
+    const source_raw = @backingInt(source_idx);
+    var own_self = self.class_self_symbol_map.get(source_raw);
+    if (own_self == null) {
+        if (self.scope_owner_origins.get(source_raw)) |origin|
+            own_self = self.class_self_symbol_map.get(origin);
+    }
+    if (own_self) |id| {
         const class_binding = self.ast.readExtraNode(self.ast.getNode(source_idx).data.extra, ast_mod.ClassExtra.name);
         const worklet = @import("../worklet_class_clone.zig");
         const move = worklet.prepareClassSelfStorageMove(self, source_idx, class_binding, @fromBackingInt(id), wrapper_scope) catch |err| switch (err) {
