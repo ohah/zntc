@@ -79,7 +79,7 @@ describe('bundle: Flow component syntax resolves React namespace import', () => 
     }
   });
 
-  test('ES5 Flow ref component preserves a quoted aliased prop key', async () => {
+  test('ES5 Flow ref component preserves quoted aliased prop keys across minify modes', async () => {
     const keys = [
       "'data-value'",
       '"plain"',
@@ -116,23 +116,37 @@ describe('bundle: Flow component syntax resolves React namespace import', () => 
 
     try {
       const entry = resolve(fixture.dir, 'entry.js');
-      const outputFile = resolve(fixture.dir, 'out.cjs');
-      const build = Bun.spawnSync([
-        ZNTC_BIN,
-        '--bundle',
-        '--platform=node',
-        '--format=cjs',
-        '--target=es5',
-        '--flow',
-        entry,
-        '-o',
-        outputFile,
-      ]);
-      expect(build.exitCode, build.stderr.toString()).toBe(0);
+      const modes = [
+        { name: 'plain', flags: [] },
+        { name: 'whitespace', flags: ['--minify-whitespace'] },
+        { name: 'syntax', flags: ['--minify-syntax'] },
+        { name: 'syntax-whitespace', flags: ['--minify-syntax', '--minify-whitespace'] },
+        { name: 'identifiers', flags: ['--minify-identifiers'] },
+        { name: 'identifiers-whitespace', flags: ['--minify-identifiers', '--minify-whitespace'] },
+        { name: 'syntax-identifiers', flags: ['--minify-syntax', '--minify-identifiers'] },
+        { name: 'full', flags: ['--minify'] },
+      ];
 
-      const run = Bun.spawnSync(['node', outputFile], { cwd: fixture.dir });
-      expect(run.exitCode, run.stderr.toString()).toBe(0);
-      expect(run.stdout.toString().trim()).toBe(JSON.stringify(expected));
+      for (const mode of modes) {
+        const outputFile = resolve(fixture.dir, `out-${mode.name}.cjs`);
+        const build = Bun.spawnSync([
+          ZNTC_BIN,
+          '--bundle',
+          '--platform=node',
+          '--format=cjs',
+          '--target=es5',
+          '--flow',
+          ...mode.flags,
+          entry,
+          '-o',
+          outputFile,
+        ]);
+        expect(build.exitCode, `${mode.name}: ${build.stderr.toString()}`).toBe(0);
+
+        const run = Bun.spawnSync(['node', outputFile], { cwd: fixture.dir });
+        expect(run.exitCode, `${mode.name}: ${run.stderr.toString()}`).toBe(0);
+        expect(run.stdout.toString().trim(), mode.name).toBe(JSON.stringify(expected));
+      }
     } finally {
       await fixture.cleanup();
     }
