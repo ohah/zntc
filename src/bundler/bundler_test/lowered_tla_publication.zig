@@ -146,8 +146,10 @@ test "lowered ESM publication owns readiness chunk descriptors and rejects ten f
     const known = graph.tla_readiness_all orelse return error.MissingTlaReadinessHelper;
     const provider = graph.moduleAtMut(known.module_index) orelse return error.MissingTlaReadinessHelper;
     try std.testing.expect(!provider.is_entry_point);
-    inline for (.{ .auto, .named, .default_, .none }) |mode|
-        try std.testing.expect(try runtime.cjsEntryDescriptorCandidate(&graph, provider, .cjs, mode));
+    inline for (.{ .cjs, .iife, .umd, .amd }) |format| {
+        inline for (.{ .auto, .named, .default_, .none }) |mode|
+            try std.testing.expect(try runtime.cjsEntryDescriptorCandidate(&graph, provider, format, mode));
+    }
     try std.testing.expect(!try runtime.cjsEntryDescriptorCandidate(&graph, provider, .esm, .none));
     const saved = provider.*;
     const original_binding = provider.export_bindings[known.export_index];
@@ -172,15 +174,67 @@ test "lowered ESM publication owns readiness chunk descriptors and rejects ten f
             9 => provider.wrap_kind = .esm,
             else => unreachable,
         }
-        try std.testing.expectError(error.InvalidTlaReadinessHelper, runtime.cjsEntryDescriptorCandidate(&graph, provider, .cjs, .none));
+        inline for (.{ .cjs, .iife, .umd, .amd }) |format|
+            try std.testing.expectError(error.InvalidTlaReadinessHelper, runtime.cjsEntryDescriptorCandidate(&graph, provider, format, .none));
     }
     // Same bytes and exact helper index do not authorize a foreign Module object.
     var foreign = saved;
-    try std.testing.expectError(error.InvalidTlaReadinessHelper, runtime.cjsEntryDescriptorCandidate(&graph, &foreign, .cjs, .none));
+    inline for (.{ .cjs, .iife, .umd, .amd }) |format|
+        try std.testing.expectError(error.InvalidTlaReadinessHelper, runtime.cjsEntryDescriptorCandidate(&graph, &foreign, format, .none));
     const source_module = graph.moduleAtMut(graph.path_to_module.get(entry).?).?;
+    // Wrapped outer formats do not grant descriptors to arbitrary modules.
+    inline for (.{ .iife, .umd, .amd }) |format| {
+        inline for (.{ .auto, .named, .default_, .none }) |mode|
+            try std.testing.expect(!try runtime.cjsEntryDescriptorCandidate(&graph, source_module, format, mode));
+    }
     const old_entry = source_module.is_entry_point;
     source_module.is_entry_point = false;
     defer source_module.is_entry_point = old_entry;
     try std.testing.expect(!try runtime.cjsEntryDescriptorCandidate(&graph, source_module, .cjs, .named));
     try std.testing.expect(!try runtime.cjsEntryDescriptorCandidate(&graph, source_module, .cjs, .none));
+}
+
+test "lowered ESM publication IIFE registry original split witness waits and initializes once" {
+    const a = std.testing.allocator;
+    const inputs = .{
+        .{ "entry.mjs", "import {combined} from \"./consumer.mjs\";export {combined};export function load(){return import(\"./lazy.mjs\")}" },
+        .{ "consumer.mjs", "import {value} from \"./slow.mjs\";export const combined=value;" },
+        .{ "slow.mjs", "export let value=0;await new Promise(r=>setTimeout(r,5));value=42;" },
+        .{ "lazy.mjs", "export {combined} from \"./consumer.mjs\";" },
+    };
+    const driver = "const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict');\n(async()=>{const mode=process.argv[2],root=process.argv[3];const effects=[];let markStarted;const started=new Promise(resolve=>markStarted=resolve);const timer=setTimeout;function observe(fn,delay,...args){effects.push('start');markStarted();return timer(()=>{effects.push('release');fn(...args)},delay)}let loading;\nif(mode==='native'){globalThis.setTimeout=observe;loading=import(require('node:url').pathToFileURL(path.join(root,'entry.mjs')).href)}else{const context=vm.createContext({console,Promise,setTimeout:observe,clearTimeout});const files=fs.readdirSync(root).filter(file=>file.endsWith('.js'));const evaluate=file=>{assert.ok(files.includes(file));vm.runInContext(fs.readFileSync(path.join(root,file),'utf8'),context,{filename:file})};context.document={createElement(){return{setAttribute(){}}},head:{appendChild(script){try{evaluate(script.src.replace(/^\\.\\//,''));script.onload?.()}catch(error){if(script.onerror)script.onerror(error);else throw error}}}};for(const file of files.filter(file=>file!=='entry.js').sort())evaluate(file);evaluate('entry.js');loading=context.PublicLibrary}\nassert.equal(typeof loading.then,'function');let settled=false;loading.then(()=>{settled=true;effects.push('ready')});await started;assert.equal(settled,false);assert.deepEqual(effects,['start']);const value=await loading;assert.equal(value.combined,42);const lazy=await value.load();assert.equal(lazy.combined,42);effects.push('lazy');assert.deepEqual(effects,['start','release','ready','lazy']);console.log(JSON.stringify({combined:value.combined,lazy:lazy.combined,effects}));})().catch(error=>{console.error(error);process.exitCode=1});\n";
+    const expected = "{\"combined\":42,\"lazy\":42,\"effects\":[\"start\",\"release\",\"ready\",\"lazy\"]}\n";
+    for ([_]compat.ESTarget{ .es5, .esnext }) |target| {
+        for ([_]bool{ false, true }) |minify| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            inline for (inputs) |input| try helpers.writeFile(tmp.dir, input[0], input[1]);
+            try helpers.writeFile(tmp.dir, "check.cjs", driver);
+            const check = try helpers.absPath(&tmp, "check.cjs");
+            defer a.free(check);
+            const directory = try helpers.absPath(&tmp, ".");
+            defer a.free(directory);
+            const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", check, "native", directory } });
+            defer a.free(native.stdout);
+            defer a.free(native.stderr);
+            try std.testing.expect(native.term == .exited and native.term.exited == 0);
+            try std.testing.expectEqualStrings(expected, native.stdout);
+            const entry = try helpers.absPath(&tmp, "entry.mjs");
+            defer a.free(entry);
+            var bundler = Bundler.init(a, .{ .entry_points = &.{entry}, .platform = .node, .format = .iife, .global_name = "PublicLibrary", .code_splitting = true, .unsupported = compat.fromESTarget(target), .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify });
+            defer bundler.deinit();
+            const result = try bundler.bundle(std.testing.io);
+            defer result.deinit(a);
+            try std.testing.expect(!result.hasErrors());
+            const outputs = result.outputs orelse return error.MissingRegistryOutputs;
+            try std.testing.expect(outputs.len >= 3);
+            for (outputs) |output| try helpers.writeFile(tmp.dir, std.fs.path.basename(output.path), output.contents);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", check, "registry", directory } });
+            defer a.free(actual.stdout);
+            defer a.free(actual.stderr);
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) std.debug.print("readiness IIFE target={s} minify={} stdout={s} stderr={s}\n", .{ @tagName(target), minify, actual.stdout, actual.stderr });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
 }
