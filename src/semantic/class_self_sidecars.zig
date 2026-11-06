@@ -112,6 +112,26 @@ fn contains(a: std.mem.Allocator, tree: *const ast.Ast, root: N, wanted: N) !boo
     return false;
 }
 
+/// This producer appends the declaration directly to its generated arrow's
+/// block. Inspect that bounded list, never descendants of nested classes.
+fn wrapperDirectlyOwnsDeclaration(tree: *const ast.Ast, wrapper: N, declaration: N) bool {
+    if (!present(tree, wrapper) or !present(tree, declaration)) return false;
+    const function = tree.getNode(wrapper);
+    if (function.tag != .arrow_function_expression or !tree.hasExtra(function.data.extra, ast.ArrowExtra.body)) return false;
+    const body = tree.readExtraNode(function.data.extra, ast.ArrowExtra.body);
+    if (!present(tree, body)) return false;
+    const block = tree.getNode(body);
+    if (block.tag != .block_statement) return false;
+    const start: usize = block.data.list.start;
+    const len: usize = block.data.list.len;
+    if (start > tree.extra_data.items.len or len > tree.extra_data.items.len - start) return false;
+    var matches: usize = 0;
+    for (tree.extra_data.items[start..][0..len]) |raw| {
+        if (raw == @backingInt(declaration)) matches += 1;
+    }
+    return matches == 1;
+}
+
 /// Construct once for this output. History and the Worklet bridge are validated
 /// once, and owner/SID selections are indexed before the caller scans sidecars.
 /// No new source/retirement/wire metadata is published by this query.
@@ -287,7 +307,10 @@ pub fn prepare(a: std.mem.Allocator, module: *const Module, source: Source, rece
     var initial_rows = try anchorlessRows(a, source.semantic);
     defer initial_rows.deinit(a);
     if (producer) |actual| {
-        for (actual.wrapper_class_self_bindings.items) |birth| {
+        var births = actual.wrapper_class_self_bindings.iterator();
+        while (births.next()) |entry| {
+            const birth = entry.value_ptr.*;
+            if (entry.key_ptr.* != birth.source_class) return null;
             const raw = @backingInt(birth.source_class);
             const origin = actual.scope_owner_origins.get(raw) orelse raw;
             const owner = owners.get(origin) orelse return null;
@@ -324,7 +347,7 @@ pub fn prepare(a: std.mem.Allocator, module: *const Module, source: Source, rece
                 sem.scopes[birth.wrapper_scope.toIndex()].kind != .function or
                 sem.scopes[owner.scope.toIndex()].kind != .class_body or sem.scopes[owner.scope.toIndex()].parent != birth.wrapper_scope or
                 actual.scope_owner_origins.get(@backingInt(birth.declaration)) != @as(?u32, origin) or
-                !try contains(a, tree, birth.wrapper, birth.declaration)) return null;
+                !wrapperDirectlyOwnsDeclaration(tree, birth.wrapper, birth.declaration)) return null;
             if (!try result.add(a, birth.source_class, birth.symbol)) return null;
         }
     }

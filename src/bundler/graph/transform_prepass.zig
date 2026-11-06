@@ -35284,7 +35284,7 @@ test "class sidecar staged lazy owner birth preserves unassigned installed sourc
     try std.testing.expect(try sidecarProofCheck(a, module, source, &receipt, root, &output, &original));
 }
 
-test "class sidecar fresh wrapper receipts reject ten crossed producer edges" {
+test "class sidecar fresh wrapper receipts reject crossed producer edges" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -35325,7 +35325,7 @@ test "class sidecar fresh wrapper receipts reject ten crossed producer edges" {
     module.ast = t.ast.*;
     sem.applyEdit((try t.finishSemanticEdit()).?);
     sem.class_self_symbol_map = t.class_self_symbol_map;
-    try std.testing.expectEqual(@as(usize, 2), t.wrapper_class_self_bindings.items.len);
+    try std.testing.expectEqual(@as(usize, 2), t.wrapper_class_self_bindings.count());
     var output = try std.DynamicBitSet.initEmpty(a, t.ast.nodes.items.len);
     for (try ast_walk.collectReachableNodeIndicesFrom(a, t.ast, root)) |raw| output.set(raw);
     var original = try std.DynamicBitSet.initEmpty(a, t.ast.nodes.items.len);
@@ -35339,29 +35339,44 @@ test "class sidecar fresh wrapper receipts reject ten crossed producer edges" {
         }
     };
     try std.testing.expect(try Check.run(a, module, source, &receipt, &t, root, &output, &original));
-    const saved = t.wrapper_class_self_bindings.items[0];
-    const other = t.wrapper_class_self_bindings.items[1];
-    const Poison = enum { source, binding, symbol, wrapper_scope, wrapper, declaration, missing_wrapper, missing_declaration, foreign_source, missing_receipts };
+    var birth_entries = t.wrapper_class_self_bindings.iterator();
+    const selected = birth_entries.next().?;
+    const selected_key = selected.key_ptr.*;
+    const saved = selected.value_ptr.*;
+    const other = birth_entries.next().?.value_ptr.*;
+    const Poison = enum { source, binding, symbol, wrapper_scope, wrapper, declaration, missing_wrapper, missing_declaration, foreign_source, missing_receipts, map_key };
+    var checked_poison_cases: usize = 0;
     for (std.enums.values(Poison)) |poison| {
-        t.wrapper_class_self_bindings.items[0] = saved;
-        const old_len = t.wrapper_class_self_bindings.items.len;
+        t.wrapper_class_self_bindings.getPtr(selected_key).?.* = saved;
+        const saved_births = t.wrapper_class_self_bindings;
         var foreign_tree = source.tree.*;
         var selected_source = source;
         switch (poison) {
-            .source => t.wrapper_class_self_bindings.items[0].source_class = other.source_class,
-            .binding => t.wrapper_class_self_bindings.items[0].binding = other.binding,
-            .symbol => t.wrapper_class_self_bindings.items[0].symbol = other.symbol,
-            .wrapper_scope => t.wrapper_class_self_bindings.items[0].wrapper_scope = other.wrapper_scope,
-            .wrapper => t.wrapper_class_self_bindings.items[0].wrapper = other.wrapper,
-            .declaration => t.wrapper_class_self_bindings.items[0].declaration = other.declaration,
-            .missing_wrapper => t.wrapper_class_self_bindings.items[0].wrapper = .none,
-            .missing_declaration => t.wrapper_class_self_bindings.items[0].declaration = .none,
+            .source => t.wrapper_class_self_bindings.getPtr(selected_key).?.source_class = other.source_class,
+            .binding => t.wrapper_class_self_bindings.getPtr(selected_key).?.binding = other.binding,
+            .symbol => t.wrapper_class_self_bindings.getPtr(selected_key).?.symbol = other.symbol,
+            .wrapper_scope => t.wrapper_class_self_bindings.getPtr(selected_key).?.wrapper_scope = other.wrapper_scope,
+            .wrapper => t.wrapper_class_self_bindings.getPtr(selected_key).?.wrapper = other.wrapper,
+            .declaration => t.wrapper_class_self_bindings.getPtr(selected_key).?.declaration = other.declaration,
+            .missing_wrapper => t.wrapper_class_self_bindings.getPtr(selected_key).?.wrapper = .none,
+            .missing_declaration => t.wrapper_class_self_bindings.getPtr(selected_key).?.declaration = .none,
             .foreign_source => selected_source.tree = &foreign_tree,
-            .missing_receipts => t.wrapper_class_self_bindings.items.len = 0,
+            .missing_receipts => t.wrapper_class_self_bindings = .empty,
+            .map_key => {
+                t.wrapper_class_self_bindings = try saved_births.clone(a);
+                _ = t.wrapper_class_self_bindings.remove(selected_key);
+                try t.wrapper_class_self_bindings.put(a, .none, saved);
+            },
         }
         try std.testing.expect(!try Check.run(a, module, selected_source, &receipt, &t, root, &output, &original));
-        t.wrapper_class_self_bindings.items.len = old_len;
+        t.wrapper_class_self_bindings = saved_births;
+        checked_poison_cases += 1;
     }
-    t.wrapper_class_self_bindings.items[0] = saved;
+    try std.testing.expectEqual(@as(usize, 11), checked_poison_cases);
+    t.wrapper_class_self_bindings.getPtr(selected_key).?.* = saved;
+    var duplicate = saved;
+    duplicate.binding = other.binding;
+    try std.testing.expectError(error.DuplicateSourceClass, duplicate.insert(a, &t.wrapper_class_self_bindings));
+    try std.testing.expect(std.meta.eql(saved, t.wrapper_class_self_bindings.getPtr(selected_key).?.*));
     try std.testing.expect(try Check.run(a, module, source, &receipt, &t, root, &output, &original));
 }

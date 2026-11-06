@@ -359,14 +359,19 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 self.current_class_name_node = new_name;
                 self.current_class_self_symbol_id = @backingInt(id);
                 try self.class_self_symbol_map.put(self.allocator, @backingInt(source_idx), @backingInt(id));
-                if (!legacy_decorator_statement_class) try self.wrapper_class_self_bindings.append(self.allocator, .{
-                    .source_class = source_idx,
-                    .declaration = .none,
-                    .binding = new_name,
-                    .symbol = @backingInt(id),
-                    .wrapper_scope = prepared_wrapper_scope,
-                    .wrapper = .none,
-                });
+                if (!legacy_decorator_statement_class) {
+                    (Transformer.WrapperClassSelf{
+                        .source_class = source_idx,
+                        .declaration = .none,
+                        .binding = new_name,
+                        .symbol = @backingInt(id),
+                        .wrapper_scope = prepared_wrapper_scope,
+                        .wrapper = .none,
+                    }).insert(self.allocator, &self.wrapper_class_self_bindings) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.DuplicateSourceClass => std.debug.panic("fresh class wrapper self source recorded twice", .{}),
+                    };
+                }
             }
         }
         var new_body_pl: NodeIndex = .none;
@@ -518,14 +523,19 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             self.current_class_name_node = new_name;
             self.current_class_self_symbol_id = @backingInt(id);
             try self.class_self_symbol_map.put(self.allocator, @backingInt(source_idx), @backingInt(id));
-            if (!legacy_decorator_statement_class) try self.wrapper_class_self_bindings.append(self.allocator, .{
-                .source_class = source_idx,
-                .declaration = .none,
-                .binding = new_name,
-                .symbol = @backingInt(id),
-                .wrapper_scope = prepared_wrapper_scope,
-                .wrapper = .none,
-            });
+            if (!legacy_decorator_statement_class) {
+                (Transformer.WrapperClassSelf{
+                    .source_class = source_idx,
+                    .declaration = .none,
+                    .binding = new_name,
+                    .symbol = @backingInt(id),
+                    .wrapper_scope = prepared_wrapper_scope,
+                    .wrapper = .none,
+                }).insert(self.allocator, &self.wrapper_class_self_bindings) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.DuplicateSourceClass => std.debug.panic("fresh class wrapper self source recorded twice", .{}),
+                };
+            }
         }
     }
 
