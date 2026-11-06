@@ -1460,6 +1460,127 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
   );
 
   test(
+    'plain Flow enum bundles retain the graph prepass across enum forms',
+    { timeout: 60_000 },
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-buildsync-flow-enum-prepass-'));
+      const runtime = join(dir, 'node_modules', 'flow-enums-runtime');
+      const cases = [
+        {
+          source:
+            'enum Color { Red, Blue } console.log(Color.Red.description, Color.Blue.description);',
+          expected: 'Red Blue\n',
+        },
+        {
+          source: 'enum Color of string { Red, Blue } console.log(Color.Red, Color.Blue);',
+          expected: 'Red Blue\n',
+        },
+        {
+          source: 'enum Level of number { Low = 1, High = 10 } console.log(Level.Low, Level.High);',
+          expected: '1 10\n',
+        },
+        {
+          source:
+            'enum Toggle of boolean { On = true, Off = false } console.log(Toggle.On, Toggle.Off);',
+          expected: 'true false\n',
+        },
+        {
+          source:
+            'enum Token of symbol { Read, Write } console.log(Token.Read.description, Token.Write.description);',
+          expected: 'Read Write\n',
+        },
+        {
+          source: 'enum Count of bigint { One = 1n, Two = 2n } console.log(Count.One, Count.Two);',
+          expected: '1n 2n\n',
+        },
+        {
+          source: 'enum Status { Active, ... } console.log(Status.Active.description);',
+          expected: 'Active\n',
+        },
+        {
+          source:
+            "enum Direction of string { 'North' = 'N', South = 'S' } console.log(Direction.North, Direction.South);",
+          expected: 'N S\n',
+        },
+        {
+          source:
+            "enum First { One } enum Second of string { Two = 'two' } console.log(First.One.description, Second.Two);",
+          expected: 'One two\n',
+        },
+        {
+          source:
+            'function make() { enum Local { Inner } return Local.Inner; } console.log(make().description);',
+          expected: 'Inner\n',
+        },
+      ].map((item) => ({ ...item, source: `// @flow\n${item.source}` }));
+      const entries = cases.map((item, index) => {
+        const entry = join(dir, `entry-${index}.js`);
+        writeFileSync(entry, item.source);
+        return realpathSync(entry);
+      });
+      mkdirSync(runtime, { recursive: true });
+      writeFileSync(
+        join(runtime, 'index.js'),
+        [
+          'function make(values) { return values; }',
+          'make.Mirrored = (names) => make(Object.fromEntries(names.map((name) => [name, name])));',
+          'module.exports = make;',
+        ].join('\n'),
+      );
+
+      const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+      const runner = [
+        `import {buildSync} from ${JSON.stringify(coreEntry)};`,
+        `const entries=${JSON.stringify(entries)}; const outputs=[];`,
+        `for(const entry of entries){const result=buildSync({entryPoints:[entry],platform:'node',format:'cjs',target:'esnext',flow:true,write:false});if(result.errors.length){console.error(JSON.stringify(result.errors));process.exit(1);}outputs.push(result.outputFiles.map(file=>file.text));}`,
+        `process.stdout.write(JSON.stringify({outputs}));`,
+      ].join('\n');
+      try {
+        const run = Bun.spawnSync(['bun', '-e', runner], {
+          cwd: join(import.meta.dir, '../../..'),
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        });
+        const stderr = run.stderr.toString();
+        expect(run.exitCode, stderr).toBe(0);
+        const result = JSON.parse(run.stdout.toString()) as { outputs: string[][] };
+        expect(result.outputs).toHaveLength(cases.length);
+
+        const lines = stderr.split(/\r?\n/);
+        for (const [index, item] of cases.entries()) {
+          expect(result.outputs[index]).toHaveLength(1);
+          const output = join(dir, `out-${index}.cjs`);
+          writeFileSync(output, result.outputs[index][0]);
+          const execution = Bun.spawnSync(['node', output]);
+          expect(execution.exitCode, `case ${index}: ${execution.stderr.toString()}`).toBe(0);
+          expect(execution.stdout.toString(), `case ${index}`).toBe(item.expected);
+
+          const identity = lines.filter(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entries[index]),
+          );
+          expect(identity, `case ${index}: ${stderr}`).toHaveLength(1);
+          for (const field of [...zeroCounters, 'clean']) {
+            const values = [
+              ...identity[0].matchAll(new RegExp(`(?:^| )${field}=(\\d+)(?= |$)`, 'g')),
+            ];
+            expect(values, `case ${index} ${field}: ${identity[0]}`).toHaveLength(1);
+            expect(Number(values[0][1]), `case ${index} ${field}`).toBe(field === 'clean' ? 1 : 0);
+          }
+          const mode = lines.filter(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') &&
+              line.includes(entries[index]),
+          );
+          expect(mode, `case ${index}: ${stderr}`).toHaveLength(1);
+          expect(mode[0]).toContain('semantic_graph=retained');
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test(
     'buildSync onTransform Flow components retain generated forwardRef identities',
     { timeout: 30_000 },
     () => {

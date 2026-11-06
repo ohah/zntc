@@ -4218,6 +4218,25 @@ test "graph pre-pass predicate: ES2022 auto-accessors trigger graph ownership" {
     try expectPrePassDecision(false, sources[0], "native-auto-accessor.js", .{});
 }
 
+test "graph pre-pass predicate: Flow enums trigger graph ownership" {
+    const sources = [_][]const u8{
+        "// @flow\nenum Color { Red, Blue }",
+        "// @flow\nenum Color of string { Red = 'red', Blue = 'blue' }",
+        "// @flow\nenum Level of number { Low = 1, High = 10 }",
+        "// @flow\nenum Toggle of boolean { On = true, Off = false }",
+        "// @flow\nenum Token of symbol { Read, Write }",
+        "// @flow\nenum Count of bigint { One = 1n, Two = 2n }",
+        "// @flow\nenum Status { Active, ... }",
+        "// @flow\nenum Color { 'red-color', Blue }",
+        "// @flow\nenum First { A }\nenum Second of string { B = 'b' }",
+        "// @flow\n'use strict';\nenum Mode { Fast, Safe }",
+    };
+    for (sources) |source| try expectPrePassDecision(true, source, "flow-enum.js", .{});
+
+    try expectPrePassDecision(false, "// @flow\nexport const value = 42;", "flow-no-enum.js", .{});
+    try expectPrePassDecision(false, "export const value = 42;", "plain-js.js", .{});
+}
+
 test "graph pre-pass predicate: worklet transforms stay gated by conservative AST signals" {
     const worklet: PrePassPredicateTestOptions = .{ .worklet_transform = true };
     try expectPrePassDecision(false, "export const answer = 42;", "worklet-noop.ts", worklet);

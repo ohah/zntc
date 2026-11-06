@@ -159,7 +159,9 @@ pub fn shouldRun(
     {
         var ast_flags_scope = profile.begin(.graph_discover_pm_prepass_decision_ast_flags);
         defer ast_flags_scope.end();
-        if (ast.has_jsx or ast.has_decorator or ast.has_ts_namespace_or_enum or
+        // Flow enum lowering emits a runtime helper access and follows the
+        // same-graph enum identity path; register it before linker decisions.
+        if (ast.has_flow_enum_declaration or ast.has_jsx or ast.has_decorator or ast.has_ts_namespace_or_enum or
             ast.has_ts_import_equals or ast.has_ts_export_equals)
         {
             return true;
