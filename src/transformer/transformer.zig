@@ -202,6 +202,15 @@ pub const ParameterBodyVarCopy = struct {
 };
 
 pub const Transformer = struct {
+    pub const WrapperClassSelf = struct {
+        source_class: NodeIndex,
+        declaration: NodeIndex,
+        binding: NodeIndex,
+        symbol: u32,
+        wrapper_scope: ScopeId,
+        wrapper: NodeIndex,
+    };
+
     pub const LoweredClassOwner = struct { node: NodeIndex, source_scope: ScopeId };
     pub const GeneratedSuperCall = struct {
         /// External original input anchor; cloning output never remaps it.
@@ -438,6 +447,10 @@ pub const Transformer = struct {
     transformed_node_scope_provenance: @import("../semantic/node_scope_provenance.zig").Map = .empty,
     node_scope_provenance_changed: bool = false,
     class_self_symbol_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Transient producer receipts for a fresh wrapper-local class self.
+    /// These are consumed before publication; no cache or source identity is inferred.
+    wrapper_class_self_bindings: std.ArrayListUnmanaged(WrapperClassSelf) = .empty,
+
     /// Anonymous default class declarations lower to an outer synthetic var.
     /// Keep its exact binding node so the export reference targets its SymbolId.
     lowered_anonymous_class_export_bindings: std.AutoHashMapUnmanaged(u32, u32) = .empty,

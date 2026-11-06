@@ -35332,3 +35332,85 @@ test "public entry first-analysis publication preserves discovery-owned dynamic 
     try std.testing.expectEqualSlices(ModuleIndex, &.{target_index}, importer.dynamic_imports.items);
     try std.testing.expectEqualSlices(ModuleIndex, &.{target_index}, importer.dependencies.items);
 }
+
+test "class sidecar fresh wrapper receipts reject ten crossed producer edges" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Sidecars = @import("../../semantic/class_self_sidecars.zig");
+    const input = "const pair=[class{static{this.x=42}},class{static{this.x=43}}];console.log(pair);";
+    const fixture = try genericPrepassTestFixture(a, input, false);
+    var installed = Module.init(@fromBackingInt(@as(u32, 0)), "wrapper.cjs");
+    installed.source = input;
+    installed.module_type = .js;
+    installed.state = .ready;
+    installed.ast = fixture.ast;
+    installed.semantic = fixture.semantic;
+    var prepared = try PreparedGenericPrepass.init(&installed, a);
+    defer prepared.discard(std.testing.allocator);
+    const module = &prepared.candidate;
+    const source: Sidecars.Source = .{ .tree = &prepared.source_ast_snapshot, .semantic = &prepared.source_semantic_snapshot };
+    const receipt = Sidecars.Receipt.capture(&installed, module, source);
+    const sem = &module.semantic.?;
+    var t = try Transformer.init(a, &module.ast.?, .{ .unsupported = TransformOptions.compat.fromESTarget(.es2015) });
+    try t.initSymbolIds(sem.symbol_ids);
+    t.symbols = sem.symbols.items;
+    t.references = sem.references;
+    t.scopes = sem.scopes;
+    t.scope_maps = sem.scope_maps;
+    t.scope_owner_map = sem.scope_owner_map;
+    t.node_scope_provenance = sem.node_scope_provenance;
+    t.source_owned_retirements = sem.source_owned_retirements;
+    t.scope_history = sem.scope_history;
+    t.class_self_symbol_map = sem.class_self_symbol_map;
+    t.helper_scope_map = sem.helper_scope_map;
+    t.semantic_edit_enabled = true;
+    t.record_explicit_global_references = true;
+    t.unresolved_references = &sem.unresolved_references;
+    var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    try collectParserUnresolvedNodes(a, &module.ast.?, @intCast(module.ast.?.nodes.items.len), sem.symbol_ids, &sem.unresolved_references, &sem.node_scope_provenance, &unresolved);
+    t.unresolved_reference_nodes = &unresolved;
+    const root = try t.transform();
+    module.ast = t.ast.*;
+    sem.applyEdit((try t.finishSemanticEdit()).?);
+    sem.class_self_symbol_map = t.class_self_symbol_map;
+    try std.testing.expectEqual(@as(usize, 2), t.wrapper_class_self_bindings.items.len);
+    var output = try std.DynamicBitSet.initEmpty(a, t.ast.nodes.items.len);
+    for (try ast_walk.collectReachableNodeIndicesFrom(a, t.ast, root)) |raw| output.set(raw);
+    var original = try std.DynamicBitSet.initEmpty(a, t.ast.nodes.items.len);
+    const source_root: ast_mod.NodeIndex = @fromBackingInt(@as(u32, @intCast(source.tree.nodes.items.len - 1)));
+    for (try ast_walk.collectReachableNodeIndicesFrom(a, source.tree, source_root)) |raw| original.set(raw);
+    const Check = struct {
+        fn run(alloc: std.mem.Allocator, m: *const Module, src: Sidecars.Source, r: *const Sidecars.Receipt, tr: *const Transformer, rt: ast_mod.NodeIndex, out: *const std.DynamicBitSet, orig: *const std.DynamicBitSet) !bool {
+            var proof = (try Sidecars.prepare(alloc, m, src, r, rt, out, orig, tr)) orelse return false;
+            defer proof.deinit(alloc);
+            return outputGraphSidecarsRemainReachableWithSourceClassOwners(m, &m.semantic.?, out, orig, &proof);
+        }
+    };
+    try std.testing.expect(try Check.run(a, module, source, &receipt, &t, root, &output, &original));
+    const saved = t.wrapper_class_self_bindings.items[0];
+    const other = t.wrapper_class_self_bindings.items[1];
+    const Poison = enum { source, binding, symbol, wrapper_scope, wrapper, declaration, missing_wrapper, missing_declaration, foreign_source, missing_receipts };
+    for (std.enums.values(Poison)) |poison| {
+        t.wrapper_class_self_bindings.items[0] = saved;
+        const old_len = t.wrapper_class_self_bindings.items.len;
+        var foreign_tree = source.tree.*;
+        var selected_source = source;
+        switch (poison) {
+            .source => t.wrapper_class_self_bindings.items[0].source_class = other.source_class,
+            .binding => t.wrapper_class_self_bindings.items[0].binding = other.binding,
+            .symbol => t.wrapper_class_self_bindings.items[0].symbol = other.symbol,
+            .wrapper_scope => t.wrapper_class_self_bindings.items[0].wrapper_scope = other.wrapper_scope,
+            .wrapper => t.wrapper_class_self_bindings.items[0].wrapper = other.wrapper,
+            .declaration => t.wrapper_class_self_bindings.items[0].declaration = other.declaration,
+            .missing_wrapper => t.wrapper_class_self_bindings.items[0].wrapper = .none,
+            .missing_declaration => t.wrapper_class_self_bindings.items[0].declaration = .none,
+            .foreign_source => selected_source.tree = &foreign_tree,
+            .missing_receipts => t.wrapper_class_self_bindings.items.len = 0,
+        }
+        try std.testing.expect(!try Check.run(a, module, selected_source, &receipt, &t, root, &output, &original));
+        t.wrapper_class_self_bindings.items.len = old_len;
+    }
+    t.wrapper_class_self_bindings.items[0] = saved;
+    try std.testing.expect(try Check.run(a, module, source, &receipt, &t, root, &output, &original));
+}

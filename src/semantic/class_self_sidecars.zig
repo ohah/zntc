@@ -286,6 +286,48 @@ pub fn prepare(a: std.mem.Allocator, module: *const Module, source: Source, rece
     defer current_rows.deinit(a);
     var initial_rows = try anchorlessRows(a, source.semantic);
     defer initial_rows.deinit(a);
+    if (producer) |actual| {
+        for (actual.wrapper_class_self_bindings.items) |birth| {
+            const raw = @backingInt(birth.source_class);
+            const origin = actual.scope_owner_origins.get(raw) orelse raw;
+            const owner = owners.get(origin) orelse return null;
+            if (origin >= source.tree.nodes.items.len or !live(original, @fromBackingInt(origin)) or
+                birth.symbol < source.semantic.symbols.items.len or birth.symbol >= sem.symbols.items.len or
+                sem.class_self_symbol_map.get(raw) != @as(?u32, birth.symbol) or
+                !live(output, birth.wrapper) or !live(output, birth.declaration) or !live(output, birth.binding)) return null;
+            const source_class = source.tree.nodes.items[origin];
+            if ((source_class.tag != .class_expression and source_class.tag != .class_declaration) or
+                owner.owner.tag != source_class.tag or owner.edges.body != source.tree.readExtraNode(source_class.data.extra, ast.ClassExtra.body) or
+                source.semantic.scope_owner_map.get(origin) != @as(?u32, @backingInt(owner.scope))) return null;
+            const source_name = source.tree.readExtraNode(source_class.data.extra, ast.ClassExtra.name);
+            if (!source_name.isNone()) {
+                const source_self = source.semantic.class_self_symbol_map.get(origin) orelse return null;
+                if (source_self >= source.semantic.symbols.items.len) return null;
+                const before = source.semantic.symbols.items[source_self];
+                const rows = initial_rows.get(source_self) orelse return null;
+                if (before.kind != .class_decl or before.scope_id != owner.scope or before.origin_scope != owner.scope or
+                    before.reference_count != 0 or before.write_count != 0 or rows.total != 1 or
+                    (rows.anchorless != 1 and rows.physical_declaration != source_name) or
+                    !actual.options.minify_syntax or actual.options.keep_names) return null;
+            } else if (source.semantic.class_self_symbol_map.contains(origin)) return null;
+            const declaration = tree.getNode(birth.declaration);
+            const wrapper = tree.getNode(birth.wrapper);
+            const symbol = sem.symbols.items[birth.symbol];
+            if (declaration.tag != .class_declaration or wrapper.tag != .arrow_function_expression or
+                tree.readExtraNode(declaration.data.extra, ast.ClassExtra.name) != birth.binding or
+                @backingInt(birth.binding) >= sem.symbol_ids.len or sem.symbol_ids[@backingInt(birth.binding)] != birth.symbol or
+                declarations.get(birth.symbol) != @as(?N, birth.binding) or
+                symbol.kind != .class_decl or symbol.scope_id != birth.wrapper_scope or symbol.origin_scope != birth.wrapper_scope or
+                sem.scope_owner_map.get(@backingInt(birth.wrapper)) != @as(?u32, @backingInt(birth.wrapper_scope)) or
+                sem.scope_owner_map.get(@backingInt(birth.declaration)) != @as(?u32, @backingInt(owner.scope)) or
+                birth.wrapper_scope.toIndex() >= sem.scopes.len or owner.scope.toIndex() >= sem.scopes.len or
+                sem.scopes[birth.wrapper_scope.toIndex()].kind != .function or
+                sem.scopes[owner.scope.toIndex()].kind != .class_body or sem.scopes[owner.scope.toIndex()].parent != birth.wrapper_scope or
+                actual.scope_owner_origins.get(@backingInt(birth.declaration)) != @as(?u32, origin) or
+                !try contains(a, tree, birth.wrapper, birth.declaration)) return null;
+            if (!try result.add(a, birth.source_class, birth.symbol)) return null;
+        }
+    }
     var self_entries = sem.class_self_symbol_map.iterator();
     while (self_entries.next()) |entry| {
         if (entry.key_ptr.* < output.capacity() and output.isSet(entry.key_ptr.*)) continue;
