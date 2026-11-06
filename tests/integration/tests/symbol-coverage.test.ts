@@ -39363,6 +39363,106 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('NAPI onAstFunction copies unary expressions with exact class references', () => {
+    const trailingStatements = [
+      'console.log(+new Box().value);',
+      'console.log(-new Box().value);',
+      'console.log(!new Box().value);',
+      'console.log(~new Box().value);',
+      'console.log(typeof new Box().value);',
+      'console.log(void new Box().value);',
+      'console.log(!!new Box(1).value);',
+      'console.log(-(-new Box(true).value));',
+      'console.log(+new Box(1, 2).value);',
+      'console.log(!(-new Box(null).value));',
+    ];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-unary-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      entry,
+      'let shared = 40; class Box { value = shared; } function outer() { function marker() {} marker(); } outer();',
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const baseOptions = JSON.stringify({
+      entryPoints: [entry],
+      platform: 'node',
+      format: 'cjs',
+      target: 'es5',
+      minifySyntax: false,
+      minifyIdentifiers: true,
+      write: false,
+    });
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build({ ...${baseOptions}, plugins: [{ name: 'unary-identity', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: ${JSON.stringify(trailingStatements)} } : null); } }] });`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+
+    try {
+      const buildResult = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      expect(buildResult.status, buildResult.stderr).toBe(0);
+      const stderr = buildResult.stderr ?? '';
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
+        );
+      expect(mode, stderr).toContain('semantic_graph=retained');
+      const identity = stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry));
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity ?? ''), identity).toEqual([]);
+      expect(identity).toContain(`external=${trailingStatements.length}`);
+
+      const outputs = JSON.parse(buildResult.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      const emitted = outputs[0];
+      expect(emitted).not.toMatch(/\bclass\s+Box\b/);
+      const calls = [...emitted.matchAll(/\bconsole\.log\(([^;]*)\);/g)];
+      expect(calls).toHaveLength(trailingStatements.length);
+      writeFileSync(output, emitted);
+
+      const execute = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(execute.status, execute.stderr).toBe(0);
+      expect(execute.stdout).toBe('40\n-40\nfalse\n-41\nnumber\nundefined\ntrue\n40\n40\nfalse\n');
+
+      for (let index = 0; index < calls.length; index += 1) {
+        const statement = calls[index]![0];
+        const className = statement.match(/new ([\w$]+)\(/)?.[1];
+        expect(className, `unary expression ${index} class binding`).toBeDefined();
+        const hostileNames = [`missing_unary_class_${index}`, `missing_unary_console_${index}`];
+        const mutations = [
+          statement.replace(`new ${className}(`, `new ${hostileNames[0]}(`),
+          statement.replace('console.log', `${hostileNames[1]}.log`),
+        ];
+
+        for (let mutationIndex = 0; mutationIndex < mutations.length; mutationIndex += 1) {
+          const hostileName = hostileNames[mutationIndex];
+          const mutated = emitted.replace(statement, mutations[mutationIndex]);
+          expect(mutated, hostileName).not.toBe(emitted);
+          writeFileSync(output, mutated);
+          const syntax = spawnSync('node', ['--check', output], { encoding: 'utf8' });
+          expect(syntax.status, `${hostileName}: ${syntax.stderr}`).toBe(0);
+          const hostile = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(hostile.status, hostileName).not.toBe(0);
+          expect(hostile.stderr, hostileName).toContain(
+            `ReferenceError: ${hostileName} is not defined`,
+          );
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('NAPI onAstFunction rejects generated console lookups inside direct eval calls', () => {
     const trailingCalls = [
       "console.log(eval('shared'));",
