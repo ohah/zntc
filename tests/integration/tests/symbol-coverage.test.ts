@@ -38364,7 +38364,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
-  test('NAPI onAstFunction trailingCode keeps exact graph identities through identifier minification', () => {
+  test('NAPI onAstFunction trailingCode keeps exact graph identities through syntax and identifier minification', () => {
     const cases = [
       {
         label: 'program scope',
@@ -38392,6 +38392,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         platform: 'node',
         format: 'cjs',
         target: 'esnext',
+        minifySyntax: true,
         minifyIdentifiers: true,
         write: false,
       });
@@ -38441,6 +38442,60 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+    }
+  }, 60_000);
+
+  test('NAPI onAstFunction refuses syntax minification when it loses injected graph identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-syntax-rollback-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(entry, 'const secret = 1; function marker() {} console.log(42);');
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const baseOptions = JSON.stringify({
+      entryPoints: [entry],
+      platform: 'node',
+      format: 'cjs',
+      target: 'esnext',
+      minifySyntax: true,
+      minifyIdentifiers: true,
+      write: false,
+    });
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build({ ...${baseOptions}, plugins: [{ name: 'pure-trailing-code', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: ['const injectedValue = secret; injectedValue;'] } : null); } }] });`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+
+    try {
+      const buildResult = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      expect(buildResult.status, buildResult.stderr).toBe(0);
+      const stderr = buildResult.stderr ?? '';
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
+        );
+      expect(mode, stderr).toContain('semantic_graph=retained');
+      const identity = stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry));
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity ?? ''), identity).toEqual([]);
+
+      const outputs = JSON.parse(buildResult.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      writeFileSync(output, outputs[0]);
+      const execute = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(execute.status, execute.stderr).toBe(0);
+      expect(execute.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
 
@@ -38549,7 +38604,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
-  test('NAPI onAstFunction generated direct eval keeps dynamic names intact', () => {
+  test('NAPI onAstFunction generated direct eval keeps dynamic names through syntax and identifier minification', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-generated-eval-'));
     const entry = join(dir, 'entry.js');
     const output = join(dir, 'out.cjs');
@@ -38561,6 +38616,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       platform: 'node',
       format: 'cjs',
       target: 'esnext',
+      minifySyntax: true,
       minifyIdentifiers: true,
       write: false,
     });
@@ -38609,7 +38665,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
-  test('NAPI onAstFunction retained graph exposes ten compileable identity mutants', () => {
+  test('NAPI onAstFunction retained graph exposes ten compileable identity mutants under syntax and identifier minification', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-graph-mutants-'));
     const entry = join(dir, 'entry.js');
     const output = join(dir, 'output.cjs');
@@ -38624,6 +38680,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       platform: 'node',
       format: 'cjs',
       target: 'esnext',
+      minifySyntax: true,
       minifyIdentifiers: true,
       write: false,
     });
