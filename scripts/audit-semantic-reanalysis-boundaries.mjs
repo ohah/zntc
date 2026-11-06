@@ -545,11 +545,11 @@ function auditPrepass(source, label = 'src/bundler/graph/transform_prepass.zig')
   );
   const genericSourceReachableSet = normalForm.body.indexOf('source_reachable.set(raw)');
   const genericSidecarGate = normalForm.body.indexOf(
-    'genericPrepassOutputSidecarsRemainReachable(',
+    'outputGraphSidecarsRemainReachableWithSourceClassOwners(',
   );
   const genericIdentityGate = normalForm.body.indexOf('checkOutputNormalFormQuiet(');
   const genericSidecarAdmissionIsOrdered =
-    /if\s*\(\s*!genericPrepassOutputSidecarsRemainReachable\(module,\s*semantic,\s*&reachable,\s*&source_reachable\)\)\s*return\s+false\s*;/.test(
+    /if\s*\(\s*!outputGraphSidecarsRemainReachableWithSourceClassOwners\(module,\s*semantic,\s*&reachable,\s*&source_reachable,\s*&class_sidecars\)\)\s*return\s+false\s*;/.test(
       normalForm.body,
     ) &&
     genericReachabilityWalk >= 0 &&
@@ -562,6 +562,9 @@ function auditPrepass(source, label = 'src/bundler/graph/transform_prepass.zig')
     genericSourceBoundsCheck > genericSourceReachabilityWalk &&
     genericSourceReachableSet > genericSourceBoundsCheck &&
     /if\s*\(\s*raw\s*>=\s*ast\.nodes\.items\.len\s*\)\s*return\s+false\s*;/.test(normalForm.body) &&
+    /var\s+class_sidecars\s*=\s*\(try\s+[\s\S]*?\.prepare\(\s*allocator,\s*module,\s*source_classes,\s*source_receipt,\s*root,\s*&reachable,\s*&source_reachable,\s*transformer,?\s*\)\)\s*orelse\s+return\s+false\s*;/.test(
+      normalForm.body,
+    ) &&
     genericSidecarGate >= 0 &&
     genericSidecarGate > genericReachableSet &&
     genericSidecarGate > genericSourceReachableSet &&
@@ -582,7 +585,7 @@ function auditPrepass(source, label = 'src/bundler/graph/transform_prepass.zig')
         genericSidecarGate,
         genericIdentityGate,
         hasFailClosedGate:
-          /if\s*\(\s*!genericPrepassOutputSidecarsRemainReachable\(module,\s*semantic,\s*&reachable,\s*&source_reachable\)\)\s*return\s+false\s*;/.test(
+          /if\s*\(\s*!outputGraphSidecarsRemainReachableWithSourceClassOwners\(module,\s*semantic,\s*&reachable,\s*&source_reachable,\s*&class_sidecars\)\)\s*return\s+false\s*;/.test(
             normalForm.body,
           ),
       },
@@ -746,8 +749,10 @@ function selfTest() {
     'parseModule',
   );
   const genericSidecarGuard =
-    'if (!genericPrepassOutputSidecarsRemainReachable(module, semantic, &reachable, &source_reachable)) return false;';
-  const genericGateFixture = `fn genericPreparedOutputHasNormalForm() { const reachable_nodes = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root); var reachable = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len); for (reachable_nodes) |raw| { if (raw >= ast.nodes.items.len) return false; reachable.set(raw); } var source_reachable = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len); if (source_root) |source| { const source_nodes = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, source); for (source_nodes) |raw| { if (raw >= ast.nodes.items.len) return false; source_reachable.set(raw); } } ${genericSidecarGuard} const report = report_mod.checkOutputNormalFormQuiet(&origins, ${outputNormalFormOptions}); const valid = report.hasCompleteOutputIdentityBeforeNames(); return valid; }\n`;
+    'if (!outputGraphSidecarsRemainReachableWithSourceClassOwners(module, semantic, &reachable, &source_reachable, &class_sidecars)) return false;';
+  const genericClassProof =
+    'var class_sidecars = (try ClassSidecars.prepare(allocator, module, source_classes, source_receipt, root, &reachable, &source_reachable, transformer)) orelse return false;';
+  const genericGateFixture = `fn genericPreparedOutputHasNormalForm() { const reachable_nodes = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root); var reachable = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len); for (reachable_nodes) |raw| { if (raw >= ast.nodes.items.len) return false; reachable.set(raw); } var source_reachable = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len); if (source_root) |source| { const source_nodes = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, source); for (source_nodes) |raw| { if (raw >= ast.nodes.items.len) return false; source_reachable.set(raw); } } ${genericClassProof} ${genericSidecarGuard} const report = report_mod.checkOutputNormalFormQuiet(&origins, ${outputNormalFormOptions}); const valid = report.hasCompleteOutputIdentityBeforeNames(); return valid; }\n`;
   const genericSourceClassOwnerFixture =
     'fn classSelfSidecarHasExactSourceOwner() bool { ' +
     'if (!isNodeReachableInOutputGraph(owner_raw, source_reachable) or owner_raw >= ast.nodes.items.len or symbol_raw >= semantic.symbols.items.len) return false; ' +
@@ -1115,49 +1120,49 @@ function selfTest() {
     [
       genericGateFixture.replace(
         genericSidecarGuard,
-        'if (genericPrepassOutputSidecarsRemainReachable(module, semantic, &reachable, &source_reachable)) return false;',
+        'if (outputGraphSidecarsRemainReachableWithSourceClassOwners(module, semantic, &reachable, &source_reachable, &class_sidecars)) return false;',
       ),
       'inverted the sidecar rejection',
     ],
     [
       genericGateFixture.replace(
         genericSidecarGuard,
-        'if (!genericPrepassOutputSidecarsRemainReachable(module, semantic, &reachable, &source_reachable)) return true;',
+        'if (!outputGraphSidecarsRemainReachableWithSourceClassOwners(module, semantic, &reachable, &source_reachable, &class_sidecars)) return true;',
       ),
       'accepted the candidate on a rejected sidecar',
     ],
     [
       genericGateFixture.replace(
         genericSidecarGuard,
-        '_ = genericPrepassOutputSidecarsRemainReachable(module, semantic, &reachable, &source_reachable);',
+        '_ = outputGraphSidecarsRemainReachableWithSourceClassOwners(module, semantic, &reachable, &source_reachable);',
       ),
       'ignored the sidecar result',
     ],
     [
       genericGateFixture.replace(
         genericSidecarGuard,
-        'if (!genericPrepassOutputSidecarsRemainReachable(source_module, semantic, &reachable, &source_reachable)) return false;',
+        'if (!outputGraphSidecarsRemainReachableWithSourceClassOwners(source_module, semantic, &reachable, &source_reachable, &class_sidecars)) return false;',
       ),
       'validated a different module than the candidate',
     ],
     [
       genericGateFixture.replace(
         genericSidecarGuard,
-        'if (!genericPrepassOutputSidecarsRemainReachable(module, source_semantic, &reachable, &source_reachable)) return false;',
+        'if (!outputGraphSidecarsRemainReachableWithSourceClassOwners(module, source_semantic, &reachable, &source_reachable, &class_sidecars)) return false;',
       ),
       'validated a different semantic graph than the candidate',
     ],
     [
       genericGateFixture.replace(
         genericSidecarGuard,
-        'if (!genericPrepassOutputSidecarsRemainReachable(module, semantic, &empty_reachable, &source_reachable)) return false;',
+        'if (!outputGraphSidecarsRemainReachableWithSourceClassOwners(module, semantic, &empty_reachable, &source_reachable, &class_sidecars)) return false;',
       ),
       'validated an unrelated reachability bitmap',
     ],
     [
       genericGateFixture.replace(
         genericSidecarGuard,
-        'if (!genericPrepassOutputSidecarsRemainReachable(module, semantic, &reachable, &empty_source_reachable)) return false;',
+        'if (!outputGraphSidecarsRemainReachableWithSourceClassOwners(module, semantic, &reachable, &empty_source_reachable, &class_sidecars)) return false;',
       ),
       'validated an unrelated source-owner bitmap',
     ],
@@ -1170,14 +1175,14 @@ function selfTest() {
     [
       genericGateFixture.replace(
         genericSidecarGuard,
-        'if (module.wrap_kind == .esm and !genericPrepassOutputSidecarsRemainReachable(module, semantic, &reachable, &source_reachable)) return false;',
+        'if (module.wrap_kind == .esm and !outputGraphSidecarsRemainReachableWithSourceClassOwners(module, semantic, &reachable, &source_reachable, &class_sidecars)) return false;',
       ),
       'skipped sidecar validation for CJS candidates',
     ],
     [
       genericGateFixture.replace(
         genericSidecarGuard,
-        'if (!genericPrepassOutputSidecarsRemainReachable(module, semantic, &reachable, &source_reachable)) {}',
+        'if (!outputGraphSidecarsRemainReachableWithSourceClassOwners(module, semantic, &reachable, &source_reachable, &class_sidecars)) {}',
       ),
       'continued after sidecar rejection',
     ],
@@ -1186,6 +1191,39 @@ function selfTest() {
     tryReject(
       () => auditPrepass(prepass.replace(genericGateFixture, mutant)),
       `generic prepass admission ${label}`,
+    );
+  }
+  for (const argument of [
+    'allocator',
+    'module',
+    'source_classes',
+    'source_receipt',
+    'root',
+    '&reachable',
+    '&source_reachable',
+    'transformer',
+  ]) {
+    const changed = genericClassProof.replace(
+      new RegExp('(?<=[(,]\\s*)' + argument.replaceAll('&', '\\&') + '(?=[,)])'),
+      'foreign_authority',
+    );
+    if (changed === genericClassProof)
+      throw new Error('class proof self-mutation did not edit ' + argument);
+    tryReject(
+      () => auditPrepass(prepass.replace(genericClassProof, changed)),
+      'class sidecar proof accepted foreign ' + argument,
+    );
+  }
+  for (const replacement of ['orelse return true;', 'orelse unreachable;']) {
+    tryReject(
+      () =>
+        auditPrepass(
+          prepass.replace(
+            genericClassProof,
+            genericClassProof.replace('orelse return false;', replacement),
+          ),
+        ),
+      'class proof did not fail closed',
     );
   }
   const genericSourceOwnerMutants = [
@@ -1748,7 +1786,7 @@ function selfTest() {
     'analyzer hidden behind a qualified same-file helper call',
   );
   console.log(
-    'semantic reanalysis and output-gate audit self-test PASS (134 hostile mutations rejected)',
+    'semantic reanalysis and output-gate audit self-test PASS (144 hostile mutations rejected)',
   );
 }
 

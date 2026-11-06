@@ -100,7 +100,7 @@ fn pureDeclaration(graph: Graph, node: NodeIndex, sid: SymbolId, scope: ScopeId)
     }
     return found == 1;
 }
-fn classShape(tree: *const ast.Ast, graph: Graph, role: Class) bool {
+pub fn classShape(tree: *const ast.Ast, graph: Graph, role: Class) bool {
     if (!nodeValid(tree, role.node) or !nodeValid(tree, role.body) or !nodeValid(tree, role.name) or
         !scopeValid(graph, role.scope) or role.self.isNone() or @backingInt(role.self) >= graph.symbols.len) return false;
     const node = tree.getNode(role.node);
