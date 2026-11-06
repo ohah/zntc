@@ -5360,7 +5360,7 @@ test "graph Flow caller: enum runtime links one package module on cold and cache
 
 const GraphDefaultParameterCase = struct {
     source: []const u8,
-    parameter_name: []const u8 = "value",
+    parameter_names: []const []const u8 = &.{"value"},
     fallback_name: ?[]const u8 = null,
 };
 
@@ -5398,7 +5398,9 @@ fn expectES5DefaultParameterGraphCacheIdentity(
     var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
     defer disk.deinit();
 
-    const cold_parameter_identities = try std.testing.allocator.alloc(GraphSourceSymbolIdentity, cases.len);
+    var parameter_identity_count: usize = 0;
+    for (cases) |case| parameter_identity_count += case.parameter_names.len;
+    const cold_parameter_identities = try std.testing.allocator.alloc(GraphSourceSymbolIdentity, parameter_identity_count);
     defer std.testing.allocator.free(cold_parameter_identities);
     var cold_fallback_identity: ?GraphSourceSymbolIdentity = null;
     defer profile.resetForTest();
@@ -5439,6 +5441,7 @@ fn expectES5DefaultParameterGraphCacheIdentity(
         try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
         try std.testing.expectEqual(entries.len, graph.moduleCount());
         try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+        var parameter_identity_offset: usize = 0;
         for (entries, 0..) |entry, index| {
             const module = graph.findModuleByPath(entry) orelse return error.MissingDefaultParameterGraphModule;
             try std.testing.expectEqual(Module.State.ready, module.state);
@@ -5479,14 +5482,18 @@ fn expectES5DefaultParameterGraphCacheIdentity(
                 }
             }
 
-            const parameter_identity = try expectGraphSourceSymbolIdentity(module, reachable, cases[index].parameter_name);
-            if (expected_load_hits == 0) {
-                cold_parameter_identities[index] = parameter_identity;
-            } else {
-                try std.testing.expectEqual(cold_parameter_identities[index].symbol_id, parameter_identity.symbol_id);
-                try std.testing.expectEqual(cold_parameter_identities[index].scope_id, parameter_identity.scope_id);
-                try std.testing.expectEqual(cold_parameter_identities[index].reference_count, parameter_identity.reference_count);
-                try std.testing.expectEqual(cold_parameter_identities[index].write_count, parameter_identity.write_count);
+            for (cases[index].parameter_names) |parameter_name| {
+                const parameter_identity = try expectGraphSourceSymbolIdentity(module, reachable, parameter_name);
+                if (expected_load_hits == 0) {
+                    cold_parameter_identities[parameter_identity_offset] = parameter_identity;
+                } else {
+                    const cold = cold_parameter_identities[parameter_identity_offset];
+                    try std.testing.expectEqual(cold.symbol_id, parameter_identity.symbol_id);
+                    try std.testing.expectEqual(cold.scope_id, parameter_identity.scope_id);
+                    try std.testing.expectEqual(cold.reference_count, parameter_identity.reference_count);
+                    try std.testing.expectEqual(cold.write_count, parameter_identity.write_count);
+                }
+                parameter_identity_offset += 1;
             }
 
             if (cases[index].fallback_name) |fallback_name| {
@@ -5556,7 +5563,7 @@ test "graph ES5 default-parameter caller: identifier minification preserves cold
         .{ .source = "export const read = (value = 'fallback') => value; export const result = read();" },
         .{
             .source = "const fallback = 41; export function read(count = fallback) { return count; } export const result = read();",
-            .parameter_name = "count",
+            .parameter_names = &.{"count"},
             .fallback_name = "fallback",
         },
     };
@@ -5571,7 +5578,7 @@ test "graph ES5 default-parameter caller: remaining minify modes preserve cold/c
         .{ .source = "export const read = (value = 'fallback') => value; export const result = read();" },
         .{
             .source = "const fallback = 41; export function read(count = fallback) { return count; } export const result = read();",
-            .parameter_name = "count",
+            .parameter_names = &.{"count"},
             .fallback_name = "fallback",
         },
     };
@@ -5587,6 +5594,21 @@ test "graph ES5 default-parameter caller: remaining minify modes preserve cold/c
         .{ .name = "full", .options = .{ .minify_whitespace = true } },
     };
     for (modes) |mode| try expectES5DefaultParameterGraphCacheIdentity(&cases, mode.name, mode.options);
+}
+
+test "graph ES5 chained default parameters preserve every binding identity" {
+    const cases = [_]GraphDefaultParameterCase{
+        .{
+            .source = "export const read = (first = 1, second = first + 1, third = second + 1) => first + second + third; export const result = read();",
+            .parameter_names = &.{ "first", "second", "third" },
+        },
+        .{
+            .source = "const fallback = 40; export function read(first = fallback, second = first + 1, third = second + 1) { return first + second + third; } export const result = read();",
+            .parameter_names = &.{ "first", "second", "third" },
+            .fallback_name = "fallback",
+        },
+    };
+    try expectES5DefaultParameterGraphCacheIdentity(&cases, "chained", .{ .minify_whitespace = true });
 }
 
 test "Flow ref-component identity survives minify modes on cold and cached ASTs" {
