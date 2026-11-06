@@ -4417,7 +4417,7 @@ test "class wrapper receipt index preserves sibling and nested construction orde
     try siblings.appendSlice(a, "];console.log(JSON.stringify(cs.map(C=>C.x)));");
     const sources = [_][]const u8{
         siblings.items,
-        "const cs=[class{static x=1;make(){return class{static{this.y=42}}}}];console.log(new cs[0]().make().y);",
+        "const cs=[class{static x=1;make(){return class{static{this.y=42}}}makeNamed(){return class Inner{static #z=43;static read(){return this.#z}}}}];console.log(JSON.stringify([cs[0].x,new cs[0]().make().y,new cs[0]().makeNamed().read()]));",
     };
     for (sources) |source| {
         const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
