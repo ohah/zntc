@@ -568,16 +568,17 @@ function hasPublishBlockingError(errors) {
  * `logLevel === 'silent'` 면 출력 안 함, `'error'` 면 errors 만.
  * `err.specifier` 는 NAPI 가 diag suggestion 으로 노출하는 import specifier.
  */
-function printResultDiagnostics(result, logLevel) {
+function printResultDiagnostics(result, logLevel, logLimit) {
+  const visible = (diagnostics) => (logLimit > 0 ? diagnostics.slice(0, logLimit) : diagnostics);
   if (result.errors.length > 0 && logLevel !== 'silent') {
-    for (const err of result.errors) {
+    for (const err of visible(result.errors)) {
       const loc = err.location ? `${err.location.file}: ` : '';
       const detail = err.specifier ? ` (${err.specifier})` : '';
       console.error(`error: ${loc}${err.text}${detail}`);
     }
   }
   if (result.warnings.length > 0 && logLevel !== 'silent' && logLevel !== 'error') {
-    for (const warn of result.warnings) {
+    for (const warn of visible(result.warnings)) {
       const detail = warn.specifier ? ` (${warn.specifier})` : '';
       console.error(`warning: ${warn.text}${detail}`);
     }
@@ -1763,6 +1764,9 @@ async function runBundle(opts, config) {
   // `write: true` 라 그대로 두면 아래의 "발행 차단 에러면 산출물 보류" 게이트를 건너뛰고
   // 네이티브가 먼저 파일을 써 버린다(stdout 경로는 보류, --outfile 만 기록되는 불일치).
   buildOpts.write = false;
+  // Publication and exit status need every diagnostic, independently of display options.
+  buildOpts.logLevel = 'warning';
+  buildOpts.logLimit = 0;
   // 배열형 alias 는 onResolve plugin 으로 구현돼 있고, 치환 결과를 native resolver 로 다시
   // 해석해야 확장자·index 가 붙는다. 그 `this.resolve` 는 **async build() 에서만** 주입되므로
   // (`NapiSyncPlugin.callHookFull` 의 의도된 제약) 배열 alias 가 있으면 async 경로로 보낸다.
@@ -1771,14 +1775,14 @@ async function runBundle(opts, config) {
     Array.isArray(buildOpts.alias);
   const result = needsAsync ? await build(buildOpts) : buildSync(buildOpts);
 
-  printResultDiagnostics(result, opts.logLevel);
+  printResultDiagnostics(result, opts.logLevel, opts.logLimit);
 
   // 출력 — 파일/stdout 양쪽 **같은 게이트**. 번들이 내부적으로 앞뒤가 안 맞을 때만
   // (export 충돌·모호·누락) 산출물을 내지 않는다. 해석 불가 import 는 막지 않는다.
   // exit code 는 이와 별개로 에러가 있으면 1 이다 (dispatchBuild → main).
   const blocked = hasPublishBlockingError(result.errors);
   if (opts.outfile || opts.outdir) {
-    if (opts.clean && opts.outdir) {
+    if (!blocked && opts.clean && opts.outdir) {
       rmSync(resolve(opts.outdir), { recursive: true, force: true });
     }
     if (!blocked) {
@@ -1798,7 +1802,7 @@ async function runBundle(opts, config) {
   if (opts.metafile && result.metafile) {
     if (opts.analyze) {
       console.error(result.metafile);
-    } else {
+    } else if (!blocked) {
       writeFileSync(resolve(opts.metafile), result.metafile);
     }
   }

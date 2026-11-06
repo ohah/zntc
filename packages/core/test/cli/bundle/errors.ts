@@ -9,6 +9,8 @@ import {
   rmSync,
   tmpdir,
   writeFileSync,
+  readFileSync,
+  mkdirSync,
 } from '../helpers';
 
 describe('CLI: bundle errors', () => {
@@ -126,5 +128,103 @@ describe('CLI: bundle 산출물 방출 게이트', () => {
         expect(existsSync(join(dir, 'out', 'bundle.js'))).toBe(true);
       },
     );
+  });
+});
+
+describe('CLI: bundle diagnostics do not weaken publication', () => {
+  const files = {
+    'entry.js': 'new Worker(new URL("./bad-worker.js", import.meta.url), { type: "module" });\n',
+    'bad-worker.js': 'const broken = ;\n',
+  };
+
+  function fixture(run: (dir: string) => void, unresolved = false) {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-cli-diagnostics-'));
+    try {
+      for (const [name, source] of Object.entries(files)) {
+        writeFileSync(join(dir, name), source);
+      }
+      if (unresolved) {
+        writeFileSync(join(dir, 'entry.js'), 'import "./missing.js";\n' + files['entry.js']);
+      }
+      run(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  for (const logging of [
+    ['--log-level', 'silent'],
+    ['--log-limit', '1'],
+  ]) {
+    test(`fatal worker preserves output and metafile sentinels: ${logging.join(' ')}`, () => {
+      fixture((dir) => {
+        mkdirSync(join(dir, 'out'));
+        writeFileSync(join(dir, 'out', 'sentinel.txt'), 'keep output');
+        writeFileSync(join(dir, 'meta.json'), 'keep metafile');
+        const result = runCli(
+          [
+            '--bundle',
+            'entry.js',
+            '--outdir',
+            'out',
+            '--clean',
+            '--metafile',
+            'meta.json',
+            ...logging,
+          ],
+          { cwd: dir },
+        );
+        expect(result.exitCode).toBe(1);
+        expect(result.stdout).toBe('');
+        expect(readFileSync(join(dir, 'out', 'sentinel.txt'), 'utf8')).toBe('keep output');
+        expect(readFileSync(join(dir, 'meta.json'), 'utf8')).toBe('keep metafile');
+        expect(existsSync(join(dir, 'out', 'bundle.js'))).toBe(false);
+        if (logging[1] === 'silent') expect(result.stderr).toBe('');
+        else expect(result.stderr.match(/^error:/gm)?.length).toBe(1);
+      }, logging[0] === '--log-limit');
+    });
+  }
+
+  test('silent fatal worker preserves outfile and withholds stdout', () => {
+    fixture((dir) => {
+      writeFileSync(join(dir, 'output.js'), 'keep outfile');
+      const output = runCli(
+        ['--bundle', 'entry.js', '--outfile', 'output.js', '--log-level', 'silent'],
+        { cwd: dir },
+      );
+      expect(output.exitCode).toBe(1);
+      expect(output.stderr).toBe('');
+      expect(readFileSync(join(dir, 'output.js'), 'utf8')).toBe('keep outfile');
+      const stdout = runCli(['--bundle', 'entry.js', '--log-level', 'silent'], { cwd: dir });
+      expect(stdout.exitCode).toBe(1);
+      expect(stdout.stdout).toBe('');
+      expect(stdout.stderr).toBe('');
+    });
+  });
+
+  test('silent successful build still publishes and exits successfully', () => {
+    fixture((dir) => {
+      writeFileSync(join(dir, 'entry.js'), 'console.log(42);\n');
+      const result = runCli(
+        ['--bundle', 'entry.js', '--outfile', 'output.js', '--log-level', 'silent'],
+        { cwd: dir },
+      );
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(existsSync(join(dir, 'output.js'))).toBe(true);
+    });
+  });
+
+  test('silent unresolved import still publishes but exits with failure', () => {
+    fixture((dir) => {
+      writeFileSync(join(dir, 'entry.js'), 'import "./missing.js"; console.log(42);\n');
+      const result = runCli(
+        ['--bundle', 'entry.js', '--outfile', 'output.js', '--log-level', 'silent'],
+        { cwd: dir },
+      );
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toBe('');
+      expect(existsSync(join(dir, 'output.js'))).toBe(true);
+    });
   });
 });
