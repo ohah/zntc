@@ -4364,3 +4364,41 @@ test "class wrapper output identity preserves native retained class declarations
     try std.testing.expectEqual(@as(usize, 24), attempted);
     try std.testing.expectEqual(@as(usize, 0), failures);
 }
+
+test "class wrapper fresh private self with public fields matches native evaluation" {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const source = "const list=[class{static x=1;static #read(){return 42}static read(){return this.#read()+this.x-1}}];console.log(list[0].read());";
+    const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    defer std.testing.allocator.free(native.stdout);
+    defer std.testing.allocator.free(native.stderr);
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("42\n", native.stdout);
+    var failures: usize = 0;
+    var attempted: usize = 0;
+    for ([_]@import("compat.zig").ESTarget{ .es5, .es2015, .es2017, .esnext }) |target| for ([_]bool{ false, true }) |minify| {
+        attempted += 1;
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", source);
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        var bundler = @import("../bundler/bundler.zig").Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm, .platform = .node, .unsupported = @import("compat.zig").fromESTarget(target), .minify_syntax = minify, .minify_identifiers = minify, .minify_whitespace = minify });
+        defer bundler.deinit();
+        const result = bundler.bundle(std.testing.io) catch |err| {
+            std.debug.print("CLASS_WRAPPER_PRIVATE_MIXED target={s} min={any} error={s}\n", .{ @tagName(target), minify, @errorName(err) });
+            failures += 1;
+            continue;
+        };
+        defer result.deinit(std.testing.allocator);
+        if (result.hasErrors()) {
+            failures += 1;
+            continue;
+        }
+        const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+        defer std.testing.allocator.free(actual.stdout);
+        defer std.testing.allocator.free(actual.stderr);
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout) or !std.mem.eql(u8, native.stderr, actual.stderr)) failures += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 8), attempted);
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}
