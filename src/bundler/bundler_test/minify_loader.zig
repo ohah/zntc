@@ -5777,6 +5777,18 @@ test "#4482 bundle: 상수 인라인된 정수는 member 앞에 공백 (`2 .toSt
     try std.testing.expect(std.mem.indexOf(u8, result.output, "2 .toString()") != null);
 }
 
+fn expectFoldedBundleObservation(output: []const u8, prefix: []const u8, observation: []const u8, expected: []const u8) !void {
+    const a = std.testing.allocator;
+    const script = try std.fmt.allocPrint(a, "{s}\n{s}\nconsole.log(JSON.stringify({s}));", .{ prefix, output, observation });
+    defer a.free(script);
+    const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", script } });
+    defer a.free(actual.stdout);
+    defer a.free(actual.stderr);
+    if (actual.term != .exited or actual.term.exited != 0) std.debug.print("folded bundle runtime: {s}\n", .{actual.stderr});
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    try std.testing.expectEqualStrings(expected, actual.stdout);
+}
+
 test "#4482 bundle: emit 시점 fold 로 살아남는 분기가 ** 좌변이면 괄호" {
     // `(ON && -1) ** k` / `(ON ? -1 : 2) ** k` — codegen 이 logical/conditional 을 접고
     // 살아남는 `-1` 을 그 자리에 emit 한다. AST 태그(logical/conditional)만 보면 단항이
@@ -5792,7 +5804,10 @@ test "#4482 bundle: emit 시점 fold 로 살아남는 분기가 ** 좌변이면 
     var result = try bundleMinified(&tmp, .{ .syntax = false });
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, result.output, "(-1)**globalThis.k"));
+    // Parse and execute the actual emitted fold. Its value carrier may own
+    // the parentheses, so the proof is the result for even AND odd powers.
+    try expectFoldedBundleObservation(result.output, "globalThis.k=2;", "[globalThis.r1,globalThis.r2]", "[1,1]\n");
+    try expectFoldedBundleObservation(result.output, "globalThis.k=3;", "[globalThis.r1,globalThis.r2]", "[-1,-1]\n");
 }
 
 test "#4482 bundle: emit 시점 fold 로 살아남는 분기의 부호 토큰 병합 방지" {
@@ -5809,8 +5824,8 @@ test "#4482 bundle: emit 시점 fold 로 살아남는 분기의 부호 토큰 �
     var result = try bundleMinified(&tmp, .{ .syntax = false });
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "globalThis.x- -1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "=- -globalThis.t") != null);
+    // Besides valid syntax, --t would silently change t. Check its value too.
+    try expectFoldedBundleObservation(result.output, "globalThis.x=10;globalThis.t=3;", "[globalThis.b,globalThis.c,globalThis.t]", "[11,3,3]\n");
 }
 
 // ============================================================
