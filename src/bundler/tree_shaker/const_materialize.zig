@@ -643,6 +643,92 @@ fn captureConstSourceExternals(a: std.mem.Allocator, source: *const Module) ![]c
     return result.toOwnedSlice(a);
 }
 
+/// Numeric materialization without syntax minification changes only exact
+/// identifier-reference leaves, but its retained graph is still an output
+/// candidate. Validate the complete candidate identity before the transaction
+/// publishes it, using the same source scope boundary as the minifying path.
+fn retainedConstCandidateHasNormalForm(
+    self: *TreeShaker,
+    prepared: *const PreparedConstModule,
+    runtime_source: *const runtime_witness.Source,
+) !bool {
+    const a = prepared.persistent;
+    const m = prepared.candidate;
+    const ast = &m.ast.?;
+    const sem = &m.semantic.?;
+    const root = ast.transformed_root orelse @as(NodeIndex, @fromBackingInt(@intCast(ast.nodes.items.len - 1)));
+    var reachable = try std.DynamicBitSet.initEmpty(a, ast.nodes.items.len);
+    defer reachable.deinit();
+    const reachable_nodes = try ast_walk.collectReachableNodeIndicesFrom(a, ast, root);
+    defer a.free(reachable_nodes);
+    for (reachable_nodes) |raw| {
+        if (raw >= ast.nodes.items.len) return false;
+        reachable.set(raw);
+    }
+    if (!@import("../graph/transform_prepass.zig").constMaterializedGraphSidecarsRemainReachable(
+        m,
+        sem,
+        &reachable,
+    )) return false;
+    const unresolved_nodes = try captureConstSourceExternals(a, prepared.source);
+    var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (unresolved_nodes) |raw| try unresolved.put(a, raw, {});
+    var explicit: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    if (m.transform_cache) |cache| {
+        for (cache.explicit_global_ref_nodes) |raw| try explicit.put(a, raw, {});
+    }
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const helpers = if (m.transform_cache) |cache| cache.helper_ref_nodes else &.{};
+    var helper_roots: std.StringHashMapUnmanaged(@import("../../semantic/symbol.zig").SymbolId) = .empty;
+    var helpers_by_name = sem.helper_scope_map.iterator();
+    while (helpers_by_name.next()) |entry| {
+        if (entry.value_ptr.* >= sem.symbols.items.len) return false;
+        try helper_roots.put(a, entry.key_ptr.*, @fromBackingInt(@intCast(entry.value_ptr.*)));
+    }
+    const output_roots = try constModuleOutputRoots(a, m);
+    const runtime_proof = @import("../../semantic/output_runtime_coverage.zig").forTarget(.{
+        .source = runtime_source,
+        .module = m,
+    }) orelse return false;
+    var normal_form = try @import("../../transformer/symbol_coverage.zig").checkOutputNormalFormQuiet(
+        self.allocator,
+        ast,
+        root,
+        @intCast(prepared.source.ast.?.nodes.items.len),
+        sem.symbol_ids,
+        sem.symbols.items,
+        sem.scopes,
+        sem.scope_maps,
+        &sem.scope_owner_map,
+        sem.references,
+        helpers,
+        &sem.helper_scope_map,
+        &unresolved,
+        &explicit,
+        &origins,
+        .{
+            .require_declaration_anchors = true,
+            .namespace_member_owners = &sem.namespace_member_owners,
+            .namespace_declaration_owners = &sem.namespace_declaration_owners,
+            .pre_transform_scope_count = prepared.source.semantic.?.scopes.len,
+            .pre_transform_scope_history_event_count = prepared.source.semantic.?.scope_history.events.len,
+        },
+        &sem.source_owned_retirements,
+        .{
+            .symbol_ids = output_roots,
+            .node_scope_provenance = &sem.node_scope_provenance,
+            .scope_history = &sem.scope_history,
+            .runtime_output_proof = runtime_proof,
+            .runtime_helper_symbols = &helper_roots,
+            .class_self_symbols = &sem.class_self_symbol_map,
+            .namespace_member_owners = &sem.namespace_member_owners,
+            .namespace_declaration_owners = &sem.namespace_declaration_owners,
+        },
+    );
+    defer normal_form.deinit(self.allocator);
+    return normal_form.hasCompleteOutputIdentityBeforeNames();
+}
+
 fn prepareJournalConstMinification(
     self: *TreeShaker,
     prepared: *PreparedConstModule,
@@ -1293,6 +1379,15 @@ fn prepareAndPublishConstFactsForIndex(
             break :blk false;
         };
         try refreshFoldedNumericExportFactsWithAllocator(&staged_shaker, candidate, candidate_ast, persistent);
+        const identity_complete = retainedConstCandidateHasNormalForm(
+            &staged_shaker,
+            &prepared,
+            &runtime_source,
+        ) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            break :blk false;
+        };
+        if (!identity_complete) break :blk false;
         candidate.namespace_access_index = null;
         staged_shaker.ast_mutated_after_link = true;
         break :blk true;
@@ -3147,6 +3242,180 @@ test "const whole transaction fact query releases a partially grown import map o
 
 test "const whole transaction rejects paired aliases of the same imported property" {
     try expectConstWholeAuthorityRejected(.paired_same_property);
+}
+
+test "retained numeric candidate rejects stale identity before publication" {
+    const a = std.testing.allocator;
+    const helpers = @import("../test_helpers.zig");
+    const Graph = @import("../graph.zig").ModuleGraph;
+    const Cache = @import("../resolve_cache.zig").ResolveCache;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "provider.mjs", "export const seed=7;");
+    try helpers.writeFile(tmp.dir, "entry.mjs", "import{seed}from'./provider.mjs';console.log(seed);");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+
+    var cache = Cache.init(a, .{});
+    defer cache.deinit();
+    var graph = Graph.init(a, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.minify_syntax = false;
+    try graph.build(std.testing.io, &.{entry});
+    var linker = Linker.init(a, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    linker.populateImportSymbols();
+    const index = graph.path_to_module.get(entry) orelse return error.MissingWholeConstConsumer;
+    const module = graph.moduleAtMut(index) orelse return error.MissingWholeConstConsumer;
+    var shaker = try TreeShaker.init(a, &graph, &linker);
+    defer shaker.deinit();
+
+    // An orphan class-self identity is unrelated to the `seed` leaf edit. A
+    // retained candidate must not publish it as if output identity were whole.
+    var stale_node: ?NodeIndex = null;
+    for (module.semantic.?.references) |reference| {
+        if (reference.flags.declare or reference.node_index.isNone()) continue;
+        const node = module.ast.?.getNode(reference.node_index);
+        if (node.tag != .identifier_reference or
+            !std.mem.eql(u8, module.ast.?.getText(node.data.string_ref), "seed")) continue;
+        stale_node = reference.node_index;
+        break;
+    }
+    const node = stale_node orelse return error.MissingRetainedCandidateMutationTarget;
+    const source_ids = module.semantic.?.symbol_ids;
+    const seed_id = source_ids[@backingInt(node)] orelse return error.MissingRetainedCandidateMutationIdentity;
+    try module.semantic.?.class_self_symbol_map.put(
+        module.parse_arena.?.allocator(),
+        std.math.maxInt(u32),
+        seed_id,
+    );
+    const before_header = try a.dupe(u8, std.mem.asBytes(module));
+    defer a.free(before_header);
+    const before_nodes = try a.dupe(Node, module.ast.?.nodes.items);
+    defer a.free(before_nodes);
+
+    const published = try prepareAndPublishConstFactsForIndex(
+        &shaker,
+        index.toU32(),
+        .numeric,
+        .{ .policy = .numeric_post_pass },
+        module.parse_arena.?.allocator(),
+    );
+    try std.testing.expect(!published);
+    try std.testing.expectEqualSlices(u8, before_header, std.mem.asBytes(module));
+    try std.testing.expectEqualSlices(
+        u8,
+        std.mem.sliceAsBytes(before_nodes),
+        std.mem.sliceAsBytes(module.ast.?.nodes.items),
+    );
+    try std.testing.expectEqual(seed_id, module.semantic.?.symbol_ids[@backingInt(node)].?);
+    try std.testing.expect(module.semantic.?.class_self_symbol_map.contains(std.math.maxInt(u32)));
+}
+
+test "retained numeric candidate publishes an exact safe leaf edit" {
+    const a = std.testing.allocator;
+    const helpers = @import("../test_helpers.zig");
+    const Graph = @import("../graph.zig").ModuleGraph;
+    const Cache = @import("../resolve_cache.zig").ResolveCache;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "provider.mjs", "export const seed=7;");
+    try helpers.writeFile(tmp.dir, "entry.mjs", "import{seed}from'./provider.mjs';console.log(seed);");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+
+    var cache = Cache.init(a, .{});
+    defer cache.deinit();
+    var graph = Graph.init(a, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.minify_syntax = false;
+    try graph.build(std.testing.io, &.{entry});
+    var linker = Linker.init(a, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    linker.populateImportSymbols();
+    const index = graph.path_to_module.get(entry) orelse return error.MissingWholeConstConsumer;
+    const module = graph.moduleAtMut(index) orelse return error.MissingWholeConstConsumer;
+    var shaker = try TreeShaker.init(a, &graph, &linker);
+    defer shaker.deinit();
+
+    try std.testing.expect(try prepareAndPublishConstFactsForIndex(
+        &shaker,
+        index.toU32(),
+        .numeric,
+        .{ .policy = .numeric_post_pass },
+        module.parse_arena.?.allocator(),
+    ));
+    var saw_literal = false;
+    const reachable = try ast_walk.collectReachableNodeIndices(a, &module.ast.?);
+    defer a.free(reachable);
+    for (reachable) |raw| {
+        const node = module.ast.?.nodes.items[raw];
+        if (node.tag == .numeric_literal and
+            std.mem.eql(u8, module.ast.?.getText(node.span), "7")) saw_literal = true;
+    }
+    try std.testing.expect(saw_literal);
+}
+
+test "retained numeric candidate rejects a stale sibling SymbolId" {
+    const a = std.testing.allocator;
+    const helpers = @import("../test_helpers.zig");
+    const Graph = @import("../graph.zig").ModuleGraph;
+    const Cache = @import("../resolve_cache.zig").ResolveCache;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "provider.mjs", "export const seed=7;");
+    try helpers.writeFile(tmp.dir, "entry.mjs", "import{seed}from'./provider.mjs';const untouched=1;console.log(seed,untouched);");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+
+    var cache = Cache.init(a, .{});
+    defer cache.deinit();
+    var graph = Graph.init(a, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.minify_syntax = false;
+    try graph.build(std.testing.io, &.{entry});
+    var linker = Linker.init(a, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    linker.populateImportSymbols();
+    const index = graph.path_to_module.get(entry) orelse return error.MissingWholeConstConsumer;
+    const module = graph.moduleAtMut(index) orelse return error.MissingWholeConstConsumer;
+    var shaker = try TreeShaker.init(a, &graph, &linker);
+    defer shaker.deinit();
+
+    var stale_node: ?NodeIndex = null;
+    for (module.semantic.?.references) |reference| {
+        if (reference.flags.declare or reference.node_index.isNone()) continue;
+        const node = module.ast.?.getNode(reference.node_index);
+        if (node.tag != .identifier_reference or
+            !std.mem.eql(u8, module.ast.?.getText(node.data.string_ref), "untouched")) continue;
+        stale_node = reference.node_index;
+        break;
+    }
+    const node = stale_node orelse return error.MissingRetainedCandidateSiblingRead;
+    @constCast(module.semantic.?.symbol_ids)[@backingInt(node)] = std.math.maxInt(u32);
+    const before_header = try a.dupe(u8, std.mem.asBytes(module));
+    defer a.free(before_header);
+    const before_nodes = try a.dupe(Node, module.ast.?.nodes.items);
+    defer a.free(before_nodes);
+
+    const published = try prepareAndPublishConstFactsForIndex(
+        &shaker,
+        index.toU32(),
+        .numeric,
+        .{ .policy = .numeric_post_pass },
+        module.parse_arena.?.allocator(),
+    );
+    try std.testing.expect(!published);
+    try std.testing.expectEqualSlices(u8, before_header, std.mem.asBytes(module));
+    try std.testing.expectEqualSlices(
+        u8,
+        std.mem.sliceAsBytes(before_nodes),
+        std.mem.sliceAsBytes(module.ast.?.nodes.items),
+    );
+    try std.testing.expectEqual(std.math.maxInt(u32), module.semantic.?.symbol_ids[@backingInt(node)].?);
 }
 
 test "const whole transaction restored-source receipt survives refusal and retires only on COW publication" {

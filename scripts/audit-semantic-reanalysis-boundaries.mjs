@@ -312,6 +312,49 @@ function auditOutputNormalFormAdmissionOptions(source, label) {
   );
 }
 
+function auditRetainedConstCandidateGate(source, label) {
+  const code = maskZigNonCode(source);
+  const gate = functionBody(code, 'retainedConstCandidateHasNormalForm', label);
+  auditOutputNormalFormAdmissionOptions(gate.body, `${label}: retained const gate`);
+  requireCondition(
+    /if\s*\(\s*!@import\s*\(\s*[^)]*\)\s*\.constMaterializedGraphSidecarsRemainReachable\s*\(/.test(
+      gate.body,
+    ),
+    `${label}: retained const gate must validate graph sidecar reachability`,
+  );
+  requireCondition(
+    /return\s+normal_form\.hasCompleteOutputIdentityBeforeNames\s*\(\s*\)\s*;/.test(gate.body),
+    `${label}: retained const gate must return the complete output identity result`,
+  );
+
+  const transaction = functionBody(code, 'prepareAndPublishConstFactsForIndex', label);
+  const branchStart = transaction.body.indexOf('if (skip_minify) blk: {');
+  requireCondition(branchStart >= 0, `${label}: skip-minify publication branch is missing`);
+  const branchOpen = transaction.body.indexOf('{', branchStart);
+  const branchClose = matchingBrace(transaction.body, branchOpen);
+  requireCondition(branchClose > branchOpen, `${label}: skip-minify branch is malformed`);
+  const branch = transaction.body.slice(branchOpen + 1, branchClose);
+  const call = branch.indexOf('retainedConstCandidateHasNormalForm(');
+  const rejection = branch.indexOf('if (!identity_complete) break :blk false;');
+  const success = branch.indexOf('break :blk true;');
+  requireCondition(
+    call >= 0 && rejection > call && success > rejection,
+    `${label}: skip-minify candidate must fail closed on incomplete identity before success`,
+  );
+  requireCondition(
+    /catch\s*\|err\|\s*\{\s*if\s*\(err\s*==\s*error\.OutOfMemory\)\s*return\s+err\s*;\s*break\s*:blk\s+false\s*;\s*\}/.test(
+      branch,
+    ),
+    `${label}: non-OOM identity-check errors must abort the candidate`,
+  );
+  const incomplete = transaction.body.indexOf('if (!complete) return false;');
+  const publish = transaction.body.indexOf('prepared.publish();');
+  requireCondition(
+    incomplete >= 0 && publish > incomplete,
+    `${label}: candidate publication must follow the skip-minify rejection barrier`,
+  );
+}
+
 function requireCondition(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -581,6 +624,20 @@ function selfTest() {
   auditPrepass(prepass);
   const constMaterialize = `fn materializeConstFacts() { const report = coverage.checkOutputNormalFormQuiet(&origins, ${outputNormalFormOptions}, &sem.source_owned_retirements); }`;
   auditOutputNormalFormAdmissionOptions(constMaterialize, 'fixture/const_materialize.zig');
+  const retainedConstGateFixture =
+    `fn retainedConstCandidateHasNormalForm() !bool { ` +
+    `if (!@import("../graph/transform_prepass.zig").constMaterializedGraphSidecarsRemainReachable(m, sem, &reachable)) return false; ` +
+    `const normal_form = try coverage.checkOutputNormalFormQuiet(&origins, ${outputNormalFormOptions}, &sem.source_owned_retirements); ` +
+    `return normal_form.hasCompleteOutputIdentityBeforeNames(); }\n`;
+  const retainedConstTransactionFixture =
+    `fn prepareAndPublishConstFactsForIndex() !bool { ` +
+    `const complete = if (skip_minify) blk: { ` +
+    `const identity_complete = retainedConstCandidateHasNormalForm() catch |err| { ` +
+    `if (err == error.OutOfMemory) return err; break :blk false; }; ` +
+    `if (!identity_complete) break :blk false; break :blk true; ` +
+    `} else true; if (!complete) return false; prepared.publish(); }\n`;
+  const retainedConst = retainedConstGateFixture + retainedConstTransactionFixture;
+  auditRetainedConstCandidateGate(retainedConst, 'fixture/const_materialize.zig');
   const mutateScopeBoundary = (source, field, mutation) => {
     const value =
       field === 'pre_transform_scope_count' ? 'source_scope_count' : 'source_history_epoch';
@@ -920,6 +977,92 @@ function selfTest() {
       ),
     'const materialization stopped explicitly pinning declaration anchors',
   );
+  const retainedMutants = [
+    [
+      retainedConst.replace(
+        'if (!@import("../graph/transform_prepass.zig").constMaterializedGraphSidecarsRemainReachable(m, sem, &reachable)) return false;',
+        'if (true) {}',
+      ),
+      'retained const gate accepted an orphan graph sidecar',
+    ],
+    [
+      retainedConst.replace(
+        '.require_declaration_anchors = true',
+        '.require_declaration_anchors = false',
+      ),
+      'retained const gate stopped requiring declaration anchors',
+    ],
+    [
+      retainedConst.replace('.require_declaration_anchors = true', ''),
+      'retained const gate stopped explicitly pinning declaration anchors',
+    ],
+    [
+      retainedConst.replace(
+        '.pre_transform_scope_count = source_scope_count',
+        '.pre_transform_scope_count = null',
+      ),
+      'retained const gate accepted a missing source scope boundary',
+    ],
+    [
+      retainedConst.replace(', .pre_transform_scope_count = source_scope_count', ''),
+      'retained const gate accepted an omitted source scope boundary',
+    ],
+    [
+      retainedConst.replace(
+        '.pre_transform_scope_history_event_count = source_history_epoch',
+        '.pre_transform_scope_history_event_count = null',
+      ),
+      'retained const gate accepted a missing source scope history epoch',
+    ],
+    [
+      retainedConst.replace(
+        ', .pre_transform_scope_history_event_count = source_history_epoch',
+        '',
+      ),
+      'retained const gate accepted an omitted source scope history epoch',
+    ],
+    [
+      retainedConst.replace(
+        'return normal_form.hasCompleteOutputIdentityBeforeNames();',
+        'return normal_form.exact.isClean();',
+      ),
+      'retained const gate accepted exact-only output validation',
+    ],
+    [
+      retainedConst.replace(
+        'retainedConstCandidateHasNormalForm() catch |err| { if (err == error.OutOfMemory) return err; break :blk false; }',
+        'true',
+      ),
+      'retained const caller bypassed output validation',
+    ],
+    [
+      retainedConst.replace(
+        'if (!identity_complete) break :blk false;',
+        'if (identity_complete) break :blk false;',
+      ),
+      'retained const caller inverted its failed-candidate branch',
+    ],
+    [
+      retainedConst.replace(
+        'if (!identity_complete) break :blk false;',
+        'if (!identity_complete) {}',
+      ),
+      'retained const caller ignored incomplete output identity',
+    ],
+    [
+      retainedConst.replace(
+        'if (!complete) return false; prepared.publish();',
+        'prepared.publish(); if (!complete) return false;',
+      ),
+      'retained const publication moved before the abort barrier',
+    ],
+  ];
+  for (const [mutant, label] of retainedMutants) {
+    tryReject(
+      () => auditRetainedConstCandidateGate(mutant, 'fixture/const_materialize.zig'),
+      label,
+    );
+  }
   for (const field of ['pre_transform_scope_count', 'pre_transform_scope_history_event_count']) {
     for (const mutation of ['null', 'remove']) {
       tryReject(
@@ -1069,7 +1212,7 @@ function selfTest() {
     'analyzer hidden behind a qualified same-file helper call',
   );
   console.log(
-    'semantic reanalysis and output-gate audit self-test PASS (73 hostile mutations rejected)',
+    'semantic reanalysis and output-gate audit self-test PASS (85 hostile mutations rejected)',
   );
 }
 
@@ -1109,7 +1252,16 @@ try {
     'parse',
   );
   auditPrepass(prepass);
+  const constMaterializeCode = maskZigNonCode(constMaterialize);
   auditOutputNormalFormAdmissionOptions(
+    functionBody(
+      constMaterializeCode,
+      'prepareJournalConstMinification',
+      'src/bundler/tree_shaker/const_materialize.zig',
+    ).body,
+    'src/bundler/tree_shaker/const_materialize.zig: minifying const gate',
+  );
+  auditRetainedConstCandidateGate(
     constMaterialize,
     'src/bundler/tree_shaker/const_materialize.zig',
   );
