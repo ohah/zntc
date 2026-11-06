@@ -3056,6 +3056,13 @@ const FlowEnumGraphIdentity = struct {
     reference_count: u32,
 };
 
+const GraphSourceSymbolIdentity = struct {
+    symbol_id: u32,
+    scope_id: u32,
+    reference_count: u32,
+    write_count: u32,
+};
+
 const expected_flow_enum_runtime_specifier = "flow-enums-runtime";
 
 const FlowGeneratedRole = enum {
@@ -3106,6 +3113,70 @@ fn expectFlowSourceBindingIdentity(module: *const Module, reachable: []const u32
     try std.testing.expect(reference_count > 0);
     try std.testing.expectEqual(reference_count, semantic.symbols.items[symbol_id].reference_count);
     return symbol_id;
+}
+
+fn expectGraphSourceSymbolIdentity(
+    module: *const Module,
+    reachable: []const u32,
+    name: []const u8,
+) !GraphSourceSymbolIdentity {
+    const ast = &module.ast.?;
+    const semantic = &module.semantic.?;
+    var symbol_id: ?u32 = null;
+    for (semantic.symbols.items, 0..) |symbol, raw| {
+        if (!std.mem.eql(u8, symbol.nameText(ast.source), name)) continue;
+        try std.testing.expect(symbol_id == null);
+        symbol_id = @intCast(raw);
+    }
+    const sid = symbol_id orelse return error.MissingGraphSourceSymbol;
+    const symbol = semantic.symbols.items[sid];
+    try std.testing.expect(!symbol.scope_id.isNone());
+    try std.testing.expect(symbol.scope_id.toIndex() < semantic.scopes.len);
+
+    var declaration_count: usize = 0;
+    var reference_count: u32 = 0;
+    var write_count: u32 = 0;
+    for (reachable) |raw| {
+        if (raw >= semantic.symbol_ids.len or semantic.symbol_ids[raw] != sid) continue;
+        const node = ast.nodes.items[raw];
+        const node_index: ast_mod.NodeIndex = @fromBackingInt(raw);
+        var is_declaration = false;
+        if (node.tag == .binding_identifier or node.tag == .assignment_target_identifier) {
+            for (semantic.references) |reference| {
+                if (!reference.flags.declare or reference.declaration_node_index != node_index) continue;
+                try std.testing.expectEqual(sid, @as(u32, @intCast(@backingInt(reference.symbol_id))));
+                is_declaration = true;
+                break;
+            }
+        }
+        if (is_declaration) {
+            declaration_count += 1;
+            continue;
+        }
+        if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+
+        var found_reference = false;
+        for (semantic.references) |reference| {
+            if (reference.node_index != node_index) continue;
+            try std.testing.expectEqual(sid, @as(u32, @intCast(@backingInt(reference.symbol_id))));
+            try std.testing.expect(reference.flags.read or reference.flags.write);
+            try std.testing.expect(!found_reference);
+            found_reference = true;
+            reference_count += 1;
+            if (reference.flags.write) write_count += 1;
+        }
+        try std.testing.expect(found_reference);
+    }
+    try std.testing.expect(declaration_count > 0);
+    try std.testing.expect(reference_count > 0);
+    try std.testing.expectEqual(reference_count, symbol.reference_count);
+    try std.testing.expectEqual(write_count, symbol.write_count);
+    return .{
+        .symbol_id = sid,
+        .scope_id = @backingInt(symbol.scope_id),
+        .reference_count = reference_count,
+        .write_count = write_count,
+    };
 }
 
 fn expectFlowEnumGraphModule(
@@ -5284,6 +5355,117 @@ test "graph Flow caller: enum runtime links one package module on cold and cache
             try std.testing.expect(!std.mem.eql(u8, record.specifier, expected_flow_enum_runtime_specifier));
         }
         for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+    }
+}
+
+test "graph ES5 arrow-default caller: parameter identities survive cold and cached ASTs" {
+    const profile = @import("../profile.zig");
+    const sources = [_]struct {
+        source: []const u8,
+        fallback_name: ?[]const u8 = null,
+    }{
+        .{ .source = "export const readA = (value = 1) => value; export const resultA = readA();" },
+        .{ .source = "export const readB = (first, value = 'text', last = null) => value; export const resultB = readB(undefined);" },
+        .{ .source = "export const readC = (value = true) => /./.test(value); export const resultC = readC();" },
+        .{
+            .source = "const fallback = 41; export const readD = (value = fallback) => value + 1; export const resultD = readD();",
+            .fallback_name = "fallback",
+        },
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var entries: [sources.len][]const u8 = undefined;
+    for (sources, 0..) |case, index| {
+        const file_name = try std.fmt.allocPrint(std.testing.allocator, "arrow-default-{d}.js", .{index});
+        defer std.testing.allocator.free(file_name);
+        try writeFile(tmp.dir, file_name, case.source);
+        entries[index] = try absPath(&tmp, file_name);
+    }
+    defer for (entries) |entry| std.testing.allocator.free(entry);
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    var cold_parameter_identities: [sources.len]GraphSourceSymbolIdentity = undefined;
+    var cold_fallback_identity: ?GraphSourceSymbolIdentity = null;
+    defer profile.resetForTest();
+    for ([_]usize{ 0, entries.len }) |expected_load_hits| {
+        profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+
+        var resolve_cache = ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+        defer resolve_cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &resolve_cache);
+        defer graph.deinit();
+        graph.disk_cache = &disk;
+        graph.disk_load_enabled = true;
+        graph.disk_options_hash = 0x6193_4819 ^ 0xA770_0001;
+        graph.disk_compiler_build_id = 0x4819_6930;
+        graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es5);
+        graph.transform_options_base.minify_syntax = true;
+        graph.minify_identifiers = true;
+        graph.max_threads = 1;
+
+        try graph.build(std.testing.io, &entries);
+
+        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+        try std.testing.expectEqual(entries.len, graph.moduleCount());
+        try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+        for (entries, 0..) |entry, index| {
+            const module = graph.findModuleByPath(entry) orelse return error.MissingArrowDefaultGraphModule;
+            try std.testing.expectEqual(Module.State.ready, module.state);
+            const ast = &(module.ast orelse return error.MissingArrowDefaultGraphAst);
+            const semantic = &(module.semantic orelse return error.MissingArrowDefaultGraphSemantic);
+            const transform_cache = module.transform_cache orelse return error.MissingArrowDefaultGraphTransform;
+            try std.testing.expectEqual(ast.nodes.items.len, semantic.symbol_ids.len);
+            try std.testing.expectEqualSlices(?u32, semantic.symbol_ids, transform_cache.symbol_ids);
+
+            const root = ast.transformed_root orelse return error.MissingArrowDefaultGraphRoot;
+            const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
+            defer std.testing.allocator.free(reachable);
+            var arrow_count: usize = 0;
+            var function_count: usize = 0;
+            for (reachable) |raw| {
+                switch (ast.nodes.items[raw].tag) {
+                    .arrow_function_expression => arrow_count += 1,
+                    .function_expression => function_count += 1,
+                    .assignment_pattern => return error.ES5ArrowDefaultParameterWasNotLowered,
+                    else => {},
+                }
+            }
+            try std.testing.expectEqual(@as(usize, 0), arrow_count);
+            try std.testing.expect(function_count > 0);
+
+            const parameter_identity = try expectGraphSourceSymbolIdentity(module, reachable, "value");
+            if (expected_load_hits == 0) {
+                cold_parameter_identities[index] = parameter_identity;
+            } else {
+                try std.testing.expectEqual(cold_parameter_identities[index].symbol_id, parameter_identity.symbol_id);
+                try std.testing.expectEqual(cold_parameter_identities[index].scope_id, parameter_identity.scope_id);
+                try std.testing.expectEqual(cold_parameter_identities[index].reference_count, parameter_identity.reference_count);
+                try std.testing.expectEqual(cold_parameter_identities[index].write_count, parameter_identity.write_count);
+            }
+
+            if (sources[index].fallback_name) |fallback_name| {
+                const fallback_identity = try expectGraphSourceSymbolIdentity(module, reachable, fallback_name);
+                try std.testing.expectEqual(@as(u32, 0), fallback_identity.write_count);
+                if (expected_load_hits == 0) {
+                    cold_fallback_identity = fallback_identity;
+                } else {
+                    const cold = cold_fallback_identity orelse return error.MissingColdArrowDefaultFallbackIdentity;
+                    try std.testing.expectEqual(cold.symbol_id, fallback_identity.symbol_id);
+                    try std.testing.expectEqual(cold.scope_id, fallback_identity.scope_id);
+                    try std.testing.expectEqual(cold.reference_count, fallback_identity.reference_count);
+                    try std.testing.expectEqual(cold.write_count, fallback_identity.write_count);
+                }
+            }
+            for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+        }
     }
 }
 
