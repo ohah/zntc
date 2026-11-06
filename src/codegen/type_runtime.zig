@@ -334,11 +334,10 @@ pub fn emitFlowEnum(self: anytype, node: Node) Error!void {
             if (member.data.binary.left.isNone()) continue;
             if (emitted > 0) try self.writeByte(',');
             emitted += 1;
-            const member_name_node = self.ast.getNode(member.data.binary.left);
+            const member_name_idx = member.data.binary.left;
+            const member_name_node = self.ast.getNode(member_name_idx);
             const member_name = Ast.stripStringQuotes(self.ast.getText(member_name_node.span));
-            try self.writeByte('"');
-            try self.write(member_name);
-            try self.writeByte('"');
+            try emitFlowEnumMemberNameString(self, member_name_idx, member_name);
         }
         try self.write("]);");
         return;
@@ -352,34 +351,63 @@ pub fn emitFlowEnum(self: anytype, node: Node) Error!void {
         if (member.data.binary.left.isNone()) continue; // 무효 멤버 방어 (위와 동일)
         if (emitted > 0) try self.writeByte(',');
         emitted += 1;
-        const member_name_node = self.ast.getNode(member.data.binary.left);
+        const member_name_idx = member.data.binary.left;
+        const member_name_node = self.ast.getNode(member_name_idx);
         const member_name = Ast.stripStringQuotes(self.ast.getText(member_name_node.span));
-        try self.write(member_name);
+        try emitFlowEnumObjectKey(self, member_name_idx, member_name);
         try self.writeByte(':');
 
         const init_idx = member.data.binary.right;
         if (!init_idx.isNone()) {
             try self.emitNode(init_idx);
         } else {
-            try emitFlowEnumDefaultValue(self, base_type_raw, member_name, auto_idx);
+            try emitFlowEnumDefaultValue(self, base_type_raw, member_name_idx, member_name, auto_idx);
         }
         auto_idx += 1;
     }
     try self.write("});");
 }
 
-fn emitFlowEnumDefaultValue(self: anytype, base_type: u32, member_name: []const u8, auto_idx: u32) std.mem.Allocator.Error!void {
+fn emitFlowEnumObjectKey(self: anytype, key_idx: NodeIndex, member_name: []const u8) Error!void {
+    const key_node = self.ast.getNode(key_idx);
+    if (key_node.tag == .string_literal or std.mem.eql(u8, member_name, "__proto__")) {
+        // Quoted string keys can contain punctuation, and `__proto__:` is a
+        // prototype setter in an object literal. Computed keys preserve both
+        // cases as ordinary enum properties.
+        try self.writeByte('[');
+        try emitFlowEnumMemberNameString(self, key_idx, member_name);
+        try self.writeByte(']');
+    } else {
+        try self.write(member_name);
+    }
+}
+
+fn emitFlowEnumMemberNameString(self: anytype, key_idx: NodeIndex, member_name: []const u8) Error!void {
+    if (self.ast.getNode(key_idx).tag == .string_literal) {
+        try self.emitNode(key_idx);
+    } else {
+        try self.writeByte('"');
+        try self.write(member_name);
+        try self.writeByte('"');
+    }
+}
+
+fn emitFlowEnumDefaultValue(
+    self: anytype,
+    base_type: u32,
+    member_name_idx: NodeIndex,
+    member_name: []const u8,
+    auto_idx: u32,
+) Error!void {
     const kind: FlowEnumBaseType = @fromBackingInt(@intCast(base_type));
     switch (kind) {
         .none, .symbol => {
-            try self.write("Symbol(\"");
-            try self.write(member_name);
-            try self.write("\")");
+            try self.write("Symbol(");
+            try emitFlowEnumMemberNameString(self, member_name_idx, member_name);
+            try self.writeByte(')');
         },
         .string => {
-            try self.writeByte('"');
-            try self.write(member_name);
-            try self.writeByte('"');
+            try emitFlowEnumMemberNameString(self, member_name_idx, member_name);
         },
         .number => {
             var buf: [16]u8 = undefined;

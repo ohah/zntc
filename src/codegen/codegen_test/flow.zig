@@ -1121,6 +1121,45 @@ test "Flow enum: of string with explicit init → callable with string values" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Blue:\"blue\"") != null);
 }
 
+test "Flow enum: quoted member keys are emitted as computed keys and string values" {
+    const keys = [_][]const u8{
+        "north-east",
+        "with space",
+        "quote\"double",
+        "quote'single",
+        "line\nbreak",
+        "tab\tkey",
+        "slash\\key",
+        "a.b",
+        "123start",
+        "😀",
+    };
+    for (keys) |key| {
+        const literal = try std.json.Stringify.valueAlloc(std.testing.allocator, key, .{});
+        defer std.testing.allocator.free(literal);
+        const source = try std.fmt.allocPrint(std.testing.allocator, "enum Key {{ {s} }}", .{literal});
+        defer std.testing.allocator.free(source);
+        var r = try e2eFlow(std.testing.allocator, source);
+        defer r.deinit();
+        const expected = try std.fmt.allocPrint(std.testing.allocator, "[{s}]:Symbol({s})", .{ literal, literal });
+        defer std.testing.allocator.free(expected);
+        try std.testing.expect(std.mem.indexOf(u8, r.output, expected) != null);
+    }
+
+    const escaped_name = "quote\"double";
+    const escaped_literal = try std.json.Stringify.valueAlloc(std.testing.allocator, escaped_name, .{});
+    defer std.testing.allocator.free(escaped_literal);
+    var escaped = try e2eFlow(std.testing.allocator, "enum Escaped { 'quote\"double' }");
+    defer escaped.deinit();
+    const escaped_expected = try std.fmt.allocPrint(std.testing.allocator, "[{s}]:Symbol({s})", .{ escaped_literal, escaped_literal });
+    defer std.testing.allocator.free(escaped_expected);
+    try std.testing.expect(std.mem.indexOf(u8, escaped.output, escaped_expected) != null);
+
+    var proto = try e2eFlow(std.testing.allocator, "enum Proto { __proto__ }");
+    defer proto.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, proto.output, "[\"__proto__\"]:Symbol(\"__proto__\")") != null);
+}
+
 test "Flow enum: of number → callable with number values" {
     var r = try e2eFlow(std.testing.allocator,
         \\enum Level of number { Low = 1, High = 10 }
