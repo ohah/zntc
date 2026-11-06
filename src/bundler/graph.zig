@@ -5358,30 +5358,27 @@ test "graph Flow caller: enum runtime links one package module on cold and cache
     }
 }
 
-test "graph ES5 arrow-default caller: parameter identities survive cold and cached ASTs" {
+const GraphDefaultParameterCase = struct {
+    source: []const u8,
+    parameter_name: []const u8 = "value",
+    fallback_name: ?[]const u8 = null,
+};
+
+fn expectES5DefaultParameterGraphCacheIdentity(cases: []const GraphDefaultParameterCase, file_prefix: []const u8) !void {
     const profile = @import("../profile.zig");
-    const sources = [_]struct {
-        source: []const u8,
-        fallback_name: ?[]const u8 = null,
-    }{
-        .{ .source = "export const readA = (value = 1) => value; export const resultA = readA();" },
-        .{ .source = "export const readB = (first, value = 'text', last = null) => value; export const resultB = readB(undefined);" },
-        .{ .source = "export const readC = (value = true) => /./.test(value); export const resultC = readC();" },
-        .{
-            .source = "const fallback = 41; export const readD = (value = fallback) => value + 1; export const resultD = readD();",
-            .fallback_name = "fallback",
-        },
-    };
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    var entries: [sources.len][]const u8 = undefined;
-    for (sources, 0..) |case, index| {
-        const file_name = try std.fmt.allocPrint(std.testing.allocator, "arrow-default-{d}.js", .{index});
+    const entries = try std.testing.allocator.alloc([]const u8, cases.len);
+    defer {
+        for (entries) |entry| std.testing.allocator.free(entry);
+        std.testing.allocator.free(entries);
+    }
+    for (cases, 0..) |case, index| {
+        const file_name = try std.fmt.allocPrint(std.testing.allocator, "{s}-default-{d}.js", .{ file_prefix, index });
         defer std.testing.allocator.free(file_name);
         try writeFile(tmp.dir, file_name, case.source);
         entries[index] = try absPath(&tmp, file_name);
     }
-    defer for (entries) |entry| std.testing.allocator.free(entry);
 
     const dp = try absPath(&tmp, ".");
     defer std.testing.allocator.free(dp);
@@ -5390,7 +5387,8 @@ test "graph ES5 arrow-default caller: parameter identities survive cold and cach
     var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
     defer disk.deinit();
 
-    var cold_parameter_identities: [sources.len]GraphSourceSymbolIdentity = undefined;
+    const cold_parameter_identities = try std.testing.allocator.alloc(GraphSourceSymbolIdentity, cases.len);
+    defer std.testing.allocator.free(cold_parameter_identities);
     var cold_fallback_identity: ?GraphSourceSymbolIdentity = null;
     defer profile.resetForTest();
     for ([_]usize{ 0, entries.len }) |expected_load_hits| {
@@ -5411,21 +5409,21 @@ test "graph ES5 arrow-default caller: parameter identities survive cold and cach
         graph.minify_identifiers = true;
         graph.max_threads = 1;
 
-        try graph.build(std.testing.io, &entries);
+        try graph.build(std.testing.io, entries);
 
         try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
         try std.testing.expectEqual(entries.len, graph.moduleCount());
         try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
         for (entries, 0..) |entry, index| {
-            const module = graph.findModuleByPath(entry) orelse return error.MissingArrowDefaultGraphModule;
+            const module = graph.findModuleByPath(entry) orelse return error.MissingDefaultParameterGraphModule;
             try std.testing.expectEqual(Module.State.ready, module.state);
-            const ast = &(module.ast orelse return error.MissingArrowDefaultGraphAst);
-            const semantic = &(module.semantic orelse return error.MissingArrowDefaultGraphSemantic);
-            const transform_cache = module.transform_cache orelse return error.MissingArrowDefaultGraphTransform;
+            const ast = &(module.ast orelse return error.MissingDefaultParameterGraphAst);
+            const semantic = &(module.semantic orelse return error.MissingDefaultParameterGraphSemantic);
+            const transform_cache = module.transform_cache orelse return error.MissingDefaultParameterGraphTransform;
             try std.testing.expectEqual(ast.nodes.items.len, semantic.symbol_ids.len);
             try std.testing.expectEqualSlices(?u32, semantic.symbol_ids, transform_cache.symbol_ids);
 
-            const root = ast.transformed_root orelse return error.MissingArrowDefaultGraphRoot;
+            const root = ast.transformed_root orelse return error.MissingDefaultParameterGraphRoot;
             const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
             defer std.testing.allocator.free(reachable);
             var arrow_count: usize = 0;
@@ -5433,15 +5431,15 @@ test "graph ES5 arrow-default caller: parameter identities survive cold and cach
             for (reachable) |raw| {
                 switch (ast.nodes.items[raw].tag) {
                     .arrow_function_expression => arrow_count += 1,
-                    .function_expression => function_count += 1,
-                    .assignment_pattern => return error.ES5ArrowDefaultParameterWasNotLowered,
+                    .function_declaration, .function_expression, .function => function_count += 1,
+                    .assignment_pattern => return error.ES5DefaultParameterWasNotLowered,
                     else => {},
                 }
             }
             try std.testing.expectEqual(@as(usize, 0), arrow_count);
             try std.testing.expect(function_count > 0);
 
-            const parameter_identity = try expectGraphSourceSymbolIdentity(module, reachable, "value");
+            const parameter_identity = try expectGraphSourceSymbolIdentity(module, reachable, cases[index].parameter_name);
             if (expected_load_hits == 0) {
                 cold_parameter_identities[index] = parameter_identity;
             } else {
@@ -5451,13 +5449,13 @@ test "graph ES5 arrow-default caller: parameter identities survive cold and cach
                 try std.testing.expectEqual(cold_parameter_identities[index].write_count, parameter_identity.write_count);
             }
 
-            if (sources[index].fallback_name) |fallback_name| {
+            if (cases[index].fallback_name) |fallback_name| {
                 const fallback_identity = try expectGraphSourceSymbolIdentity(module, reachable, fallback_name);
                 try std.testing.expectEqual(@as(u32, 0), fallback_identity.write_count);
                 if (expected_load_hits == 0) {
                     cold_fallback_identity = fallback_identity;
                 } else {
-                    const cold = cold_fallback_identity orelse return error.MissingColdArrowDefaultFallbackIdentity;
+                    const cold = cold_fallback_identity orelse return error.MissingColdDefaultParameterFallbackIdentity;
                     try std.testing.expectEqual(cold.symbol_id, fallback_identity.symbol_id);
                     try std.testing.expectEqual(cold.scope_id, fallback_identity.scope_id);
                     try std.testing.expectEqual(cold.reference_count, fallback_identity.reference_count);
@@ -5467,6 +5465,31 @@ test "graph ES5 arrow-default caller: parameter identities survive cold and cach
             for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
         }
     }
+}
+
+test "graph ES5 arrow-default caller: parameter identities survive cold and cached ASTs" {
+    const cases = [_]GraphDefaultParameterCase{
+        .{ .source = "export const readA = (value = 1) => value; export const resultA = readA();" },
+        .{ .source = "export const readB = (first, value = 'text', last = null) => value; export const resultB = readB(undefined);" },
+        .{ .source = "export const readC = (value = true) => /./.test(value); export const resultC = readC();" },
+        .{
+            .source = "const fallback = 41; export const readD = (value = fallback) => value + 1; export const resultD = readD();",
+            .fallback_name = "fallback",
+        },
+    };
+    try expectES5DefaultParameterGraphCacheIdentity(&cases, "arrow");
+}
+
+test "graph ES5 function-default caller: parameter identities survive cold and cached ASTs" {
+    const cases = [_]GraphDefaultParameterCase{
+        .{ .source = "export function readA(value = 1) { return value; } export const resultA = readA();" },
+        .{ .source = "export const readB = function(first, value = 'text', last = null) { return value; }; export const resultB = readB(undefined);" },
+        .{
+            .source = "const fallback = 41; export function readC(value = fallback) { return value + 1; } export const resultC = readC();",
+            .fallback_name = "fallback",
+        },
+    };
+    try expectES5DefaultParameterGraphCacheIdentity(&cases, "function");
 }
 
 test "Flow ref-component identity survives minify modes on cold and cached ASTs" {
