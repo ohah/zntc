@@ -1070,6 +1070,35 @@ pub const Module = struct {
         self.self_namespace_source_receipt = staged.self_namespace_source_receipt;
     }
 
+    /// Cross-module const materialization publishes the transformed AST graph
+    /// plus its provider provenance. Graph identity, lifecycle, edge topology,
+    /// and output-owned roles remain on the installed Module.
+    pub fn publishConstMaterializationFrom(self: *Module, staged: *const Module) void {
+        self.ast = staged.ast;
+        self.semantic = staged.semantic;
+        self.prebuilt_stmt_info = staged.prebuilt_stmt_info;
+        self.import_records = staged.import_records;
+        self.import_bindings = staged.import_bindings;
+        self.export_bindings = staged.export_bindings;
+        self.exported_names = staged.exported_names;
+        self.export_index_by_name = staged.export_index_by_name;
+        self.alias_table = staged.alias_table;
+        self.transform_cache = staged.transform_cache;
+        self.namespace_access_index = staged.namespace_access_index;
+
+        self.exports_kind = staged.exports_kind;
+        self.has_cjs_export_signal = staged.has_cjs_export_signal;
+        self.has_esmodule_marker = staged.has_esmodule_marker;
+        self.can_skip_cjs_default_interop = staged.can_skip_cjs_default_interop;
+        self.is_wrapper_barrel = staged.is_wrapper_barrel;
+        self.has_local_export = staged.has_local_export;
+        self.default_export_named_local = staged.default_export_named_local;
+        self.self_namespace_source_receipt = staged.self_namespace_source_receipt;
+
+        self.const_baked = staged.const_baked;
+        self.const_providers = staged.const_providers;
+    }
+
     /// Check that an emitter-side TLA reference still points at the binding
     /// and scope captured when the lowering created the promise variable.
     pub fn matchesTlaPromiseReference(self: *const Module, binding_node_index: u32) bool {
