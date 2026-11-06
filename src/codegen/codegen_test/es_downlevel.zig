@@ -3196,10 +3196,40 @@ test "ES2015: generator switch with yield" {
     var r = try e2eTarget(std.testing.allocator, "function* g(x){switch(x){case 1:yield 'a';break;default:yield 'b';}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
-    // switch → if-else 체인으로 분해
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "x===1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[4,\"a\"]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[4,\"b\"]") != null);
+    // The discriminant is captured once before case evaluation. Assert the
+    // generated AST relation rather than requiring a particular temp spelling.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(a, r.output);
+    var parser = @import("../../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var captured: ?[]const u8 = null;
+    var comparisons: usize = 0;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .binary_expression or node.data.binary.flags != @backingInt(@import("../../lexer/token.zig").Kind.eq3)) continue;
+        const right = parser.ast.getNode(node.data.binary.right);
+        const left = parser.ast.getNode(node.data.binary.left);
+        if (right.tag != .numeric_literal or !std.mem.eql(u8, parser.ast.getText(right.span), "1")) continue;
+        try std.testing.expectEqual(@import("../../parser/ast.zig").Node.Tag.identifier_reference, left.tag);
+        captured = parser.ast.getText(left.data.string_ref);
+        try std.testing.expect(!std.mem.eql(u8, captured.?, "x"));
+        comparisons += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), comparisons);
+    var captures: usize = 0;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .assignment_expression) continue;
+        const left = parser.ast.getNode(node.data.binary.left);
+        const right = parser.ast.getNode(node.data.binary.right);
+        if (left.tag == .assignment_target_identifier and right.tag == .identifier_reference and
+            std.mem.eql(u8, parser.ast.getText(left.data.string_ref), captured.?) and
+            std.mem.eql(u8, parser.ast.getText(right.data.string_ref), "x")) captures += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), captures);
+    try expectGeneratorNativeValues("function* g(x){switch(x){case 1:yield 'a';break;default:yield 'b';}}console.log(JSON.stringify([...g(1),...g(2)]));", "[\"a\",\"b\"]\n");
 }
 
 // --- static block ES5 ---
@@ -4837,8 +4867,29 @@ test "ES5 상태 기계: 배열 구조분해 대입이 __read 를 거친다 (#47
 test "ES5 상태 기계: 배열 구멍은 끌어올린 변수 목록에 안 들어간다 (#4791)" {
     var r = try e2eTarget(std.testing.allocator, "function* g(){ const [a, , b] = yield 0; }", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, ",,") == null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var a,b;") != null);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(a, r.output);
+    var parser = @import("../../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var first: usize = 0;
+    var last: usize = 0;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .variable_declarator) continue;
+        const binding = parser.ast.readExtraNode(node.data.extra, 0);
+        try std.testing.expect(!binding.isNone());
+        const actual = parser.ast.getNode(binding);
+        try std.testing.expectEqual(@import("../../parser/ast.zig").Node.Tag.binding_identifier, actual.tag);
+        const name = parser.ast.getText(actual.data.string_ref);
+        if (std.mem.eql(u8, name, "a")) first += 1;
+        if (std.mem.eql(u8, name, "b")) last += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), first);
+    try std.testing.expectEqual(@as(usize, 1), last);
+    try expectGeneratorNativeValues("function* g(){const [a,,b]=yield 0;return [a,b]}const iterator=g();const first=iterator.next();console.log(JSON.stringify([first,iterator.next(new Set([10,20,30]))]));", "[{\"value\":0,\"done\":false},{\"value\":[10,30],\"done\":true}]\n");
 }
 
 // #4791: 선언의 rest 가 패턴이면 임시 변수로 받아 푼다 — 그대로 두면 es5 에 `[y,z]=` 가 남는다.
@@ -4960,4 +5011,25 @@ test "ES5 블록 스코핑: 함수 본문 var 와 같은 이름의 블록 let �
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var x$") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var x=0;") != null);
+}
+
+// Real runtime helpers and the full transpile API complement the AST checks.
+fn expectGeneratorNativeValues(source: []const u8, expected: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings(expected, native.stdout);
+    for ([_]bool{ false, true }) |minify| {
+        const result = try @import("../../transpile.zig").transpile(a, source, "generator-control.cjs", .{
+            .unsupported = TransformOptions.compat.fromESTarget(.es5),
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+            .minify_whitespace = minify,
+        });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    }
 }

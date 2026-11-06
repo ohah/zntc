@@ -4683,9 +4683,11 @@ fn checkGeneratorTempProducerFixture(source: []const u8, require_extracted_loop_
             try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, symbol.kind);
 
             var binding_matches: usize = 0;
+            var producer_binding: NodeIndex = .none;
             for (result.hoisted_temps.items) |temp| {
                 if (temp.symbol_id != raw_id) continue;
                 binding_matches += 1;
+                producer_binding = temp.binding;
                 try std.testing.expectEqual(@as(?u32, raw_id), transformer.getSymbolIdAt(temp.binding));
                 try std.testing.expectEqual(identity.owner_scope, temp.owner_scope);
                 if (identity.temp_producer_id != null)
@@ -4693,15 +4695,32 @@ fn checkGeneratorTempProducerFixture(source: []const u8, require_extracted_loop_
             }
             try std.testing.expectEqual(@as(usize, 1), binding_matches);
 
-            var reads: usize = 0;
-            var writes: usize = 0;
+            // Shared AST lowerers publish value rows directly. State-machine
+            // producers can instead queue the same exact handles until callback
+            // assembly. Both paths must retain node/SID/scope/flags; a pure
+            // declaration alone is never evidence of a used temp.
+            const Use = struct { scope: ScopeId, flags: @import("../semantic/symbol.zig").ReferenceFlags };
+            var uses: std.AutoHashMapUnmanaged(NodeIndex, Use) = .empty;
             for (transformer.generator_state_semantic_refs.items) |reference| {
                 if (reference.symbol_id != raw_id) continue;
-                try std.testing.expectEqual(@as(?u32, raw_id), transformer.getSymbolIdAt(reference.node));
-                if (reference.flags.read) reads += 1;
-                if (reference.flags.write) writes += 1;
+                try recordGeneratorProducerTestUse(&transformer, editor, raw_id, owner_scope, reference.node, reference.scope, reference.flags, &uses);
             }
-            try std.testing.expect(reads > 0 or writes > 0);
+            var declarations: usize = 0;
+            for (editor.references.items) |reference| {
+                if (@backingInt(reference.symbol_id) != raw_id) continue;
+                if (reference.flags.declare) {
+                    try std.testing.expect(reference.node_index.isNone());
+                    try std.testing.expectEqual(producer_binding, reference.declaration_node_index);
+                    try std.testing.expectEqual(owner_scope, reference.scope_id);
+                    try std.testing.expect(!reference.flags.read and !reference.flags.write and !reference.flags.type_context and !reference.flags.value_as_type);
+                    declarations += 1;
+                    continue;
+                }
+                try std.testing.expect(reference.declaration_node_index.isNone());
+                try recordGeneratorProducerTestUse(&transformer, editor, raw_id, owner_scope, reference.node_index, reference.scope_id, reference.flags, &uses);
+            }
+            try std.testing.expectEqual(@as(usize, 1), declarations);
+            try std.testing.expect(uses.count() > 0);
         }
 
         frame_active = false;
@@ -4711,6 +4730,33 @@ fn checkGeneratorTempProducerFixture(source: []const u8, require_extracted_loop_
     try std.testing.expect(generator_count > 0);
     try std.testing.expect(direct_producer_count > 0);
     if (require_extracted_loop_producer) try std.testing.expect(extracted_loop_producer_count > 0);
+}
+
+fn recordGeneratorProducerTestUse(transformer: anytype, editor: anytype, sid: u32, owner: ScopeId, node: NodeIndex, use_scope: ScopeId, flags: @import("../semantic/symbol.zig").ReferenceFlags, uses: anytype) !void {
+    try std.testing.expect(!node.isNone() and @backingInt(node) < transformer.ast.nodes.items.len);
+    const tag = transformer.ast.getNode(node).tag;
+    try std.testing.expect(tag == .identifier_reference or tag == .assignment_target_identifier);
+    try std.testing.expectEqual(@as(?u32, sid), transformer.getSymbolIdAt(node));
+    try std.testing.expect(!flags.declare and !flags.type_context and !flags.value_as_type and (flags.read or flags.write));
+    try std.testing.expect(!use_scope.isNone() and use_scope.toIndex() < editor.scopes.items.len);
+    // A nested source expression may capture its wrapper's temp. Its actual
+    // use ScopeId must still reach the exact producer owner without a cycle.
+    var current = use_scope;
+    var visible = false;
+    for (0..editor.scopes.items.len + 1) |_| {
+        if (current == owner) {
+            visible = true;
+            break;
+        }
+        if (current.isNone() or current.toIndex() >= editor.scopes.items.len) break;
+        current = editor.scopes.items[current.toIndex()].parent;
+    }
+    try std.testing.expect(visible);
+    const entry = try uses.getOrPut(transformer.allocator, node);
+    if (entry.found_existing) {
+        try std.testing.expectEqual(use_scope, entry.value_ptr.scope);
+        try std.testing.expectEqualDeep(flags, entry.value_ptr.flags);
+    } else entry.value_ptr.* = .{ .scope = use_scope, .flags = flags };
 }
 
 fn checkGeneratorAssignmentBindingIdentity(source: []const u8) !void {
