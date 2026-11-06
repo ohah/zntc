@@ -708,6 +708,7 @@ test "public entry auto mixed preserves wrapped PM namespace and transport" {
             .strict_execution_order = true,
             .output_exports = .auto,
             .unsupported = @import("../../transformer/compat.zig").fromESTarget(target),
+            .rn_version_matrix = @import("../../transformer/compat.zig").fromESTarget(target),
             .minify_identifiers = minify,
             .minify_syntax = minify,
             .minify_whitespace = minify,
