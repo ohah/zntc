@@ -5364,7 +5364,11 @@ const GraphDefaultParameterCase = struct {
     fallback_name: ?[]const u8 = null,
 };
 
-fn expectES5DefaultParameterGraphCacheIdentity(cases: []const GraphDefaultParameterCase, file_prefix: []const u8) !void {
+fn expectES5DefaultParameterGraphCacheIdentity(
+    cases: []const GraphDefaultParameterCase,
+    file_prefix: []const u8,
+    with_identity_plugin: bool,
+) !void {
     const profile = @import("../profile.zig");
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -5400,6 +5404,14 @@ fn expectES5DefaultParameterGraphCacheIdentity(cases: []const GraphDefaultParame
         defer resolve_cache.deinit();
         var graph = ModuleGraph.init(std.testing.allocator, &resolve_cache);
         defer graph.deinit();
+        var plugin_state: IdentityRetainingVisitorMutationState = .{};
+        const identity_plugins = [_]plugin_mod.Plugin{.{
+            .name = "identity-retaining-visitor-default-parameter",
+            .context = @ptrCast(&plugin_state),
+            .visitor = identityRetainingVisitorFor(.program),
+            .ast_graph_contract = .identity_preserving_visitor_edits,
+        }};
+        if (with_identity_plugin) graph.plugins = &identity_plugins;
         graph.disk_cache = &disk;
         graph.disk_load_enabled = true;
         graph.disk_options_hash = 0x6193_4819 ^ 0xA770_0001;
@@ -5411,6 +5423,11 @@ fn expectES5DefaultParameterGraphCacheIdentity(cases: []const GraphDefaultParame
 
         try graph.build(std.testing.io, entries);
 
+        if (with_identity_plugin) {
+            try std.testing.expectEqual(@as(usize, 1), plugin_state.calls);
+            try std.testing.expectEqual(ast_mod.Node.Tag.program, plugin_state.observed_tag.?);
+            try std.testing.expect(plugin_state.did_mutate);
+        }
         try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
         try std.testing.expectEqual(entries.len, graph.moduleCount());
         try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
@@ -5438,6 +5455,17 @@ fn expectES5DefaultParameterGraphCacheIdentity(cases: []const GraphDefaultParame
             }
             try std.testing.expectEqual(@as(usize, 0), arrow_count);
             try std.testing.expect(function_count > 0);
+
+            if (with_identity_plugin) {
+                var folded = TransformedNumericLiteralCount{ .ast = ast, .text = "4" };
+                try ast_walk.walkPreorderIterative(std.testing.allocator, ast, root, &folded, TransformedNumericLiteralCount.visit);
+                try std.testing.expectEqual(@as(usize, 1), folded.count);
+                for ([_][]const u8{ "1", "2" }) |stale_text| {
+                    var stale = TransformedNumericLiteralCount{ .ast = ast, .text = stale_text };
+                    try ast_walk.walkPreorderIterative(std.testing.allocator, ast, root, &stale, TransformedNumericLiteralCount.visit);
+                    try std.testing.expectEqual(@as(usize, 0), stale.count);
+                }
+            }
 
             const parameter_identity = try expectGraphSourceSymbolIdentity(module, reachable, cases[index].parameter_name);
             if (expected_load_hits == 0) {
@@ -5477,7 +5505,7 @@ test "graph ES5 arrow-default caller: parameter identities survive cold and cach
             .fallback_name = "fallback",
         },
     };
-    try expectES5DefaultParameterGraphCacheIdentity(&cases, "arrow");
+    try expectES5DefaultParameterGraphCacheIdentity(&cases, "arrow", false);
 }
 
 test "graph ES5 function-default caller: parameter identities survive cold and cached ASTs" {
@@ -5489,7 +5517,14 @@ test "graph ES5 function-default caller: parameter identities survive cold and c
             .fallback_name = "fallback",
         },
     };
-    try expectES5DefaultParameterGraphCacheIdentity(&cases, "function");
+    try expectES5DefaultParameterGraphCacheIdentity(&cases, "function", false);
+}
+
+test "graph ES5 default-parameter plugin caller: graph identity survives cold and cached ASTs" {
+    const cases = [_]GraphDefaultParameterCase{
+        .{ .source = "export function read(value = 'fallback') { return value + (1 + 2); } export const result = read();" },
+    };
+    try expectES5DefaultParameterGraphCacheIdentity(&cases, "plugin", true);
 }
 
 test "Flow ref-component identity survives minify modes on cold and cached ASTs" {
