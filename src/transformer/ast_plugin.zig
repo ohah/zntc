@@ -688,6 +688,19 @@ pub const AstTransformCtx = struct {
                 });
             },
 
+            // Parentheses are a transparent expression wrapper, but their
+            // operand still carries lexical references that must be copied.
+            .parenthesized_expression => blk: {
+                const source = src_node.data.unary;
+                const operand = try self.copyNodeFromParsedAst(src_ast, source.operand);
+                if (!source.operand.isNone() and operand.isNone()) break :blk .none;
+                break :blk self.transformer.ast.addNode(.{
+                    .tag = .parenthesized_expression,
+                    .span = new_span,
+                    .data = .{ .unary = .{ .operand = operand, .flags = source.flags } },
+                });
+            },
+
             // Identifier-only var/let/const declarations. Keeping the binding
             // node in the copied AST lets insertion-scope registration attach
             // its producer-selected SymbolId before references are resolved.
