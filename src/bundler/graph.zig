@@ -5551,6 +5551,21 @@ test "graph ES5 default-parameter caller: whitespace minification preserves cold
     });
 }
 
+test "graph ES5 default-parameter caller: identifier minification preserves cold/cache identity" {
+    const cases = [_]GraphDefaultParameterCase{
+        .{ .source = "export const read = (value = 'fallback') => value; export const result = read();" },
+        .{
+            .source = "const fallback = 41; export function read(count = fallback) { return count; } export const result = read();",
+            .parameter_name = "count",
+            .fallback_name = "fallback",
+        },
+    };
+    try expectES5DefaultParameterGraphCacheIdentity(&cases, "identifiers", .{
+        .minify_syntax = false,
+        .minify_identifiers = true,
+    });
+}
+
 test "Flow ref-component identity survives minify modes on cold and cached ASTs" {
     const profile = @import("../profile.zig");
     var tmp = std.testing.tmpDir(.{});
