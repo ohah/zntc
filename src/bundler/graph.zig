@@ -5625,6 +5625,19 @@ test "graph ES5 base and derived constructor defaults preserve every binding ide
     });
 }
 
+test "graph ES5 class and object method defaults preserve every binding identity" {
+    const cases = [_]GraphDefaultParameterCase{
+        .{
+            .source = "const methods = { read(objectValue = 4) { return objectValue; } }; export class Reader { read(classValue = 3) { return classValue; } } export const result = methods.read() + new Reader().read();",
+            .parameter_names = &.{ "objectValue", "classValue" },
+        },
+    };
+    try expectES5DefaultParameterGraphCacheIdentity(&cases, "methods", .{
+        .minify_whitespace = true,
+        .expected_additional_graph_modules = 1,
+    });
+}
+
 test "Flow ref-component identity survives minify modes on cold and cached ASTs" {
     const profile = @import("../profile.zig");
     var tmp = std.testing.tmpDir(.{});
