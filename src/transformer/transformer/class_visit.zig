@@ -92,6 +92,14 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 es_helpers.markStandaloneLateSyntheticTemp(self, id, prepared_wrapper_scope);
                 generated_class_self_symbol_id = @backingInt(id);
                 try self.class_self_symbol_map.put(self.allocator, @backingInt(source_idx), @backingInt(id));
+                try self.wrapper_class_self_bindings.append(self.allocator, .{
+                    .source_class = source_idx,
+                    .declaration = .none,
+                    .binding = new_name,
+                    .symbol = @backingInt(id),
+                    .wrapper_scope = prepared_wrapper_scope,
+                    .wrapper = .none,
+                });
             }
         }
         if (self.options.unsupported.class_static_block and as_expression and new_name.isNone() and
@@ -107,6 +115,14 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 es_helpers.markStandaloneLateSyntheticTemp(self, id, prepared_wrapper_scope);
                 generated_class_self_symbol_id = @backingInt(id);
                 try self.class_self_symbol_map.put(self.allocator, @backingInt(source_idx), @backingInt(id));
+                try self.wrapper_class_self_bindings.append(self.allocator, .{
+                    .source_class = source_idx,
+                    .declaration = .none,
+                    .binding = new_name,
+                    .symbol = @backingInt(id),
+                    .wrapper_scope = prepared_wrapper_scope,
+                    .wrapper = .none,
+                });
             }
         }
         const saved_class_name_node = self.current_class_name_node;
@@ -751,6 +767,14 @@ pub fn wrapClassExprInIIFE(
     });
     if (self.semantic_edit_enabled) {
         try self.bindReservedFunctionOwner(wrapper_scope, arrow);
+        for (self.wrapper_class_self_bindings.items) |*birth| {
+            if (birth.source_class != source_idx) continue;
+            if (birth.symbol != class_binding_symbol_id or birth.binding != decl_name or
+                birth.wrapper_scope != wrapper_scope or !birth.declaration.isNone() or !birth.wrapper.isNone())
+                std.debug.panic("fresh class wrapper self receipt changed during construction", .{});
+            birth.declaration = class_decl;
+            birth.wrapper = arrow;
+        }
         const result = try es_helpers.makeCallExpr(self, arrow, &.{}, span);
         try class_private_fields.PrivateFields(Transformer).trackPrivateMethodSymbols(
             self,
