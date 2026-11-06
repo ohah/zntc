@@ -57,6 +57,41 @@ pub fn ES2015Computed(comptime Transformer: type) type {
         }
 
         pub fn lowerComputedPropertiesWithSource(self: *Transformer, source_object: NodeIndex, node: Node, origins: ?*const @import("object_builtin_reference.zig").AccessorOrigins) Transformer.Error!NodeIndex {
+            return lowerComputedPropertiesImpl(self, source_object, node, origins, false);
+        }
+
+        /// Suspension planning already visited every key/value/function body.
+        /// Share property-definition semantics without re-entering those nodes.
+        const VisitedGroupFinalizer = struct {
+            source_object: NodeIndex,
+            origins: ?*const @import("object_builtin_reference.zig").AccessorOrigins,
+
+            pub fn finalize(context: @This(), transformer: *Transformer, group: NodeIndex) Transformer.Error!NodeIndex {
+                return finishVisitedGroup(transformer, context.source_object, transformer.ast.getNode(group), context.origins);
+            }
+        };
+
+        pub fn lowerObjectWithVisitedChildren(self: *Transformer, source_object: NodeIndex, node: Node, properties: []const NodeIndex, origins: ?*const @import("object_builtin_reference.zig").AccessorOrigins) Transformer.Error!NodeIndex {
+            if (!self.options.unsupported.object_spread) return finishVisitedGroup(self, source_object, node, origins);
+            return es_helpers.lowerObjectSpreadPropsWithFinalizer(self, properties, node.span, VisitedGroupFinalizer{ .source_object = source_object, .origins = origins });
+        }
+
+        fn finishVisitedGroup(self: *Transformer, source_object: NodeIndex, node: Node, origins: ?*const @import("object_builtin_reference.zig").AccessorOrigins) Transformer.Error!NodeIndex {
+            if (self.options.unsupported.object_extensions and hasComputedProperty(self, node))
+                return lowerComputedPropertiesImpl(self, source_object, node, origins, true);
+            return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = node.data });
+        }
+
+        fn keyArgument(self: *Transformer, key: NodeIndex, visited: bool) Transformer.Error!NodeIndex {
+            if (visited) {
+                const node = self.ast.getNode(key);
+                if (node.tag == .computed_property_key) return node.data.unary.operand;
+                if (node.tag == .string_literal) return key;
+            }
+            return es_helpers.buildDefinePropertyKeyArg(self, key);
+        }
+
+        fn lowerComputedPropertiesImpl(self: *Transformer, source_object: NodeIndex, node: Node, origins: ?*const @import("object_builtin_reference.zig").AccessorOrigins, visited: bool) Transformer.Error!NodeIndex {
             const span = node.span;
             const members_start = node.data.list.start;
             const members_len = node.data.list.len;
@@ -91,7 +126,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 var i_pre: u32 = 0;
                 while (i_pre < @as(u32, @intCast(first_computed))) : (i_pre += 1) {
                     const raw_idx = self.ast.extra_data.items[members_start + i_pre];
-                    const new_member = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
+                    const new_member: NodeIndex = if (visited) @fromBackingInt(raw_idx) else try self.visitNode(@fromBackingInt(raw_idx));
                     if (!new_member.isNone()) {
                         try self.scratch.append(self.allocator, new_member);
                     }
@@ -138,7 +173,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                     // 일반/async/generator 메서드는 es2015_object_methods가 먼저 object_property로 변환한다.
                     // getter/setter 외의 메서드가 여기 도달하면 pass 순서가 깨진 것.
                     std.debug.assert(is_getter or is_setter);
-                    const define_call = try emitDefineAccessor(self, source_object, origins, @fromBackingInt(@intCast(raw_idx)), is_getter, temp_capture, span);
+                    const define_call = try emitDefineAccessor(self, source_object, origins, @fromBackingInt(@intCast(raw_idx)), is_getter, temp_capture, span, visited);
                     try self.scratch.append(self.allocator, define_call);
                     continue;
                 }
@@ -153,10 +188,10 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 // A runtime computed key names its function/class value: evaluate
                 // it once into a temp (`_a[_b = k] = __name(fn, _b)`, #5527).
                 // An anonymous class value is named inside its lowering instead.
-                const class_key = try pe.runtimeKeyClass(self, key_idx, val_idx);
+                const class_key = !visited and try pe.runtimeKeyClass(self, key_idx, val_idx);
                 if (!val_idx.isNone() and (class_key or try pe.needsRuntimeKeyName(self, key_idx, val_idx))) {
                     // Capture first: the class lowering reads the temp.
-                    const captured = try pe.captureRuntimeKey(self, try self.visitNode(self.ast.getNode(key_idx).data.unary.operand), span);
+                    const captured = try pe.captureRuntimeKey(self, if (visited) self.ast.getNode(key_idx).data.unary.operand else try self.visitNode(self.ast.getNode(key_idx).data.unary.operand), span);
                     const bound = if (class_key)
                         try pe.bindRuntimeKeyClassWithProducerId(
                             self,
@@ -167,7 +202,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                         )
                     else
                         null;
-                    var value = try self.visitNode(val_idx);
+                    var value = if (visited) val_idx else try self.visitNode(val_idx);
                     value = if (class_key)
                         try pe.finishRuntimeKeyClass(self, bound, val_idx, value, false, self.current_scope, span)
                     else
@@ -182,12 +217,12 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 }
                 const new_val = if (val_idx.isNone())
                     // shorthand → key 복제
-                    try self.visitNode(key_idx)
+                    if (visited) key_idx else try self.visitNode(key_idx)
                 else
-                    try pe.nameLoweredProperty(self, try self.visitNode(val_idx), key_idx, val_idx, span);
+                    try pe.nameLoweredProperty(self, if (visited) val_idx else try self.visitNode(val_idx), key_idx, val_idx, span);
 
                 if (self.ast.getNode(key_idx).tag == .computed_property_key) {
-                    var property_key = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
+                    var property_key = try keyArgument(self, key_idx, visited);
                     if ((try pe.keyName(self, key_idx, false)) == null) {
                         self.runtime_helpers.to_property_key = true;
                         const to_property_key = try es_helpers.makeRuntimeHelperRef(self, "__toPropertyKey");
@@ -207,7 +242,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 const prototype_setter = !val_idx.isNone() and direct_name != null and std.mem.eql(u8, direct_name.?, "__proto__");
                 if (!prototype_setter) {
                     const obj_ref = try es_helpers.makeTempRefFromIdentity(self, temp_capture, temp_span, .{ .read = true });
-                    const property_key = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
+                    const property_key = try keyArgument(self, key_idx, visited);
                     const define = try makeOwnDataProperty(self, temp_capture, obj_ref, property_key, new_val, span);
                     try self.scratch.append(self.allocator, define);
                     continue;
@@ -283,6 +318,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             is_getter: bool,
             temp_capture: es_helpers.TempIdentityCapture,
             span: Span,
+            visited: bool,
         ) Transformer.Error!NodeIndex {
             const member = self.ast.getNode(member_idx);
             const me = member.data.extra;
@@ -291,7 +327,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             const pe = @import("parameter_environment.zig");
             var func_expr = try pe.nameLoweredMember(
                 self,
-                try buildAccessorFunction(self, member_idx, span),
+                try buildAccessorFunction(self, member_idx, span, visited),
                 member_idx,
                 .none,
                 if (is_getter) "get " else "set ",
@@ -303,7 +339,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             var captured_key: ?NodeIndex = null;
             const key_node = self.ast.getNode(key_idx);
             if (key_node.tag == .computed_property_key and (try pe.keyName(self, key_idx, false)) == null) {
-                const captured = try pe.captureRuntimeKey(self, try self.visitNode(key_node.data.unary.operand), span);
+                const captured = try pe.captureRuntimeKey(self, if (visited) key_node.data.unary.operand else try self.visitNode(key_node.data.unary.operand), span);
                 captured_key = captured.key;
                 func_expr = try pe.nameByTemp(self, func_expr, captured.temp, if (is_getter) "get" else "set", span);
             }
@@ -324,7 +360,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 .data = .{ .list = desc_list },
             });
 
-            const key_arg = captured_key orelse try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
+            const key_arg = captured_key orelse try keyArgument(self, key_idx, visited);
 
             const temp_ref = try es_helpers.makeTempRefFromIdentity(self, temp_capture, temp_capture.span, .{ .read = true });
             const object_span = try self.ast.addString("Object");
@@ -346,7 +382,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
 
         /// Keep the accessor's original function scope and object home while lowering it
         /// into the descriptor's getter/setter function expression.
-        fn buildAccessorFunction(self: *Transformer, member_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        fn buildAccessorFunction(self: *Transformer, member_idx: NodeIndex, span: Span, previsited: bool) Transformer.Error!NodeIndex {
             const member = self.ast.getNode(member_idx);
             const me = member.data.extra;
             const none = @backingInt(NodeIndex.none);
@@ -361,6 +397,11 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                     none,
                 }) },
             });
+
+            if (previsited) {
+                try self.remapCopiedScopeOwner(member_idx, fn_expr);
+                return fn_expr;
+            }
 
             const home_saved = object_super.enterMethod(self, object_super.lookup(self, me));
             defer object_super.leaveMethod(self, home_saved);

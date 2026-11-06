@@ -3442,7 +3442,19 @@ pub fn makeObjectAssignCall(self: anytype, args: []const NodeIndex, span: Span) 
 /// evaluate later values (including await operands) before copying earlier
 /// spread getters. The first spread always copies into a fresh target, even
 /// when its operand itself happens to be an object literal.
+const IdentityObjectGroupFinalizer = struct {
+    pub fn finalize(_: @This(), _: anytype, group: NodeIndex) std.mem.Allocator.Error!NodeIndex {
+        return group;
+    }
+};
+
 pub fn lowerObjectSpreadProps(self: anytype, properties: []const NodeIndex, span: Span) !NodeIndex {
+    return lowerObjectSpreadPropsWithFinalizer(self, properties, span, IdentityObjectGroupFinalizer{});
+}
+
+/// Complete each non-spread group through the caller's source-owned context.
+/// Both ordinary and suspension lowering share this exact grouping/copy order.
+pub fn lowerObjectSpreadPropsWithFinalizer(self: anytype, properties: []const NodeIndex, span: Span, finalizer: anytype) !NodeIndex {
     // Child builders can relocate scratch; retain indices rather than a slice
     // into the caller's live scratch frame.
     const owned_props = try self.allocator.dupe(NodeIndex, properties);
@@ -3459,7 +3471,8 @@ pub fn lowerObjectSpreadProps(self: anytype, properties: []const NodeIndex, span
         }
 
         if (self.scratch.items.len > scratch_top) {
-            const group = try makeObjectLiteral(self, self.scratch.items[scratch_top..], span);
+            const literal = try makeObjectLiteral(self, self.scratch.items[scratch_top..], span);
+            const group = try finalizer.finalize(self, literal);
             self.scratch.shrinkRetainingCapacity(scratch_top);
             result = if (result.isNone()) group else try makeObjectAssignCall(self, &.{ result, group }, span);
         }
@@ -3468,7 +3481,8 @@ pub fn lowerObjectSpreadProps(self: anytype, properties: []const NodeIndex, span
     }
 
     if (self.scratch.items.len > scratch_top) {
-        const group = try makeObjectLiteral(self, self.scratch.items[scratch_top..], span);
+        const literal = try makeObjectLiteral(self, self.scratch.items[scratch_top..], span);
+        const group = try finalizer.finalize(self, literal);
         result = if (result.isNone()) group else try makeObjectAssignCall(self, &.{ result, group }, span);
     }
     return if (result.isNone()) makeObjectLiteral(self, &.{}, span) else result;

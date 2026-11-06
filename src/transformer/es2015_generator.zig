@@ -1930,7 +1930,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return;
             }
 
-            const new_disc = try self.visitNode(disc_idx);
+            // GetValue of the discriminant happens exactly once, before any
+            // case expression. Keep it stable across suspension and mutation.
+            const disc_value = try visitExprWithYieldExtraction(self, disc_idx, ops, next_label);
+            const disc = try freezeSuspensionPrefix(self, disc_value, self.ast.getNode(disc_idx).span, ops);
 
             // 각 case에 고유 sentinel 할당 (body 처리 후 실제 label로 fixup)
             const sentinel_base = LABEL_SENTINEL_BASE - 100; // 충분히 떨어진 sentinel 영역
@@ -1965,12 +1968,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
                 if (test_idx.isNone()) continue; // default
 
-                const new_test = try self.visitNode(test_idx);
+                // These operations stay after the previous comparison branch:
+                // a matching case skips every later test (including its yield).
+                const new_test = try visitExprWithYieldExtraction(self, test_idx, ops, next_label);
+                const disc_read = try makeGeneratorTempRefForProducer(self, disc, stmt.span, .{ .read = true });
                 const eq_check = try self.ast.addNode(.{
                     .tag = .binary_expression,
                     .span = stmt.span,
                     .data = .{ .binary = .{
-                        .left = new_disc,
+                        .left = disc_read,
                         .right = new_test,
                         .flags = @backingInt(token_mod.Kind.eq3),
                     } },
@@ -2472,6 +2478,27 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return es_helpers.makeExprStmt(self, assign, span);
         }
 
+        /// The shared destructuring lowerer produces ordered assignments and
+        /// lazy default conditionals. Extract their suspension points only
+        /// after that common AST reconstruction, not from the pattern itself.
+        fn appendDestructuringAssignment(
+            self: *Transformer,
+            lhs: NodeIndex,
+            rhs: NodeIndex,
+            span: Span,
+            ops: *std.ArrayList(Operation),
+            next_label: *u32,
+        ) Transformer.Error!void {
+            const statement = try makeDestructuringAssignStmt(self, lhs, rhs, span, self.generator_state_machine_scope);
+            const expression = self.ast.getNode(statement).data.unary.operand;
+            const lowered = if (es2015_scan.containsYield(self, expression))
+                try visitExprWithYieldExtraction(self, expression, ops, next_label)
+            else
+                expression;
+            const output = if (lowered == expression) statement else try es_helpers.makeExprStmt(self, lowered, span);
+            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = output } });
+        }
+
         /// yield가 있는 variable_declaration의 각 declarator를 개별 연산으로 변환.
         /// var x = yield 1 → yield 1 (op) + x = _state.sent() (op)
         /// var x = expr (no yield) → x = expr (statement op)
@@ -2512,21 +2539,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     // x = _state.sent()
                     const new_binding = try bindingToAssignTarget(self, try self.visitNode(binding));
                     const sent_call = try buildSentCall(self, stmt.span);
-                    const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, sent_call, stmt.span, self.generator_state_machine_scope);
-                    try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
+                    try appendDestructuringAssignment(self, new_binding, sent_call, stmt.span, ops, next_label);
                 } else if (es2015_scan.containsYield(self, init_idx)) {
                     // var x = foo(await y) → 중첩 yield 추출 후 x = foo(_state.sent())
                     const new_binding = try bindingToAssignTarget(self, try self.visitNode(binding));
                     const new_init = try visitExprWithYieldExtraction(self, init_idx, ops, next_label);
-                    const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, new_init, stmt.span, self.generator_state_machine_scope);
-                    try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
+                    try appendDestructuringAssignment(self, new_binding, new_init, stmt.span, ops, next_label);
                 } else {
                     // var x = expr (no yield) → x = expr
                     const new_binding = try bindingToAssignTarget(self, try self.visitNode(binding));
                     const new_init = try self.visitNode(init_idx);
                     if (self.unsupported_generator_native_lexical != null) return null;
-                    const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, new_init, stmt.span, self.generator_state_machine_scope);
-                    try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
+                    try appendDestructuringAssignment(self, new_binding, new_init, stmt.span, ops, next_label);
                 }
 
                 // `var` 는 대입으로 접혔으니 이름을 **바깥 함수** var 리스트에 등록한다 (#4722).
@@ -2710,10 +2734,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// expression 내부의 yield/await를 별도 yield operation으로 추출하고
         /// 해당 위치를 _state.sent()로 치환한 expression을 반환.
         /// 조건식(if, while, for test) 등에서 yield/await가 중첩된 경우 사용.
-        /// An assignment pattern (with no `yield` of its own) the general
-        /// assignment path would lower.
+        /// An assignment pattern the common assignment lowerer handles,
+        /// including suspension in its own computed keys and defaults.
         fn patternNeedsLowering(self: *Transformer, left_idx: NodeIndex) bool {
-            return self.needsDestructuringAssignmentLowering(left_idx) and !es2015_scan.containsYield(self, left_idx);
+            if (self.needsDestructuringAssignmentLowering(left_idx)) return true;
+            if (left_idx.isNone()) return false;
+            return switch (self.ast.getNode(left_idx).tag) {
+                // Native pattern syntax cannot contain raw suspension inside
+                // the ordinary resume callback (Hermes's mixed feature mask).
+                .object_assignment_target, .array_assignment_target, .object_pattern, .array_pattern => es2015_scan.containsYield(self, left_idx),
+                else => false,
+            };
         }
 
         /// In an async generator, an `await` the state machine meets (one that
@@ -2971,6 +3002,59 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return @import("transformer/calls.zig").lowerCallWithEvaluatedChildren(self, node, callee, args);
         }
 
+        const ObjectKeyCapture = struct { value: NodeIndex, identity: es_helpers.TempIdentityCapture };
+
+        fn captureObjectKeyValue(self: *Transformer, value: NodeIndex, span: Span, ops: *std.ArrayList(Operation)) Transformer.Error!ObjectKeyCapture {
+            const converted = try es_helpers.makePropertyKeyValue(self, value, span);
+            const producer = try freezeSuspensionPrefix(self, converted, span, ops);
+            return .{
+                .value = try makeGeneratorTempRefForProducer(self, producer, span, .{ .read = true }),
+                .identity = .{
+                    .span = producer.name_span,
+                    .symbol_id = if (producer.symbol_id) |id| @as(SymbolId, @fromBackingInt(id)) else null,
+                    .reference_scope = self.current_scope,
+                    .owner_scope = self.generator_state_machine_scope,
+                    .temp_producer_id = producer.temp_producer_id,
+                },
+            };
+        }
+
+        fn lowerSuspendingObjectMember(self: *Transformer, source_member: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!NodeIndex {
+            const source = self.ast.getNode(source_member);
+            const home = @import("object_super.zig").lookup(self, source.data.extra);
+            var member = source_member;
+            var key_identity: ?es_helpers.TempIdentityCapture = null;
+            const key = self.readNodeIdx(source.data.extra, ast_mod.MethodExtra.key);
+            if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key) {
+                const key_node = self.ast.getNode(key);
+                const value = try visitExprWithYieldExtraction(self, key_node.data.unary.operand, ops, next_label);
+                // ToPropertyKey precedes every later property/value evaluation,
+                // including suspension in a subsequent literal member.
+                const captured = try captureObjectKeyValue(self, value, key_node.span, ops);
+                key_identity = captured.identity;
+                const new_key = try self.ast.addNode(.{ .tag = .computed_property_key, .span = key_node.span, .data = .{ .unary = .{ .operand = captured.value, .flags = key_node.data.unary.flags } } });
+                var slots: [6]u32 = undefined;
+                for (0..6) |slot| slots[slot] = self.ast.extra_data.items[source.data.extra + slot];
+                slots[ast_mod.MethodExtra.key] = @backingInt(new_key);
+                member = try self.ast.addNode(.{ .tag = .method_definition, .span = source.span, .data = .{ .extra = try self.ast.addExtras(&slots) } });
+                try self.remapCopiedScopeOwner(source_member, member);
+                if (home) |identity| try self.object_super_homes.append(self.allocator, .{ .method_extra = self.ast.getNode(member).data.extra, .identity = identity });
+            }
+            const lowered = try @import("es2015_object_methods.zig").ES2015ObjectMethods(Transformer).lowerObjectMember(self, member);
+            if (key_identity) |identity| {
+                const property = self.ast.getNode(lowered);
+                if (property.tag == .object_property) {
+                    const value = try @import("parameter_environment.zig").nameByTemp(self, property.data.binary.right, identity, null, property.span);
+                    self.ast.nodes.items[@backingInt(lowered)].data.binary.right = value;
+                }
+            }
+            if (home) |identity| {
+                const output = self.ast.getNode(lowered);
+                if (output.tag == .method_definition) try self.object_super_homes.append(self.allocator, .{ .method_extra = output.data.extra, .identity = identity });
+            }
+            return lowered;
+        }
+
         fn visitExprWithYieldExtraction(self: *Transformer, expr_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!NodeIndex {
             if (expr_idx.isNone()) return .none;
             const node = self.ast.getNode(expr_idx);
@@ -3028,18 +3112,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // 안쪽만 추출해야 `{ [_a]: 2 }` 로 나온다 (#4721).
             // 객체 리터럴 메서드/접근자: 본문은 별도 스코프지만 computed 키는 이 문맥에서
             // 평가된다 — 키만 추출하고 나머지는 평소대로 visit (#4723).
-            if (node.tag == .method_definition) {
-                const me = node.data.extra;
-                const key_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me]));
-                if (!key_idx.isNone() and self.ast.getNode(key_idx).tag == .computed_property_key) {
-                    const new_key = try visitExprWithYieldExtraction(self, key_idx, ops, next_label);
-                    var slots: [6]u32 = undefined;
-                    for (0..6) |k| slots[k] = self.ast.extra_data.items[me + k];
-                    slots[0] = @backingInt(new_key);
-                    const new_extra = try self.ast.addExtras(&slots);
-                    return self.visitNode(try self.ast.addNode(.{ .tag = .method_definition, .span = node.span, .data = .{ .extra = new_extra } }));
-                }
-            }
+            if (node.tag == .method_definition)
+                return lowerSuspendingObjectMember(self, expr_idx, ops, next_label);
 
             // 클래스 식: 헤더의 yield 를 먼저 꺼낸 뒤 평소대로 낮춘다 (#4723).
             if (node.tag == .class_expression) {
@@ -3131,7 +3205,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // assignment, with the right side whose yields became temps (#5728).
                 if (patternNeedsLowering(self, node.data.binary.left)) {
                     const new_right = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
-                    return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignmentWithRight(self, node, new_right, true);
+                    const lowered = try es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignmentWithRightInOutputScope(self, node, new_right, true, self.generator_state_machine_scope);
+                    // Computed keys/defaults belong to the left pattern, so
+                    // they may still suspend after RHS extraction.
+                    return visitExprWithYieldExtraction(self, lowered, ops, next_label);
                 }
                 return extractAssignmentEvaluation(self, node, ops, next_label);
             }
@@ -3179,6 +3256,19 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const home = if (node.tag == .object_expression) try object_super.prepareHome(self, expr_idx, false) else null;
                 var home_prefix_roots: std.ArrayList(NodeIndex) = .empty;
                 defer home_prefix_roots.deinit(self.allocator);
+                const builtin = @import("object_builtin_reference.zig");
+                var accessor_origins: ?builtin.AccessorOrigins = null;
+                defer if (accessor_origins) |*origins| origins.deinit(self.allocator);
+                if (node.tag == .object_expression and self.options.unsupported.object_extensions) {
+                    var members = self.ast.iterateExtraList(node.data.list);
+                    while (members.next()) |member| {
+                        const m = self.ast.getNode(member);
+                        if (m.tag == .method_definition and self.readU32(m.data.extra, ast_mod.MethodExtra.flags) & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter) != 0) {
+                            accessor_origins = builtin.AccessorOrigins.init(self, expr_idx) catch |err| return builtin.productionFailure(err);
+                            break;
+                        }
+                    }
+                }
 
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -3196,12 +3286,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const elem_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
                     // An object method lowers like in any object literal (`n() {}` →
                     // `n: function () {}`); its body is its own function (#4736).
-                    var new_elem = if (node.tag == .object_expression and
-                        self.ast.getNode(elem_idx).tag == .method_definition and
-                        !es2015_scan.containsYield(self, elem_idx))
-                        try @import("es2015_object_methods.zig").ES2015ObjectMethods(Transformer).lowerObjectMember(self, elem_idx)
+                    var new_elem = if (node.tag == .object_expression and self.ast.getNode(elem_idx).tag == .method_definition)
+                        try lowerSuspendingObjectMember(self, elem_idx, ops, next_label)
                     else
                         try visitExprWithYieldExtraction(self, elem_idx, ops, next_label);
+                    if (accessor_origins) |*origins| {
+                        const source_member = self.ast.getNode(elem_idx);
+                        if (source_member.tag == .method_definition and self.readU32(source_member.data.extra, ast_mod.MethodExtra.flags) & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter) != 0)
+                            origins.record(self, elem_idx, new_elem) catch |err| return builtin.productionFailure(err);
+                    }
                     if (node.tag == .template_literal and !new_elem.isNone() and self.ast.getNode(new_elem).tag != .template_element)
                         new_elem = try @import("es2015_template.zig").coerceTemplateSubstitution(self, new_elem, self.ast.getNode(elem_idx).span);
                     const before_suspend = if (last_suspending) |last| i_elem < last else false;
@@ -3248,8 +3341,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 } else if (node.tag == .array_expression and self.options.unsupported.spread) {
                     const Spread = @import("es2015_spread.zig").ES2015Spread(Transformer);
                     if (Spread.hasSpreadInArray(self, self.ast.getNode(rebuilt))) lowered = try Spread.lowerSpreadArrayWithPrevisitedChildren(self, self.ast.getNode(rebuilt));
-                } else if (node.tag == .object_expression and self.options.unsupported.object_spread) {
-                    lowered = try es_helpers.lowerObjectSpreadProps(self, self.scratch.items[scratch_top..], node.span);
+                } else if (node.tag == .object_expression) {
+                    lowered = try @import("es2015_computed.zig").ES2015Computed(Transformer).lowerObjectWithVisitedChildren(self, expr_idx, self.ast.getNode(rebuilt), self.scratch.items[scratch_top..], if (accessor_origins) |*origins| origins else null);
                 }
                 if (home) |h| return object_super.wrapWithHomeAndPrefixRoots(self, h, lowered, node.span, home_prefix_roots.items);
                 return lowered;
@@ -3258,16 +3351,26 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // object_property: binary (key: value)
             if (node.tag == .object_property) {
                 var new_key = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
-                if (es2015_scan.containsYield(self, node.data.binary.right) and self.ast.getNode(new_key).tag == .computed_property_key) {
+                const pe = @import("parameter_environment.zig");
+                const class_key = try pe.runtimeKeyClass(self, node.data.binary.left, node.data.binary.right);
+                const function_key = try pe.needsRuntimeKeyName(self, node.data.binary.left, node.data.binary.right);
+                var key_identity: ?es_helpers.TempIdentityCapture = null;
+                if ((class_key or function_key or es2015_scan.containsYield(self, node.data.binary.right)) and self.ast.getNode(new_key).tag == .computed_property_key) {
                     const source_key = self.ast.getNode(new_key);
-                    const converted = try es_helpers.makePropertyKeyValue(self, source_key.data.unary.operand, source_key.span);
-                    const key = try freezeValue(self, converted, source_key.span, ops);
-                    new_key = try self.ast.addNode(.{ .tag = .computed_property_key, .span = source_key.span, .data = .{ .unary = .{ .operand = key, .flags = source_key.data.unary.flags } } });
+                    const captured = try captureObjectKeyValue(self, source_key.data.unary.operand, source_key.span, ops);
+                    key_identity = captured.identity;
+                    new_key = try self.ast.addNode(.{ .tag = .computed_property_key, .span = source_key.span, .data = .{ .unary = .{ .operand = captured.value, .flags = source_key.data.unary.flags } } });
                 }
-                const new_value = if (!node.data.binary.right.isNone())
+                const class_binding = if (class_key)
+                    try pe.bindRuntimeKeyClassWithProducerId(self, new_key, node.data.binary.right, self.ast.getNode(new_key).data.unary.operand, null)
+                else
+                    null;
+                var new_value = if (!node.data.binary.right.isNone())
                     try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label)
                 else
                     NodeIndex.none;
+                if (class_key) new_value = try pe.finishRuntimeKeyClass(self, class_binding, node.data.binary.right, new_value, false, self.current_scope, node.span);
+                if (function_key) new_value = try pe.nameByTemp(self, new_value, key_identity.?, null, node.span);
                 return self.ast.addNode(.{
                     .tag = .object_property,
                     .span = node.span,
@@ -4580,9 +4683,11 @@ fn checkGeneratorTempProducerFixture(source: []const u8, require_extracted_loop_
             try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, symbol.kind);
 
             var binding_matches: usize = 0;
+            var producer_binding: NodeIndex = .none;
             for (result.hoisted_temps.items) |temp| {
                 if (temp.symbol_id != raw_id) continue;
                 binding_matches += 1;
+                producer_binding = temp.binding;
                 try std.testing.expectEqual(@as(?u32, raw_id), transformer.getSymbolIdAt(temp.binding));
                 try std.testing.expectEqual(identity.owner_scope, temp.owner_scope);
                 if (identity.temp_producer_id != null)
@@ -4590,15 +4695,32 @@ fn checkGeneratorTempProducerFixture(source: []const u8, require_extracted_loop_
             }
             try std.testing.expectEqual(@as(usize, 1), binding_matches);
 
-            var reads: usize = 0;
-            var writes: usize = 0;
+            // Shared AST lowerers publish value rows directly. State-machine
+            // producers can instead queue the same exact handles until callback
+            // assembly. Both paths must retain node/SID/scope/flags; a pure
+            // declaration alone is never evidence of a used temp.
+            const Use = struct { scope: ScopeId, flags: @import("../semantic/symbol.zig").ReferenceFlags };
+            var uses: std.AutoHashMapUnmanaged(NodeIndex, Use) = .empty;
             for (transformer.generator_state_semantic_refs.items) |reference| {
                 if (reference.symbol_id != raw_id) continue;
-                try std.testing.expectEqual(@as(?u32, raw_id), transformer.getSymbolIdAt(reference.node));
-                if (reference.flags.read) reads += 1;
-                if (reference.flags.write) writes += 1;
+                try recordGeneratorProducerTestUse(&transformer, editor, raw_id, owner_scope, reference.node, reference.scope, reference.flags, &uses);
             }
-            try std.testing.expect(reads > 0 or writes > 0);
+            var declarations: usize = 0;
+            for (editor.references.items) |reference| {
+                if (@backingInt(reference.symbol_id) != raw_id) continue;
+                if (reference.flags.declare) {
+                    try std.testing.expect(reference.node_index.isNone());
+                    try std.testing.expectEqual(producer_binding, reference.declaration_node_index);
+                    try std.testing.expectEqual(owner_scope, reference.scope_id);
+                    try std.testing.expect(!reference.flags.read and !reference.flags.write and !reference.flags.type_context and !reference.flags.value_as_type);
+                    declarations += 1;
+                    continue;
+                }
+                try std.testing.expect(reference.declaration_node_index.isNone());
+                try recordGeneratorProducerTestUse(&transformer, editor, raw_id, owner_scope, reference.node_index, reference.scope_id, reference.flags, &uses);
+            }
+            try std.testing.expectEqual(@as(usize, 1), declarations);
+            try std.testing.expect(uses.count() > 0);
         }
 
         frame_active = false;
@@ -4608,6 +4730,33 @@ fn checkGeneratorTempProducerFixture(source: []const u8, require_extracted_loop_
     try std.testing.expect(generator_count > 0);
     try std.testing.expect(direct_producer_count > 0);
     if (require_extracted_loop_producer) try std.testing.expect(extracted_loop_producer_count > 0);
+}
+
+fn recordGeneratorProducerTestUse(transformer: anytype, editor: anytype, sid: u32, owner: ScopeId, node: NodeIndex, use_scope: ScopeId, flags: @import("../semantic/symbol.zig").ReferenceFlags, uses: anytype) !void {
+    try std.testing.expect(!node.isNone() and @backingInt(node) < transformer.ast.nodes.items.len);
+    const tag = transformer.ast.getNode(node).tag;
+    try std.testing.expect(tag == .identifier_reference or tag == .assignment_target_identifier);
+    try std.testing.expectEqual(@as(?u32, sid), transformer.getSymbolIdAt(node));
+    try std.testing.expect(!flags.declare and !flags.type_context and !flags.value_as_type and (flags.read or flags.write));
+    try std.testing.expect(!use_scope.isNone() and use_scope.toIndex() < editor.scopes.items.len);
+    // A nested source expression may capture its wrapper's temp. Its actual
+    // use ScopeId must still reach the exact producer owner without a cycle.
+    var current = use_scope;
+    var visible = false;
+    for (0..editor.scopes.items.len + 1) |_| {
+        if (current == owner) {
+            visible = true;
+            break;
+        }
+        if (current.isNone() or current.toIndex() >= editor.scopes.items.len) break;
+        current = editor.scopes.items[current.toIndex()].parent;
+    }
+    try std.testing.expect(visible);
+    const entry = try uses.getOrPut(transformer.allocator, node);
+    if (entry.found_existing) {
+        try std.testing.expectEqual(use_scope, entry.value_ptr.scope);
+        try std.testing.expectEqualDeep(flags, entry.value_ptr.flags);
+    } else entry.value_ptr.* = .{ .scope = use_scope, .flags = flags };
 }
 
 fn checkGeneratorAssignmentBindingIdentity(source: []const u8) !void {
@@ -5520,20 +5669,23 @@ fn checkGeneratorDestructuringProducerIdentity(source: []const u8, expected_temp
         .span = pattern_node.span,
         .data = .{ .list = body_list },
     });
+    // Pattern storage is now wrapper-owned so it survives callback re-entry.
+    // Exercise the real declaration producer rather than relocating it into
+    // the resume callback as an ordinary expression-local temp.
+    var wrapper_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty;
+    const wrapper_decl = try ES2015Generator(Transformer).buildHoistedVarDecl(&transformer, &.{}, pattern_node.span, &wrapper_temps, owner);
+    try std.testing.expect(!wrapper_decl.isNone());
     var callback_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty;
     const hoisted_body = try transformer.hoistStateMachineTempsAndRestore(body, saved_counter, pattern_node.span, &callback_temps);
+    try std.testing.expectEqual(@as(usize, 0), callback_temps.items.len);
     var carried_count: usize = 0;
-    for (callback_temps.items) |temp| {
-        var expected_id: ?u32 = null;
-        var producer_slots = transformer.temp_symbol_ids_by_counter.iterator();
-        while (producer_slots.next()) |entry| {
-            const producer_span = transformer.temp_span_by_counter.get(entry.key_ptr.*) orelse continue;
-            if (producer_span.start != temp.name_span.start or producer_span.end != temp.name_span.end) continue;
-            expected_id = entry.value_ptr.*;
-        }
-        const producer_id = expected_id orelse continue;
+    for (wrapper_temps.items) |temp| {
+        const producer = temp.temp_producer_id orelse return error.MissingPatternTempProducerId;
+        const producer_id = transformer.temp_symbols_by_producer_id.get(producer) orelse return error.MissingPatternTempProducerSymbol;
         const hoisted_id = temp.symbol_id orelse return error.MissingHoistedProducerSymbolId;
         try std.testing.expectEqual(producer_id, hoisted_id);
+        try std.testing.expectEqual(@as(?u32, producer_id), transformer.getSymbolIdAt(temp.binding));
+        try std.testing.expectEqual(owner, temp.owner_scope);
         carried_count += 1;
     }
     try std.testing.expectEqual(expected_temp_count, carried_count);
@@ -5550,7 +5702,7 @@ fn checkGeneratorDestructuringProducerIdentity(source: []const u8, expected_temp
         generated.callback,
         generated.state_param,
         transformer.generator_state_refs.items.len,
-        &.{},
+        wrapper_temps.items,
         callback_temps.items,
         pattern_node.span,
     );
@@ -5564,13 +5716,12 @@ fn checkGeneratorDestructuringProducerIdentity(source: []const u8, expected_temp
     var finalized_identities: usize = 0;
     var finalized_slots = transformer.temp_symbol_ids_by_counter.iterator();
     while (finalized_slots.next()) |entry| {
-        const name_span = transformer.temp_span_by_counter.get(entry.key_ptr.*) orelse continue;
         const id = entry.value_ptr.*;
         const symbol = editor.symbols.items[id];
-        try std.testing.expectEqual(callback_scope, symbol.scope_id);
+        try std.testing.expectEqual(owner, symbol.scope_id);
         var binding_found = false;
-        for (callback_temps.items) |temp| {
-            if (temp.name_span.start != name_span.start or temp.name_span.end != name_span.end) continue;
+        for (wrapper_temps.items) |temp| {
+            if (temp.symbol_id != id) continue;
             try std.testing.expectEqual(@as(?u32, id), transformer.getSymbolIdAt(temp.binding));
             binding_found = true;
         }
@@ -5578,7 +5729,7 @@ fn checkGeneratorDestructuringProducerIdentity(source: []const u8, expected_temp
         var finalized_references: usize = 0;
         for (editor.references.items) |reference| {
             if (@backingInt(reference.symbol_id) != id) continue;
-            try std.testing.expectEqual(callback_scope, reference.scope_id);
+            try std.testing.expectEqual(if (reference.flags.declare) owner else callback_scope, reference.scope_id);
             finalized_references += 1;
         }
         try std.testing.expect(finalized_references > 0);
@@ -5593,7 +5744,7 @@ test "#4819 state-machine destructuring assignment carries exact producer IDs th
         .{ .source = "function* f(key, output) { let { [key]: output } = 1; }", .temps = 2 },
         .{ .source = "function* f(output) { let [output] = 1; }", .temps = 1 },
         .{ .source = "function* f(output) { let [, output] = 1; }", .temps = 1 },
-        .{ .source = "function* f(output) { let { item: { value: output } } = 1; }", .temps = 1 },
+        .{ .source = "function* f(output) { let { item: { value: output } } = 1; }", .temps = 2 },
         .{ .source = "function* f(key, output) { let { [key()]: output } = 1; }", .temps = 2 },
         .{ .source = "function* f(key, output, rest) { let { [key()]: output, ...rest } = 1; }", .temps = 2 },
         .{ .source = "function* f(output) { let { output } = 1; }", .temps = 1 },
@@ -6701,4 +6852,167 @@ test "suspension compound static members own separate property leaves" {
         if (owner.found_existing) try std.testing.expectEqual(owner.value_ptr.*, @as(u32, @intCast(raw)));
         owner.value_ptr.* = @intCast(raw);
     }
+}
+
+test "suspension switch expressions preserve single discriminant and lazy case order" {
+    const sources = [_][]const u8{
+        "function* run(){var value=0;switch(yield 'pick'){case 2:value=42;break;default:value=7;}return value;}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(2)]));",
+        "function* run(){var value=0;switch(2){case yield 'pick':value=42;break;default:value=7;}return value;}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(2)]));",
+        "function* run(){switch(yield 'disc'){case 2:return 42;default:return 0;}}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(2)]));",
+        "function* run(){switch(2){case yield 'case':return 42;default:return 0;}}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(2)]));",
+        "function* run(){switch(yield 'disc'){case yield 'case':return 42;default:return 0;}}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(2),iter.next(2)]));",
+        "var reads=0;var events=[];function read(){reads++;return 2;}function* run(){switch(read()){case (events.push('first'),1):break;default:events.push('default');case yield 'case':events.push('matched');return reads;}}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(2),events,reads]));",
+        "var value=2;function* run(){switch(value){case (value=3,yield 'case'):return 'matched';case 2:return 'frozen';default:return 'wrong';}}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(3),value]));",
+        "var events=[];function* run(){try{switch(1){case 1:events.push('first');case 2:yield 'body';return 42;case yield 'unreachable':return 0;}}finally{events.push('finally');}}var iter=run();console.log(JSON.stringify([iter.next(),iter.return(7),events]));",
+        "async function run(){var value=2;switch(await Promise.resolve(value)){case await Promise.resolve(2):return 42;default:return 0;}}run().then(function(value){console.log(value);});",
+    };
+    for (sources) |source| try checkSuspensionEvaluationRuntime(source);
+}
+
+test "suspension binding patterns use shared lowering before ordered extraction" {
+    const sources = [_][]const u8{
+        "function* run(){var [value=yield 'default']=[];return value;}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(42)]));",
+        "var events=[];function rhs(){events.push('rhs');return {}}function* run(){var {[(events.push('key'),yield 'key')]:value=(events.push('default'),yield 'default')}=rhs();return value;}var iter=run();console.log(JSON.stringify([iter.next(),iter.next('answer'),iter.next(42),events]));",
+        "var events=[];function* run(){var [value=(events.push('wrong'),yield 'default')]=[42];return value;}var iter=run();console.log(JSON.stringify([iter.next(),events]));",
+        "function* run(){var [[value=yield 'nested',...rest]]=[[undefined,2,3]];return [value,rest];}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(42)]));",
+        "function* run(){var {outer:{[(yield 'key')]:value=yield 'nested',...rest}}={outer:{other:3}};return [value,rest];}var iter=run();console.log(JSON.stringify([iter.next(),iter.next('answer'),iter.next(42)]));",
+        "function* run(){var [value=yield 'default',...rest]=[undefined,2,3];return [value,rest];}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(42)]));",
+        "function* run(){var {[(yield 'key')]:value,...rest}={answer:42,other:3};return [value,rest];}var iter=run();console.log(JSON.stringify([iter.next(),iter.next('answer')]));",
+        "async function run(){var [value=await Promise.resolve(42)]=[];return value;}run().then(function(value){console.log(value)});",
+        "async function run(){var {[(await Promise.resolve('answer'))]:value}={answer:42};return value;}run().then(function(value){console.log(value)});",
+        "function* run(){var value;return [([value=yield 'default']=[]),value];}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(42)]));",
+        "function* run(){var value;({[(yield 'key')]:value=yield 'default'}={});return value;}var iter=run();console.log(JSON.stringify([iter.next(),iter.next('answer'),iter.next(42)]));",
+    };
+    for (sources) |source| try checkSuspensionEvaluationRuntime(source);
+    try checkSuspensionEvaluationRuntime("var events=[];function* run(){try{var [value=yield 'default']=[];return value;}finally{events.push('finally')}}var iter=run();var first=iter.next();var caught;try{iter.throw('stop')}catch(error){caught=error}console.log(JSON.stringify([first,caught,events]));");
+}
+
+test "suspension binding patterns retain graphless physical storage across resume" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "function* run(){var [value=yield 'default',...remaining]=[undefined,2,3];return [value,remaining];}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(42)]));";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const Transformer = @import("transformer.zig").Transformer;
+    // This low-level API intentionally has no Analyzer/SEM. Its physical
+    // wrapper storage must still survive resume; no fake identity is added.
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = .{ .generator = true, .destructuring = true },
+        .emit_runtime_helper_imports = false,
+    });
+    try std.testing.expect(!transformer.semantic_edit_enabled);
+    const root = try transformer.transform();
+    var codegen = @import("../codegen/codegen.zig").Codegen.init(allocator, transformer.ast);
+    const generated = try codegen.generate(root);
+    var output: std.ArrayList(u8) = .empty;
+    try @import("../bundler/runtime_helpers.zig").appendRuntimeHelpers(&output, allocator, transformer.runtime_helpers, false, true);
+    try output.appendSlice(allocator, generated);
+    const native = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    const actual = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", output.items } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    try std.testing.expectEqualStrings("", actual.stderr);
+    try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+}
+
+fn checkSuspensionObjectES5(source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    for ([_]bool{ false, true }) |minify| {
+        const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
+            .keep_names = true,
+            .unsupported = @import("compat.zig").fromESTarget(.es5),
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+            .minify_whitespace = minify,
+        });
+        try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+        // Reparse emitted bytes, not the transform AST retaining source nodes.
+        // These are the precise ES2015 syntax forms this ES5 producer removes.
+        var scanner = try Scanner.init(a, result.code);
+        var parser = Parser.init(a, &scanner);
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        for (parser.ast.nodes.items) |node| {
+            try std.testing.expect(node.tag != .computed_property_key);
+            try std.testing.expect(node.tag != .yield_expression and node.tag != .await_expression);
+            if (node.tag == .method_definition) {
+                const flags = parser.ast.extra_data.items[node.data.extra + ast_mod.MethodExtra.flags];
+                try std.testing.expect(flags & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter) != 0);
+            }
+        }
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+            std.debug.print("suspension object source={s} code={s} expected={s} actual={s} stderr={s}\n", .{ source, result.code, native.stdout, actual.stdout, actual.stderr });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("", actual.stderr);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    }
+}
+
+test "suspension object members share ES5 property lowering without revisiting children" {
+    const sources = [_][]const u8{
+        "function* run(){var obj={[(yield 'key')](){return 42}};return obj.answer()}var iter=run();console.log(JSON.stringify([iter.next(),iter.next('answer')]));",
+        "function* run(){return {[(yield 'key')]:42}}var iter=run();iter.next();console.log(iter.next('answer').value.answer);",
+        "function* run(){return {get [(yield 'get')](){return this.stored},set [(yield 'set')](value){this.stored=value}}}var iter=run();iter.next();iter.next('answer');var obj=iter.next('answer').value;obj.answer=42;var desc=Object.getOwnPropertyDescriptor(obj,'answer');console.log(JSON.stringify([obj.answer,desc.enumerable,desc.configurable,desc.get.name,desc.set.name]));",
+        "function* run(){return {[(yield 'key')](){return 42}}}var iter=run();iter.next();var obj=iter.next('__proto__').value;console.log(JSON.stringify([Object.prototype.hasOwnProperty.call(obj,'__proto__'),Object.getPrototypeOf(obj)===Object.prototype,obj.__proto__()]));",
+        "var parent={value:42};function* run(){var obj={__proto__:parent,[(yield 'key')](){return super.value}};return obj.answer()}var iter=run();console.log(JSON.stringify([iter.next(),iter.next('answer')]));",
+        "var events=[];var key={toString:function(){events.push('key');return 'answer'}};function* run(){return {[(yield 'first')](){return 42},next:(events.push('next'),yield 'second')}}var iter=run();var first=iter.next();var second=iter.next(key);var last=iter.next(3);console.log(JSON.stringify([first,second,last.value.answer.name,last.value.answer(),events]));",
+        "function* run(){return {[(yield 'key')](){return 42},...{other:3}}}var iter=run();iter.next();var obj=iter.next('answer').value;console.log(JSON.stringify([obj.answer(),obj.other,obj.answer.name]));",
+        "function* run(){return {[(yield 'key')]:function(){return 42},next:yield 'next'}}var iter=run();iter.next();iter.next('answer');var obj=iter.next(3).value;console.log(JSON.stringify([obj.answer.name,obj.answer(),obj.next]));",
+        "function* run(){return {[(yield 'key')]:class{},next:yield 'next'}}var iter=run();iter.next();iter.next('Answer');var obj=iter.next(3).value;console.log(JSON.stringify([obj.Answer.name,obj.next]));",
+    };
+    for (sources) |source| try checkSuspensionObjectES5(source);
+}
+
+test "suspension object computed keys preserve exact wrapper producer identity" {
+    try checkGeneratorTempProducerFixture("function* run(){var obj={[(yield 'key')](){return 42}};return obj.answer()}", false);
+}
+
+test "suspension native assignment patterns lower only their suspended execution" {
+    const sources = [_][]const u8{
+        "function* run(){var value;({value:value=yield 'default'}={});return value;}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(42)]));",
+        "function* run(){var value,remaining;({[(yield 'key')]:value,...remaining}={answer:42,other:3});return [value,remaining];}var iter=run();console.log(JSON.stringify([iter.next(),iter.next('answer')]));",
+        "async function run(){var value;[value=await Promise.resolve(42)]=[];return value;}run().then(function(value){console.log(value)});",
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Native destructuring + lowered async/generator: this feature mask
+    // reproduces the RN/Hermes boundary without changing ordinary patterns.
+    const unsupported: @import("compat.zig").UnsupportedFeatures = .{ .generator = true, .async_await = true };
+    try std.testing.expect(!unsupported.destructuring);
+    for (sources) |source| {
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]bool{ false, true }) |minify| {
+            const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
+                .unsupported = unsupported,
+                .minify_syntax = minify,
+                .minify_identifiers = minify,
+                .minify_whitespace = minify,
+            });
+            try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings("", actual.stderr);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+}
+
+test "suspension object spread groups share ordinary getter copy ordering" {
+    const sources = [_][]const u8{
+        "var obj={...{left:1},right:41};console.log(obj.left+obj.right);",
+        "var events=[];var source={get value(){events.push('get');return 42}};var obj={...source,next:(events.push('next'),3)};console.log(JSON.stringify([obj.value,obj.next,events]));",
+        "var events=[];var source={get value(){events.push('get');return 42}};function* run(){return {[(yield 'key')](){return 1},...source,next:(events.push('next'),yield 'next')}}var iter=run();iter.next();var middle=iter.next('answer');var last=iter.next(3);console.log(JSON.stringify([middle,last.value.answer(),last.value.value,last.value.next,events]));",
+        "function* run(){return {get [(yield 'key')](){return this.first+41},...{first:1,last:3}}}var iter=run();iter.next();var obj=iter.next('answer').value;console.log(JSON.stringify([obj.answer,obj.last]));",
+    };
+    for (sources) |source| try checkSuspensionObjectES5(source);
 }

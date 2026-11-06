@@ -319,6 +319,26 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// 입력 `pattern` 은 binding pattern (이미 visit 끝났거나 raw), `rhs` 는 visit 끝난 노드.
         /// 결과는 `(_ref = rhs, x = _ref.x, ..., _ref)` sequence_expression. 호출자는 보통
         /// `makeExprStmt` 로 wrap 해서 statement 로 넣는다.
+        /// Keep only producer-owned pattern storage in the actual state-machine
+        /// wrapper. Nested functions still allocate against their own scopes;
+        /// no generated spelling is used to recover a storage identity.
+        fn reservePatternTemp(self: *Transformer, span: Span, output_scope: ?@import("../semantic/scope.zig").ScopeId) Transformer.Error!es_helpers.TempIdentityCapture {
+            const identity = if (output_scope) |scope|
+                if (!scope.isNone()) try es_helpers.reserveTrackedTempIdentityInOutputScope(self, span, scope, self.current_scope) else try es_helpers.reserveTrackedTempIdentity(self, span)
+            else
+                try es_helpers.reserveTrackedTempIdentity(self, span);
+            if (output_scope != null and self.state_machine_depth > 0 and
+                output_scope.? == self.generator_state_machine_scope)
+            {
+                const Generator = @import("es2015_generator.zig").ES2015Generator(Transformer);
+                try Generator.appendGeneratorTempSpanWithIdentity(self, identity.span, identity.symbol_id, identity.owner_scope);
+                const producer = &self.generator_temp_producer_identities.items[self.generator_temp_producer_identities.items.len - 1];
+                producer.temp_producer_id = identity.temp_producer_id;
+                producer.producer_owned = true;
+            }
+            return identity;
+        }
+
         pub fn lowerBindingPatternAssignment(
             self: *Transformer,
             pattern: Node,
@@ -326,10 +346,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             span: Span,
             producer_output_scope: ?@import("../semantic/scope.zig").ScopeId,
         ) Transformer.Error!NodeIndex {
-            const temp_identity = if (producer_output_scope) |output_scope|
-                try es_helpers.reserveTrackedTempIdentityInOutputScope(self, span, output_scope, self.current_scope)
-            else
-                try es_helpers.reserveTrackedTempIdentity(self, span);
+            const temp_identity = try reservePatternTemp(self, span, producer_output_scope);
             const temp_span = temp_identity.span;
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -408,7 +425,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     const value_node = self.ast.getNode(value_idx);
                     if (value_node.tag == .object_pattern or value_node.tag == .array_pattern) {
                         // nested: { a: { b } } → _inner = _ref.a, b = _inner.b
-                        _ = try emitNestedPatternAssignment(self, value_node, member_access, span);
+                        _ = try emitNestedPatternAssignment(self, value_node, member_access, span, identity.owner_scope);
                     } else if (value_node.tag == .assignment_pattern) {
                         // default: { a = 1 } 또는 { a: b = 1 } — _ref.key === void 0 ? default : _ref.key
                         const inner_target = value_node.data.binary.left;
@@ -425,7 +442,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             identity,
                             span,
                         );
-                        if (try emitNestedPatternAssignment(self, inner_target_node, defaulted, span)) continue;
+                        if (try emitNestedPatternAssignment(self, inner_target_node, defaulted, span, identity.owner_scope)) continue;
                         const target_ref = if (inner_target_node.tag == .binding_identifier)
                             try makeTrackedBindingWriteRef(self, inner_target, inner_target_node.data.string_ref)
                         else
@@ -467,9 +484,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// 기본값이 붙은 대상이 다시 패턴이면(`{ b: [c] = d }`) 임시 변수에 담고 재귀로 푼다.
         /// 패턴을 대입 좌변에 그대로 두면 es5 에 구조분해 문법이 남고 minify 가 이름을 잇지
         /// 못한다 (#4712). 처리했으면 true.
-        fn emitNestedPatternAssignment(self: *Transformer, target: Node, value: NodeIndex, span: Span) Transformer.Error!bool {
+        fn emitNestedPatternAssignment(self: *Transformer, target: Node, value: NodeIndex, span: Span, output_scope: @import("../semantic/scope.zig").ScopeId) Transformer.Error!bool {
             if (target.tag != .object_pattern and target.tag != .array_pattern) return false;
-            const inner_identity = try es_helpers.reserveTrackedTempIdentity(self, span);
+            const inner_identity = try reservePatternTemp(self, span, output_scope);
             const inner_span = inner_identity.span;
             const inner_lhs = try es_helpers.makeTempRefFromIdentity(self, inner_identity, span, .{ .write = true });
             const inner_value = if (target.tag == .array_pattern) try buildArrayRead(self, value, target, span) else value;
@@ -517,7 +534,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         .span = span,
                         .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = elem_access2 } },
                     });
-                    if (try emitNestedPatternAssignment(self, inner_target_node, conditional, span)) continue;
+                    if (try emitNestedPatternAssignment(self, inner_target_node, conditional, span, identity.owner_scope)) continue;
                     const target_ref = if (inner_target_node.tag == .binding_identifier)
                         try makeTrackedBindingWriteRef(self, inner_target, inner_target_node.data.string_ref)
                     else
@@ -526,7 +543,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     const assign = try es_helpers.makeAssignExpr(self, target_ref, conditional, span, 0);
                     try self.scratch.append(self.allocator, assign);
                 } else if (elem.tag == .object_pattern or elem.tag == .array_pattern) {
-                    _ = try emitNestedPatternAssignment(self, elem, elem_access, span);
+                    _ = try emitNestedPatternAssignment(self, elem, elem_access, span, identity.owner_scope);
                 } else {
                     const target_ref = if (elem.tag == .binding_identifier)
                         try makeTrackedBindingWriteRef(self, @fromBackingInt(@intCast(raw_idx)), elem.data.string_ref)
@@ -541,7 +558,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             if (split.rest_operand) |rest_inner| {
                 const slice = try buildArraySlice(self, ref_span, non_rest_len, span, identity);
                 const rest_node = self.ast.getNode(rest_inner);
-                if (try emitNestedPatternAssignment(self, rest_node, slice, span)) return;
+                if (try emitNestedPatternAssignment(self, rest_node, slice, span, identity.owner_scope)) return;
                 const target = if (rest_node.tag == .binding_identifier)
                     try restAssignTarget(self, rest_inner, try self.visitNode(rest_inner))
                 else
@@ -561,6 +578,10 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// `new_right` is the right side already in the output AST (a state
         /// machine replaced its `yield`s, #5728).
         pub fn lowerDestructuringAssignmentWithRight(self: *Transformer, node: Node, new_right: NodeIndex, value_used: bool) Transformer.Error!NodeIndex {
+            return lowerDestructuringAssignmentWithRightInOutputScope(self, node, new_right, value_used, null);
+        }
+
+        pub fn lowerDestructuringAssignmentWithRightInOutputScope(self: *Transformer, node: Node, new_right: NodeIndex, value_used: bool, output_scope: ?@import("../semantic/scope.zig").ScopeId) Transformer.Error!NodeIndex {
             const span = node.span;
             const left_idx = node.data.binary.left;
 
@@ -572,16 +593,26 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             // is the right side itself (`([a] = arr) === arr`): keep it in a
             // temp when the value is read (#4799).
             const is_array = left_node.tag == .array_assignment_target or left_node.tag == .array_pattern;
-            const value_temp: ?es_helpers.TempCapture = if (is_array and value_used)
-                try es_helpers.captureToTrackedTemp(self, new_right, span)
-            else
-                null;
+            const value_temp: ?es_helpers.TempCapture = if (is_array and value_used) blk: {
+                if (output_scope == null) break :blk try es_helpers.captureToTrackedTemp(self, new_right, span);
+                const identity = try reservePatternTemp(self, span, output_scope);
+                const counter = self.temp_var_counter - 1;
+                const write = try es_helpers.makeTempRefFromIdentity(self, identity, span, .{ .write = true });
+                break :blk .{
+                    .span = identity.span,
+                    .paren_assign = try es_helpers.makeAssignExpr(self, write, new_right, span, 0),
+                    .symbol_id = identity.symbol_id,
+                    .reference_scope = identity.reference_scope,
+                    .temp_counter_index = counter,
+                    .temp_producer_id = identity.temp_producer_id,
+                };
+            } else null;
             const array_source = if (value_temp) |temp| temp.paren_assign else new_right;
             const assignment_right = if (is_array)
                 try buildArrayRead(self, array_source, left_node, span)
             else
                 new_right;
-            const temp_identity = try es_helpers.reserveTrackedTempIdentity(self, span);
+            const temp_identity = try reservePatternTemp(self, span, output_scope);
             const temp_span = temp_identity.span;
 
             // _ref = obj
@@ -709,9 +740,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             identity,
                             span,
                         );
-                        try emitTargetAssignOrRecurse(self, right_node.data.binary.left, rhs, span);
+                        try emitTargetAssignOrRecurse(self, right_node.data.binary.left, rhs, span, identity.owner_scope);
                     } else {
-                        try emitTargetAssignOrRecurse(self, right_idx, access, span);
+                        try emitTargetAssignOrRecurse(self, right_idx, access, span, identity.owner_scope);
                     }
                 }
             }
@@ -760,17 +791,17 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         .span = span,
                         .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = access2 } },
                     });
-                    try emitTargetAssignOrRecurse(self, elem.data.binary.left, conditional, span);
+                    try emitTargetAssignOrRecurse(self, elem.data.binary.left, conditional, span, identity.owner_scope);
                 } else {
                     // target = _ref[idx]. nested destructuring, private field, 일반 assignment 분기.
-                    try emitTargetAssignOrRecurse(self, @fromBackingInt(@intCast(raw_idx)), access, span);
+                    try emitTargetAssignOrRecurse(self, @fromBackingInt(@intCast(raw_idx)), access, span, identity.owner_scope);
                 }
             }
             // rest element: `rest = _ref.slice(N)` (#4789). `_ref` 는 `__read` 로 만든 배열이라
             // 이터러블이어도 slice 가 있다. 좌변이 패턴·멤버·private 이면 같은 분기로 간다.
             if (split.rest_operand) |rest_inner| {
                 const slice = try buildArraySlice(self, ref_span, non_rest_len, span, identity);
-                try emitTargetAssignOrRecurse(self, rest_inner, slice, span);
+                try emitTargetAssignOrRecurse(self, rest_inner, slice, span, identity.owner_scope);
             }
         }
 
@@ -779,7 +810,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         ///   - object/array_assignment_target → 임시 변수 + 재귀 emit (nested destructuring).
         ///   - 나머지 (identifier, member expr 등) → 일반 `target = value` assignment.
         /// 생성된 표현식은 self.scratch 에 push된다 (lowerDestructuringAssignment 패턴 유지).
-        fn emitTargetAssignOrRecurse(self: *Transformer, target_old_idx: NodeIndex, value: NodeIndex, span: Span) Transformer.Error!void {
+        fn emitTargetAssignOrRecurse(self: *Transformer, target_old_idx: NodeIndex, value: NodeIndex, span: Span, output_scope: @import("../semantic/scope.zig").ScopeId) Transformer.Error!void {
             if (try es2015_class.ES2015Class(Transformer).tryLowerPrivateFieldAssign(self, target_old_idx, value, span)) |call| {
                 try self.scratch.append(self.allocator, call);
                 return;
@@ -794,7 +825,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const target_node = self.ast.getNode(target_old_idx);
             if (target_node.tag == .object_assignment_target or target_node.tag == .array_assignment_target or target_node.tag == .object_pattern or target_node.tag == .array_pattern) {
                 // nested: _inner = value; 각 element 재귀 emit.
-                const inner_identity = try es_helpers.reserveTrackedTempIdentity(self, span);
+                const inner_identity = try reservePatternTemp(self, span, output_scope);
                 const inner_span = inner_identity.span;
                 const inner_lhs = try es_helpers.makeTempRefFromIdentity(self, inner_identity, span, .{ .write = true });
                 const inner_value = if (target_node.tag == .array_assignment_target or target_node.tag == .array_pattern)
@@ -1241,10 +1272,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         // State-machine lowering knows the eventual var owner
                         // even though the callback scope itself is created
                         // later. Keep the producer ID across that handoff.
-                        const identity = if (!producer_output_scope.isNone())
-                            try es_helpers.reserveTrackedTempIdentityInOutputScope(self, span, producer_output_scope, self.current_scope)
-                        else
-                            try es_helpers.reserveTrackedTempIdentity(self, span);
+                        const identity = try reservePatternTemp(self, span, if (producer_output_scope.isNone()) null else producer_output_scope);
                         computed_key_temp_identity = identity;
                         break :blk identity.span;
                     },
