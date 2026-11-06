@@ -980,7 +980,7 @@ const PreparedConstModule = struct {
         }
         if (self.source.alias_table) |*table| table.deinit();
         if (self.source.export_index_by_name) |*map| map.deinit(self.heap);
-        self.source.* = self.candidate.*;
+        self.source.publishConstMaterializationFrom(self.candidate);
         self.published = true;
     }
 };
@@ -3526,4 +3526,227 @@ test "const whole transaction actual disk namespace receipt preserves registered
     std.debug.print("CONST_DISK_OWNER actualWarmPlans={d}\n", .{warm.self_namespace_holders.count()});
     try std.testing.expectEqual(@as(usize, 1), warm.self_namespace_holders.count());
     try lowering.validate(&warm, module);
+}
+
+test "const COW publication retains graph roles and edges added after capture" {
+    const a = std.testing.allocator;
+    const source = "export const value=1;";
+    const parse_arena = module_mod.createParseArena(a) orelse return error.OutOfMemory;
+    var module = Module.init(@fromBackingInt(@as(u32, 7)), "const-owner.mjs");
+    module.source = source;
+    module.parse_arena = parse_arena;
+    module.state = .parsed;
+    module.exec_index = 41;
+    module.cycle_group = 9;
+    module.is_entry_point = true;
+    module.wrap_kind = .none;
+    module.namespace_access_index = .{};
+    defer module.deinit(a);
+
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(parse_arena.allocator(), source);
+    scanner.is_module = true;
+    var parser = @import("../../parser/parser.zig").Parser.init(parse_arena.allocator(), &scanner);
+    parser.is_module = true;
+    _ = try parser.parse();
+    var analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer.init(parse_arena.allocator(), &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    module.ast = parser.ast;
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_member_owners = analyzer.namespace_member_owners,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+
+    const original_index = module.index;
+    const original_owner = module.codegen_output_owner;
+    const original_state = module.state;
+    var persistent = std.heap.ArenaAllocator.init(a);
+    defer persistent.deinit();
+    var prepared = try PreparedConstModule.init(&module, a, persistent.allocator());
+    defer prepared.discard();
+
+    const target: ModuleIndex = @fromBackingInt(@as(u32, 12));
+    try module.dependencies.append(a, target);
+    try module.importers.append(a, target);
+    try module.dynamic_imports.append(a, target);
+    try module.dynamic_importers.append(a, target);
+    try module.implicitly_loaded_after_one_of.append(a, target);
+    try module.implicitly_loaded_before.append(a, target);
+    var current_edges = .{
+        .dependencies = module.dependencies,
+        .importers = module.importers,
+        .dynamic_imports = module.dynamic_imports,
+        .dynamic_importers = module.dynamic_importers,
+        .implicit_after = module.implicitly_loaded_after_one_of,
+        .implicit_before = module.implicitly_loaded_before,
+    };
+    // If the old whole-Module assignment regresses, it drops these source-owned
+    // arrays. Keep cleanup explicit so the failing assertion does not leak.
+    defer {
+        if (module.dependencies.items.ptr != current_edges.dependencies.items.ptr) current_edges.dependencies.deinit(a);
+        if (module.importers.items.ptr != current_edges.importers.items.ptr) current_edges.importers.deinit(a);
+        if (module.dynamic_imports.items.ptr != current_edges.dynamic_imports.items.ptr) current_edges.dynamic_imports.deinit(a);
+        if (module.dynamic_importers.items.ptr != current_edges.dynamic_importers.items.ptr) current_edges.dynamic_importers.deinit(a);
+        if (module.implicitly_loaded_after_one_of.items.ptr != current_edges.implicit_after.items.ptr) current_edges.implicit_after.deinit(a);
+        if (module.implicitly_loaded_before.items.ptr != current_edges.implicit_before.items.ptr) current_edges.implicit_before.deinit(a);
+    }
+
+    prepared.candidate.index = @fromBackingInt(@as(u32, 99));
+    prepared.candidate.path = "stale-candidate.mjs";
+    prepared.candidate.source = "stale candidate";
+    prepared.candidate.codegen_output_owner = .unassigned;
+    prepared.candidate.state = .ready;
+    prepared.candidate.exec_index = 99;
+    prepared.candidate.cycle_group = 99;
+    prepared.candidate.is_entry_point = false;
+    prepared.candidate.wrap_kind = .cjs;
+    prepared.candidate.dependencies = .empty;
+    prepared.candidate.importers = .empty;
+    prepared.candidate.dynamic_imports = .empty;
+    prepared.candidate.dynamic_importers = .empty;
+    prepared.candidate.implicitly_loaded_after_one_of = .empty;
+    prepared.candidate.implicitly_loaded_before = .empty;
+    prepared.candidate.const_baked = true;
+    prepared.candidate.const_providers = &.{"provider.mjs"};
+    prepared.candidate.namespace_access_index = null;
+
+    prepared.publish();
+
+    try std.testing.expectEqual(original_index, module.index);
+    try std.testing.expectEqualStrings("const-owner.mjs", module.path);
+    try std.testing.expectEqualStrings(source, module.source);
+    try std.testing.expectEqual(original_owner, module.codegen_output_owner);
+    try std.testing.expectEqual(original_state, module.state);
+    try std.testing.expectEqual(@as(u32, 41), module.exec_index);
+    try std.testing.expectEqual(@as(u32, 9), module.cycle_group);
+    try std.testing.expect(module.is_entry_point);
+    try std.testing.expectEqual(.none, module.wrap_kind);
+    try std.testing.expectEqual(current_edges.dependencies.items.ptr, module.dependencies.items.ptr);
+    try std.testing.expectEqual(current_edges.importers.items.ptr, module.importers.items.ptr);
+    try std.testing.expectEqual(current_edges.dynamic_imports.items.ptr, module.dynamic_imports.items.ptr);
+    try std.testing.expectEqual(current_edges.dynamic_importers.items.ptr, module.dynamic_importers.items.ptr);
+    try std.testing.expectEqual(current_edges.implicit_after.items.ptr, module.implicitly_loaded_after_one_of.items.ptr);
+    try std.testing.expectEqual(current_edges.implicit_before.items.ptr, module.implicitly_loaded_before.items.ptr);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{target}, module.dependencies.items);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{target}, module.importers.items);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{target}, module.dynamic_imports.items);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{target}, module.dynamic_importers.items);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{target}, module.implicitly_loaded_after_one_of.items);
+    try std.testing.expectEqualSlices(ModuleIndex, &.{target}, module.implicitly_loaded_before.items);
+    try std.testing.expect(module.const_baked);
+    try std.testing.expectEqualSlices([]const u8, &.{"provider.mjs"}, module.const_providers);
+    try std.testing.expect(module.namespace_access_index == null);
+    try std.testing.expectEqual(prepared.candidate.ast.?.nodes.items.ptr, module.ast.?.nodes.items.ptr);
+}
+
+test "const materialization publisher rejects isolated graph-role attacks" {
+    const a = std.testing.allocator;
+    const Role = enum {
+        index,
+        path,
+        source,
+        codegen_owner,
+        codegen_domain,
+        state,
+        exec_index,
+        cycle_group,
+        wrap_kind,
+        entry_point,
+        dependencies,
+        dynamic_imports,
+        namespace_access_index,
+    };
+    const roles = [_]Role{
+        .index,
+        .path,
+        .source,
+        .codegen_owner,
+        .codegen_domain,
+        .state,
+        .exec_index,
+        .cycle_group,
+        .wrap_kind,
+        .entry_point,
+        .dependencies,
+        .dynamic_imports,
+        .namespace_access_index,
+    };
+
+    for (roles) |role| {
+        {
+            var module = Module.init(@fromBackingInt(@as(u32, 7)), "installed.mjs");
+            defer module.deinit(a);
+            module.source = "installed source";
+            module.state = .parsed;
+            module.exec_index = 41;
+            module.cycle_group = 9;
+            module.is_entry_point = true;
+            if (role == .namespace_access_index) module.namespace_access_index = .{};
+            if (role == .codegen_domain) module.codegen_output_domain = try @import("../codegen_output_domain.zig").Domain.createNamespace(a, module.codegen_output_owner, "installed");
+
+            const target: ModuleIndex = @fromBackingInt(@as(u32, 12));
+            if (role == .dependencies) try module.dependencies.append(a, target);
+            if (role == .dynamic_imports) try module.dynamic_imports.append(a, target);
+
+            const expected_owner = module.codegen_output_owner;
+            const expected_domain = module.codegen_output_domain;
+            defer {
+                if (module.codegen_output_domain != expected_domain) {
+                    if (expected_domain) |domain| domain.destroy();
+                }
+            }
+            const expected_dependencies = module.dependencies;
+            const expected_dynamic_imports = module.dynamic_imports;
+            var staged = module;
+            switch (role) {
+                .index => staged.index = @fromBackingInt(@as(u32, 99)),
+                .path => staged.path = "stale-candidate.mjs",
+                .source => staged.source = "stale candidate source",
+                .codegen_owner => staged.codegen_output_owner = .unassigned,
+                .codegen_domain => staged.codegen_output_domain = null,
+                .state => staged.state = .ready,
+                .exec_index => staged.exec_index = 99,
+                .cycle_group => staged.cycle_group = 99,
+                .wrap_kind => staged.wrap_kind = .cjs,
+                .entry_point => staged.is_entry_point = false,
+                .dependencies => staged.dependencies = .empty,
+                .dynamic_imports => staged.dynamic_imports = .empty,
+                .namespace_access_index => staged.namespace_access_index = null,
+            }
+            staged.const_baked = true;
+            staged.const_providers = &.{"provider.mjs"};
+
+            module.publishConstMaterializationFrom(&staged);
+
+            try std.testing.expectEqual(@as(u32, 7), @as(u32, @bitCast(module.index)));
+            try std.testing.expectEqualStrings("installed.mjs", module.path);
+            try std.testing.expectEqualStrings("installed source", module.source);
+            try std.testing.expectEqual(expected_owner, module.codegen_output_owner);
+            try std.testing.expectEqual(expected_domain, module.codegen_output_domain);
+            try std.testing.expectEqual(.parsed, module.state);
+            try std.testing.expectEqual(@as(u32, 41), module.exec_index);
+            try std.testing.expectEqual(@as(u32, 9), module.cycle_group);
+            try std.testing.expectEqual(.none, module.wrap_kind);
+            try std.testing.expect(module.is_entry_point);
+            try std.testing.expectEqual(expected_dependencies.items.ptr, module.dependencies.items.ptr);
+            try std.testing.expectEqual(expected_dynamic_imports.items.ptr, module.dynamic_imports.items.ptr);
+            if (role == .namespace_access_index) try std.testing.expect(module.namespace_access_index == null);
+            if (role == .dependencies) try std.testing.expectEqualSlices(ModuleIndex, &.{target}, module.dependencies.items);
+            if (role == .dynamic_imports) try std.testing.expectEqualSlices(ModuleIndex, &.{target}, module.dynamic_imports.items);
+            try std.testing.expect(module.const_baked);
+            try std.testing.expectEqualSlices([]const u8, &.{"provider.mjs"}, module.const_providers);
+        }
+    }
 }
