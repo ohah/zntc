@@ -171,7 +171,9 @@ trailing_nodes가 있으면 함수 뒤에 삽입
 지원하지만 lexical `this`/`arguments`, direct `eval`, async, block body, 파라미터, 함수 내부 선언과 쓰기 참조는
 지원하지 않는다. 일반 trailing statement에서는 단순 식별자 대입·증감 target을 해당 binding의 exact `SymbolId`에
 연결한다. block body가 아닌 단일 문장 `if/else` 분기도 조건과 각 분기의 참조를 exact `SymbolId`에 연결해 복사한다.
-BigInt 리터럴은 parser 원문 span과 data를 유지해 복사한다. 정규식 리터럴은 parser 원문 span을
+선언이 없는 `switch` 분기와 bare `break`도 insertion scope에 한해 복사한다. switch 안의 선언이나 block은
+자체 lexical scope를 만들기 때문에 거부한다. BigInt 리터럴은 parser 원문 span과 data를 유지해 복사한다.
+정규식 리터럴은 parser 원문 span을
 보존해 복사한 뒤 일반 target별 정규식 변환을 적용한다.
 
 구조분해, TypeScript 타입 주석, 중첩 블록 선언 등 복사 경로가 표현하지 못하는 코드가 있으면 해당 코드를

@@ -39880,6 +39880,93 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('NAPI onAstFunction copies declaration-free switch cases with exact identities', () => {
+    const trailingCode = [
+      'switch (shared) { case 1: shared++; case 2: shared += 10; break; default: shared = -1; break; }',
+      'console.log(shared);',
+    ];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-switch-statement-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      entry,
+      'function outer(shared) { function marker() {} marker(); } outer(1); outer(2); outer(3);',
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const baseOptions = JSON.stringify({
+      entryPoints: [entry],
+      platform: 'node',
+      format: 'cjs',
+      target: 'esnext',
+      minifySyntax: false,
+      minifyIdentifiers: false,
+      write: false,
+    });
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build({ ...${baseOptions}, plugins: [{ name: 'switch-statement-copy', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === 'marker' ? { trailingCode: ${JSON.stringify(trailingCode)} } : null); } }] });`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+
+    try {
+      const buildResult = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      expect(buildResult.status, buildResult.stderr).toBe(0);
+      const stderr = buildResult.stderr ?? '';
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
+        );
+      expect(mode, stderr).toContain('semantic_graph=retained');
+      const identity = stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry));
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity ?? ''), identity).toEqual([]);
+      expect(identity).toContain('external=1');
+
+      const outputs = JSON.parse(buildResult.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      const emitted = outputs[0];
+      expect(emitted).toContain('switch (shared)');
+      expect(emitted).toContain('case 1:');
+      writeFileSync(output, emitted);
+
+      const execute = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(execute.status, execute.stderr).toBe(0);
+      expect(execute.stdout).toBe('12\n12\n-1\n');
+
+      const mutations = [
+        [
+          'missing_switch_discriminant',
+          emitted.replace('switch (shared)', 'switch (missing_switch_discriminant)'),
+        ],
+        ['missing_switch_update', emitted.replace('shared++', 'missing_switch_update++')],
+        [
+          'missing_switch_assignment',
+          emitted.replace('shared += 10', 'missing_switch_assignment += 10'),
+        ],
+      ] as const;
+      for (const [name, mutated] of mutations) {
+        expect(mutated, name).not.toBe(emitted);
+        writeFileSync(output, mutated);
+        const syntax = spawnSync('node', ['--check', output], { encoding: 'utf8' });
+        expect(syntax.status, `${name}: ${syntax.stderr}`).toBe(0);
+        const hostile = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(hostile.status, name).not.toBe(0);
+        expect(hostile.stderr, name).toContain(`ReferenceError: ${name} is not defined`);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('NAPI onAstFunction copies assignment targets with exact captured identities', () => {
     const assignments = [
       'shared = shared + 1; console.log(shared);',
@@ -40452,9 +40539,15 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       ['[shared] = [1];'],
       ['({ value: shared } = { value: 1 });'],
       ['if (shared > 0) { console.log(shared); }'],
+      ['switch (shared) { case 1: const local = 1; break; }'],
+      ['switch (shared) { case 1: { console.log(shared); } break; }'],
       ['console.log(/unterminated);'],
       ['console.log("partial_plugin_statement");', 'console.log((value) => value);'],
       ['console.log("partial_if_statement");', 'if (shared > 0) { console.log(shared); }'],
+      [
+        'console.log("partial_switch_statement");',
+        'switch (shared) { case 1: let local = 1; break; }',
+      ],
     ];
     const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-arrow-reject-'));
     const entry = join(dir, 'entry.js');
