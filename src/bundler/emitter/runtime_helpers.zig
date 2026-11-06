@@ -107,11 +107,15 @@ pub fn emitBundleRuntimeHelpers(
     var needs_cjs_runtime = false;
     var needs_esm_wrap_runtime = false;
     var needs_to_esm_runtime = false;
+    var needs_cjs_descriptor_runtime = false;
     var needs_to_binary = false;
     for (sorted_modules) |m| {
         if (m.wrap_kind == .cjs) needs_cjs_runtime = true;
         if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
-        if (try cjsEntryDescriptorCandidate(graph, m, options.format, options.output_exports)) needs_to_esm_runtime = true;
+        if (try cjsEntryDescriptorCandidate(graph, m, options.format, options.output_exports)) {
+            needs_to_esm_runtime = true;
+            needs_cjs_descriptor_runtime = true;
+        }
         if (moduleNeedsToEsmInterop(m, graph, linker)) needs_to_esm_runtime = true;
         // (#4120) entry 가 `export { default } from './cjs'`(non can_skip)면 buildFinalExports 가
         // `var _default = __toESM(require_X()).default` 를 materialize 한다 — default 를 import 하는
@@ -126,8 +130,8 @@ pub fn emitBundleRuntimeHelpers(
         if (m.loader == .binary) needs_to_binary = true;
         if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
     }
-    if (graph.interop_ast_provider) |provider| needs_to_esm_runtime = provider.active;
-    if (needs_cjs_runtime or needs_esm_wrap_runtime) {
+    if (graph.interop_ast_provider) |provider| needs_to_esm_runtime = provider.active or needs_cjs_descriptor_runtime;
+    if (needs_cjs_runtime or needs_esm_wrap_runtime or needs_to_esm_runtime) {
         // Node ESM 출력에서 *external require 호출* (예: `require("fs")`) 이 bundle 에 emit
         // 되면 그 `require` 가 런타임에 미정의 — `createRequire(import.meta.url)` shim 필요.
         // `__commonJS` wrapper 자체는 cb 를 직접 호출하므로 shim 필요 조건은

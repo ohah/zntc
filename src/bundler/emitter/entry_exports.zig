@@ -22,11 +22,21 @@ fn entryIsDefault(allocator: std.mem.Allocator, entry: FinalExportEntry) !bool {
     return std.mem.eql(u8, key.text, "default");
 }
 
+// Node discovers CJS named exports from syntax, without executing getters.
+// This unreachable protocol assignment exposes the exact final public key;
+// it never reads a user binding or mutates the live descriptor at runtime.
+fn appendCjsNamedExportAnnotation(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, entry: FinalExportEntry) !void {
+    try out.appendSlice(allocator, "0&&(exports[");
+    try appendEntryKey(out, allocator, entry);
+    try out.appendSlice(allocator, "]=0);\n");
+}
+
 fn appendOrdinaryCjsExport(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, entry: FinalExportEntry, def_prop_name: ?[]const u8, configurable_exports: bool) !void {
     const def_prop = def_prop_name orelse return error.MissingCjsEntryDescriptorIdentity;
     try out.print(allocator, "{s}(exports,", .{def_prop});
     try appendEntryKey(out, allocator, entry);
     try out.print(allocator, ",{{enumerable:true{s},get:function(){{return {s};}}}});\n", .{ if (configurable_exports) ",configurable:true" else "", entry.local });
+    try appendCjsNamedExportAnnotation(out, allocator, entry);
 }
 
 pub fn needsCjsEntryDescriptors(allocator: std.mem.Allocator, entries: []const FinalExportEntry, mode: OutputExports) !bool {
@@ -120,6 +130,7 @@ pub fn appendWrappedCjsNamedEntryExports(
         try suffix.print(allocator, ",{{enumerable:true{s},get:function(){{return {s}[", .{ if (configurable_exports) ",configurable:true" else "", namespace_name });
         try appendEntryKey(&suffix, allocator, entry);
         try suffix.appendSlice(allocator, "];}});\n");
+        try appendCjsNamedExportAnnotation(&suffix, allocator, entry);
     }
     // A real public __esModule export owns its key, including quoted aliases.
     // Only the absent compiler interop marker is added; no getter is evaluated.
@@ -402,7 +413,7 @@ test "emitCjsEntryExports: auto mode named-only → exports.X (no esModule)" {
     };
     const out = try emitCjsEntryExports(std.testing.allocator, entries, .auto, null, "__defProp", false);
     defer std.testing.allocator.free(out);
-    try std.testing.expectEqualStrings("__defProp(exports,\"a\",{enumerable:true,get:function(){return a;}});\n__defProp(exports,\"b\",{enumerable:true,get:function(){return b;}});\n", out);
+    try std.testing.expectEqualStrings("__defProp(exports,\"a\",{enumerable:true,get:function(){return a;}});\n0&&(exports[\"a\"]=0);\n__defProp(exports,\"b\",{enumerable:true,get:function(){return b;}});\n0&&(exports[\"b\"]=0);\n", out);
 }
 
 test "emitCjsEntryExports: auto mode mixed → exports.X + esModule" {
@@ -566,7 +577,7 @@ fn checkWrappedCjsExportAllocation(allocator: std.mem.Allocator) !void {
     };
     const combined = (try appendWrappedCjsNamedEntryExports(allocator, body, "namespace", &entries, "__defProp", false)).?;
     defer allocator.free(combined);
-    try std.testing.expectEqualStrings("var namespace={};__defProp(exports,\"default\",{enumerable:true,get:function(){return namespace[\"default\"];}});\n__defProp(exports,\"x-y\",{enumerable:true,get:function(){return namespace[\"x-y\"];}});\n__defProp(exports,\"__esModule\",{value:true});\n", combined);
+    try std.testing.expectEqualStrings("var namespace={};__defProp(exports,\"default\",{enumerable:true,get:function(){return namespace[\"default\"];}});\n0&&(exports[\"default\"]=0);\n__defProp(exports,\"x-y\",{enumerable:true,get:function(){return namespace[\"x-y\"];}});\n0&&(exports[\"x-y\"]=0);\n__defProp(exports,\"__esModule\",{value:true});\n", combined);
     try std.testing.expectEqualStrings("var namespace={};", body);
     try std.testing.expect(std.mem.indexOf(u8, combined, "must_not_be_evaluated") == null);
 }
@@ -604,7 +615,7 @@ fn checkOrdinaryQuotedExportAllocation(allocator: std.mem.Allocator) !void {
     };
     const emitted = try emitCjsEntryExports(allocator, &entries, .named, null, "__defProp", false);
     defer allocator.free(emitted);
-    try std.testing.expectEqualStrings("__defProp(exports,\"\\\\u0061\",{enumerable:true,get:function(){return known_local;}});\n__defProp(exports,\"한글\",{enumerable:true,get:function(){return other_local;}});\n", emitted);
+    try std.testing.expectEqualStrings("__defProp(exports,\"\\\\u0061\",{enumerable:true,get:function(){return known_local;}});\n0&&(exports[\"\\\\u0061\"]=0);\n__defProp(exports,\"한글\",{enumerable:true,get:function(){return other_local;}});\n0&&(exports[\"한글\"]=0);\n", emitted);
 }
 
 test "quoted ordinary CJS export writers preserve certified StringValue and allocation ownership" {

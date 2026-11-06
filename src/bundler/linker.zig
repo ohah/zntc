@@ -3401,6 +3401,10 @@ pub const Linker = struct {
 
     fn reserveEsmInteropRuntimeNames(self: *Linker) !void {
         if (self.graph.interop_ast_provider != null) return;
+        // The raw interop output domain reads the global Object constructor.
+        // Reserve this fixed protocol global before naming hoisted source IDs,
+        // just as AST-backed helpers reserve their unresolved global reads.
+        try self.reserved_globals.put(self.allocator, "Object", {});
         try self.prepareEsmInteropRuntimeNames();
         const names = try self.currentEsmInteropRuntimeNames();
         inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {

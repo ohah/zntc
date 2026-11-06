@@ -444,7 +444,7 @@ test "PreserveModules: CJS format succeeds with require()/exports (P3-A #3321)" 
     for (outs) |o| {
         if (std.mem.indexOf(u8, o.contents, "require(\"") != null or
             std.mem.indexOf(u8, o.contents, "require('") != null) has_require = true;
-        if (std.mem.indexOf(u8, o.contents, "exports.") != null) has_exports = true;
+        if (std.mem.indexOf(u8, o.contents, "exports.") != null or std.mem.indexOf(u8, o.contents, "exports[") != null) has_exports = true;
     }
     try std.testing.expect(has_require);
     try std.testing.expect(has_exports);
