@@ -20383,8 +20383,34 @@ test "generic prepass run publishes transformed output and preserves parser AST"
     if (module.alias_table) |*table| table.deinit();
     if (module.export_index_by_name) |*index| index.deinit(graph_allocator);
 
+    const orphan_source = "const value = 1; value;";
+    var orphan_fixture = try runtimeHelperReanalysisTestFixture(allocator, orphan_source);
+    const orphan_owner = @as(u32, @intCast(orphan_fixture.ast.nodes.items.len + 17));
+    try orphan_fixture.semantic.class_self_symbol_map.put(allocator, orphan_owner, 0);
+    var orphan_module = Module.init(@fromBackingInt(@as(u32, 1)), "orphan-sidecar.js");
+    orphan_module.source = orphan_source;
+    orphan_module.module_type = .js;
+    orphan_module.state = .ready;
+    orphan_module.ast = orphan_fixture.ast;
+    orphan_module.semantic = orphan_fixture.semantic;
+    const orphan_ast_nodes = orphan_module.ast.?.nodes.items;
+    const orphan_symbol_ids = orphan_module.semantic.?.symbol_ids;
+    const orphan_owner_token = orphan_module.semantic.?.captureOwnerToken();
+    var orphan_context: TestGraph = .{ .allocator = graph_allocator };
+    run(&orphan_context, &orphan_module, allocator);
+    try std.testing.expectEqual(@as(usize, 1), orphan_context.diag_count);
+    try std.testing.expect(orphan_module.ast.?.transformed_root == null);
+    try std.testing.expect(orphan_module.transform_cache == null);
+    try std.testing.expectEqual(@intFromPtr(orphan_ast_nodes.ptr), @intFromPtr(orphan_module.ast.?.nodes.items.ptr));
+    try std.testing.expectEqual(@intFromPtr(orphan_symbol_ids.ptr), @intFromPtr(orphan_module.semantic.?.symbol_ids.ptr));
+    try std.testing.expectEqual(orphan_owner_token, orphan_module.semantic.?.captureOwnerToken());
+    try std.testing.expectEqual(@as(?u32, 0), orphan_module.semantic.?.class_self_symbol_map.get(orphan_owner));
+    if (orphan_module.alias_table) |*table| table.deinit();
+    if (orphan_module.export_index_by_name) |*index| index.deinit(graph_allocator);
+
     const object_shadow_source = "var Object; class Box { get value() { return this._value; } set value(value = 1) { this._value = value; } static get count() { return this._count; } static set count(next = 2) { this._count = next; } }";
     var object_shadow_fixture = try genericPrepassTestFixture(allocator, object_shadow_source, true);
+    const object_shadow_source_root: ast_mod.NodeIndex = @fromBackingInt(@intCast(object_shadow_fixture.ast.nodes.items.len - 1));
     const object_shadow_owner = object_shadow_fixture.semantic.captureOwnerToken();
     var object_shadow_module = Module.init(@fromBackingInt(@as(u32, 7)), "shadowed-object-accessors.js");
     object_shadow_module.source = object_shadow_source;
@@ -20407,6 +20433,52 @@ test "generic prepass run publishes transformed output and preserves parser AST"
     try std.testing.expect(object_shadow_module.transform_cache != null);
     try std.testing.expectEqual(object_shadow_owner, object_shadow_module.semantic.?.owner_token);
     try std.testing.expectEqual(@as(usize, 2), object_shadow_module.transform_cache.?.explicit_global_ref_nodes.len);
+
+    const object_shadow_ast = &object_shadow_module.ast.?;
+    const object_shadow_output_root = object_shadow_ast.transformed_root.?;
+    const object_shadow_output_nodes = try ast_walk.collectReachableNodeIndicesFrom(allocator, object_shadow_ast, object_shadow_output_root);
+    var object_shadow_output_reachable = try std.DynamicBitSet.initEmpty(allocator, object_shadow_ast.nodes.items.len);
+    for (object_shadow_output_nodes) |raw| object_shadow_output_reachable.set(raw);
+    const object_shadow_source_nodes = try ast_walk.collectReachableNodeIndicesFrom(allocator, object_shadow_ast, object_shadow_source_root);
+    var object_shadow_source_reachable = try std.DynamicBitSet.initEmpty(allocator, object_shadow_ast.nodes.items.len);
+    for (object_shadow_source_nodes) |raw| object_shadow_source_reachable.set(raw);
+    try std.testing.expect(genericPrepassOutputSidecarsRemainReachable(
+        &object_shadow_module,
+        &object_shadow_module.semantic.?,
+        &object_shadow_output_reachable,
+        &object_shadow_source_reachable,
+    ));
+
+    var wrong_source_owner_semantic = object_shadow_module.semantic.?;
+    wrong_source_owner_semantic.class_self_symbol_map = try wrong_source_owner_semantic.class_self_symbol_map.clone(allocator);
+    var class_self_entry = wrong_source_owner_semantic.class_self_symbol_map.iterator();
+    const class_self = class_self_entry.next().?;
+    const class_self_owner = class_self.key_ptr.*;
+    const class_self_id = class_self.value_ptr.*;
+    const class_name = object_shadow_fixture.ast.readExtraNode(object_shadow_fixture.ast.nodes.items[class_self_owner].data.extra, ast_mod.ClassExtra.name);
+    const outer_class_id = object_shadow_fixture.semantic.symbol_ids[@backingInt(class_name)] orelse return error.TestUnexpectedResult;
+    try std.testing.expect(class_self_id != outer_class_id);
+    try wrong_source_owner_semantic.class_self_symbol_map.put(allocator, class_self_owner, outer_class_id);
+    var wrong_source_owner_module = object_shadow_module;
+    wrong_source_owner_module.semantic = wrong_source_owner_semantic;
+    try std.testing.expect(!genericPrepassOutputSidecarsRemainReachable(
+        &wrong_source_owner_module,
+        &wrong_source_owner_semantic,
+        &object_shadow_output_reachable,
+        &object_shadow_source_reachable,
+    ));
+
+    var wrong_source_node_semantic = object_shadow_module.semantic.?;
+    wrong_source_node_semantic.class_self_symbol_map = try wrong_source_node_semantic.class_self_symbol_map.clone(allocator);
+    try wrong_source_node_semantic.class_self_symbol_map.put(allocator, @backingInt(object_shadow_source_root), class_self_id);
+    var wrong_source_node_module = object_shadow_module;
+    wrong_source_node_module.semantic = wrong_source_node_semantic;
+    try std.testing.expect(!genericPrepassOutputSidecarsRemainReachable(
+        &wrong_source_node_module,
+        &wrong_source_node_semantic,
+        &object_shadow_output_reachable,
+        &object_shadow_source_reachable,
+    ));
 
     const computed_object_source = "function nextKey() { return 'value'; } export const box = { get [nextKey()]() { return this._value; }, set [nextKey()](value = 1) { this._value = value; } };";
     var computed_object_fixture = try genericPrepassTestFixture(allocator, computed_object_source, true);
@@ -21103,6 +21175,7 @@ fn genericPreparedOutputHasNormalForm(
     module: *const Module,
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
+    source_root: ?ast_mod.NodeIndex,
     parser_node_count: u32,
     pre_transform_scope_count: usize,
     pre_transform_scope_history_event_count: usize,
@@ -21111,6 +21184,22 @@ fn genericPreparedOutputHasNormalForm(
 ) !bool {
     const ast = if (module.ast) |*value| value else return false;
     const semantic = if (module.semantic) |*value| value else return false;
+
+    const reachable_nodes = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root);
+    var reachable = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len);
+    for (reachable_nodes) |raw| {
+        if (raw >= ast.nodes.items.len) return false;
+        reachable.set(raw);
+    }
+    var source_reachable = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len);
+    if (source_root) |source| {
+        const source_nodes = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, source);
+        for (source_nodes) |raw| {
+            if (raw >= ast.nodes.items.len) return false;
+            source_reachable.set(raw);
+        }
+    }
+    if (!genericPrepassOutputSidecarsRemainReachable(module, semantic, &reachable, &source_reachable)) return false;
 
     var roots: std.ArrayListUnmanaged(u32) = .empty;
     for (module.import_bindings) |binding| {
@@ -21267,6 +21356,7 @@ fn completeGenericPrepassCandidate(
     module: *Module,
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
+    source_root: ?ast_mod.NodeIndex,
     parser_node_count: u32,
     pre_transform_scope_count: usize,
     pre_transform_scope_history_event_count: usize,
@@ -21280,6 +21370,7 @@ fn completeGenericPrepassCandidate(
         module,
         transformer,
         root,
+        source_root,
         parser_node_count,
         pre_transform_scope_count,
         pre_transform_scope_history_event_count,
@@ -21539,6 +21630,10 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
         isBuiltinWorkletPluginSet(merged_plugins);
 
     const parser_node_count: u32 = @intCast(ast_ptr.nodes.items.len);
+    const source_root: ?ast_mod.NodeIndex = ast_ptr.transformed_root orelse if (parser_node_count > 0)
+        @as(ast_mod.NodeIndex, @fromBackingInt(parser_node_count - 1))
+    else
+        null;
 
     var opts = self.transform_options_base;
     opts.unsupported = moduleUnsupported(opts.unsupported, module);
@@ -21727,9 +21822,9 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     }
     if (can_keep_semantic_graph) {
         if (module.semantic) |*sem| {
-            const source_root = ast_ptr.transformed_root orelse @as(ast_mod.NodeIndex, @fromBackingInt(@intCast(ast_ptr.nodes.items.len - 1)));
-            if (opts.unsupported.object_extensions and ast_ptr.getNode(source_root).tag == .program and
-                (@import("../../transformer/computed_object_helper_authority.zig").candidate(arena_alloc, ast_ptr, source_root) catch false))
+            const computed_source_root = ast_ptr.transformed_root orelse @as(ast_mod.NodeIndex, @fromBackingInt(@intCast(ast_ptr.nodes.items.len - 1)));
+            if (opts.unsupported.object_extensions and ast_ptr.getNode(computed_source_root).tag == .program and
+                (@import("../../transformer/computed_object_helper_authority.zig").candidate(arena_alloc, ast_ptr, computed_source_root) catch false))
                 transformer.computed_object_helper_source = .{ .source_ast = ast_ptr, .output_ast = transformer.ast, .owner = sem.captureOwnerToken() };
         }
     }
@@ -21784,11 +21879,10 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
     if (debug_symbol_coverage and ast_ptr.transformed_root == null and parser_node_count > 0) {
         if (module.semantic) |*sem| {
             const coverage = @import("../../transformer/symbol_coverage.zig");
-            const source_root: ast_mod.NodeIndex = @fromBackingInt(@intCast(parser_node_count - 1));
             const source_scope_owner_audit = coverage.checkExactWithCompleteSourceScopeOwners(
                 arena_alloc,
                 ast_ptr,
-                source_root,
+                source_root.?,
                 parser_node_count,
                 sem.symbol_ids,
                 sem.symbols.items,
@@ -22501,6 +22595,7 @@ fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, 
             module,
             &transformer,
             root,
+            source_root,
             parser_node_count,
             pre_transform_scope_count,
             pre_transform_scope_history_event_count,
@@ -25579,10 +25674,111 @@ pub fn outputGraphSidecarsRemainReachable(
     semantic: anytype,
     reachable: *const std.DynamicBitSet,
 ) bool {
+    return outputGraphSidecarsRemainReachableWithSourceClassOwners(module, semantic, reachable, null);
+}
+
+pub fn genericPrepassOutputSidecarsRemainReachable(
+    module: *const Module,
+    semantic: anytype,
+    output_reachable: *const std.DynamicBitSet,
+    source_reachable: *const std.DynamicBitSet,
+) bool {
+    return outputGraphSidecarsRemainReachableWithSourceClassOwners(
+        module,
+        semantic,
+        output_reachable,
+        source_reachable,
+    );
+}
+
+/// Class lowering can replace a source class node while retaining its exact
+/// inner-self SymbolId on a generated output binding. Admit that sidecar only
+/// when the source owner, source class-body scope, SymbolId lineage, and output
+/// declaration all agree.
+fn classSelfSidecarHasExactSourceOwner(
+    module: *const Module,
+    semantic: anytype,
+    source_reachable: *const std.DynamicBitSet,
+    output_reachable: *const std.DynamicBitSet,
+    owner_raw: u32,
+    symbol_raw: u32,
+) bool {
+    const ast = if (module.ast) |*value| value else return false;
+    if (!isNodeReachableInOutputGraph(owner_raw, source_reachable) or owner_raw >= ast.nodes.items.len or
+        symbol_raw >= semantic.symbols.items.len) return false;
+    const owner = ast.nodes.items[owner_raw];
+    if (owner.tag != .class_declaration and owner.tag != .class_expression) return false;
+    const symbol = semantic.symbols.items[symbol_raw];
+    if (symbol.kind != .class_decl or symbol.scope_id.isNone() or
+        @backingInt(symbol.scope_id) >= semantic.scopes.len or symbol.origin_scope.isNone()) return false;
+
+    if (!ast.hasExtra(owner.data.extra, ast_mod.ClassExtra.name)) return false;
+    const name = ast.readExtraNode(owner.data.extra, ast_mod.ClassExtra.name);
+    if (!name.isNone() and (@backingInt(name) >= ast.nodes.items.len or
+        ast.nodes.items[@backingInt(name)].tag != .binding_identifier))
+        return false;
+    if (!name.isNone() and !std.mem.eql(u8, ast.getText(ast.nodes.items[@backingInt(name)].span), symbol.nameText(ast.source)))
+        return false;
+
+    const class_body = ast.readExtraNode(owner.data.extra, ast_mod.ClassExtra.body);
+    for (semantic.scope_history.source_owners) |source_owner| {
+        if (@backingInt(source_owner.owner.node) != owner_raw or source_owner.owner.tag != owner.tag or
+            source_owner.edges.body != class_body) continue;
+        if (@backingInt(source_owner.scope) >= semantic.scope_history.source_scopes.len) return false;
+        const source_scope = semantic.scope_history.source_scopes[@backingInt(source_owner.scope)];
+        if (source_scope.kind != .class_body or !source_scope.is_strict or symbol.origin_scope != source_owner.scope)
+            return false;
+        const source_name = if (name.isNone()) null else ast.getText(ast.nodes.items[@backingInt(name)].span);
+        return classSelfSidecarHasOutputBinding(ast, semantic, output_reachable, symbol_raw, source_name);
+    }
+    return false;
+}
+
+fn classSelfSidecarHasOutputBinding(
+    ast: *const ast_mod.Ast,
+    semantic: anytype,
+    reachable: *const std.DynamicBitSet,
+    symbol_raw: u32,
+    source_name: ?[]const u8,
+) bool {
+    if (symbol_raw >= semantic.symbols.items.len) return false;
+    const symbol = semantic.symbols.items[symbol_raw];
+    for (0..@min(semantic.symbol_ids.len, reachable.capacity())) |raw| {
+        if (!reachable.isSet(raw) or raw >= ast.nodes.items.len or
+            ast.nodes.items[raw].tag != .binding_identifier or semantic.symbol_ids[raw] != symbol_raw) continue;
+        if (source_name) |name| {
+            if (!std.mem.eql(u8, ast.getText(ast.nodes.items[raw].span), name) or
+                !std.mem.eql(u8, name, symbol.nameText(ast.source))) continue;
+        }
+        for (semantic.references) |reference| {
+            if (reference.flags.declare and @backingInt(reference.symbol_id) == symbol_raw and
+                reference.declaration_node_index == @as(ast_mod.NodeIndex, @fromBackingInt(@intCast(raw)))) return true;
+        }
+    }
+    return false;
+}
+
+fn outputGraphSidecarsRemainReachableWithSourceClassOwners(
+    module: *const Module,
+    semantic: anytype,
+    reachable: *const std.DynamicBitSet,
+    source_reachable: ?*const std.DynamicBitSet,
+) bool {
     var class_self_owners = semantic.class_self_symbol_map.iterator();
     while (class_self_owners.next()) |entry| {
-        if (!isNodeReachableInOutputGraph(entry.key_ptr.*, reachable) or
-            entry.value_ptr.* >= semantic.symbols.items.len) return false;
+        if (entry.value_ptr.* >= semantic.symbols.items.len) return false;
+        if (isNodeReachableInOutputGraph(entry.key_ptr.*, reachable)) continue;
+        // Only the generic prepass supplies source reachability. Buffer and
+        // const-fold candidates must keep every class-self owner in output.
+        const source = source_reachable orelse return false;
+        if (!classSelfSidecarHasExactSourceOwner(
+            module,
+            semantic,
+            source,
+            reachable,
+            entry.key_ptr.*,
+            entry.value_ptr.*,
+        )) return false;
     }
 
     // Unlike class_self_symbol_map, these namespace sidecars are keyed by
@@ -25711,6 +25907,9 @@ const ConstMaterializedSidecarMutation = enum {
 const ConstMaterializedTestSemantic = struct {
     symbols: struct { items: []SemanticSymbol },
     symbol_ids: []const ?u32,
+    scopes: []const SemanticScope = &.{},
+    scope_history: @import("../../semantic/scope_frame_history.zig").History = .{},
+    references: []const SemanticReference = &.{},
     class_self_symbol_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     namespace_member_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     namespace_declaration_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,

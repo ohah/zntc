@@ -474,6 +474,8 @@ function auditPrepass(source, label = 'src/bundler/graph/transform_prepass.zig')
   const run = functionBody(code, 'run', label);
   const runCandidate = functionBody(code, 'runCandidate', label);
   const normalForm = functionBody(code, 'genericPreparedOutputHasNormalForm', label);
+  const genericSourceClassOwner = functionBody(code, 'classSelfSidecarHasExactSourceOwner', label);
+  const genericSourceClassBinding = functionBody(code, 'classSelfSidecarHasOutputBinding', label);
   const bufferNormalForm = functionBody(code, 'bufferPreparedOutputHasNormalForm', label);
   const bufferFold = functionBody(code, 'prepareNodeBufferCapabilityFold', label);
   const completeCandidate = functionBody(code, 'completeGenericPrepassCandidate', label);
@@ -518,6 +520,112 @@ function auditPrepass(source, label = 'src/bundler/graph/transform_prepass.zig')
       normalForm.body.indexOf('return valid;') > identityGate &&
       !/\breturn\s+true\s*;/.test(normalForm.body),
     `${label}: generic prepass must return the exact output normal-form result`,
+  );
+  const genericReachabilityWalk = normalForm.body.indexOf(
+    'ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root)',
+  );
+  const genericSourceReachabilityBranch = normalForm.body.indexOf('if (source_root) |source|');
+  const genericSourceReachabilityWalk = normalForm.body.indexOf(
+    'ast_walk.collectReachableNodeIndicesFrom(allocator, ast, source)',
+  );
+  const genericReachableInit = normalForm.body.indexOf(
+    'std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len)',
+  );
+  const genericSourceReachableInit = normalForm.body.indexOf(
+    'std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len)',
+    genericReachableInit + 1,
+  );
+  const genericBoundsCheck = normalForm.body.indexOf(
+    'if (raw >= ast.nodes.items.len) return false;',
+  );
+  const genericReachableSet = normalForm.body.search(/(?<!source_)\breachable\.set\(raw\)/);
+  const genericSourceBoundsCheck = normalForm.body.indexOf(
+    'if (raw >= ast.nodes.items.len) return false;',
+    genericBoundsCheck + 1,
+  );
+  const genericSourceReachableSet = normalForm.body.indexOf('source_reachable.set(raw)');
+  const genericSidecarGate = normalForm.body.indexOf(
+    'genericPrepassOutputSidecarsRemainReachable(',
+  );
+  const genericIdentityGate = normalForm.body.indexOf('checkOutputNormalFormQuiet(');
+  const genericSidecarAdmissionIsOrdered =
+    /if\s*\(\s*!genericPrepassOutputSidecarsRemainReachable\(module,\s*semantic,\s*&reachable,\s*&source_reachable\)\)\s*return\s+false\s*;/.test(
+      normalForm.body,
+    ) &&
+    genericReachabilityWalk >= 0 &&
+    genericReachableInit > genericReachabilityWalk &&
+    genericBoundsCheck > genericReachableInit &&
+    genericReachableSet > genericBoundsCheck &&
+    genericSourceReachableInit > genericReachableSet &&
+    genericSourceReachabilityBranch > genericSourceReachableInit &&
+    genericSourceReachabilityWalk > genericSourceReachabilityBranch &&
+    genericSourceBoundsCheck > genericSourceReachabilityWalk &&
+    genericSourceReachableSet > genericSourceBoundsCheck &&
+    /if\s*\(\s*raw\s*>=\s*ast\.nodes\.items\.len\s*\)\s*return\s+false\s*;/.test(normalForm.body) &&
+    genericSidecarGate >= 0 &&
+    genericSidecarGate > genericReachableSet &&
+    genericSidecarGate > genericSourceReachableSet &&
+    genericIdentityGate > genericSidecarGate;
+  requireCondition(
+    genericSidecarAdmissionIsOrdered,
+    `${label}: generic prepass must reject unreachable graph sidecars before output identity admission (${JSON.stringify(
+      {
+        genericReachabilityWalk,
+        genericReachableInit,
+        genericBoundsCheck,
+        genericReachableSet,
+        genericSourceReachabilityWalk,
+        genericSourceReachabilityBranch,
+        genericSourceReachableInit,
+        genericSourceBoundsCheck,
+        genericSourceReachableSet,
+        genericSidecarGate,
+        genericIdentityGate,
+        hasFailClosedGate:
+          /if\s*\(\s*!genericPrepassOutputSidecarsRemainReachable\(module,\s*semantic,\s*&reachable,\s*&source_reachable\)\)\s*return\s+false\s*;/.test(
+            normalForm.body,
+          ),
+      },
+    )})`,
+  );
+  requireCondition(
+    genericSourceClassOwner.body.includes(
+      'isNodeReachableInOutputGraph(owner_raw, source_reachable)',
+    ) &&
+      /owner_raw\s*>=\s*ast\.nodes\.items\.len/.test(genericSourceClassOwner.body) &&
+      /symbol_raw\s*>=\s*semantic\.symbols\.items\.len/.test(genericSourceClassOwner.body) &&
+      /owner\.tag\s*!=\s*\.class_declaration\s*and\s*owner\.tag\s*!=\s*\.class_expression/.test(
+        genericSourceClassOwner.body,
+      ) &&
+      genericSourceClassOwner.body.includes('source_owner.owner.node') &&
+      genericSourceClassOwner.body.includes('source_owner.owner.tag') &&
+      genericSourceClassOwner.body.includes('source_owner.edges.body != class_body') &&
+      genericSourceClassOwner.body.includes('source_scope.kind != .class_body') &&
+      genericSourceClassOwner.body.includes('!source_scope.is_strict') &&
+      genericSourceClassOwner.body.includes('symbol.origin_scope != source_owner.scope') &&
+      genericSourceClassOwner.body.includes('symbol.kind != .class_decl') &&
+      genericSourceClassOwner.body.includes('symbol.scope_id.isNone()') &&
+      genericSourceClassOwner.body.includes(
+        '@backingInt(symbol.scope_id) >= semantic.scopes.len',
+      ) &&
+      genericSourceClassOwner.body.includes('symbol.origin_scope.isNone()') &&
+      /if\s*\(\s*!name\.isNone\(\)\s+and\s+!std\.mem\.eql\(u8,\s*ast\.getText\(ast\.nodes\.items\[@backingInt\(name\)\]\.span\),\s*symbol\.nameText\(ast\.source\)\)\)\s*return\s+false\s*;/.test(
+        genericSourceClassOwner.body,
+      ) &&
+      genericSourceClassOwner.body.includes('classSelfSidecarHasOutputBinding('),
+    `${label}: source-only class-self owners must retain exact source scope and reachable output binding evidence`,
+  );
+  requireCondition(
+    genericSourceClassBinding.body.includes('reachable.isSet(raw)') &&
+      genericSourceClassBinding.body.includes('semantic.symbol_ids[raw] != symbol_raw') &&
+      genericSourceClassBinding.body.includes('ast.nodes.items[raw].tag != .binding_identifier') &&
+      genericSourceClassBinding.body.includes('symbol.nameText(ast.source)') &&
+      /if\s*\(\s*reference\.flags\.declare\s+and\s+@backingInt\(reference\.symbol_id\)\s*==\s*symbol_raw/.test(
+        genericSourceClassBinding.body,
+      ) &&
+      genericSourceClassBinding.body.includes('reference.declaration_node_index ==') &&
+      /return\s+true\s*;/.test(genericSourceClassBinding.body),
+    `${label}: source-only class-self identity must bind to its exact declared output SymbolId`,
   );
   auditOutputNormalFormAdmissionOptions(normalForm.body, `${label}: generic prepass gate`);
   auditOutputNormalFormAdmissionOptions(bufferNormalForm.body, `${label}: Buffer fold gate`);
@@ -637,7 +745,25 @@ function selfTest() {
     'SemanticAnalyzer.init(arena_alloc, &parser.ast)',
     'parseModule',
   );
-  const genericGateFixture = `fn genericPreparedOutputHasNormalForm() { const report = report_mod.checkOutputNormalFormQuiet(&origins, ${outputNormalFormOptions}); const valid = report.hasCompleteOutputIdentityBeforeNames(); return valid; }\n`;
+  const genericSidecarGuard =
+    'if (!genericPrepassOutputSidecarsRemainReachable(module, semantic, &reachable, &source_reachable)) return false;';
+  const genericGateFixture = `fn genericPreparedOutputHasNormalForm() { const reachable_nodes = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root); var reachable = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len); for (reachable_nodes) |raw| { if (raw >= ast.nodes.items.len) return false; reachable.set(raw); } var source_reachable = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len); if (source_root) |source| { const source_nodes = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, source); for (source_nodes) |raw| { if (raw >= ast.nodes.items.len) return false; source_reachable.set(raw); } } ${genericSidecarGuard} const report = report_mod.checkOutputNormalFormQuiet(&origins, ${outputNormalFormOptions}); const valid = report.hasCompleteOutputIdentityBeforeNames(); return valid; }\n`;
+  const genericSourceClassOwnerFixture =
+    'fn classSelfSidecarHasExactSourceOwner() bool { ' +
+    'if (!isNodeReachableInOutputGraph(owner_raw, source_reachable) or owner_raw >= ast.nodes.items.len or symbol_raw >= semantic.symbols.items.len) return false; ' +
+    'const owner = ast.nodes.items[owner_raw]; if (owner.tag != .class_declaration and owner.tag != .class_expression) return false; ' +
+    'const symbol = semantic.symbols.items[symbol_raw]; if (symbol.kind != .class_decl or symbol.scope_id.isNone() or @backingInt(symbol.scope_id) >= semantic.scopes.len or symbol.origin_scope.isNone()) return false; ' +
+    'if (!name.isNone() and !std.mem.eql(u8, ast.getText(ast.nodes.items[@backingInt(name)].span), symbol.nameText(ast.source))) return false; ' +
+    'for (semantic.scope_history.source_owners) |source_owner| { ' +
+    'if (source_owner.owner.node != owner_raw or source_owner.owner.tag != owner.tag or source_owner.edges.body != class_body) continue; ' +
+    'const source_scope = semantic.scope_history.source_scopes[source_owner.scope]; ' +
+    'if (source_scope.kind != .class_body or !source_scope.is_strict or symbol.origin_scope != source_owner.scope) return false; ' +
+    'return classSelfSidecarHasOutputBinding(ast, semantic, output_reachable, symbol_raw, source_name); } return false; }\n';
+  const genericSourceClassBindingFixture =
+    'fn classSelfSidecarHasOutputBinding() bool { ' +
+    'for (0..reachable.capacity()) |raw| { if (!reachable.isSet(raw) or ast.nodes.items[raw].tag != .binding_identifier or semantic.symbol_ids[raw] != symbol_raw) continue; ' +
+    'if (source_name) |name| { if (!std.mem.eql(u8, ast.getText(ast.nodes.items[raw].span), name) or !std.mem.eql(u8, name, symbol.nameText(ast.source))) continue; } ' +
+    'for (semantic.references) |reference| { if (reference.flags.declare and @backingInt(reference.symbol_id) == symbol_raw and reference.declaration_node_index == @as(NodeIndex, @intCast(raw))) return true; } } return false; }\n';
   const bufferGateFixture = `fn bufferPreparedOutputHasNormalForm() { if (!outputGraphSidecarsRemainReachable(module, sem, &reachable)) return false; const report = report_mod.checkOutputNormalFormQuiet(&origins, ${outputNormalFormOptions}); return report.hasCompleteOutputIdentityBeforeNames(); }\n`;
   const bufferFoldFixture =
     'fn prepareNodeBufferCapabilityFold() !?PreparedBufferGraph { ' +
@@ -648,6 +774,8 @@ function selfTest() {
     'pub fn run() { var candidate_completed = false; runCandidate(&candidate_completed); if (!candidate_completed) { return; } prepared.publish(self.allocator); }\n' +
     'fn runCandidate(candidate_completed: *bool) { completeGenericPrepassCandidate(candidate_completed); }\n' +
     genericGateFixture +
+    genericSourceClassOwnerFixture +
+    genericSourceClassBindingFixture +
     bufferGateFixture +
     bufferFoldFixture +
     'fn completeGenericPrepassCandidate(candidate_completed: *bool) { const has_normal_form = genericPreparedOutputHasNormalForm(); if (!has_normal_form) { return; } candidate_completed.* = true; }\n' +
@@ -982,6 +1110,222 @@ function selfTest() {
     () => auditPrepass(prepass.replace('.require_declaration_anchors = true', '')),
     'generic prepass admission stopped explicitly pinning declaration anchors',
   );
+  const genericSidecarMutants = [
+    [genericGateFixture.replace(`${genericSidecarGuard} `, ''), 'removed the sidecar rejection'],
+    [
+      genericGateFixture.replace(
+        genericSidecarGuard,
+        'if (genericPrepassOutputSidecarsRemainReachable(module, semantic, &reachable, &source_reachable)) return false;',
+      ),
+      'inverted the sidecar rejection',
+    ],
+    [
+      genericGateFixture.replace(
+        genericSidecarGuard,
+        'if (!genericPrepassOutputSidecarsRemainReachable(module, semantic, &reachable, &source_reachable)) return true;',
+      ),
+      'accepted the candidate on a rejected sidecar',
+    ],
+    [
+      genericGateFixture.replace(
+        genericSidecarGuard,
+        '_ = genericPrepassOutputSidecarsRemainReachable(module, semantic, &reachable, &source_reachable);',
+      ),
+      'ignored the sidecar result',
+    ],
+    [
+      genericGateFixture.replace(
+        genericSidecarGuard,
+        'if (!genericPrepassOutputSidecarsRemainReachable(source_module, semantic, &reachable, &source_reachable)) return false;',
+      ),
+      'validated a different module than the candidate',
+    ],
+    [
+      genericGateFixture.replace(
+        genericSidecarGuard,
+        'if (!genericPrepassOutputSidecarsRemainReachable(module, source_semantic, &reachable, &source_reachable)) return false;',
+      ),
+      'validated a different semantic graph than the candidate',
+    ],
+    [
+      genericGateFixture.replace(
+        genericSidecarGuard,
+        'if (!genericPrepassOutputSidecarsRemainReachable(module, semantic, &empty_reachable, &source_reachable)) return false;',
+      ),
+      'validated an unrelated reachability bitmap',
+    ],
+    [
+      genericGateFixture.replace(
+        genericSidecarGuard,
+        'if (!genericPrepassOutputSidecarsRemainReachable(module, semantic, &reachable, &empty_source_reachable)) return false;',
+      ),
+      'validated an unrelated source-owner bitmap',
+    ],
+    [
+      genericGateFixture
+        .replace(`${genericSidecarGuard} `, '')
+        .replace('return valid;', `${genericSidecarGuard} return valid;`),
+      'checked sidecars only after output identity admission',
+    ],
+    [
+      genericGateFixture.replace(
+        genericSidecarGuard,
+        'if (module.wrap_kind == .esm and !genericPrepassOutputSidecarsRemainReachable(module, semantic, &reachable, &source_reachable)) return false;',
+      ),
+      'skipped sidecar validation for CJS candidates',
+    ],
+    [
+      genericGateFixture.replace(
+        genericSidecarGuard,
+        'if (!genericPrepassOutputSidecarsRemainReachable(module, semantic, &reachable, &source_reachable)) {}',
+      ),
+      'continued after sidecar rejection',
+    ],
+  ];
+  for (const [mutant, label] of genericSidecarMutants) {
+    tryReject(
+      () => auditPrepass(prepass.replace(genericGateFixture, mutant)),
+      `generic prepass admission ${label}`,
+    );
+  }
+  const genericSourceOwnerMutants = [
+    [
+      genericSourceClassOwnerFixture.replace(
+        'isNodeReachableInOutputGraph(owner_raw, source_reachable)',
+        'true',
+      ),
+      'accepted a source owner absent from the source AST root',
+    ],
+    [
+      genericSourceClassOwnerFixture.replace(
+        'owner.tag != .class_declaration and owner.tag != .class_expression',
+        'false',
+      ),
+      'accepted a non-class source owner',
+    ],
+    [
+      genericSourceClassOwnerFixture.replace('source_owner.owner.node != owner_raw', 'false'),
+      'accepted a class sidecar owned by a different source node',
+    ],
+    [
+      genericSourceClassOwnerFixture.replace(
+        'symbol.origin_scope != source_owner.scope',
+        'symbol.origin_scope.isNone()',
+      ),
+      'dropped exact source class-self scope lineage',
+    ],
+    [
+      genericSourceClassOwnerFixture.replace('symbol.kind != .class_decl', 'false'),
+      'accepted a non-class-self SymbolId',
+    ],
+    [
+      genericSourceClassOwnerFixture.replace(
+        'symbol.nameText(ast.source))) return false;',
+        'symbol.nameText(ast.source))) {}',
+      ),
+      'dropped the source class name to SymbolId comparison',
+    ],
+    [
+      genericSourceClassOwnerFixture.replace(
+        'return classSelfSidecarHasOutputBinding(ast, semantic, output_reachable, symbol_raw, source_name);',
+        'return true;',
+      ),
+      'accepted a source class without an output self binding',
+    ],
+  ];
+  for (const [mutant, label] of genericSourceOwnerMutants) {
+    tryReject(
+      () => auditPrepass(prepass.replace(genericSourceClassOwnerFixture, mutant)),
+      `generic prepass source class-self admission ${label}`,
+    );
+  }
+  const genericSourceBindingMutants = [
+    [
+      genericSourceClassBindingFixture.replace(
+        'reference.flags.declare',
+        '!reference.flags.declare',
+      ),
+      'accepted a non-declaration output binding reference',
+    ],
+    [
+      genericSourceClassBindingFixture.replace(
+        'reference.declaration_node_index == @as(NodeIndex, @intCast(raw))',
+        'reference.declaration_node_index != @as(NodeIndex, @intCast(raw))',
+      ),
+      'accepted a different declaration node for the source class-self SymbolId',
+    ],
+  ];
+  for (const [mutant, label] of genericSourceBindingMutants) {
+    tryReject(
+      () => auditPrepass(prepass.replace(genericSourceClassBindingFixture, mutant)),
+      `generic prepass source class-self output binding ${label}`,
+    );
+  }
+  const genericReachabilityMutants = [
+    [
+      genericGateFixture.replace(
+        'const reachable_nodes = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root);',
+        '',
+      ),
+      'removed the candidate-root reachability walk',
+    ],
+    [
+      genericGateFixture.replace(
+        'std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len)',
+        'std.DynamicBitSet.initEmpty(allocator, 0)',
+      ),
+      'sized the reachability bitmap for no AST nodes',
+    ],
+    [
+      genericGateFixture.replace(
+        'if (raw >= ast.nodes.items.len) return false;',
+        'if (raw >= ast.nodes.items.len) {}',
+      ),
+      'continued after an out-of-range reachable node',
+    ],
+    [
+      genericGateFixture.replace('reachable.set(raw);', 'reachable.set(0);'),
+      'marked a different node reachable',
+    ],
+    [
+      genericGateFixture.replace(
+        'const source_nodes = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, source);',
+        '',
+      ),
+      'removed the source-root class-owner reachability walk',
+    ],
+    [
+      genericGateFixture.replace(
+        'var source_reachable = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len);',
+        'std.DynamicBitSet.initEmpty(allocator, 0); for (source_nodes)',
+      ),
+      'sized the source-owner bitmap for no AST nodes',
+    ],
+    [
+      genericGateFixture.replace(
+        'if (raw >= ast.nodes.items.len) return false; source_reachable.set(raw);',
+        'if (raw >= ast.nodes.items.len) {} source_reachable.set(raw);',
+      ),
+      'continued after an out-of-range source node',
+    ],
+    [
+      genericGateFixture.replace('source_reachable.set(raw);', 'source_reachable.set(0);'),
+      'marked a different source node reachable',
+    ],
+    [
+      genericGateFixture.replace(
+        'ast_walk.collectReachableNodeIndicesFrom(allocator, ast, source)',
+        'ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root)',
+      ),
+      'used the candidate root as source-owner evidence',
+    ],
+  ];
+  for (const [mutant, label] of genericReachabilityMutants) {
+    tryReject(
+      () => auditPrepass(prepass.replace(genericGateFixture, mutant)),
+      `generic prepass reachability ${label}`,
+    );
+  }
   tryReject(
     () =>
       auditPrepass(
@@ -1404,7 +1748,7 @@ function selfTest() {
     'analyzer hidden behind a qualified same-file helper call',
   );
   console.log(
-    'semantic reanalysis and output-gate audit self-test PASS (105 hostile mutations rejected)',
+    'semantic reanalysis and output-gate audit self-test PASS (134 hostile mutations rejected)',
   );
 }
 
