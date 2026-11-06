@@ -16635,7 +16635,6 @@ test "loop dynamic eval preserves main ordinary readonly closure capture support
     const a = arena.allocator();
     const sources = [_][]const u8{
         "function collect(){const readers=[];for(let index=0;index<3;index++){readers.push(function(){return eval('index')})}return readers.map(read=>read()).join(',')}console.log(collect());",
-        "function collect(){const readers=[];for(let index=0;index<2;index++){readers.push(function(){return ev\\u0061l('index')})}return readers.map(read=>read()).join(',')}console.log(collect());",
         "function collect(marker){const readers=[];for(let index=0;index<2;index++){readers.push(function(){return(0,eval)('typeof index')});readers.push(function(){return eval?.('typeof index')});readers.push(()=>arguments[0])}return readers.map(read=>read()).join(',')}console.log(collect('source-argument'));",
         "function collect(){const readers=[];for(let index=0;index<2;index++){readers.push(function(){let index=9;return eval('index')})}return readers.map(read=>read()).join(',')}console.log(collect());",
         // Preserve the former readonly guard inputs under the new main producer.
@@ -16658,6 +16657,31 @@ test "loop dynamic eval preserves main ordinary readonly closure capture support
         }
     }
     try std.testing.expectError(error.LoopDynamicScope, transpile(a, "var readers=[];for(let index=0;index<3;index++){eval('readers.push(function(){return index})')}", "loop-eval.cjs", .{ .unsupported = @import("transformer/compat.zig").fromESTarget(.es5) }));
+}
+
+test "loop dynamic eval escaped direct identifier preserves readonly closure capture" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const compat = @import("transformer/compat.zig");
+    // Escapes normalize to the IdentifierName "eval"; Node 24 treats this
+    // spelling as indirect eval, so use Bun for this direct-eval oracle.
+    const source = "function collect(){const readers=[];for(let index=0;index<2;index++){readers.push(function(){return ev\\u0061l('index')})}return readers.map(read=>read()).join(',')}console.log(collect());";
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "bun", "-e", source } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("0,1\n", native.stdout);
+
+    for ([_]bool{ false, true }) |minify| {
+        const result = try transpile(a, source, "loop-eval.cjs", .{
+            .unsupported = compat.fromESTarget(.es5),
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+        });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "bun", "-e", result.code } });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+    }
 }
 
 test "loop dynamic eval readonly demand excludes unrelated names and respects initialization" {
