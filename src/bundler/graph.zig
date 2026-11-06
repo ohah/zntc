@@ -4027,6 +4027,169 @@ test "graph visitor caller: identity-retaining edits keep the graph on cold and 
     for (cases) |case| try expectColdAndCachedVisitorMutationRetainsGraph(case.kind, case.source);
 }
 
+fn expectVisitorMinifyGraphBuild(
+    entry: []const u8,
+    disk: *@import("disk_module_store.zig").DiskModuleStore,
+    expected_load_hits: usize,
+    cold_parameter_symbol: *?u32,
+    cold_parameter_scope: *?u32,
+) !void {
+    const profile = @import("../profile.zig");
+    profile.resetForTest();
+    profile.setIoForTest(std.testing.io);
+    profile.addFromCsv("graph.resync.semantic");
+    var state: IdentityRetainingVisitorMutationState = .{};
+    const plugins = [_]plugin_mod.Plugin{.{
+        .name = "identity-retaining-visitor-minify-edit",
+        .context = @ptrCast(&state),
+        .visitor = identityRetainingVisitorFor(.program),
+        .ast_graph_contract = .identity_preserving_visitor_edits,
+    }};
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.disk_cache = disk;
+    graph.disk_load_enabled = true;
+    graph.disk_options_hash = 0x6193_6878;
+    graph.disk_compiler_build_id = 0x4819;
+    graph.max_threads = 1;
+    graph.plugins = &plugins;
+    graph.transform_options_base.minify_syntax = true;
+    graph.minify_identifiers = true;
+
+    try graph.build(std.testing.io, &.{entry});
+
+    try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+    try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+    try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+    try std.testing.expectEqual(@as(usize, 1), state.calls);
+    try std.testing.expect(state.did_mutate);
+    const module = graph.findModuleByPath(entry) orelse return error.MissingVisitorMinifyGraphModule;
+    try std.testing.expectEqual(Module.State.ready, module.state);
+    try std.testing.expect(module.transform_cache != null);
+    const ast = &module.ast.?;
+    const semantic = &module.semantic.?;
+    const root = ast.transformed_root orelse return error.MissingVisitorMinifyGraphRoot;
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
+    defer std.testing.allocator.free(reachable);
+
+    var parameter_symbol: ?u32 = null;
+    for (semantic.symbols.items, 0..) |symbol, raw| {
+        if (symbol.kind != .parameter or !std.mem.eql(u8, symbol.nameText(ast.source), "value")) continue;
+        try std.testing.expect(parameter_symbol == null);
+        parameter_symbol = @intCast(raw);
+    }
+    const sid = parameter_symbol orelse return error.MissingVisitorParameterSymbol;
+    const scope_id = @backingInt(semantic.symbols.items[sid].scope_id);
+    try std.testing.expect(scope_id < semantic.scopes.len);
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, semantic.scopes[scope_id].kind);
+
+    var declaration_count: usize = 0;
+    var reference_count: u32 = 0;
+    for (reachable) |raw| {
+        if (raw >= semantic.symbol_ids.len or semantic.symbol_ids[raw] != sid) continue;
+        switch (ast.nodes.items[raw].tag) {
+            .binding_identifier, .assignment_target_identifier => declaration_count += 1,
+            .identifier_reference => reference_count += 1,
+            else => {},
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), declaration_count);
+    try std.testing.expectEqual(@as(u32, 1), reference_count);
+    try std.testing.expectEqual(reference_count, semantic.symbols.items[sid].reference_count);
+    var exact_declaration_rows: usize = 0;
+    var exact_reference_rows: usize = 0;
+    var exact_reference_stmt: ?u32 = null;
+    for (semantic.references) |reference| {
+        if (@backingInt(reference.symbol_id) != sid) continue;
+        if (reference.flags.declare) {
+            try std.testing.expect(reference.node_index.isNone());
+            try std.testing.expect(!reference.declaration_node_index.isNone());
+            const raw: u32 = @intCast(@backingInt(reference.declaration_node_index));
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw) != null);
+            try std.testing.expectEqual(sid, semantic.symbol_ids[raw] orelse return error.MissingVisitorParameterDeclarationSymbol);
+            try std.testing.expect(ast.nodes.items[raw].tag == .binding_identifier or ast.nodes.items[raw].tag == .assignment_target_identifier);
+            exact_declaration_rows += 1;
+            continue;
+        }
+        try std.testing.expect(!reference.node_index.isNone());
+        const raw: u32 = @intCast(@backingInt(reference.node_index));
+        try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw) != null);
+        try std.testing.expectEqual(sid, semantic.symbol_ids[raw] orelse return error.MissingVisitorParameterReferenceSymbol);
+        try std.testing.expect(ast.nodes.items[raw].tag == .identifier_reference);
+        try std.testing.expect(reference.flags.read and !reference.flags.write);
+        try std.testing.expect(reference.stmt_idx != @import("../semantic/symbol.zig").Reference.NO_STMT);
+        exact_reference_stmt = reference.stmt_idx;
+        exact_reference_rows += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), exact_declaration_rows);
+    try std.testing.expectEqual(@as(usize, 1), exact_reference_rows);
+    const stmt_infos = module.prebuilt_stmt_info orelse return error.MissingVisitorMinifyStmtInfo;
+    const referencing_stmts = stmt_infos.referencingStmts(sid);
+    try std.testing.expectEqual(@as(usize, 1), referencing_stmts.len);
+    try std.testing.expectEqual(exact_reference_stmt.?, referencing_stmts[0]);
+    try std.testing.expect(referencing_stmts[0] < stmt_infos.stmts.len);
+    try std.testing.expect(std.mem.indexOfScalar(u32, stmt_infos.stmts[referencing_stmts[0]].referenced_symbols, sid) != null);
+
+    var folded = TransformedNumericLiteralCount{ .ast = ast, .text = "4" };
+    try ast_walk.walkPreorderIterative(std.testing.allocator, ast, root, &folded, TransformedNumericLiteralCount.visit);
+    try std.testing.expectEqual(@as(usize, 1), folded.count);
+    for ([_][]const u8{ "1", "2" }) |text| {
+        var stale = TransformedNumericLiteralCount{ .ast = ast, .text = text };
+        try ast_walk.walkPreorderIterative(std.testing.allocator, ast, root, &stale, TransformedNumericLiteralCount.visit);
+        try std.testing.expectEqual(@as(usize, 0), stale.count);
+    }
+
+    if (cold_parameter_symbol.*) |cold_sid| {
+        try std.testing.expectEqual(cold_sid, sid);
+        try std.testing.expectEqual(cold_parameter_scope.*.?, scope_id);
+    } else {
+        cold_parameter_symbol.* = sid;
+        cold_parameter_scope.* = scope_id;
+    }
+    for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+}
+
+test "graph visitor caller: identity edits compose with syntax and identifier minification" {
+    const profile = @import("../profile.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const sources = [_][]const u8{
+        "export function read(value) { return value + (1 + 2); }",
+        "export const read = function(value) { return value + (1 + 2); };",
+        "export const read = (value) => value + (1 + 2);",
+        "const box = { read(value) { return value + (1 + 2); } }; export { box };",
+        "class Box { read(value) { return value + (1 + 2); } } export { Box };",
+        "export default function read(value) { return value + (1 + 2); }",
+        "function read(value) { return value + (1 + 2); } export const result = read;",
+        "export const box = { read: function(value) { return value + (1 + 2); } };",
+        "export function outer() { return function read(value) { return value + (1 + 2); }; }",
+        "export const box = { read: (value) => value + (1 + 2) };",
+    };
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    defer profile.resetForTest();
+    for (sources, 0..) |source, source_index| {
+        const file_name = try std.fmt.allocPrint(std.testing.allocator, "entry-{d}.js", .{source_index});
+        defer std.testing.allocator.free(file_name);
+        try writeFile(tmp.dir, file_name, source);
+        const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, file_name });
+        defer std.testing.allocator.free(entry);
+        const cache_component = try std.fmt.allocPrint(std.testing.allocator, "cache-{d}", .{source_index});
+        defer std.testing.allocator.free(cache_component);
+        const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, cache_component });
+        defer std.testing.allocator.free(cache_root);
+        var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+        defer disk.deinit();
+        var cold_parameter_symbol: ?u32 = null;
+        var cold_parameter_scope: ?u32 = null;
+        for ([_]usize{ 0, 1 }) |expected_load_hits| {
+            try expectVisitorMinifyGraphBuild(entry, &disk, expected_load_hits, &cold_parameter_symbol, &cold_parameter_scope);
+        }
+    }
+}
+
 test "graph function-hook caller: tracked direct eval injection retains its exact graph on cold and cached ASTs" {
     try expectColdAndCachedTrackedDirectEvalGraph();
 }
