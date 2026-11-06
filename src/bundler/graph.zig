@@ -3038,6 +3038,48 @@ fn expectFlowSourceBindingIdentity(module: *const Module, reachable: []const u32
     return symbol_id;
 }
 
+fn expectFlowSourceSymbolIdentity(module: *const Module, reachable: []const u32, source_name: []const u8) !u32 {
+    const ast = &module.ast.?;
+    const semantic = &module.semantic.?;
+    var found_symbol: ?u32 = null;
+    for (semantic.symbols.items, 0..) |symbol, raw| {
+        if (symbol.synthetic_kind != null or !std.mem.eql(u8, symbol.nameText(ast.source), source_name)) continue;
+        try std.testing.expect(found_symbol == null);
+        found_symbol = @intCast(raw);
+    }
+    const symbol_id = found_symbol orelse return error.MissingFlowSourceSymbol;
+    var has_exact_export = false;
+    for (module.export_bindings) |binding| {
+        if (binding.kind != .local or !std.mem.eql(u8, binding.exported_name, source_name)) continue;
+        if (module.exportBindingSemanticIndex(binding) == symbol_id) has_exact_export = true;
+    }
+    try std.testing.expect(has_exact_export);
+    var binding_count: usize = 0;
+    var live_reference_count: u32 = 0;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (raw < semantic.symbol_ids.len and semantic.symbol_ids[raw] == symbol_id) {
+            if (node.tag == .binding_identifier) binding_count += 1;
+            if (node.tag == .identifier_reference) live_reference_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), binding_count);
+
+    var semantic_reference_count: u32 = 0;
+    for (semantic.references) |reference| {
+        if (@backingInt(reference.symbol_id) != symbol_id or reference.flags.declare) continue;
+        try std.testing.expect(!reference.node_index.isNone());
+        const raw: u32 = @intCast(@backingInt(reference.node_index));
+        try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw) != null);
+        try std.testing.expect(raw < semantic.symbol_ids.len and semantic.symbol_ids[raw] == symbol_id);
+        try std.testing.expect(reference.flags.read or reference.flags.write);
+        semantic_reference_count += 1;
+    }
+    try std.testing.expectEqual(live_reference_count, semantic_reference_count);
+    try std.testing.expectEqual(live_reference_count, semantic.symbols.items[symbol_id].reference_count);
+    return symbol_id;
+}
+
 fn expectFlowGeneratedIdentityForSymbol(
     module: *const Module,
     reachable: []const u32,
@@ -4682,6 +4724,99 @@ test "graph Flow caller: match and ref-component identities survive cold and cac
         try std.testing.expect(!type_only.ast.?.has_flow_runtime_transform);
         try std.testing.expect(type_only.transform_cache == null);
         for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+    }
+}
+
+test "Flow ref-component identity survives minify modes on cold and cached ASTs" {
+    const profile = @import("../profile.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const source = "// @flow\nexport let Card_withRef = 'user-helper'; component Card(ref?: mixed, 'data-value' as value: string, ...props: any) { return value; } export const result = Card({ 'data-value': 'ok' });";
+    try writeFile(tmp.dir, "entry.js", source);
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.js" });
+    defer std.testing.allocator.free(entry);
+
+    const MinifyMode = struct {
+        name: []const u8,
+        whitespace: bool,
+        syntax: bool,
+        identifiers: bool,
+    };
+    const modes = [_]MinifyMode{
+        .{ .name = "plain", .whitespace = false, .syntax = false, .identifiers = false },
+        .{ .name = "whitespace", .whitespace = true, .syntax = false, .identifiers = false },
+        .{ .name = "syntax", .whitespace = false, .syntax = true, .identifiers = false },
+        .{ .name = "syntax-whitespace", .whitespace = true, .syntax = true, .identifiers = false },
+        .{ .name = "identifiers", .whitespace = false, .syntax = false, .identifiers = true },
+        .{ .name = "identifiers-whitespace", .whitespace = true, .syntax = false, .identifiers = true },
+        .{ .name = "syntax-identifiers", .whitespace = false, .syntax = true, .identifiers = true },
+        .{ .name = "full", .whitespace = true, .syntax = true, .identifiers = true },
+    };
+
+    defer profile.resetForTest();
+    for (modes, 0..) |mode, mode_index| {
+        const cache_component = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "cache-{s}",
+            .{mode.name},
+        );
+        defer std.testing.allocator.free(cache_component);
+        const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, cache_component });
+        defer std.testing.allocator.free(cache_root);
+        var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+        defer disk.deinit();
+
+        var cold_identity: ?FlowGraphIdentity = null;
+        var cold_source_symbol_id: ?u32 = null;
+        for ([_]usize{ 0, 2 }) |expected_load_hits| {
+            profile.resetForTest();
+            profile.setIoForTest(std.testing.io);
+            profile.addFromCsv("graph.resync.semantic");
+            var cache = ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+            defer cache.deinit();
+            var graph = ModuleGraph.init(std.testing.allocator, &cache);
+            defer graph.deinit();
+            graph.disk_cache = &disk;
+            graph.disk_load_enabled = true;
+            graph.disk_options_hash = 0x4819_6877 ^ (@as(u64, @intCast(mode_index)) << 8);
+            graph.disk_compiler_build_id = 0x4819;
+            graph.max_threads = 1;
+            graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es5);
+            graph.transform_options_base.minify_whitespace = mode.whitespace;
+            graph.transform_options_base.minify_syntax = mode.syntax;
+            graph.minify_identifiers = mode.identifiers;
+
+            try graph.build(std.testing.io, &.{entry});
+
+            try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+            try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+            try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
+            const module = graph.findModuleByPath(entry) orelse return error.MissingFlowMinifyGraphModule;
+            try std.testing.expectEqual(Module.State.ready, module.state);
+            try std.testing.expect(module.ast.?.has_flow_runtime_transform);
+            try std.testing.expect(module.transform_cache != null);
+            try std.testing.expect(module.semantic != null);
+            const identity = try expectFlowGeneratedIdentity(module, .ref_component_helper);
+            try std.testing.expectEqual(@as(usize, 1), module.dependencies.items.len);
+            const root = module.ast.?.transformed_root orelse return error.MissingFlowMinifyGraphRoot;
+            const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, &module.ast.?, root);
+            defer std.testing.allocator.free(reachable);
+            const source_symbol_id = try expectFlowSourceSymbolIdentity(module, reachable, "Card_withRef");
+            try expectFlowQuotedPropertyComputed(module, "'data-value'");
+            if (cold_identity) |cold| {
+                try std.testing.expectEqual(cold.symbol_id, identity.symbol_id);
+                try std.testing.expectEqual(cold.scope_id, identity.scope_id);
+                try std.testing.expectEqual(cold.reference_count, identity.reference_count);
+                try std.testing.expectEqual(cold_source_symbol_id.?, source_symbol_id);
+            } else {
+                cold_identity = identity;
+                cold_source_symbol_id = source_symbol_id;
+            }
+            try std.testing.expect(identity.symbol_id != source_symbol_id);
+            for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+        }
     }
 }
 
