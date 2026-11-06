@@ -154,7 +154,18 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                     if (!pushNode(self, &stack, @fromBackingInt(@intCast(extras[e + slot])))) return true;
                 }
             },
-            .switch_statement, .variable_declaration => {
+            .switch_statement => {
+                const e = node.data.extra;
+                const extras = self.ast.extra_data.items;
+                if (e + 2 >= extras.len) continue;
+                if (!pushNode(self, &stack, @fromBackingInt(extras[e]))) return true;
+                const start = extras[e + 1];
+                const len = extras[e + 2];
+                for (extras[start .. start + len]) |raw| {
+                    if (!pushNode(self, &stack, @fromBackingInt(raw))) return true;
+                }
+            },
+            .variable_declaration => {
                 // extra = [_, list_start, list_len]
                 const extras = self.ast.extra_data.items;
                 const e = node.data.extra;
@@ -167,10 +178,11 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                 }
             },
             .switch_case => {
-                // extra = [test, stmts_start, stmts_len] — test 는 yield 안 가짐 (literal)
+                // Case tests are arbitrary expressions evaluated in the enclosing function.
                 const extras = self.ast.extra_data.items;
                 const e = node.data.extra;
                 if (e + 2 >= extras.len) continue;
+                if (!pushNode(self, &stack, @fromBackingInt(extras[e]))) return true;
                 const stmts_start = extras[e + 1];
                 const stmts_len = extras[e + 2];
                 const stmts = extras[stmts_start .. stmts_start + stmts_len];

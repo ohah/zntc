@@ -1930,7 +1930,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return;
             }
 
-            const new_disc = try self.visitNode(disc_idx);
+            // GetValue of the discriminant happens exactly once, before any
+            // case expression. Keep it stable across suspension and mutation.
+            const disc_value = try visitExprWithYieldExtraction(self, disc_idx, ops, next_label);
+            const disc = try freezeSuspensionPrefix(self, disc_value, self.ast.getNode(disc_idx).span, ops);
 
             // 각 case에 고유 sentinel 할당 (body 처리 후 실제 label로 fixup)
             const sentinel_base = LABEL_SENTINEL_BASE - 100; // 충분히 떨어진 sentinel 영역
@@ -1965,12 +1968,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
                 if (test_idx.isNone()) continue; // default
 
-                const new_test = try self.visitNode(test_idx);
+                // These operations stay after the previous comparison branch:
+                // a matching case skips every later test (including its yield).
+                const new_test = try visitExprWithYieldExtraction(self, test_idx, ops, next_label);
+                const disc_read = try makeGeneratorTempRefForProducer(self, disc, stmt.span, .{ .read = true });
                 const eq_check = try self.ast.addNode(.{
                     .tag = .binary_expression,
                     .span = stmt.span,
                     .data = .{ .binary = .{
-                        .left = new_disc,
+                        .left = disc_read,
                         .right = new_test,
                         .flags = @backingInt(token_mod.Kind.eq3),
                     } },
@@ -6701,4 +6707,17 @@ test "suspension compound static members own separate property leaves" {
         if (owner.found_existing) try std.testing.expectEqual(owner.value_ptr.*, @as(u32, @intCast(raw)));
         owner.value_ptr.* = @intCast(raw);
     }
+}
+
+test "suspension switch expressions preserve single discriminant and lazy case order" {
+    const sources = [_][]const u8{
+        "function* run(){switch(yield 'disc'){case 2:return 42;default:return 0;}}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(2)]));",
+        "function* run(){switch(2){case yield 'case':return 42;default:return 0;}}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(2)]));",
+        "function* run(){switch(yield 'disc'){case yield 'case':return 42;default:return 0;}}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(2),iter.next(2)]));",
+        "var reads=0;var events=[];function read(){reads++;return 2;}function* run(){switch(read()){case (events.push('first'),1):break;default:events.push('default');case yield 'case':events.push('matched');return reads;}}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(2),events,reads]));",
+        "var value=2;function* run(){switch(value){case (value=3,yield 'case'):return 'matched';case 2:return 'frozen';default:return 'wrong';}}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(3),value]));",
+        "var events=[];function* run(){try{switch(1){case 1:events.push('first');case 2:yield 'body';return 42;case yield 'unreachable':return 0;}}finally{events.push('finally');}}var iter=run();console.log(JSON.stringify([iter.next(),iter.return(7),events]));",
+        "async function run(){var value=2;switch(await Promise.resolve(value)){case await Promise.resolve(2):return 42;default:return 0;}}run().then(function(value){console.log(value);});",
+    };
+    for (sources) |source| try checkSuspensionEvaluationRuntime(source);
 }
