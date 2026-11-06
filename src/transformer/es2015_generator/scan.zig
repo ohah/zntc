@@ -55,6 +55,10 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
             .function_body,
             .array_expression,
             .object_expression,
+            .array_pattern,
+            .object_pattern,
+            .array_assignment_target,
+            .object_assignment_target,
             .sequence_expression,
             .template_literal,
             .formal_parameters,
@@ -70,6 +74,8 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
             .throw_statement,
             .spread_element,
             .rest_element,
+            .binding_rest_element,
+            .assignment_target_rest,
             // ⚠️ computed key 는 `computed_property_key` 래퍼에 싸여 있다. 여기 없으면
             // `{ [yield 1]: 2 }` / `class { [yield k]() {} }` 의 yield 를 못 보고,
             // 추출이 시작되지 않아 raw `yield` 가 남아 **산출물이 파싱조차 안 된다**. (#4721)
@@ -93,6 +99,11 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                 if (!pushNode(self, &stack, @fromBackingInt(@intCast(extras[e])))) return true;
             },
             .assignment_expression,
+            .assignment_pattern,
+            .assignment_target_with_default,
+            .binding_property,
+            .assignment_target_property_identifier,
+            .assignment_target_property_property,
             .binary_expression,
             .logical_expression,
             .object_property,
@@ -207,6 +218,9 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                 const extras = self.ast.extra_data.items;
                 const e = node.data.extra;
                 if (e + 2 >= extras.len) continue;
+                // Pattern defaults and computed keys execute in this function,
+                // after the initializer and before subsequent declarators.
+                if (!pushNode(self, &stack, @fromBackingInt(extras[e]))) return true; // binding
                 if (!pushNode(self, &stack, @fromBackingInt(@intCast(extras[e + 2])))) return true; // init
             },
             else => {},
