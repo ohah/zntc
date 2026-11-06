@@ -3050,6 +3050,14 @@ const FlowGraphIdentity = struct {
     reference_count: u32,
 };
 
+const FlowEnumGraphIdentity = struct {
+    symbol_id: u32,
+    scope_id: u32,
+    reference_count: u32,
+};
+
+const expected_flow_enum_runtime_specifier = "flow-enums-runtime";
+
 const FlowGeneratedRole = enum {
     match_parameter,
     ref_component_helper,
@@ -3098,6 +3106,64 @@ fn expectFlowSourceBindingIdentity(module: *const Module, reachable: []const u32
     try std.testing.expect(reference_count > 0);
     try std.testing.expectEqual(reference_count, semantic.symbols.items[symbol_id].reference_count);
     return symbol_id;
+}
+
+fn expectFlowEnumGraphModule(
+    graph: *const ModuleGraph,
+    entry: []const u8,
+    enum_name: []const u8,
+    has_explicit_runtime_import: bool,
+) !FlowEnumGraphIdentity {
+    const module = graph.findModuleByPath(entry) orelse return error.MissingFlowEnumGraphModule;
+    try std.testing.expectEqual(Module.State.ready, module.state);
+    const ast = &(module.ast orelse return error.MissingFlowEnumGraphAst);
+    const semantic = &(module.semantic orelse return error.MissingFlowEnumGraphSemantic);
+    const transformed = module.transform_cache orelse return error.MissingFlowEnumGraphTransform;
+    try std.testing.expect(ast.has_flow_enum_declaration);
+    try std.testing.expectEqual(ast.nodes.items.len, semantic.symbol_ids.len);
+    try std.testing.expectEqualSlices(?u32, semantic.symbol_ids, transformed.symbol_ids);
+
+    const root = ast.transformed_root orelse return error.MissingFlowEnumGraphRoot;
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
+    defer std.testing.allocator.free(reachable);
+    const symbol_id = try expectFlowSourceBindingIdentity(module, reachable, enum_name);
+    const symbol = semantic.symbols.items[symbol_id];
+    try std.testing.expect(!symbol.scope_id.isNone());
+    try std.testing.expect(symbol.scope_id.toIndex() < semantic.scopes.len);
+
+    var enum_declarations: usize = 0;
+    var enum_members: usize = 0;
+    for (reachable) |raw| {
+        const tag = ast.nodes.items[raw].tag;
+        if (tag == .flow_enum_declaration) enum_declarations += 1;
+        if (tag == .flow_enum_member) enum_members += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), enum_declarations);
+    try std.testing.expect(enum_members >= 2);
+
+    var runtime_records: usize = 0;
+    for (module.import_records) |record| {
+        if (!std.mem.eql(u8, record.specifier, expected_flow_enum_runtime_specifier)) continue;
+        runtime_records += 1;
+        try std.testing.expect(record.is_external);
+        if (has_explicit_runtime_import) {
+            try std.testing.expectEqual(@as(@TypeOf(record.kind), .static_import), record.kind);
+            try std.testing.expect(!record.source_node.isNone());
+            try std.testing.expect(record.span.end > record.span.start);
+        } else {
+            try std.testing.expectEqual(@as(@TypeOf(record.kind), .require), record.kind);
+            try std.testing.expect(record.source_node.isNone());
+            try std.testing.expectEqual(@as(u32, 0), record.span.start);
+            try std.testing.expectEqual(@as(u32, 0), record.span.end);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), runtime_records);
+
+    return .{
+        .symbol_id = symbol_id,
+        .scope_id = @backingInt(symbol.scope_id),
+        .reference_count = semantic.symbols.items[symbol_id].reference_count,
+    };
 }
 
 fn expectFlowSourceSymbolIdentity(module: *const Module, reachable: []const u32, source_name: []const u8) !u32 {
@@ -4990,6 +5056,86 @@ test "graph Flow caller: match and ref-component identities survive cold and cac
         try std.testing.expectEqual(Module.State.ready, type_only.state);
         try std.testing.expect(!type_only.ast.?.has_flow_runtime_transform);
         try std.testing.expect(type_only.transform_cache == null);
+        for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
+    }
+}
+
+test "graph Flow caller: enum identities and runtime import survive cold and cached ASTs" {
+    const profile = @import("../profile.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const sources = [_][]const u8{
+        "// @flow\nexport enum LongColor { Red, Blue }\nexport const selectedColor = LongColor.Blue;",
+        "// @flow\nimport flowEnums from 'flow-enums-runtime';\nexport enum LongShape of string { Circle = 'circle', Square = 'square' }\nexport const selectedShape = LongShape.Square;\nexport const runtimeType = typeof flowEnums;",
+        "// @flow\nexport const untouched = 42;",
+    };
+    const enum_names = [_][]const u8{ "LongColor", "LongShape" };
+    var entries: [sources.len][]const u8 = undefined;
+    for (sources, 0..) |source, index| {
+        const file_name = try std.fmt.allocPrint(std.testing.allocator, "flow-enum-{d}.js", .{index});
+        defer std.testing.allocator.free(file_name);
+        try writeFile(tmp.dir, file_name, source);
+        entries[index] = try absPath(&tmp, file_name);
+    }
+    defer {
+        for (entries) |entry| std.testing.allocator.free(entry);
+    }
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer disk.deinit();
+
+    const external_patterns = [_][]const u8{expected_flow_enum_runtime_specifier};
+    var cold_identities: [sources.len]FlowEnumGraphIdentity = undefined;
+    defer profile.resetForTest();
+    for ([_]usize{ 0, entries.len }) |expected_load_hits| {
+        profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+
+        var resolve_cache = ResolveCache.init(std.testing.allocator, .{
+            .external_patterns = &external_patterns,
+            .platform = .node,
+        });
+        defer resolve_cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &resolve_cache);
+        defer graph.deinit();
+        graph.disk_cache = &disk;
+        graph.disk_load_enabled = true;
+        graph.disk_options_hash = 0x6193_4819;
+        graph.disk_compiler_build_id = 0x4819_6925;
+        graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es5);
+        graph.minify_identifiers = true;
+        graph.max_threads = 1;
+
+        try graph.build(std.testing.io, &entries);
+
+        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+        try std.testing.expect(graph.moduleCount() >= entries.len);
+        try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+        for (enum_names, 0..) |enum_name, index| {
+            const entry = entries[index];
+            const identity = try expectFlowEnumGraphModule(&graph, entry, enum_name, index == 1);
+            if (expected_load_hits == 0) {
+                cold_identities[index] = identity;
+            } else {
+                try std.testing.expectEqual(cold_identities[index].symbol_id, identity.symbol_id);
+                try std.testing.expectEqual(cold_identities[index].scope_id, identity.scope_id);
+                try std.testing.expectEqual(cold_identities[index].reference_count, identity.reference_count);
+            }
+        }
+        const plain = graph.findModuleByPath(entries[2]) orelse return error.MissingPlainFlowGraphModule;
+        try std.testing.expect(!plain.ast.?.has_flow_enum_declaration);
+        var plain_runtime_records: usize = 0;
+        for (plain.import_records) |record| {
+            if (std.mem.eql(u8, record.specifier, expected_flow_enum_runtime_specifier)) {
+                plain_runtime_records += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 0), plain_runtime_records);
         for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
     }
 }
