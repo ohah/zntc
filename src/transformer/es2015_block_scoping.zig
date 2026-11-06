@@ -64,6 +64,116 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
     return struct {
         const Self = @This();
 
+        /// Exact storage choices made before a state collector visits/emits
+        /// statements. No operation labels, state.sent or expression visiting.
+        pub const StateMachineBindingPlan = struct {
+            pub const Entry = struct { binding: NodeIndex, symbol: ?u32, span: Span, wrapper_scope: ScopeId };
+            entries: std.ArrayListUnmanaged(Entry) = .empty,
+            pub fn deinit(plan: *StateMachineBindingPlan, allocator: std.mem.Allocator) void {
+                plan.entries.deinit(allocator);
+            }
+        };
+
+        pub fn prepareStateMachineBindings(
+            self: *Transformer,
+            bindings: []const NodeIndex,
+            force_hoist: bool,
+            already_registered: *const std.AutoHashMapUnmanaged(NodeIndex, void),
+        ) Transformer.Error!StateMachineBindingPlan {
+            var plan: StateMachineBindingPlan = .{};
+            errdefer plan.deinit(self.allocator);
+            for (bindings) |binding| {
+                const bi = @backingInt(binding);
+                const sym: ?u32 = if (bi < self.symbol_ids.items.len) self.symbol_ids.items[bi] else null;
+                const sid = sym orelse {
+                    try plan.entries.append(self.allocator, .{ .binding = binding, .symbol = sym, .span = self.ast.getNode(binding).data.string_ref, .wrapper_scope = self.generator_state_machine_scope });
+                    continue;
+                };
+                // 블록 스코프가 네이티브인 타깃(chrome49)은 소스 바인딩을 제자리에 둔다. 다만 분석 후
+                // 하강이 만든 바인딩(for-of 의 `catch (_err)`, 이름이 string table 에 있음)은 어느
+                // hoist 스캔에도 없으므로 여기서 선언해야 strict 코드에서 ReferenceError 가 안 난다 (#5769).
+                if (!self.options.unsupported.block_scoping and !force_hoist) {
+                    const name_span = self.ast.getNode(binding).data.string_ref;
+                    if (name_span.start & ast_mod.Ast.STRING_TABLE_BIT != 0 and !already_registered.contains(binding))
+                        try plan.entries.append(self.allocator, .{ .binding = binding, .symbol = sym, .span = name_span, .wrapper_scope = self.generator_state_machine_scope });
+                    continue;
+                }
+                const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+                if (self.semantic_edit_enabled and self.options.defer_runtime_helper_name_resolution and
+                    !self.options.emit_runtime_helper_imports and sid < symbols.len and
+                    es_helpers.isStandaloneLateOutputNameSymbol(symbols[sid]))
+                {
+                    // The standalone exact-ID naming pass owns this symbol's
+                    // final spelling. A second name$N choice here conflicts
+                    // with that pass when the generated loop temp is hoisted.
+                    try plan.entries.append(self.allocator, .{ .binding = binding, .symbol = sym, .span = self.ast.getNode(binding).data.string_ref, .wrapper_scope = self.generator_state_machine_scope });
+                    continue;
+                }
+                const new_name = self.tableRenameOf(binding) orelse blk: {
+                    const raw_name = self.ast.getText(if (force_hoist) self.ast.getNode(binding).data.string_ref else self.ast.getNode(binding).span);
+                    const name = if (force_hoist) try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw_name) else raw_name;
+                    defer if (name.ptr != raw_name.ptr) self.allocator.free(name);
+                    self.block_rename_counter += 1;
+                    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+                    const n = try std.fmt.allocPrint(self.name_arena.?.allocator(), "{s}${d}", .{ name, self.block_rename_counter });
+                    if (self.block_rename_map == null) self.block_rename_map = .empty;
+                    try self.block_rename_map.?.put(self.allocator, sid, n);
+                    break :blk n;
+                };
+                const selected_name = if (force_hoist)
+                    try es_helpers.resolveGeneratedNameAvoidingDynamicEval(self, new_name, self.generator_state_machine_scope)
+                else
+                    new_name;
+                if (force_hoist) try self.block_rename_map.?.put(self.allocator, sid, selected_name);
+                try plan.entries.append(self.allocator, .{ .binding = binding, .symbol = sym, .span = try self.ast.addString(selected_name), .wrapper_scope = self.generator_state_machine_scope });
+            }
+            return plan;
+        }
+
+        /// Both ordinary let->var visitation and state AST preparation use
+        /// this initialization rule. A pattern/iteration head never acquires
+        /// a bogus destructuring `= void 0` initializer.
+        pub fn initializeLoweredLexical(self: *Transformer, binding: NodeIndex, initializer: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            if (!initializer.isNone()) return initializer;
+            const tag = self.ast.getNode(binding).tag;
+            if (tag == .object_pattern or tag == .array_pattern) return initializer;
+            return es_helpers.makeVoidZero(self, span);
+        }
+
+        /// Rewrite only the declaration selected for actual state collection.
+        /// Nested functions/classes/native regions are not walked or visited.
+        pub fn prepareStateMachineDeclaration(self: *Transformer, index: NodeIndex) Transformer.Error!void {
+            if (index.isNone()) return;
+            const declaration = self.ast.getNode(index);
+            if (declaration.tag != .variable_declaration) return;
+            const kind = self.ast.variableDeclarationKind(declaration);
+            // using has its own disposal reconstruction before entering the
+            // core collector; changing its kind here would lose disposal.
+            if (kind != .let and kind != .@"const") return;
+            const start = self.readU32(declaration.data.extra, 1);
+            const len = self.readU32(declaration.data.extra, 2);
+            for (0..len) |i| {
+                const raw = self.ast.extra_data.items[start + i];
+                const item = self.ast.getNode(@fromBackingInt(raw));
+                if (item.tag != .variable_declarator) continue;
+                const binding = self.readNodeIdx(item.data.extra, 0);
+                const initializer = self.readNodeIdx(item.data.extra, 2);
+                const prepared = try initializeLoweredLexical(self, binding, initializer, declaration.span);
+                self.ast.extra_data.items[item.data.extra + 2] = @backingInt(prepared);
+            }
+            if (self.options.unsupported.block_scoping)
+                self.ast.setVariableDeclarationKind(declaration, lowerKind(kind));
+        }
+
+        pub fn prepareStateMachineDeclarations(self: *Transformer, list: ast_mod.NodeList) Transformer.Error!void {
+            // Immediate list only: source scopes and per-iteration extraction
+            // still belong to their ordinary common producers.
+            for (0..list.len) |i| {
+                const index: NodeIndex = @fromBackingInt(self.ast.extra_data.items[list.start + i]);
+                try prepareStateMachineDeclaration(self, index);
+            }
+        }
+
         pub const LoopClosureResult = struct {
             loop_fn: NodeIndex,
             loop_function: NodeIndex,

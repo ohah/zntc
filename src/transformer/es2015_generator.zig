@@ -356,6 +356,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .none;
             defer self.generator_native_var_scope = saved_native_scope;
 
+            try es2015_block_scoping.ES2015BlockScoping(Transformer).prepareStateMachineDeclarations(self, body.data.list);
             const body_list = try rewriteUsingForStateMachine(self, body.data.list);
             const stmts_start = body_list.statements.start;
             const stmts_len = body_list.statements.len;
@@ -691,10 +692,20 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             defer seen.deinit(self.allocator);
             var source_identities: std.AutoHashMapUnmanaged(u32, void) = .empty;
             defer source_identities.deinit(self.allocator);
-            for (hoisted_vars) |binding| {
+            source_hoist: for (hoisted_vars) |binding| {
                 if (self.getSymbolIdAt(binding)) |id| {
                     const identity = try source_identities.getOrPut(self.allocator, id);
                     if (identity.found_existing) continue;
+                }
+                // Selected lexical storage supersedes the preliminary source
+                // declaration (notably an unbraced switch case). Its exact
+                // producer below creates the one physical wrapper binding.
+                for (self.generator_temp_producer_identities.items) |producer| {
+                    if (producer.source_binding != binding or producer.symbol_id == null) continue;
+                    if (self.semantic_edit_enabled and
+                        (producer.symbol_id != self.getSymbolIdAt(binding) or producer.owner_scope != wrapper_scope))
+                        @panic("prepared lexical storage lost its exact source SymbolId or wrapper owner");
+                    continue :source_hoist;
                 }
                 const bnode = self.ast.getNode(binding);
                 if (bnode.tag == .binding_identifier) {
@@ -830,6 +841,21 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// AST 문을 순회하며 연산을 수집.
         fn collectOperations(self: *Transformer, stmt_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             if (stmt_idx.isNone()) return;
+            // A case consequent need not have a block/list owner. Prepare its
+            // actual declaration before entering the operation collector too.
+            var bindings: std.ArrayList(NodeIndex) = .empty;
+            defer bindings.deinit(self.allocator);
+            if (isLexicalDeclaration(self, stmt_idx)) {
+                try collectLexicalBindingsInList(self, .{ .start = try self.ast.addExtras(&.{@backingInt(stmt_idx)}), .len = 1 }, &bindings);
+                try es2015_block_scoping.ES2015BlockScoping(Transformer).prepareStateMachineDeclaration(self, stmt_idx);
+            }
+            var plan = try prepareStateMachineBindingPlan(self, bindings.items, false);
+            defer plan.deinit(self.allocator);
+            try collectPreparedOperations(self, stmt_idx, &plan, ops, next_label);
+        }
+
+        fn collectPreparedOperations(self: *Transformer, stmt_idx: NodeIndex, plan: *const es2015_block_scoping.ES2015BlockScoping(Transformer).StateMachineBindingPlan, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+            try consumeStateMachineBindingPlan(self, plan);
             if (self.generator_collected_function_declarations.get(@backingInt(stmt_idx))) |sid| {
                 try appendCollectedFunctionAlias(self, stmt_idx, sid, ops);
                 return;
@@ -1589,6 +1615,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const test_idx: NodeIndex = self.readNodeIdx(e, 1);
             const update_idx: NodeIndex = self.readNodeIdx(e, 2);
             const body_idx: NodeIndex = self.readNodeIdx(e, 3);
+            // 헤더의 let/const 는 루프 스코프 — 고유 이름으로 바꿔 wrapper 에 등록한다 (#4712).
+            var header_plan = try prepareLoopHeadBindings(self, init_idx);
+            defer header_plan.deinit(self.allocator);
+            try consumeStateMachineBindingPlan(self, &header_plan);
+
             // body 는 statement → hasYieldOrReturn, 헤더 세 칸은 expression → containsYield.
             // ⚠️ init/update 를 빼면 헤더에만 yield 가 있을 때 루프가 상태 기계를 안 타고
             // raw `yield` 가 남아 **산출물이 파싱조차 안 된다** (#4721).
@@ -1604,13 +1635,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return;
             }
 
-            // Native regions keep the ordinary visitor's header storage. That
-            // visitor can split an iteration binding into an inner parameter
-            // and a distinct outer cell; pre-registering its old SID here
-            // would later hoist the inner binding back into the outer cell.
-            // Only loops consumed by this state collector own this registration.
-            try registerLoopHeadBindings(self, init_idx);
-
             // 반복별 바인딩 복원(#4716) — 필요하면 body 를 `yield* _loopN(x)` 로 바꾼 새
             // 노드로 다시 수집한다. 이 검사는 위 early-return **뒤**라, 상태 기계로 접히는
             // 루프에만 적용된다.
@@ -1620,6 +1644,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     return collectForOperations(self, rewritten, self.ast.getNode(rewritten), ops, next_label);
                 }
             }
+
+            try es2015_block_scoping.ES2015BlockScoping(Transformer).prepareStateMachineDeclaration(self, init_idx);
 
             // init: var는 호이스팅 후 assignment로 변환, expression은 그대로
             if (!init_idx.isNone()) {
@@ -1999,6 +2025,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = end_sentinel } });
             }
 
+            // A block inside a case still breaks this switch. Give the
+            // selected switch its own control owner; continue skips it and
+            // keeps the enclosing loop's existing target.
+            const switch_break = breakSentinel(self.generator_label_stack.items.len);
+            try self.generator_label_stack.append(self.allocator, .{
+                .name = "",
+                .break_label = switch_break,
+                .continue_label = null,
+            });
+            defer _ = self.generator_label_stack.pop();
+
             // 각 case body 출력 + 실제 label 할당
             var actual_labels = try self.allocator.alloc(u32, cases_len_val);
             defer self.allocator.free(actual_labels);
@@ -2040,6 +2077,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 fixupSentinel(ops_slice, sent, actual_labels[i]);
             }
             fixupSentinel(ops_slice, end_sentinel, actual_end);
+            fixupSentinel(ops_slice, switch_break, actual_end);
         }
 
         /// do-while문의 연산 수집. body → condition 순서.
@@ -2145,6 +2183,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return;
             }
 
+            // Select the source catch storage before collecting any try operation.
+            var catch_bindings: std.ArrayList(NodeIndex) = .empty;
+            defer catch_bindings.deinit(self.allocator);
+            if (!catch_clause.isNone()) {
+                const parameter = self.ast.getNode(catch_clause).data.binary.left;
+                if (!parameter.isNone()) try collectBindingNodes(self, parameter, &catch_bindings);
+                if (catch_bindings.items.len == 1 and isRegisteredGeneratorBinding(self, catch_bindings.items[0])) catch_bindings.clearRetainingCapacity();
+            }
+            var catch_plan = try prepareStateMachineBindingPlan(self, catch_bindings.items, !stateMachineRenamesBlockScope(self));
+            defer catch_plan.deinit(self.allocator);
+
             // try_label = 현재 case 번호. next_label은 1에서 시작하고
             // 각 nop append 직전에 +1되므로, next_label - 1 == 현재 case 번호.
             const try_label = next_label.* - 1;
@@ -2172,18 +2221,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const catch_param = catch_node.data.binary.left;
                 const catch_body_idx = catch_node.data.binary.right;
 
-                // catch 파라미터를 고유 이름으로 — 상태 기계는 wrapper 최상단 var 로 올리므로
-                // 원래 이름이면 바깥 동명 바인딩·중첩 catch 의 같은 이름을 덮는다 (#4712).
-                var param_bindings: std.ArrayList(NodeIndex) = .empty;
-                defer param_bindings.deinit(self.allocator);
-                if (!catch_param.isNone()) try collectBindingNodes(self, catch_param, &param_bindings);
-                // 이미 wrapper 에 등록한 바인딩의 정확한 노드/심볼만 재사용한다. 이름만 같다는
-                // 이유로 중첩 catch 둘을 하나의 상태 변수로 합치면 서로의 값을 덮는다.
-                if (param_bindings.items.len == 1 and isRegisteredGeneratorBinding(self, param_bindings.items[0])) param_bindings.clearRetainingCapacity();
-                // This catch is actually split into state cases. Native-block
-                // targets need an explicit state cell too; a retained native
-                // catch must never share its physical leaf with wrapper storage.
-                try registerStateMachineBindingsWithHoisting(self, param_bindings.items, !stateMachineRenamesBlockScope(self));
+                try consumeStateMachineBindingPlan(self, &catch_plan);
 
                 const param_is_pattern = !catch_param.isNone() and self.ast.getNode(catch_param).tag != .binding_identifier;
                 if (param_is_pattern) {
@@ -3870,54 +3908,32 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// 심볼 없는 바인딩은 변환기가 만든 임시 변수(`_d`, `_using`, `_` …)로, 만들 때 함수 안에서
         /// 고유하게 지어지므로 이름을 그대로 올린다.
         fn registerStateMachineBindings(self: *Transformer, bindings: []const NodeIndex) Transformer.Error!void {
-            return registerStateMachineBindingsWithHoisting(self, bindings, false);
+            var plan = try prepareStateMachineBindingPlan(self, bindings, false);
+            defer plan.deinit(self.allocator);
+            try consumeStateMachineBindingPlan(self, &plan);
         }
 
-        fn registerStateMachineBindingsWithHoisting(self: *Transformer, bindings: []const NodeIndex, force_hoist: bool) Transformer.Error!void {
-            for (bindings) |binding| {
-                const bi = @backingInt(binding);
-                const sym: ?u32 = if (bi < self.symbol_ids.items.len) self.symbol_ids.items[bi] else null;
-                const sid = sym orelse {
-                    _ = try registerGeneratorVar(self, self.ast.getNode(binding).data.string_ref, binding);
-                    continue;
+        fn prepareStateMachineBindingPlan(self: *Transformer, bindings: []const NodeIndex, force_hoist: bool) Transformer.Error!es2015_block_scoping.ES2015BlockScoping(Transformer).StateMachineBindingPlan {
+            const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
+            var registered: std.AutoHashMapUnmanaged(NodeIndex, void) = .empty;
+            defer registered.deinit(self.allocator);
+            // Only native lexical storage consults the already-registered
+            // set. ES5/forced plans must not scan every existing temp per name.
+            if (!self.options.unsupported.block_scoping and !force_hoist) {
+                for (bindings) |binding| if (isRegisteredGeneratorBinding(self, binding)) {
+                    try registered.put(self.allocator, binding, {});
                 };
-                // 블록 스코프가 네이티브인 타깃(chrome49)은 소스 바인딩을 제자리에 둔다. 다만 분석 후
-                // 하강이 만든 바인딩(for-of 의 `catch (_err)`, 이름이 string table 에 있음)은 어느
-                // hoist 스캔에도 없으므로 여기서 선언해야 strict 코드에서 ReferenceError 가 안 난다 (#5769).
-                if (!stateMachineRenamesBlockScope(self) and !force_hoist) {
-                    const name_span = self.ast.getNode(binding).data.string_ref;
-                    if (name_span.start & ast_mod.Ast.STRING_TABLE_BIT != 0 and !isRegisteredGeneratorBinding(self, binding))
-                        _ = try registerGeneratorVar(self, name_span, binding);
-                    continue;
-                }
-                const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
-                if (self.semantic_edit_enabled and self.options.defer_runtime_helper_name_resolution and
-                    !self.options.emit_runtime_helper_imports and sid < symbols.len and
-                    es_helpers.isStandaloneLateOutputNameSymbol(symbols[sid]))
-                {
-                    // The standalone exact-ID naming pass owns this symbol's
-                    // final spelling. A second name$N choice here conflicts
-                    // with that pass when the generated loop temp is hoisted.
-                    _ = try registerGeneratorVar(self, self.ast.getNode(binding).data.string_ref, binding);
-                    continue;
-                }
-                const new_name = self.tableRenameOf(binding) orelse blk: {
-                    const raw_name = self.ast.getText(if (force_hoist) self.ast.getNode(binding).data.string_ref else self.ast.getNode(binding).span);
-                    const name = if (force_hoist) try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw_name) else raw_name;
-                    defer if (name.ptr != raw_name.ptr) self.allocator.free(name);
-                    self.block_rename_counter += 1;
-                    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
-                    const n = try std.fmt.allocPrint(self.name_arena.?.allocator(), "{s}${d}", .{ name, self.block_rename_counter });
-                    if (self.block_rename_map == null) self.block_rename_map = .empty;
-                    try self.block_rename_map.?.put(self.allocator, sid, n);
-                    break :blk n;
-                };
-                const selected_name = if (force_hoist)
-                    try es_helpers.resolveGeneratedNameAvoidingDynamicEval(self, new_name, self.generator_state_machine_scope)
-                else
-                    new_name;
-                if (force_hoist) try self.block_rename_map.?.put(self.allocator, sid, selected_name);
-                _ = try registerGeneratorVar(self, try self.ast.addString(selected_name), binding);
+            }
+            return BlockScoping.prepareStateMachineBindings(self, bindings, force_hoist, &registered);
+        }
+
+        fn consumeStateMachineBindingPlan(self: *Transformer, plan: *const es2015_block_scoping.ES2015BlockScoping(Transformer).StateMachineBindingPlan) Transformer.Error!void {
+            for (plan.entries.items) |entry| {
+                if (entry.wrapper_scope != self.generator_state_machine_scope or self.getSymbolIdAt(entry.binding) != entry.symbol)
+                    @panic("prepared state binding changed its exact producer or storage owner");
+                const index = try registerGeneratorVar(self, entry.span, entry.binding);
+                self.generator_temp_producer_identities.items[index].symbol_id = entry.symbol;
+                self.generator_temp_producer_identities.items[index].owner_scope = entry.wrapper_scope;
             }
         }
 
@@ -4283,7 +4299,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             @panic("generator discarded function lost its exact declaration row");
                     }
                 };
-                try registerStateMachineBindingsWithHoisting(self, &.{entry.binding}, true);
+                var binding_plan = try prepareStateMachineBindingPlan(self, &.{entry.binding}, true);
+                defer binding_plan.deinit(self.allocator);
+                try consumeStateMachineBindingPlan(self, &binding_plan);
                 const producer_index = self.generator_temp_producer_identities.items.len - 1;
                 const span = self.generator_temp_var_spans.items[producer_index];
                 const binding = if (self.semantic_edit_enabled) try self.makeUserBinding(span, entry.binding) else entry.binding;
@@ -4329,15 +4347,28 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return false;
         }
 
-        fn registerLoopHeadBindings(self: *Transformer, head: NodeIndex) Transformer.Error!void {
-            if (!isLexicalDeclaration(self, head)) return;
+        fn prepareLoopHeadBindings(self: *Transformer, head: NodeIndex) Transformer.Error!es2015_block_scoping.ES2015BlockScoping(Transformer).StateMachineBindingPlan {
+            if (!isLexicalDeclaration(self, head)) return .{};
             var bindings: std.ArrayList(NodeIndex) = .empty;
             defer bindings.deinit(self.allocator);
             try collectLexicalBindingsInList(self, .{ .start = try self.ast.addExtras(&.{@backingInt(head)}), .len = 1 }, &bindings);
-            try registerStateMachineBindings(self, bindings.items);
+            return prepareStateMachineBindingPlan(self, bindings.items, false);
         }
 
         fn collectBodyOperations(self: *Transformer, body_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+            const node = self.ast.getNode(body_idx);
+            var bindings: std.ArrayList(NodeIndex) = .empty;
+            defer bindings.deinit(self.allocator);
+            if (node.tag == .block_statement) {
+                try collectLexicalBindingsInList(self, node.data.list, &bindings);
+                try es2015_block_scoping.ES2015BlockScoping(Transformer).prepareStateMachineDeclarations(self, node.data.list);
+            }
+            var plan = try prepareStateMachineBindingPlan(self, bindings.items, false);
+            defer plan.deinit(self.allocator);
+            try collectPreparedBodyOperations(self, body_idx, &plan, ops, next_label);
+        }
+
+        fn collectPreparedBodyOperations(self: *Transformer, body_idx: NodeIndex, plan: *const es2015_block_scoping.ES2015BlockScoping(Transformer).StateMachineBindingPlan, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             const saved_scope = self.generator_operation_scope;
             if (self.semantic_edit_enabled) {
                 const raw = @backingInt(body_idx);
@@ -4349,16 +4380,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             defer self.generator_operation_scope = saved_scope;
             const body_node = self.ast.getNode(body_idx);
             if (body_node.tag == .block_statement) {
-                // 이 블록의 let/const/class/using 은 블록 스코프 — 고유 이름으로 바꿔 wrapper 에
-                // 등록한다(호이스팅은 중첩 블록의 lexical 선언을 건너뛴다) (#4712). using 재구성
-                // 뒤에는 var 가 되므로 이름은 **원래 목록**에서 모은다.
-                var lexical: std.ArrayList(NodeIndex) = .empty;
-                defer lexical.deinit(self.allocator);
-                try collectLexicalBindingsInList(self, body_node.data.list, &lexical);
                 const list = try rewriteUsingForStateMachine(self, body_node.data.list);
                 const stmts_start = list.statements.start;
                 const stmts_len = list.statements.len;
-                try registerStateMachineBindings(self, lexical.items);
+                try consumeStateMachineBindingPlan(self, plan);
                 _ = try collectFunctionInitializers(self, list.statements, ops);
                 // collectOperations가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
                 var i_stmt: u32 = 0;
@@ -7019,4 +7044,43 @@ test "suspension object spread groups share ordinary getter copy ordering" {
         "function* run(){return {get [(yield 'key')](){return this.first+41},...{first:1,last:3}}}var iter=run();iter.next();var obj=iter.next('answer').value;console.log(JSON.stringify([obj.answer,obj.last]));",
     };
     for (sources) |source| try checkSuspensionObjectES5(source);
+}
+
+test "suspension lexical preparation resets source cells at each actual entry" {
+    // Each source is an independent native oracle. In particular the first
+    // source used to produce [42,42] instead of the native [42,null].
+    const sources = [_][]const u8{
+        "function* run(){for(var index=0;index<2;index++){let value;if(index===0)value=42;yield value}}console.log(JSON.stringify([...run()]));",
+        "function* run(){var index=0;while(index<2){let value;if(index++===0)value=42;yield value}}console.log(JSON.stringify([...run()]));",
+        "function* run(){var index=0;do{let value;if(index++===0)value=42;yield value}while(index<2)}console.log(JSON.stringify([...run()]));",
+        "function* run(){for(var index=0;index<2;index++){try{let value;if(index===0)value=42;yield value}finally{yield index}}}console.log(JSON.stringify([...run()]));",
+        "function* run(){for(var index=0;index<2;index++){try{throw index}catch(error){let value;if(error===0)value=42;yield value}}}console.log(JSON.stringify([...run()]));",
+        "function* run(){for(var index=0;index<2;index++){switch(index){case 0:case 1:let value;if(index===0)value=42;yield value;break}}}console.log(JSON.stringify([...run()]));",
+        "function* run(){for(var index=0;index<2;index++){again:{let value;if(index===0)value=42;yield value;break again}}}console.log(JSON.stringify([...run()]));",
+        "function* run(){for(var index=0;index<2;index++){for(let value;index<2;index++){yield value;value=42;break}}}console.log(JSON.stringify([...run()]));",
+        "function* run(){let value=7;var readOuter=function(){return value};for(var index=0;index<2;index++){let value;if(index===0)value=42;yield value}yield readOuter()}console.log(JSON.stringify([...run()]));",
+        "async function run(){var output=[];for(var index=0;index<2;index++){let value;await 0;if(index===0)value=42;output.push(value)}return output}run().then(function(value){console.log(JSON.stringify(value))});",
+    };
+    for (sources) |source| try checkSuspensionEvaluationRuntime(source);
+}
+
+test "suspension lexical preparation retains explicit switch block ownership" {
+    try checkSuspensionEvaluationRuntime("function* run(){for(var index=0;index<2;index++){switch(index){case 0:case 1:{let value;if(index===0)value=42;yield value;break}}}}console.log(JSON.stringify([...run()]));");
+}
+
+test "suspension lexical preparation keeps nested switch break and loop continue owners" {
+    const sources = [_][]const u8{
+        "function* run(){for(var index=0;index<3;index++){switch(index){case 0:{yield index;continue}default:{yield index;break}}yield 42}}console.log(JSON.stringify([...run()]));",
+        "function* run(){outer:for(var index=0;index<3;index++){switch(index){case 0:{yield index;break outer}default:yield index}}}console.log(JSON.stringify([...run()]));",
+        "function* run(){for(var index=0;index<2;index++){switch(index){case 0:case 1:{switch(index){case 0:{yield 1;break}default:yield 2}yield 3;break}}yield 4}}console.log(JSON.stringify([...run()]));",
+    };
+    for (sources) |source| try checkSuspensionEvaluationRuntime(source);
+}
+
+test "suspension lexical preparation preserves var retention and every lexical declarator" {
+    const sources = [_][]const u8{
+        "function* run(){for(var index=0;index<2;index++){var value;if(index===0)value=42;yield value}}console.log(JSON.stringify([...run()]));",
+        "function* run(){for(var index=0;index<2;index++){let first,last;if(index===0){first=41;last=42}yield [first,last]}}console.log(JSON.stringify([...run()]));",
+    };
+    for (sources) |source| try checkSuspensionEvaluationRuntime(source);
 }

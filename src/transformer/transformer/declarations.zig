@@ -136,12 +136,8 @@ pub fn visitVariableDeclaration(self: *Transformer, node: Node) Error!NodeIndex 
                 // 단 destructuring pattern (`let {x}`, `let [x]`)은 init 추가 금지 —
                 // for-of/for-in의 left에서 매 반복 iter value를 받으며, `{x} = void 0` 같은
                 // statement는 block_statement로 잘못 파싱되어 syntax error (#1302).
-                const is_destructuring = isBindingPattern(self, new_name);
                 const none = @backingInt(NodeIndex.none);
-                const init_node: u32 = if (is_destructuring)
-                    none
-                else
-                    @backingInt(try es_helpers.makeVoidZero(self, node.span));
+                const init_node = @backingInt(try es2015_block_scoping.ES2015BlockScoping(Transformer).initializeLoweredLexical(self, new_name, .none, node.span));
                 const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @backingInt(new_name), none, init_node });
                 try self.scratch.append(self.allocator, new_decl);
             } else {
