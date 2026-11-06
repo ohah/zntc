@@ -18,6 +18,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -75,6 +76,23 @@ function spawnSync(command: string, args: string[], options: SpawnSyncOptions = 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+function diskCacheFileSnapshot(root: string): string[] {
+  const files: string[] = [];
+  const visit = (directory: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name.toString());
+      if (entry.isDirectory()) visit(path);
+      else if (entry.isFile()) files.push(path);
+    }
+  };
+  visit(root);
+  return files
+    .sort()
+    .map(
+      (path) => `${relative(root, path)}:${statSync(path, { bigint: true }).mtimeNs.toString()}`,
+    );
 }
 
 const FIXTURE_DIR = join(import.meta.dir, '../fixtures/downlevel-oracle');
@@ -38644,7 +38662,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
-  test('NAPI onAstFunction generated direct eval keeps exact identities through target lowering', () => {
+  test('NAPI onAstFunction generated direct eval keeps exact identities through cold and warm cache builds', () => {
     const fixtures = [
       {
         label: 'ESNext syntax and identifier minification',
@@ -38679,6 +38697,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-generated-eval-'));
       const entry = join(dir, 'entry.js');
       const output = join(dir, 'out.cjs');
+      const cacheDir = join(dir, 'cache');
       writeFileSync(entry, fixture.source);
 
       const baseOptions = JSON.stringify({
@@ -38688,6 +38707,8 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         target: fixture.target,
         minifySyntax: fixture.minifySyntax,
         minifyIdentifiers: true,
+        diskCache: true,
+        cacheDir,
         write: false,
       });
       const runner = [
@@ -38698,64 +38719,88 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       ].join('\n');
 
       try {
-        const buildResult = spawnSync('bun', ['-e', runner], {
-          cwd: join(import.meta.dir, '../../..'),
-          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
-          encoding: 'utf8',
-        });
-        expect(buildResult.status, `${fixture.label}: ${buildResult.stderr}`).toBe(0);
-        const stderr = buildResult.stderr ?? '';
-        const mode = stderr
-          .split(/\r?\n/)
-          .find(
-            (line) =>
-              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
-          );
-        expect(mode, `${fixture.label}: ${stderr}`).toContain('semantic_graph=retained');
-        const identity = stderr
-          .split(/\r?\n/)
-          .find(
-            (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry),
-          );
-        expect(identity, `${fixture.label}: ${stderr}`).toBeDefined();
-        expect(exactSchemaProblems(identity ?? ''), `${fixture.label}: ${identity}`).toEqual([]);
-        const outputs = JSON.parse(buildResult.stdout) as string[];
-        expect(outputs).toHaveLength(1);
-        const emitted = outputs[0];
-        if (fixture.expectDownlevelClass)
-          expect(emitted, fixture.label).not.toMatch(/\bclass\s+Box\b/);
-        writeFileSync(output, emitted);
-
-        const execute = spawnSync(
-          'node',
-          [
-            '-e',
-            `try { require(${JSON.stringify(output)}); } catch (error) { process.stdout.write(String(error) + '\\n'); }`,
-          ],
-          { encoding: 'utf8' },
-        );
-        expect(execute.status, `${fixture.label}: ${execute.stderr}`).toBe(0);
-        expect(execute.stdout, fixture.label).toBe(fixture.expected);
-
-        if (fixture.hostileEvalNames) {
-          const evalCall = emitted.match(/eval\((["'])shared\1\)/);
-          expect(evalCall, fixture.label).not.toBeNull();
-          for (const hostileName of fixture.hostileEvalNames) {
-            const mutated = emitted.replace(evalCall![0], `eval(${JSON.stringify(hostileName)})`);
-            expect(mutated, `${fixture.label}: ${hostileName}`).not.toBe(emitted);
-            writeFileSync(output, mutated);
-            const hostile = spawnSync(
-              'node',
-              [
-                '-e',
-                `try { require(${JSON.stringify(output)}); } catch (error) { process.stdout.write(String(error) + '\\n'); }`,
-              ],
-              { encoding: 'utf8' },
+        let coldOutput: string | undefined;
+        let coldCacheSnapshot: string[] | undefined;
+        for (const phase of ['cold', 'warm'] as const) {
+          // Separate Bun processes ensure the warm build restores the persisted
+          // parse AST and semantic graph instead of reusing an in-memory module.
+          const buildResult = spawnSync('bun', ['-e', runner], {
+            cwd: join(import.meta.dir, '../../..'),
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          });
+          expect(buildResult.status, `${fixture.label} ${phase}: ${buildResult.stderr}`).toBe(0);
+          const stderr = buildResult.stderr ?? '';
+          const mode = stderr
+            .split(/\r?\n/)
+            .find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(entry),
             );
-            expect(hostile.status, `${hostileName}: ${hostile.stderr}`).toBe(0);
-            expect(hostile.stdout, hostileName).toMatch(
-              new RegExp(`^ReferenceError: ${hostileName} is not defined[\\s\\S]*\\n40\\n$`),
+          expect(mode, `${fixture.label} ${phase}: ${stderr}`).toContain('semantic_graph=retained');
+          const identity = stderr
+            .split(/\r?\n/)
+            .find(
+              (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(entry),
             );
+          expect(identity, `${fixture.label} ${phase}: ${stderr}`).toBeDefined();
+          expect(
+            exactSchemaProblems(identity ?? ''),
+            `${fixture.label} ${phase}: ${identity}`,
+          ).toEqual([]);
+          const outputs = JSON.parse(buildResult.stdout) as string[];
+          expect(outputs, `${fixture.label} ${phase}`).toHaveLength(1);
+          const emitted = outputs[0];
+          if (fixture.expectDownlevelClass)
+            expect(emitted, `${fixture.label} ${phase}`).not.toMatch(/\bclass\s+Box\b/);
+          if (phase === 'cold') {
+            coldOutput = emitted;
+            coldCacheSnapshot = diskCacheFileSnapshot(cacheDir);
+            expect(
+              coldCacheSnapshot.length,
+              `${fixture.label}: cold build wrote disk cache`,
+            ).toBeGreaterThan(0);
+          } else {
+            expect(emitted, `${fixture.label}: warm output`).toBe(coldOutput);
+            // A miss would reparse and atomically rewrite the cache entries.
+            expect(
+              diskCacheFileSnapshot(cacheDir),
+              `${fixture.label}: warm build loaded cache`,
+            ).toEqual(coldCacheSnapshot);
+          }
+          writeFileSync(output, emitted);
+
+          const execute = spawnSync(
+            'node',
+            [
+              '-e',
+              `try { require(${JSON.stringify(output)}); } catch (error) { process.stdout.write(String(error) + '\\n'); }`,
+            ],
+            { encoding: 'utf8' },
+          );
+          expect(execute.status, `${fixture.label} ${phase}: ${execute.stderr}`).toBe(0);
+          expect(execute.stdout, `${fixture.label} ${phase}`).toBe(fixture.expected);
+
+          if (phase === 'warm' && fixture.hostileEvalNames) {
+            const evalCall = emitted.match(/eval\((["'])shared\1\)/);
+            expect(evalCall, fixture.label).not.toBeNull();
+            for (const hostileName of fixture.hostileEvalNames) {
+              const mutated = emitted.replace(evalCall![0], `eval(${JSON.stringify(hostileName)})`);
+              expect(mutated, `${fixture.label}: ${hostileName}`).not.toBe(emitted);
+              writeFileSync(output, mutated);
+              const hostile = spawnSync(
+                'node',
+                [
+                  '-e',
+                  `try { require(${JSON.stringify(output)}); } catch (error) { process.stdout.write(String(error) + '\\n'); }`,
+                ],
+                { encoding: 'utf8' },
+              );
+              expect(hostile.status, `${hostileName}: ${hostile.stderr}`).toBe(0);
+              expect(hostile.stdout, hostileName).toMatch(
+                new RegExp(`^ReferenceError: ${hostileName} is not defined[\\s\\S]*\\n40\\n$`),
+              );
+            }
           }
         }
       } finally {
