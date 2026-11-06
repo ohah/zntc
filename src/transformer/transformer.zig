@@ -209,6 +209,12 @@ pub const Transformer = struct {
         symbol: u32,
         wrapper_scope: ScopeId,
         wrapper: NodeIndex,
+
+        pub fn insert(self: @This(), allocator: std.mem.Allocator, records: *std.AutoHashMapUnmanaged(NodeIndex, @This())) error{ OutOfMemory, DuplicateSourceClass }!void {
+            const entry = try records.getOrPut(allocator, self.source_class);
+            if (entry.found_existing) return error.DuplicateSourceClass;
+            entry.value_ptr.* = self;
+        }
     };
 
     pub const LoweredClassOwner = struct { node: NodeIndex, source_scope: ScopeId };
@@ -449,7 +455,7 @@ pub const Transformer = struct {
     class_self_symbol_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// Transient producer receipts for a fresh wrapper-local class self.
     /// These are consumed before publication; no cache or source identity is inferred.
-    wrapper_class_self_bindings: std.ArrayListUnmanaged(WrapperClassSelf) = .empty,
+    wrapper_class_self_bindings: std.AutoHashMapUnmanaged(NodeIndex, WrapperClassSelf) = .empty,
 
     /// Anonymous default class declarations lower to an outer synthetic var.
     /// Keep its exact binding node so the export reference targets its SymbolId.
