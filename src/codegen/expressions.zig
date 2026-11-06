@@ -44,11 +44,9 @@ pub fn emitUnary(self: anytype, node: Node, level: Level, flags: ExprFlags) !voi
     if (e + 1 >= extras.len) return;
     const operand: NodeIndex = @fromBackingInt(@intCast(extras[e]));
     const op: Kind = @fromBackingInt(@intCast(@as(u8, @truncate(extras[e + 1]))));
-    if (op == .bang and self.options.linking_metadata != null) {
-        if (self.evalBooleanCondition(operand)) |v| {
-            try self.write(if (!v) "true" else "false");
-            return;
-        }
+    if (foldedOutput(self, node)) |selected| {
+        try self.write(if (selected.boolean) "true" else "false");
+        return;
     }
     const is_keyword_op = op == .kw_typeof or op == .kw_void or op == .kw_delete;
     // 직전 연산자와 붙어 `--`/`++` 로 합쳐지면 한 칸 끼운다 (`- -x`, `- --x`) (#4482).
@@ -202,21 +200,9 @@ fn powLeftNeedsParen(self: anytype, idx: NodeIndex) bool {
                 }
                 return calls.isUndefinedPeephole(self, cur); // 전역 `undefined` → `void 0`
             },
-            // 상수 단락 fold — emitBinary 와 **같은 판정**을 해야 한다.
-            .logical_expression => {
-                if (self.options.linking_metadata == null) return false;
-                const left_val = self.evalBooleanCondition(n.data.binary.left) orelse return false;
-                const op: Kind = @fromBackingInt(@intCast(n.data.binary.flags));
-                // 단락 확정 → `true`/`false` 텍스트로 접힘 (키워드로 시작).
-                if ((op == .amp2 and !left_val) or (op == .pipe2 and left_val)) return false;
-                cur = skipTransparent(self, n.data.binary.right); // 우변이 그 자리에 온다
-            },
-            // 상수 조건 fold — emitConditional 과 같은 판정.
-            .conditional_expression => {
-                if (self.options.linking_metadata == null) return false;
-                const cond = self.evalBooleanCondition(n.data.ternary.a) orelse return false;
-                cur = skipTransparent(self, if (cond) n.data.ternary.b else n.data.ternary.c);
-            },
+            // Folded logical/conditional values start with their parenthesized
+            // GetValue carrier. Non-folded operators own normal precedence.
+            .logical_expression, .conditional_expression => return false,
             else => return false,
         }
     }
@@ -260,27 +246,16 @@ fn assertPowLeftWrapped(self: anytype, node: Node, left: NodeIndex, left_start: 
 /// (#4123) → 좌 스파인을 명시 스택으로 평탄화해 반복 emit 한다. 출력 텍스트와 addSourceMapping
 /// 순서(root → 스파인 top-down → 최좌단 leaf → operator+right bottom-up)는 재귀판과 동일.
 pub fn emitBinary(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
-    // wrap 은 emitExpr 진입부 exprNeedsParens 가 담당(중앙 집중). level 은 단락 폴드 시
-    // 살아남는 분기를 부모 level 로 투과해, 폴드로 wrap 을 위임받은 그 분기가 자기 wrap 을
-    // 정확히 걸 수 있게 한다(.lowest 로 투과하면 고-precedence 슬롯에서 괄호 유실).
+    _ = level; // folded values own a parenthesized GetValue carrier
+    // Non-folded operators use the shared precedence path. A folded operand
+    // owns its parenthesized GetValue carrier and cannot leak a Reference.
     try self.addSourceMapping(node.span);
-    const op: Kind = @fromBackingInt(@intCast(node.data.binary.flags));
     // 괄호 안이 아니면 자식에 forbid_in 전파(`for ((a in b);;)` 헤더 오파싱 방지).
     // PR6 에서 wrap 시 false 로 조정(괄호 안에선 in 이 안전). PR5 는 wrap 미발동.
     const child_flags = ExprFlags{ .forbid_in = flags.forbid_in };
-    if (self.options.linking_metadata != null and node.tag == .logical_expression) {
-        if (self.evalBooleanCondition(node.data.binary.left)) |left_val| {
-            if ((op == .amp2 and !left_val) or
-                (op == .pipe2 and left_val))
-            {
-                try self.write(if (left_val) "true" else "false");
-                return;
-            }
-            // 단락 폴드: logical 이 사라지고 right 가 그 자리 → 부모 level/flags 투과
-            // (자식이 부모 level 로 자기 wrap → exprNeedsParens 의 wrap-위임이 정확해짐).
-            try self.emitExpr(node.data.binary.right, level, flags);
-            return;
-        }
+    if (foldedOutput(self, node)) |selected| {
+        try emitFoldedOutput(self, selected);
+        return;
     }
 
     const left = node.data.binary.left;
@@ -383,16 +358,60 @@ pub fn emitAssignment(self: anytype, node: Node, level: Level, flags: ExprFlags)
     }
 }
 
+/// Exact output selected by the link-time folds below. Keyword separation and
+/// precedence inspect this same result, rather than a discarded AST child.
+pub const FoldedOutput = union(enum) { value: NodeIndex, boolean: bool };
+
+/// Conditional and logical expressions return GetValue, never a Reference or
+/// an anonymous-definition NamedEvaluation. Parentheses alone retain both.
+/// The comma value carrier preserves that boundary for calls, eval, delete,
+/// typeof, constructor/tag targets and anonymous function/class initializers.
+fn emitFoldedOutput(self: anytype, selected: FoldedOutput) !void {
+    switch (selected) {
+        .boolean => |value| try self.write(if (value) "true" else "false"),
+        .value => |index| {
+            try self.write("(0,");
+            try self.emitExpr(index, .comma, .{});
+            try self.writeByte(')');
+        },
+    }
+}
+
+pub fn foldedOutput(self: anytype, node: Node) ?FoldedOutput {
+    if (self.options.linking_metadata == null) return null;
+    switch (node.tag) {
+        .conditional_expression => {
+            const condition = self.evalBooleanCondition(node.data.ternary.a) orelse return null;
+            return .{ .value = if (condition) node.data.ternary.b else node.data.ternary.c };
+        },
+        .logical_expression => {
+            const op: Kind = @fromBackingInt(@intCast(node.data.binary.flags));
+            // Truthiness is not nullishness. Without a nullish fact, keep ??
+            // intact instead of applying an &&/|| selection rule to it.
+            if (op != .amp2 and op != .pipe2) return null;
+            const left = self.evalBooleanCondition(node.data.binary.left) orelse return null;
+            // &&/|| select an operand value; they do not convert it to bool.
+            // evalBooleanCondition only proves effect-free conditions/reads.
+            return .{ .value = if ((op == .amp2 and !left) or (op == .pipe2 and left)) node.data.binary.left else node.data.binary.right };
+        },
+        .unary_expression => {
+            if (unaryOpKind(self, node.data.extra) != .bang) return null;
+            const operand = self.ast.readExtraNode(node.data.extra, 0);
+            return .{ .boolean = !(self.evalBooleanCondition(operand) orelse return null) };
+        },
+        else => return null,
+    }
+}
+
 pub fn emitConditional(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
-    // wrap 은 emitExpr 진입부가 담당. level 은 상수 폴드 시 살아남는 분기를 부모 level 로
-    // 투과해 그 분기가 자기 wrap 을 정확히 걸게 한다(.lowest 투과 시 고-precedence 슬롯 유실).
+    _ = level; // folded values own a parenthesized GetValue carrier
+    // Non-folded branches use normal conditional precedence. A folded value
+    // is emitted inside its own parenthesized GetValue carrier.
     try self.addSourceMapping(node.span);
     const t = node.data.ternary;
-    if (self.options.linking_metadata != null) {
-        if (self.evalBooleanCondition(t.a)) |cond| {
-            try self.emitExpr(if (cond) t.b else t.c, level, flags);
-            return;
-        }
+    if (foldedOutput(self, node)) |selected| {
+        try emitFoldedOutput(self, selected);
+        return;
     }
     // esbuild EIf: test=.conditional(forbid_in 보존), yes=.yield(clean), no=.yield(forbid_in 보존).
     const branch_flags = ExprFlags{ .forbid_in = flags.forbid_in };

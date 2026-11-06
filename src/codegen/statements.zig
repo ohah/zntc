@@ -596,6 +596,12 @@ fn operandStartsIdentifierLikeDepth(self: anytype, idx: ast_mod.NodeIndex, depth
     if (depth >= 32) return true;
     if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return true;
     const n = self.ast.getNode(idx);
+    if (@import("expressions.zig").foldedOutput(self, n)) |selected| {
+        return switch (selected) {
+            .boolean => true,
+            .value => false, // the shared value carrier starts with `(`
+        };
+    }
     // TS/Flow type cast 래퍼(`x as T`/`<T>x`)는 strip 후 안쪽이 시작 토큰 → 따라간다.
     if (ast_mod.Node.Tag.isTransparentTypeWrapper(n.tag)) {
         return operandStartsIdentifierLikeDepth(self, n.data.unary.operand, depth + 1);
