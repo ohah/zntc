@@ -24,6 +24,11 @@ pub fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult,
     var js_result: c.napi_value = undefined;
     if (c.napi_create_object(env, &js_result) != c.napi_ok) return null;
 
+    // Logging controls diagnostic visibility, never publication authority.
+    var js_has_errors: c.napi_value = undefined;
+    _ = c.napi_get_boolean(env, result.hasErrors(), &js_has_errors);
+    _ = c.napi_set_named_property(env, js_result, "hasErrors", js_has_errors);
+
     var js_outputs: c.napi_value = undefined;
     _ = c.napi_create_array(env, &js_outputs);
 

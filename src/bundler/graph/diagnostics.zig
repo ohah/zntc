@@ -60,6 +60,30 @@ pub fn addOwnedDiag(
     addDiag(self, code, severity, file_path, span, step, message, suggestion);
 }
 
+/// Atomically publish a diagnostic whose source graph is about to die.
+/// All fallible work precedes content/latch publication under the same lock.
+pub fn addOwnedDiagnostic(self: *ModuleGraph, source: BundlerDiagnostic) !void {
+    const message = try self.allocator.dupe(u8, source.message);
+    errdefer self.allocator.free(message);
+    const file_path = try self.allocator.dupe(u8, source.file_path);
+    errdefer self.allocator.free(file_path);
+    const suggestion = if (source.suggestion) |text| try self.allocator.dupe(u8, text) else null;
+    errdefer if (suggestion) |text| self.allocator.free(text);
+    self.diag_mutex.lock();
+    defer self.diag_mutex.unlock();
+    try self.owned_diagnostic_strings.ensureUnusedCapacity(self.allocator, if (suggestion != null) 3 else 2);
+    try self.diagnostics.ensureUnusedCapacity(self.allocator, 1);
+    var owned = source;
+    owned.message = message;
+    owned.file_path = file_path;
+    owned.suggestion = suggestion;
+    self.owned_diagnostic_strings.appendAssumeCapacity(message);
+    self.owned_diagnostic_strings.appendAssumeCapacity(file_path);
+    if (suggestion) |text| self.owned_diagnostic_strings.appendAssumeCapacity(text);
+    self.diagnostics.appendAssumeCapacity(owned);
+    if (source.severity == .@"error") self.preserved_graph_invalidated = true;
+}
+
 pub fn addPluginFailureDiag(
     self: *ModuleGraph,
     failure: ?plugin_mod.PluginFailure,
@@ -134,4 +158,49 @@ fn tryAddPluginFailureDiag(
     }
 
     addDiag(self, .plugin_error, .@"error", file_path, span, step, message, null);
+}
+
+fn checkAtomicWorkerDiagnostic(allocator: @import("std").mem.Allocator) !void {
+    const std = @import("std");
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(allocator, &cache);
+    defer graph.deinit();
+    var message = [_]u8{ 'b', 'a', 'd' };
+    var path = [_]u8{ 'w', '.', 'j', 's' };
+    var suggestion = [_]u8{ 'f', 'i', 'x' };
+    const source: BundlerDiagnostic = .{
+        .code = .parse_error,
+        .severity = .@"error",
+        .message = &message,
+        .file_path = &path,
+        .span = .{ .start = 3, .end = 4 },
+        .step = .parse,
+        .suggestion = &suggestion,
+        .captured_location = .{ .span = .{ .start = 3, .end = 4 }, .source_length = 9, .line = 2, .column = 1 },
+    };
+    graph.addOwnedDiagnostic(source) catch |err| {
+        try std.testing.expectEqual(@as(usize, 0), graph.diagnostics.items.len);
+        try std.testing.expectEqual(@as(usize, 0), graph.owned_diagnostic_strings.items.len);
+        try std.testing.expect(!graph.preserved_graph_invalidated);
+        return err;
+    };
+    try std.testing.expect(graph.preserved_graph_invalidated);
+    try std.testing.expectEqual(@as(usize, 1), graph.diagnostics.items.len);
+    const owned = graph.diagnostics.items[0];
+    try std.testing.expect(owned.message.ptr != message[0..].ptr);
+    try std.testing.expect(owned.file_path.ptr != path[0..].ptr);
+    try std.testing.expect(owned.suggestion.?.ptr != suggestion[0..].ptr);
+    @memset(&message, 'x');
+    @memset(&path, 'x');
+    @memset(&suggestion, 'x');
+    try std.testing.expectEqualStrings("bad", owned.message);
+    try std.testing.expectEqualStrings("w.js", owned.file_path);
+    try std.testing.expectEqualStrings("fix", owned.suggestion.?);
+    try std.testing.expectEqualDeep(source.captured_location, owned.captured_location);
+}
+
+test "worker parser diagnostic ownership is atomic under allocation failure" {
+    const std = @import("std");
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkAtomicWorkerDiagnostic, .{});
 }

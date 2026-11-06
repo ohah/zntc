@@ -768,7 +768,17 @@ fn copyDiagnostics(
         var line: ?u32 = null;
         var column: ?u32 = null;
         if (d.span.end >= d.span.start and (d.span.start != 0 or d.span.end != 0)) {
-            if (graph.path_to_module.get(d.file_path)) |module_index| {
+            if (d.captured_location) |captured| {
+                if (std.meta.eql(captured.span, d.span) and
+                    diagnosticSpanBelongsToSource(d.span, captured.source_length) and
+                    captured.line > 0 and captured.line <= captured.source_length +| 1 and
+                    captured.column <= captured.source_length)
+                {
+                    validated_span = d.span;
+                    line = captured.line;
+                    column = captured.column;
+                }
+            } else if (graph.path_to_module.get(d.file_path)) |module_index| {
                 const module = graph.modules.at(module_index.toU32());
                 if (diagnosticSpanBelongsToSource(d.span, module.source.len)) {
                     validated_span = d.span;
@@ -781,16 +791,22 @@ fn copyDiagnostics(
                 }
             }
         }
+        const message = try allocator.dupe(u8, d.message);
+        errdefer allocator.free(message);
+        const file_path = try allocator.dupe(u8, d.file_path);
+        errdefer allocator.free(file_path);
+        const suggestion = if (d.suggestion) |text| try allocator.dupe(u8, text) else null;
+        errdefer if (suggestion) |text| allocator.free(text);
         dest[filled.*] = .{
             .span = validated_span,
             .line = line,
             .column = column,
             .code = d.code,
             .severity = d.severity,
-            .message = try allocator.dupe(u8, d.message),
-            .file_path = try allocator.dupe(u8, d.file_path),
+            .message = message,
+            .file_path = file_path,
             .step = d.step,
-            .suggestion = if (d.suggestion) |s| try allocator.dupe(u8, s) else null,
+            .suggestion = suggestion,
         };
         filled.* += 1;
     }
@@ -1191,7 +1207,7 @@ pub const Bundler = struct {
     }
 
     /// Worker 파일을 별도 번들로 빌드한다.
-    fn buildWorker(self: *Bundler, io: std.Io, worker_path: []const u8, format: EmitOptions.Format, parent_graph: *ModuleGraph) !WorkerBuildResult {
+    fn buildWorker(self: *Bundler, io: std.Io, worker_path: []const u8, format: EmitOptions.Format, parent_graph: *ModuleGraph) !?WorkerBuildResult {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const arena_alloc = arena.allocator();
@@ -1256,6 +1272,28 @@ pub const Bundler = struct {
         const entry_arr: [1][]const u8 = .{entry_path};
         try worker_graph.build(io, &entry_arr);
         try rejectUnsupportedLoopPublication(&worker_graph);
+        // Fatal parser failures return before parseModule publishes an AST.
+        // Recoverable parser errors and all resolve/linker policy stay unchanged.
+        var fatal_parser = false;
+        for (worker_graph.diagnostics.items) |diagnostic| {
+            if (diagnostic.code != .parse_error or diagnostic.step != .parse or diagnostic.severity != .@"error") continue;
+            const index = worker_graph.path_to_module.get(diagnostic.file_path) orelse continue;
+            const module = worker_graph.modules.at(index.toU32());
+            if (module.state != .ready or module.ast != null) continue;
+            var owned = diagnostic;
+            if ((diagnostic.span.start != 0 or diagnostic.span.end != 0) and
+                diagnosticSpanBelongsToSource(diagnostic.span, module.source.len))
+            {
+                if (module.line_offsets.len == 0)
+                    module.line_offsets = try @import("../lexer/scanner.zig").Scanner.computeLineOffsets(arena_alloc, module.source);
+                const info: @import("../rich_diagnostic.zig").SourceInfo = .{ .source = module.source, .line_offsets = module.line_offsets };
+                const location = info.getLineColumn(diagnostic.span.start);
+                owned.captured_location = .{ .span = diagnostic.span, .source_length = module.source.len, .line = location.line + 1, .column = location.column };
+            }
+            try parent_graph.addOwnedDiagnostic(owned);
+            fatal_parser = true;
+        }
+        if (fatal_parser) return null;
 
         // 링킹
         var worker_linker = Linker.init(arena_alloc, &worker_graph, format);
@@ -1717,13 +1755,21 @@ pub const Bundler = struct {
                 if (we.record_index >= mod.import_records.len or !mod.import_records[we.record_index].worker_module)
                     try classic_workers.put(self.allocator, we.resolved_path, {});
             }
+            var failed_worker_paths: std.StringHashMapUnmanaged(void) = .empty;
+            defer failed_worker_paths.deinit(self.allocator);
             for (graph.worker_entries.items) |we| {
+                // Failed paths also have one diagnostic publication despite
+                // discovery/prepass replaying the same worker edge.
+                if (failed_worker_paths.contains(we.resolved_path)) continue;
                 // 같은 worker 파일이 여러 곳에서 참조되면 한 번만 빌드
                 if (!worker_output_map.contains(we.resolved_path)) {
                     const worker_format = self.workerFormatFor(!classic_workers.contains(we.resolved_path));
                     const worker_result = self.buildWorker(io, we.resolved_path, worker_format, graph) catch |err| switch (err) {
-                        error.LoopDynamicScope, error.GeneratorNativeLexicalResume, error.GeneratorNativeLexicalNesting => return err,
+                        error.OutOfMemory, error.LoopDynamicScope, error.GeneratorNativeLexicalResume, error.GeneratorNativeLexicalNesting => return err,
                         else => continue,
+                    } orelse {
+                        try failed_worker_paths.put(self.allocator, we.resolved_path, {});
+                        continue;
                     };
                     try worker_output_map.put(self.allocator, we.resolved_path, worker_result.filename);
                     try worker_output_files.append(self.allocator, .{
@@ -3138,4 +3184,166 @@ test "unsupported loop publication returns typed errors before bundle results" {
             }
         }
     }
+}
+
+test "fatal worker parser publication preserves isolated source diagnostics and skips invalid output" {
+    const helpers = @import("test_helpers.zig");
+    const bad_source = "// isolated worker source\nconst broken = ;\n";
+    inline for (.{ false, true }) |dependency| {
+        inline for (.{ false, true }) |module_worker| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            const source = try std.fmt.allocPrint(std.testing.allocator, "new Worker(new URL('./good.mjs',import.meta.url));new Worker(new URL('./bad.mjs',import.meta.url){s});new Worker(new URL('./bad.mjs',import.meta.url){s});", .{ if (module_worker) ",{type:'module'}" else "", if (module_worker) ",{type:'module'}" else "" });
+            defer std.testing.allocator.free(source);
+            try helpers.writeFile(tmp.dir, "entry.mjs", source);
+            try helpers.writeFile(tmp.dir, "good.mjs", "console.log(42);");
+            try helpers.writeFile(tmp.dir, "bad.mjs", if (dependency) "import './broken.mjs';console.log(43);" else bad_source);
+            if (dependency) try helpers.writeFile(tmp.dir, "broken.mjs", bad_source);
+            const entry = try helpers.absPath(&tmp, "entry.mjs");
+            defer std.testing.allocator.free(entry);
+            var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+            defer bundler.deinit();
+            const result = try bundler.bundle(std.testing.io);
+            defer result.deinit(std.testing.allocator);
+            try std.testing.expect(result.hasErrors());
+            var parser_count: usize = 0;
+            const diagnostics = result.diagnostics orelse return error.MissingWorkerParserDiagnostic;
+            const offsets = try @import("../lexer/scanner.zig").Scanner.computeLineOffsets(std.testing.allocator, bad_source);
+            defer std.testing.allocator.free(offsets);
+            const info: @import("../rich_diagnostic.zig").SourceInfo = .{ .source = bad_source, .line_offsets = offsets };
+            for (diagnostics, 0..) |diagnostic, index| {
+                if (diagnostic.code != .parse_error) continue;
+                parser_count += 1;
+                try std.testing.expectEqualStrings(if (dependency) "broken.mjs" else "bad.mjs", std.fs.path.basename(diagnostic.file_path));
+                try std.testing.expect(diagnostic.message.len > 0);
+                const span = diagnostic.span orelse return error.MissingWorkerParserSpan;
+                try std.testing.expect(diagnosticSpanBelongsToSource(span, bad_source.len));
+                const location = info.getLineColumn(span.start);
+                try std.testing.expectEqual(@as(?u32, location.line + 1), diagnostic.line);
+                try std.testing.expectEqual(@as(?u32, location.column), diagnostic.column);
+                for (diagnostics[0..index]) |previous| {
+                    try std.testing.expect(!(previous.code == diagnostic.code and
+                        std.meta.eql(previous.span, diagnostic.span) and
+                        std.mem.eql(u8, previous.message, diagnostic.message) and
+                        std.mem.eql(u8, previous.file_path, diagnostic.file_path)));
+                }
+            }
+            try std.testing.expect(parser_count > 0);
+            const outputs = result.asset_outputs orelse return error.MissingGoodWorkerOutput;
+            try std.testing.expectEqual(@as(usize, 1), outputs.len);
+            try std.testing.expect(std.mem.startsWith(u8, outputs[0].path, "good-"));
+            try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "42") != null);
+        }
+    }
+}
+
+test "valid and recoverable worker parser policy remains unchanged" {
+    const helpers = @import("test_helpers.zig");
+    inline for (.{ false, true }) |recoverable| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "new Worker(new URL('./worker.mjs',import.meta.url));");
+        try helpers.writeFile(tmp.dir, "worker.mjs", if (recoverable) "function run(value=1){'use strict';return value;}console.log(42);" else "console.log(42);");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
+        try std.testing.expectEqual(@as(usize, 1), outputs.len);
+        try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "42") != null);
+    }
+}
+
+test "worker parser captured locations reject mismatched spans and out of bounds metadata" {
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    const location: BundlerDiagnostic.CapturedLocation = .{ .span = .{ .start = 2, .end = 3 }, .source_length = 9, .line = 2, .column = 1 };
+    for (0..4) |poison| {
+        var diagnostic: BundlerDiagnostic = .{ .code = .parse_error, .severity = .@"error", .message = "bad", .file_path = "/isolated/worker.mjs", .span = location.span, .step = .parse, .captured_location = location };
+        switch (poison) {
+            1 => diagnostic.captured_location.?.span.start = 1,
+            2 => diagnostic.captured_location.?.source_length = 1,
+            3 => diagnostic.captured_location.?.line = 0,
+            else => {},
+        }
+        var destination: [1]BundleResult.OwnedDiagnostic = undefined;
+        var filled: usize = 0;
+        try copyDiagnostics(std.testing.allocator, &destination, &.{diagnostic}, &filled, &graph);
+        defer std.testing.allocator.free(destination[0].message);
+        defer std.testing.allocator.free(destination[0].file_path);
+        try std.testing.expectEqual(@as(usize, 1), filled);
+        if (poison == 0) {
+            try std.testing.expectEqualDeep(@as(?@import("../lexer/token.zig").Span, location.span), destination[0].span);
+            try std.testing.expectEqual(@as(?u32, 2), destination[0].line);
+            try std.testing.expectEqual(@as(?u32, 1), destination[0].column);
+        } else {
+            try std.testing.expect(destination[0].span == null);
+            try std.testing.expect(destination[0].line == null);
+            try std.testing.expect(destination[0].column == null);
+        }
+    }
+}
+
+fn checkWorkerParserDiagnosticFinalCopy(allocator: std.mem.Allocator) !void {
+    var cache = ResolveCache.init(allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(allocator, &cache);
+    defer graph.deinit();
+    const message = [_]u8{ 'b', 'a', 'd' };
+    const file_path = [_]u8{ 'w', '.', 'j', 's' };
+    const suggestion = [_]u8{ 'f', 'i', 'x' };
+    const location: BundlerDiagnostic.CapturedLocation = .{ .span = .{ .start = 3, .end = 4 }, .source_length = 9, .line = 2, .column = 1 };
+    const diagnostic: BundlerDiagnostic = .{
+        .code = .parse_error,
+        .severity = .@"error",
+        .message = &message,
+        .file_path = &file_path,
+        .suggestion = &suggestion,
+        .span = location.span,
+        .step = .parse,
+        .captured_location = location,
+    };
+    const sources = [_]BundlerDiagnostic{ diagnostic, diagnostic };
+    var destination: [2]BundleResult.OwnedDiagnostic = undefined;
+    var filled: usize = 0;
+    // Exactly the BundleResult caller's prefix ownership on success or OOM.
+    defer for (destination[0..filled]) |owned| {
+        allocator.free(owned.message);
+        allocator.free(owned.file_path);
+        if (owned.suggestion) |text| allocator.free(text);
+    };
+    copyDiagnostics(allocator, &destination, &sources, &filled, &graph) catch |err| {
+        try std.testing.expect(filled < sources.len);
+        try std.testing.expectEqualStrings("bad", &message);
+        try std.testing.expectEqualStrings("w.js", &file_path);
+        try std.testing.expectEqualStrings("fix", &suggestion);
+        try std.testing.expectEqualDeep(@as(?BundlerDiagnostic.CapturedLocation, location), sources[0].captured_location);
+        return err;
+    };
+    try std.testing.expectEqual(@as(usize, 2), filled);
+    for (destination) |owned| {
+        try std.testing.expect(owned.message.ptr != message[0..].ptr);
+        try std.testing.expect(owned.file_path.ptr != file_path[0..].ptr);
+        try std.testing.expect(owned.suggestion.?.ptr != suggestion[0..].ptr);
+        try std.testing.expectEqualStrings("bad", owned.message);
+        try std.testing.expectEqualStrings("w.js", owned.file_path);
+        try std.testing.expectEqualStrings("fix", owned.suggestion.?);
+        try std.testing.expectEqualDeep(@as(?@import("../lexer/token.zig").Span, location.span), owned.span);
+        try std.testing.expectEqual(@as(?u32, location.line), owned.line);
+        try std.testing.expectEqual(@as(?u32, location.column), owned.column);
+    }
+    try std.testing.expect(destination[0].message.ptr != destination[1].message.ptr);
+    try std.testing.expectEqualStrings("bad", &message);
+    try std.testing.expectEqualStrings("w.js", &file_path);
+    try std.testing.expectEqualStrings("fix", &suggestion);
+    try std.testing.expectEqualDeep(@as(?BundlerDiagnostic.CapturedLocation, location), sources[1].captured_location);
+}
+
+test "worker parser diagnostic final copy releases every partial allocation" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkWorkerParserDiagnosticFinalCopy, .{});
 }
