@@ -256,6 +256,12 @@ CJS `output.exports=none`은 공개 반환값을 만들지 않는 기존 계약�
 공개 namespace의 이름과 getter는 유지하며, callable `then` export는 네이티브
 동적 `import()`와 같은 Promise assimilation 규칙을 따른다.
 
+ESM의 청크 분할 또는 모듈 보존 출력에서 타깃이 top-level await를 지원하지 않고,
+실제로 남은 비동기 초기화를 외부 모듈 소비자가 기다릴 수 없다면 `ZNTC0001`
+(`top_level_await_target`)로 거절하며 출력 파일을 게시하지 않는다. 트리 셰이킹이나
+라벨 제거로 해당 초기화가 제거된 경우, 네이티브 top-level await 출력, 등록된
+완료 대기 계약이 있는 CJS/IIFE, 기존 단일 ESM 출력에는 이 제한을 적용하지 않는다.
+
 이 반환 계약은 타깃의 기존 지원·진단 정책을 바꾸지 않는다. 예를 들어 async를
 지원하지 않는 타깃의 일부 `export const x = await ...` 입력은 계속 오류다.
 
