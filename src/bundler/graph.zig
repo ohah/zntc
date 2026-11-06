@@ -4105,6 +4105,8 @@ test "graph pre-pass predicate: syntax and options that mutate graph-visible sur
     try expectPrePassDecision(true, "export const run = async () => await value;", "downlevel.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
     try expectPrePassDecision(true, "export async function* g() { yield 1; await Promise.resolve(); }", "async-generator.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
     try expectPrePassDecision(true, "export function* ids() { yield 1; }", "generator.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
+    try expectPrePassDecision(true, "export function read(value = fallback) { return value; }", "function-default-params.js", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
+    try expectPrePassDecision(true, "export const read = (value = fallback) => value;", "arrow-default-params.js", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
     try expectPrePassDecision(true, "export const xs = [...items];", "spread.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
     try expectPrePassDecision(true, "for (const item of items) console.log(item);", "for-of.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
     try expectPrePassDecision(true, "export class Child extends Parent {}", "class.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
@@ -4154,6 +4156,42 @@ test "graph pre-pass predicate: syntax and options that mutate graph-visible sur
         .emotion_extra_styled_sources = &.{"@acme/emotion-styled"},
     });
     try expectPrePassDecision(true, "export function f() { 'worklet'; return 1; }", "worklet.ts", .{ .worklet_transform = true });
+}
+
+test "graph pre-pass predicate: ES5 arrow cover defaults trigger graph ownership" {
+    const es5: PrePassPredicateTestOptions = .{
+        .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+    };
+    const sources = [_][]const u8{
+        "export const read = (value = 42) => value;",
+        "export const read = (value = null) => value;",
+        "export const read = (value = true) => value;",
+        "export const read = (value = 'fallback') => value;",
+        "export const read = (left, value = 42) => left + value;",
+        "export const read = (left = 1, value = 42) => left + value;",
+        "export const read = (value = 42, tail) => value + tail;",
+        "export const read = (value = fallback) => value;",
+        "export const read = (value = getFallback()) => value;",
+        "export const read = async (value = 42) => value;",
+        "export const factory = () => (value = 42) => value;",
+        "export const read = ({ value } = { value: 42 }) => value;",
+        "export const read = ([value] = [42]) => value;",
+    };
+    for (sources) |source| try expectPrePassDecision(true, source, "arrow-default.js", es5);
+
+    const body_assignments = [_][]const u8{
+        "export const read = (value) => value = 42;",
+        "export const read = (value) => { value = 42; return value; };",
+        "export const read = (value) => value + 42;",
+    };
+    for (body_assignments) |source| try expectPrePassDecision(false, source, "arrow-body-assignment.js", es5);
+    try expectPrePassDecision(false, sources[0], "native-arrow-default.js", .{});
+
+    var arrow_without_default_lowering = TransformOptions.compat.fromESTarget(.es5);
+    arrow_without_default_lowering.default_params = false;
+    try expectPrePassDecision(false, sources[0], "arrow-default-params-native.js", .{
+        .transform_options = .{ .unsupported = arrow_without_default_lowering },
+    });
 }
 
 test "graph pre-pass predicate: worklet transforms stay gated by conservative AST signals" {

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createFixture, runZntc } from './helpers';
+import { createFixture, runZntc, runNode, ZNTC_BIN } from './helpers';
 
 // #5659: an arrow's cover-grammar default parameter `(a = 1) =>` stayed an
 // assignment expression, so ES5 lowering turned the arrow into
@@ -66,4 +67,53 @@ describe('ES5 lowers arrow function default parameters (#5659)', () => {
       });
     }
   }
+
+  test('ES5 bundle retains the semantic graph for arrow cover defaults', async () => {
+    const created = await createFixture({
+      'entry.js':
+        'const fallback = 41; const read = (value = fallback) => value + 1; console.log(read());',
+    });
+    cleanup = created.cleanup;
+    const input = join(created.dir, 'entry.js');
+    const out = join(created.dir, 'out.cjs');
+    const result = spawnSync(
+      ZNTC_BIN,
+      ['--bundle', input, '--target=es5', '--platform=node', '--format=cjs', '-o', out],
+      {
+        cwd: created.dir,
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('semantic_graph=retained');
+    const report = result.stderr
+      .replaceAll('\0', '\n')
+      .split(/\r?\n/)
+      .find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+      );
+    expect(report, result.stderr).toBeDefined();
+    expect(report).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of [
+      'invalid_id',
+      'missing_reference',
+      'identity_mismatch',
+      'scope_map_mismatch',
+      'scope_owner_mismatch',
+      'scope_owner_parent_mismatch',
+      'declaration_identity_mismatch',
+    ]) {
+      expect(
+        Number(report?.match(new RegExp(`(?:^| )${counter}=(\\d+)(?:\\s|$)`))?.[1] ?? -1),
+        `${counter}: ${report}`,
+      ).toBe(0);
+    }
+    const code = readFileSync(out, 'utf8');
+    expect(code).not.toMatch(/function\s*[\w$]*\s*\([^)]*\b[\w$]+\s*=[^=]/);
+    const execution = await runNode(out);
+    expect(execution.stderr).toBe('');
+    expect(execution.stdout).toBe('42');
+  });
 });

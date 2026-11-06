@@ -357,6 +357,12 @@ pub const TransformOptions = struct {
                 .arrow_function_expression => {
                     saw_arrow = true;
                     if (u.async_await and hasArrowFlag(ast, node, ast_mod.ArrowFlags.is_async)) return true;
+                    // The parser keeps arrow cover-grammar defaults as
+                    // assignment_expression children of the formal list.
+                    // They are otherwise invisible to the binding-pattern
+                    // checks below, so ES5 could lower them only in the
+                    // post-link emitter without running the graph pre-pass.
+                    if (u.default_params and arrowHasCoverDefaultParameter(ast, node)) return true;
                 },
                 .function_declaration,
                 .function_expression,
@@ -533,6 +539,30 @@ pub const TransformOptions = struct {
         if (u.block_scoping and saw_named_definition and hasBlockLevelNamedDefinition(ast)) return true;
         // A renamed lexical binding can also be assigned a function later.
         if (u.block_scoping and saw_lexical and saw_named_assignment) return true;
+        return false;
+    }
+
+    /// Arrow defaults remain cover-grammar assignment expressions directly in
+    /// the `formal_parameters` list. Treat malformed list links as a reason to
+    /// run the pre-pass too, so an invalid/mutated AST cannot hide a lowering
+    /// that needs graph ownership.
+    fn arrowHasCoverDefaultParameter(ast: *const Ast, arrow: ast_mod.Node) bool {
+        if (arrow.tag != .arrow_function_expression) return true;
+        const extra = arrow.data.extra;
+        const extras = ast.extra_data.items;
+        if (extra > extras.len or extras.len - extra <= ast_mod.ArrowExtra.params) return true;
+        const params_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(
+            extras[extra + ast_mod.ArrowExtra.params],
+        ));
+        if (params_idx.isNone() or @backingInt(params_idx) >= ast.nodes.items.len) return true;
+        const params_node = ast.nodes.items[@backingInt(params_idx)];
+        if (params_node.tag != .formal_parameters) return true;
+        const params = params_node.data.list;
+        if (params.start > extras.len or params.len > extras.len - params.start) return true;
+        for (extras[params.start .. params.start + params.len]) |raw_parameter| {
+            if (raw_parameter >= ast.nodes.items.len) return true;
+            if (ast.nodes.items[raw_parameter].tag == .assignment_expression) return true;
+        }
         return false;
     }
 
