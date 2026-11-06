@@ -1580,6 +1580,103 @@ describe('non-AST plugins preserve the transform semantic graph (#4819)', () => 
     },
   );
 
+  test('Flow enum quoted member keys emit valid object properties', { timeout: 60_000 }, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-flow-enum-string-keys-'));
+    const runtime = join(dir, 'node_modules', 'flow-enums-runtime');
+    const keys = [
+      'north-east',
+      'with space',
+      'quote"double',
+      "quote'single",
+      '__proto__',
+      'line\nbreak',
+      'tab\tkey',
+      'slash\\key',
+      'a.b',
+      '😀',
+    ];
+    const entries = keys.map((key, index) => {
+      const entry = join(dir, `entry-${index}.js`);
+      const enumName = `Key${index}`;
+      const literal = JSON.stringify(key);
+      writeFileSync(
+        entry,
+        `// @flow\nenum ${enumName} { ${literal} }\nconsole.log(${enumName}[${literal}].description);`,
+      );
+      return realpathSync(entry);
+    });
+    const mirroredEntry = join(dir, 'entry-mirrored.js');
+    writeFileSync(
+      mirroredEntry,
+      '// @flow\nenum Mirrored of string { "north-east" }\nconsole.log(Mirrored["north-east"]);',
+    );
+    entries.push(realpathSync(mirroredEntry));
+    const defaultValueEntry = join(dir, 'entry-default-value.js');
+    writeFileSync(
+      defaultValueEntry,
+      "// @flow\nenum Defaults of string { First = 'first', \"north-east\" }\nconsole.log(Defaults['north-east']);",
+    );
+    entries.push(realpathSync(defaultValueEntry));
+    const escapedQuoteEntry = join(dir, 'entry-escaped-quote.js');
+    writeFileSync(
+      escapedQuoteEntry,
+      "// @flow\nenum Escaped { 'quote\"double' }\nconsole.log(Escaped['quote\"double'].description);",
+    );
+    entries.push(realpathSync(escapedQuoteEntry));
+    mkdirSync(runtime, { recursive: true });
+    writeFileSync(
+      join(runtime, 'index.js'),
+      'function make(values) { return values; } make.Mirrored = (names) => make(Object.fromEntries(names.map((name) => [name, name]))); module.exports = make;',
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const runner = [
+      `import {buildSync} from ${JSON.stringify(coreEntry)};`,
+      `const entries=${JSON.stringify(entries)}; const outputs=[];`,
+      `for(const entry of entries){const result=buildSync({entryPoints:[entry],platform:'node',format:'cjs',target:'esnext',flow:true,write:false});if(result.errors.length){console.error(JSON.stringify(result.errors));process.exit(1);}outputs.push(result.outputFiles.map(file=>file.text));}`,
+      `process.stdout.write(JSON.stringify({outputs}));`,
+    ].join('\n');
+    try {
+      const run = Bun.spawnSync(['bun', '-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+      });
+      expect(run.exitCode, run.stderr.toString()).toBe(0);
+      const result = JSON.parse(run.stdout.toString()) as { outputs: string[][] };
+      expect(result.outputs).toHaveLength(keys.length + 3);
+      for (const [index, key] of keys.entries()) {
+        expect(result.outputs[index]).toHaveLength(1);
+        const output = join(dir, `out-${index}.cjs`);
+        writeFileSync(output, result.outputs[index][0]);
+        const execution = Bun.spawnSync(['node', output]);
+        expect(
+          execution.exitCode,
+          `key ${JSON.stringify(key)}: ${execution.stderr.toString()}`,
+        ).toBe(0);
+        expect(execution.stdout.toString(), `key ${JSON.stringify(key)}`).toBe(`${key}\n`);
+      }
+      expect(result.outputs[keys.length]).toHaveLength(1);
+      const mirroredOutput = join(dir, 'out-mirrored.cjs');
+      writeFileSync(mirroredOutput, result.outputs[keys.length][0]);
+      const mirroredExecution = Bun.spawnSync(['node', mirroredOutput]);
+      expect(mirroredExecution.exitCode, mirroredExecution.stderr.toString()).toBe(0);
+      expect(mirroredExecution.stdout.toString()).toBe('north-east\n');
+      expect(result.outputs[keys.length + 1]).toHaveLength(1);
+      const defaultValueOutput = join(dir, 'out-default-value.cjs');
+      writeFileSync(defaultValueOutput, result.outputs[keys.length + 1][0]);
+      const defaultValueExecution = Bun.spawnSync(['node', defaultValueOutput]);
+      expect(defaultValueExecution.exitCode, defaultValueExecution.stderr.toString()).toBe(0);
+      expect(defaultValueExecution.stdout.toString()).toBe('north-east\n');
+      expect(result.outputs[keys.length + 2]).toHaveLength(1);
+      const escapedQuoteOutput = join(dir, 'out-escaped-quote.cjs');
+      writeFileSync(escapedQuoteOutput, result.outputs[keys.length + 2][0]);
+      const escapedQuoteExecution = Bun.spawnSync(['node', escapedQuoteOutput]);
+      expect(escapedQuoteExecution.exitCode, escapedQuoteExecution.stderr.toString()).toBe(0);
+      expect(escapedQuoteExecution.stdout.toString()).toBe('quote"double\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test(
     'buildSync onTransform Flow components retain generated forwardRef identities',
     { timeout: 30_000 },
