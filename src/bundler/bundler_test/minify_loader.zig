@@ -6058,3 +6058,60 @@ test "async arrow super parameter default preserves source provenance in ES5 bun
     }
     try std.testing.expectEqual(@as(usize, 0), failures);
 }
+
+test "full bundler folding preserves GetValue indirect eval names and nullish operand values" {
+    const cases = [_]struct { name: []const u8, source: []const u8, expected: []const u8 }{
+        .{ .name = "callee", .source = "const obj={method(){return this===obj}};function f(){return false}console.log(JSON.stringify([(true?obj.method:f)(),(true&&obj.method)()]));", .expected = "[false,false]\n" },
+        .{ .name = "indirect-eval", .source = "function f(){return \"fallback\"}function test(secret){return [secret,(true?eval:f)(\"typeof secret\"),(true&&eval)(\"typeof secret\")]}console.log(JSON.stringify(test(42)));", .expected = "[42,\"undefined\",\"undefined\"]\n" },
+        .{ .name = "delete", .source = "const obj={a:1,b:2};const one=delete(true?obj.a:obj.b);const two=delete(true&&obj.b);console.log(JSON.stringify([one,two,Object.hasOwn(obj,\"a\"),Object.hasOwn(obj,\"b\")]));", .expected = "[true,true,true,true]\n" },
+        .{ .name = "typeof", .source = "let caught=false;try{typeof(true?__missing_value_reference_4819:0)}catch(e){caught=e instanceof ReferenceError}console.log(caught);", .expected = "true\n" },
+        .{ .name = "anonymous-name", .source = "const a=true?function(){}:null;const b=true&&(()=>{});const c=false||class{};console.log(JSON.stringify([a.name,b.name,c.name]));", .expected = "[\"\",\"\",\"\"]\n" },
+        .{ .name = "optional-tag-new", .source = "const obj={method(){return this===obj},tag(){return this===obj}};function f(){return false}class Good{constructor(){this.value=42}}class Bad{constructor(){this.value=99}}console.log(JSON.stringify([(true?obj.method:f)?.(),(true&&obj.tag)`x`,new(true?Good:Bad)().value]));", .expected = "[false,false,42]\n" },
+        .{ .name = "side-effects", .source = "const events=[];function pick(value){events.push(value);return value}const a=(pick(\"condition\"),true)?pick(\"chosen\"):pick(\"dead\");const b=(false&&pick(\"and-dead\"))||pick(\"fallback\");console.log(JSON.stringify([a,b,events]));", .expected = "[\"chosen\",\"fallback\",[\"condition\",\"chosen\",\"fallback\"]]\n" },
+        .{ .name = "nullish-return", .source = "const events=[];function dead(){events.push(\"dead\");return 7}function answer(){return 42??0}console.log(JSON.stringify([[0??dead(),false??dead(),42??7],answer(),events]));", .expected = "[[0,false,42],42,[]]\n" },
+    };
+    var failures: usize = 0;
+    for (cases) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.mjs", case.source);
+        const entry = try absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", entry } });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings(case.expected, native.stdout);
+        inline for (.{ .es5, .esnext }) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                var bundler = Bundler.init(std.testing.allocator, .{
+                    .entry_points = &.{entry},
+                    .platform = .node,
+                    .format = .cjs,
+                    .unsupported = @import("../../transformer/compat.zig").fromESTarget(target),
+                    .tree_shaking = false,
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                    .minify_whitespace = minify,
+                });
+                defer bundler.deinit();
+                const result = try bundler.bundle(std.testing.io);
+                defer result.deinit(std.testing.allocator);
+                if (result.hasErrors()) {
+                    std.debug.print("full pipeline folding {s} minify={any} BUILD_REJECT\n", .{ case.name, minify });
+                    for (result.getDiagnostics()) |diagnostic| std.debug.print("{s}\n", .{diagnostic.message});
+                    failures += 1;
+                    continue;
+                }
+                const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+                defer std.testing.allocator.free(actual.stdout);
+                defer std.testing.allocator.free(actual.stderr);
+                if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout) or !std.mem.eql(u8, native.stderr, actual.stderr)) {
+                    std.debug.print("full pipeline folding {s} minify={any} expected={s}actual={s}stderr={s}\n", .{ case.name, minify, native.stdout, actual.stdout, actual.stderr });
+                    failures += 1;
+                }
+            }
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}

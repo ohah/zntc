@@ -251,6 +251,28 @@ pub inline fn replaceNodeFromChild(
     }
 }
 
+/// Conditional/logical evaluation returns a value, even when its selected
+/// child is a Reference or an anonymous definition. Keep that semantic edge
+/// in the AST so later codegen cannot turn it into this-binding/direct eval,
+/// delete/typeof Reference handling, or a new NamedEvaluation context.
+fn replaceValueFromChild(ast: *Ast, ctx: MinifyCtx, idx: u32, child: u32, changed: *bool) bool {
+    const selected = ast.nodes.items[child];
+    switch (selected.tag) {
+        .numeric_literal, .string_literal, .boolean_literal, .null_literal, .bigint_literal => {
+            replaceNodeFromChild(ast, ctx, idx, child, selected, changed);
+            return true;
+        },
+        else => {},
+    }
+    // Prepare all allocations before changing the selected source slot or its
+    // reference counts. The child keeps its actual NodeIndex and identity.
+    const zero_span = numeric.formatNumber(ast, 0) orelse return false;
+    const zero = ast.addNode(.{ .tag = .numeric_literal, .span = zero_span, .data = .{ .none = 0 } }) catch return false;
+    const list = ast.addNodeList(&.{ zero, @as(NodeIndex, @fromBackingInt(child)) }) catch return false;
+    replaceNode(ast, idx, .{ .tag = .sequence_expression, .span = ast.nodes.items[idx].span, .data = .{ .list = list } }, changed);
+    return true;
+}
+
 inline fn sourceSpanStart(node: Node) u32 {
     return node.span.start & ~ast_mod.Ast.STRING_TABLE_BIT;
 }
@@ -298,8 +320,8 @@ pub fn minify(ast: *Ast, ctx_in: MinifyCtx, scratch: std.mem.Allocator, root: No
         if (skip_for_binding) |*b| markForLoopBindings(ast, b);
     }
 
-    // call-callee 자리에 있는 sequence 는 fold pass 들이 새로 만들지 않으므로 미리 1회만 수집.
-    // 새로 append 된 노드는 capacity 밖이라 isSet 호출 시 false 처리되어 안전하다.
+    // Value-sensitive roots include conditional/logical slots that folding
+    // will turn into sequences later in this pass. Collect once up front.
     var protected_sequences: ?std.DynamicBitSet = std.DynamicBitSet.initEmpty(scratch, ast.nodes.items.len) catch null;
     defer if (protected_sequences) |*b| b.deinit();
     if (protected_sequences) |*b| markCallCalleeSequences(ast, b);
@@ -424,6 +446,12 @@ fn markCallCalleeSequences(ast: *const Ast, protected_sequences: *std.DynamicBit
             else => .none,
         };
         markAnonymousValueSequence(ast, named_value, protected_sequences);
+        if (node.tag == .unary_expression and ast.hasExtra(node.data.extra, 1)) {
+            // UnaryExtra is [operand, operator_and_flags]; only the low byte
+            // is Kind (the remaining bits are the registered UnaryFlags).
+            const op: Kind = @fromBackingInt(@as(u8, @truncate(ast.readExtra(node.data.extra, 1))));
+            if (op == .kw_delete or op == .kw_typeof) markSequenceInCallee(ast, ast.readExtraNode(node.data.extra, 0), protected_sequences);
+        }
         // tagged template 의 tag 도 callee 자리다(extra[0]) — `` (0, o.tag)`x` `` 의 sequence 를
         // 풀면 tag 가 this=o 로 호출된다(`` o.tag`x` ``). #4500 의 파서 수정으로 tagged template 이
         // new 의 callee 로도 들어오면서(`` new (0, o.tag)`x`() ``) 같은 경로가 새로 열렸다.
@@ -437,6 +465,10 @@ fn markAnonymousValueSequence(ast: *const Ast, idx: NodeIndex, protected: *std.D
     if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return;
     const node = ast.getNode(idx);
     if (node.tag == .parenthesized_expression) return markAnonymousValueSequence(ast, node.data.unary.operand, protected);
+    if (node.tag == .conditional_expression or node.tag == .logical_expression) {
+        if (@backingInt(idx) < protected.capacity()) protected.set(@backingInt(idx));
+        return;
+    }
     if (node.tag != .sequence_expression or node.data.list.len == 0) return;
     const last: NodeIndex = @fromBackingInt(ast.extra_data.items[node.data.list.start + node.data.list.len - 1]);
     if (ast.isAnonymousFunctionDefinition(last) and @backingInt(idx) < protected.capacity()) protected.set(@backingInt(idx));
@@ -448,7 +480,7 @@ fn markSequenceInCallee(ast: *const Ast, idx: NodeIndex, protected_sequences: *s
     if (ni >= ast.nodes.items.len or ni >= protected_sequences.capacity()) return;
     const node = ast.nodes.items[ni];
     switch (node.tag) {
-        .sequence_expression => protected_sequences.set(ni),
+        .sequence_expression, .conditional_expression, .logical_expression => protected_sequences.set(ni),
         .parenthesized_expression => markSequenceInCallee(ast, node.data.unary.operand, protected_sequences),
         else => {},
     }
@@ -2286,8 +2318,8 @@ fn foldConditional(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed
     const dropped = if (truthy) node.data.ternary.c else node.data.ternary.b;
     const kept_ni = @backingInt(kept);
     if (kept_ni >= ast.nodes.items.len) return;
+    if (!replaceValueFromChild(ast, ctx, node_idx, kept_ni, changed)) return;
     if (ctx.hasSemantic() and !dropped.isNone()) decrementRefsShallow(ast, ctx, dropped);
-    replaceNodeFromChild(ast, ctx, node_idx, kept_ni, ast.nodes.items[kept_ni], changed);
 }
 
 /// if_statement: if (false) { A } else { B } → B, if (true) { A } → A.
@@ -2453,23 +2485,23 @@ fn foldLogical(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *b
                 // true && x → x (left literal — 영향 0)
                 const right_ni = @backingInt(node.data.binary.right);
                 if (right_ni >= ast.nodes.items.len) return;
-                replaceNodeFromChild(ast, ctx, node_idx, right_ni, ast.nodes.items[right_ni], changed);
+                _ = replaceValueFromChild(ast, ctx, node_idx, right_ni, changed);
             } else {
                 // false && x → false. right (x) drop → cascade.
+                if (!replaceValueFromChild(ast, ctx, node_idx, left_ni, changed)) return;
                 if (semantic) decrementRefsShallow(ast, ctx, node.data.binary.right);
-                replaceNodeFromChild(ast, ctx, node_idx, left_ni, left, changed);
             }
         },
         .pipe2 => { // ||
             if (truthy) {
                 // true || x → true. right (x) drop → cascade.
+                if (!replaceValueFromChild(ast, ctx, node_idx, left_ni, changed)) return;
                 if (semantic) decrementRefsShallow(ast, ctx, node.data.binary.right);
-                replaceNodeFromChild(ast, ctx, node_idx, left_ni, left, changed);
             } else {
                 // false || x → x (left literal — 영향 0)
                 const right_ni = @backingInt(node.data.binary.right);
                 if (right_ni >= ast.nodes.items.len) return;
-                replaceNodeFromChild(ast, ctx, node_idx, right_ni, ast.nodes.items[right_ni], changed);
+                _ = replaceValueFromChild(ast, ctx, node_idx, right_ni, changed);
             }
         },
         .question2 => { // ??
@@ -2477,13 +2509,13 @@ fn foldLogical(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *b
             if (left.tag == .null_literal) {
                 const right_ni = @backingInt(node.data.binary.right);
                 if (right_ni >= ast.nodes.items.len) return;
-                replaceNodeFromChild(ast, ctx, node_idx, right_ni, ast.nodes.items[right_ni], changed);
+                _ = replaceValueFromChild(ast, ctx, node_idx, right_ni, changed);
             } else if (left.tag == .identifier_reference) {
                 const text = ast.getText(left.span);
                 if (std.mem.eql(u8, text, "undefined")) {
                     const right_ni = @backingInt(node.data.binary.right);
                     if (right_ni >= ast.nodes.items.len) return;
-                    replaceNodeFromChild(ast, ctx, node_idx, right_ni, ast.nodes.items[right_ni], changed);
+                    _ = replaceValueFromChild(ast, ctx, node_idx, right_ni, changed);
                 }
             }
         },
