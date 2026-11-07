@@ -8405,6 +8405,7 @@ test "strict accepted identities require per-finding SymbolId and ScopeId eviden
             .marked_synthetic = false,
             .symbol_id = 8,
             .expected_scope_id = 3,
+            .binding_required_scope_id = 3,
             .symbol_scope_id = 2,
             .symbol_origin_scope_id = 1,
         },
@@ -8429,6 +8430,7 @@ test "strict accepted identities require per-finding SymbolId and ScopeId eviden
             .is_binding = true,
             .symbol_id = 10,
             .expected_scope_id = 4,
+            .binding_required_scope_id = 4,
             .symbol_scope_id = 3,
             .symbol_origin_scope_id = 2,
         },
@@ -8481,6 +8483,8 @@ test "strict accepted identities require per-finding SymbolId and ScopeId eviden
         .{ .node = 45, .name = "x", .tag = .identifier_reference, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .reference_scope_id = 1 },
         .{ .node = 46, .name = "x", .tag = .binding_identifier, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .symbol_scope_id = 0, .symbol_origin_scope_id = 0 },
         .{ .node = 47, .name = "x", .tag = .binding_identifier, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_origin_scope_id = 0 },
+        .{ .node = 48, .name = "x", .tag = .binding_identifier, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 1 },
+        .{ .node = 49, .name = "x", .tag = .binding_identifier, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 8, .binding_required_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 1 },
     };
     for (rejected) |finding| {
         var report: coverage.StrictReport = .{};
@@ -8508,6 +8512,7 @@ test "strict symbol identity delegates only binding scope traces" {
             .symbol_id = if (status == .bound or status == .scope_mismatch) 1 else null,
             .reference_symbol_id = if (status == .bound) 1 else null,
             .expected_scope_id = if (status == .bound) 2 else if (status == .scope_mismatch) 3 else null,
+            .binding_required_scope_id = if (status == .scope_mismatch) 3 else null,
             .symbol_scope_id = if (status == .bound) 2 else if (status == .scope_mismatch) 2 else null,
             .symbol_origin_scope_id = if (status == .scope_mismatch) 1 else null,
             .reference_scope_id = if (status == .bound) 2 else null,
@@ -8538,6 +8543,108 @@ test "strict symbol identity delegates only binding scope traces" {
     try std.testing.expect(bad_reference_scope.isConsistent());
     try std.testing.expect(!bad_reference_scope.hasCompleteSymbolIdentity());
     try std.testing.expect(!bad_reference_scope.hasCompleteExactCoverage());
+}
+
+test "strict delegated binding scope mismatch requires distinct scopes across ten forged findings" {
+    const allocator = std.testing.allocator;
+    const Node = @import("../parser/ast.zig").Node;
+    const Forgery = struct {
+        tag: Node.Tag,
+        explicit_binding: bool,
+        expected_scope_id: u32,
+        scope_id: u32,
+        origin_scope_id: u32,
+    };
+    const forged = [_]Forgery{
+        .{ .tag = .binding_identifier, .explicit_binding = false, .expected_scope_id = 0, .scope_id = 0, .origin_scope_id = 1 },
+        .{ .tag = .identifier_reference, .explicit_binding = true, .expected_scope_id = 1, .scope_id = 1, .origin_scope_id = 0 },
+        .{ .tag = .assignment_target_identifier, .explicit_binding = true, .expected_scope_id = 8, .scope_id = 2, .origin_scope_id = 2 },
+        .{ .tag = .identifier_reference, .explicit_binding = true, .expected_scope_id = 3, .scope_id = 3, .origin_scope_id = 4 },
+        .{ .tag = .binding_identifier, .explicit_binding = false, .expected_scope_id = 9, .scope_id = 4, .origin_scope_id = 4 },
+        .{ .tag = .identifier_reference, .explicit_binding = true, .expected_scope_id = 5, .scope_id = 5, .origin_scope_id = 7 },
+        .{ .tag = .assignment_target_identifier, .explicit_binding = true, .expected_scope_id = 6, .scope_id = 6, .origin_scope_id = 5 },
+        .{ .tag = .identifier_reference, .explicit_binding = true, .expected_scope_id = 10, .scope_id = 7, .origin_scope_id = 7 },
+        .{ .tag = .binding_identifier, .explicit_binding = false, .expected_scope_id = 8, .scope_id = 8, .origin_scope_id = 9 },
+        .{ .tag = .identifier_reference, .explicit_binding = true, .expected_scope_id = 0, .scope_id = 9, .origin_scope_id = 8 },
+    };
+    var rejected: usize = 0;
+    for (forged, 0..) |input, index| {
+        var report: coverage.StrictReport = .{};
+        defer report.deinit(allocator);
+        report.counts[@backingInt(coverage.StrictStatus.scope_mismatch)] = 1;
+        try report.findings.append(allocator, .{
+            .node = @intCast(index + 1),
+            .name = "same-scope-binding",
+            .tag = input.tag,
+            .status = .scope_mismatch,
+            .marked_synthetic = false,
+            .is_binding = input.explicit_binding,
+            .symbol_id = @intCast(index + 1),
+            .expected_scope_id = input.expected_scope_id,
+            .binding_required_scope_id = input.scope_id,
+            .symbol_scope_id = input.scope_id,
+            .symbol_origin_scope_id = input.origin_scope_id,
+        });
+        try std.testing.expect(!report.isConsistent());
+        try std.testing.expect(!report.hasCompleteSymbolIdentity());
+        if (index == 0) {
+            var output_gate: coverage.OutputNormalFormReport = .{ .exact = .{}, .strict = .{} };
+            defer output_gate.deinit(allocator);
+            output_gate.strict.counts[@backingInt(coverage.StrictStatus.scope_mismatch)] = 1;
+            try output_gate.strict.findings.append(allocator, report.findings.items[0]);
+            try std.testing.expect(!output_gate.hasCompleteOutputIdentityBeforeNames());
+        }
+        rejected += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 10), rejected);
+
+    var missing_required_scope: coverage.StrictReport = .{};
+    defer missing_required_scope.deinit(allocator);
+    missing_required_scope.counts[@backingInt(coverage.StrictStatus.scope_mismatch)] = 1;
+    try missing_required_scope.findings.append(allocator, .{
+        .node = 19,
+        .name = "missing-required-scope",
+        .tag = .binding_identifier,
+        .status = .scope_mismatch,
+        .marked_synthetic = false,
+        .symbol_id = 19,
+        .expected_scope_id = 0,
+        .symbol_scope_id = 0,
+        .symbol_origin_scope_id = 1,
+    });
+    try std.testing.expect(!missing_required_scope.isConsistent());
+    try std.testing.expect(!missing_required_scope.hasCompleteSymbolIdentity());
+    var missing_required_scope_output: coverage.OutputNormalFormReport = .{ .exact = .{}, .strict = .{} };
+    defer missing_required_scope_output.deinit(allocator);
+    missing_required_scope_output.strict.counts[@backingInt(coverage.StrictStatus.scope_mismatch)] = 1;
+    try missing_required_scope_output.strict.findings.append(allocator, missing_required_scope.findings.items[0]);
+    try std.testing.expect(!missing_required_scope_output.hasCompleteOutputIdentityBeforeNames());
+
+    const valid_mismatches = [_]struct { expected: u32, required: u32, symbol: u32, origin: u32 }{
+        .{ .expected = 1, .required = 1, .symbol = 2, .origin = 1 },
+        // The raw trace can equal the Symbol scope while the transform-aware
+        // declaration/storage scope differs (for example a generated _using var).
+        .{ .expected = 3, .required = 2, .symbol = 3, .origin = 3 },
+    };
+    for (valid_mismatches, 0..) |input, index| {
+        var report: coverage.StrictReport = .{};
+        defer report.deinit(allocator);
+        report.counts[@backingInt(coverage.StrictStatus.scope_mismatch)] = 1;
+        try report.findings.append(allocator, .{
+            .node = @intCast(index + 20),
+            .name = "relocated-binding",
+            .tag = .binding_identifier,
+            .status = .scope_mismatch,
+            .marked_synthetic = false,
+            .symbol_id = @intCast(index + 20),
+            .expected_scope_id = input.expected,
+            .binding_required_scope_id = input.required,
+            .symbol_scope_id = input.symbol,
+            .symbol_origin_scope_id = input.origin,
+        });
+        try std.testing.expect(report.isConsistent());
+        try std.testing.expect(report.hasCompleteSymbolIdentity());
+    }
 }
 
 test "strict exact external references require matching NodeIndex provenance" {
