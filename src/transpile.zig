@@ -13325,6 +13325,44 @@ test "#4493 TS namespace export 도 shorthand+기본값에서 ns 치환을 따�
     try std.testing.expect(std.mem.indexOf(u8, r.code, "x:x=1") == null);
 }
 
+test "ES5 derived class fields retain outer reads across renamed branch locals" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\const label = "outer", log = [];
+        \\class Base { constructor(value) { this.value = value; } }
+        \\class Child extends Base {
+        \\  field = label + ":" + this.value;
+        \\  constructor(flag) {
+        \\    if (flag) { let label = "first"; super(7); log.push(label); }
+        \\    else { let label = "second"; super(9); log.push(label); }
+        \\    log.push(this.field, label);
+        \\  }
+        \\}
+        \\new Child(true);
+        \\new Child(false);
+        \\console.log(JSON.stringify(log));
+    ;
+    const compat = @import("transformer/compat.zig");
+    const expected = "[\"first\",\"outer:7\",\"outer\",\"second\",\"outer:9\",\"outer\"]\n";
+    const options = [_]TranspileOptions{
+        .{ .unsupported = compat.fromESTarget(.es5), .es_target = .es5 },
+        .{ .unsupported = compat.fromESTarget(.es5), .es_target = .es5, .minify_whitespace = true, .minify_identifiers = true, .minify_syntax = true },
+    };
+    for (options) |option| {
+        var result = try transpile(allocator, source, "input.js", option);
+        defer result.deinit(allocator);
+        const runtime = try std.process.run(allocator, std.testing.io, .{
+            .argv = &.{ "node", "-e", result.code },
+            .stdout_limit = .limited(16384),
+            .stderr_limit = .limited(16384),
+        });
+        try std.testing.expect(runtime.term == .exited and runtime.term.exited == 0);
+        try std.testing.expectEqualStrings(expected, runtime.stdout);
+    }
+}
+
 test "#4493 es5 다운레벨의 중첩 구조분해 대입 타겟도 rename 을 따라간다" {
     // es5 에서는 codegen 이 아니라 transformer 가 구조분해를 풀어낸다
     // (`{s, w = 1}` → `s = _ref.s, w = _ref.w === void 0 ? 1 : _ref.w`).

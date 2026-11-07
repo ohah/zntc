@@ -1307,7 +1307,7 @@ fn namespaceMemberForOwner(ctx: *const ExactCtx, owner_id: u32, name: []const u8
     var entries = owners.iterator();
     while (entries.next()) |entry| {
         if (entry.value_ptr.* != owner_id or entry.key_ptr.* >= ctx.symbols.len) continue;
-        const symbol_name = exactSymbolName(ctx.ast, &ctx.symbols[entry.key_ptr.*]);
+        const symbol_name = exactOutputSymbolName(ctx, entry.key_ptr.*);
         if (Scanner.identifierNamesEqual(symbol_name, name)) return entry.key_ptr.*;
     }
     return null;
@@ -1318,9 +1318,25 @@ fn hasNamespaceMemberNamed(ctx: *const ExactCtx, name: []const u8) bool {
     var entries = owners.keyIterator();
     while (entries.next()) |member_id| {
         if (member_id.* < ctx.symbols.len and
-            Scanner.identifierNamesEqual(exactSymbolName(ctx.ast, &ctx.symbols[member_id.*]), name)) return true;
+            Scanner.identifierNamesEqual(exactOutputSymbolName(ctx, member_id.*), name)) return true;
     }
     return false;
+}
+
+fn exactOutputSymbolName(ctx: *const ExactCtx, symbol_id: u32) []const u8 {
+    if (ctx.known_output_names) |names| {
+        if (names.get(symbol_id)) |name| return name;
+    }
+    if (symbol_id >= ctx.symbols.len) return "";
+    return exactSymbolName(ctx.ast, &ctx.symbols[symbol_id]);
+}
+
+fn resolveInExactScopesForSymbol(ctx: *const ExactCtx, source_name: []const u8, symbol_id: u32, use_scope: ScopeId) ?u32 {
+    const output_name = if (ctx.known_output_names) |names|
+        names.get(symbol_id) orelse source_name
+    else
+        source_name;
+    return resolveInExactScopes(ctx, output_name, use_scope);
 }
 
 /// Resolve like SemanticAnalyzer.visitIdentifier: a namespace member proxy is
@@ -1338,18 +1354,13 @@ fn resolveInExactScopes(ctx: *const ExactCtx, name: []const u8, use_scope: Scope
 }
 
 fn resolveInExactScopesByName(ctx: *const ExactCtx, name: []const u8, use_scope: ScopeId) ?u32 {
+    const resolution_scope_maps = ctx.resolution_scope_maps orelse ctx.scope_maps;
     var current = use_scope;
     var hops: usize = 0;
     while (exactValidScope(ctx.scopes, current) and hops < ctx.scopes.len) : (hops += 1) {
         const scope_index = current.toIndex();
-        if (scope_index < ctx.scope_maps.len) {
-            if (ctx.scope_maps[scope_index].get(name)) |sid| return @intCast(sid);
-            if (std.mem.indexOfScalar(u8, name, '\\') != null) {
-                var entries = ctx.scope_maps[scope_index].iterator();
-                while (entries.next()) |entry| {
-                    if (Scanner.identifierNamesEqual(name, entry.key_ptr.*)) return @intCast(entry.value_ptr.*);
-                }
-            }
+        if (scope_index < resolution_scope_maps.len) {
+            if (resolveExactScopeMapName(&resolution_scope_maps[scope_index], name)) |sid| return sid;
         }
         if (ctx.namespace_scope_owners) |namespace_owners| {
             if (namespace_owners.get(scope_index)) |owner_id| {
@@ -1359,6 +1370,92 @@ fn resolveInExactScopesByName(ctx: *const ExactCtx, name: []const u8, use_scope:
         current = ctx.scopes[scope_index].parent;
     }
     return null;
+}
+
+fn resolveExactScopeMapName(scope_map: *const std.StringHashMapUnmanaged(usize), name: []const u8) ?u32 {
+    if (scope_map.get(name)) |symbol_id| return @intCast(symbol_id);
+    if (std.mem.indexOfScalar(u8, name, '\\') == null) return null;
+    var entries = scope_map.iterator();
+    while (entries.next()) |entry| {
+        if (Scanner.identifierNamesEqual(name, entry.key_ptr.*)) return @intCast(entry.value_ptr.*);
+    }
+    return null;
+}
+
+/// Scope maps retain analyzer spellings for binding and declaration checks.
+/// Output identity resolution needs a separate projection through selected
+/// block-renamed names so a moved reference sees the names codegen will emit.
+fn buildExactOutputScopeMaps(
+    allocator: std.mem.Allocator,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    known_output_names: *const std.AutoHashMapUnmanaged(u32, []const u8),
+    collisions: *usize,
+) std.mem.Allocator.Error![]std.StringHashMapUnmanaged(usize) {
+    const output_maps = try allocator.alloc(std.StringHashMapUnmanaged(usize), scope_maps.len);
+    @memset(output_maps, .empty);
+    errdefer {
+        for (output_maps) |*scope_map| scope_map.deinit(allocator);
+        allocator.free(output_maps);
+    }
+
+    for (scope_maps, 0..) |source_map, scope_index| {
+        var entries = source_map.iterator();
+        while (entries.next()) |source_entry| {
+            const symbol_id: u32 = @intCast(source_entry.value_ptr.*);
+            const output_name = known_output_names.get(symbol_id) orelse source_entry.key_ptr.*;
+            if (output_name.len == 0) {
+                collisions.* += 1;
+                continue;
+            }
+            const entry = try output_maps[scope_index].getOrPut(allocator, output_name);
+            if (entry.found_existing and entry.value_ptr.* != symbol_id) {
+                collisions.* += 1;
+                continue;
+            }
+            entry.value_ptr.* = symbol_id;
+        }
+    }
+    return output_maps;
+}
+
+test "exact output scope maps resolve block renames and reject alias collisions" {
+    const allocator = std.testing.allocator;
+    var root_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer root_map.deinit(allocator);
+    try root_map.put(allocator, "label", 0);
+    var block_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer block_map.deinit(allocator);
+    try block_map.put(allocator, "label", 1);
+    const source_maps = [_]std.StringHashMapUnmanaged(usize){ root_map, block_map };
+    var output_names: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    defer output_names.deinit(allocator);
+    try output_names.put(allocator, 1, "label$1");
+    var collisions: usize = 0;
+    const projected = try buildExactOutputScopeMaps(allocator, &source_maps, &output_names, &collisions);
+    defer {
+        for (projected) |*scope_map| scope_map.deinit(allocator);
+        allocator.free(projected);
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), collisions);
+    try std.testing.expectEqual(@as(?u32, null), resolveExactScopeMapName(&projected[1], "label"));
+    try std.testing.expectEqual(@as(?u32, 1), resolveExactScopeMapName(&projected[1], "label$1"));
+    try std.testing.expectEqual(@as(?u32, 0), resolveExactScopeMapName(&projected[0], "label"));
+
+    var conflicting_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer conflicting_map.deinit(allocator);
+    try conflicting_map.put(allocator, "label", 1);
+    try conflicting_map.put(allocator, "other", 2);
+    try conflicting_map.put(allocator, "label$1", 3);
+    const conflicting_source_maps = [_]std.StringHashMapUnmanaged(usize){conflicting_map};
+    try output_names.put(allocator, 2, "label$1");
+    var hostile_collisions: usize = 0;
+    const hostile = try buildExactOutputScopeMaps(allocator, &conflicting_source_maps, &output_names, &hostile_collisions);
+    defer {
+        for (hostile) |*scope_map| scope_map.deinit(allocator);
+        allocator.free(hostile);
+    }
+    try std.testing.expectEqual(@as(usize, 2), hostile_collisions);
 }
 
 fn resolveInAnyScope(
@@ -2501,6 +2598,10 @@ const ExactCtx = struct {
     symbols: []const Symbol,
     scopes: []const Scope,
     scope_maps: []const std.StringHashMapUnmanaged(usize),
+    /// Output-only lexical lookup; source maps above remain authoritative for
+    /// declaration and binding identity checks.
+    resolution_scope_maps: ?[]const std.StringHashMapUnmanaged(usize) = null,
+    known_output_names: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null,
     namespace_member_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     namespace_scope_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     all_references: []const Reference = &.{},
@@ -3107,7 +3208,7 @@ const ExactCtx = struct {
         const expected: ?u32 = if (ctx.helper_reference_nodes.contains(raw)) blk: {
             if (ctx.helper_scope_map.get(name)) |sid| break :blk @intCast(sid);
             break :blk null;
-        } else if (isEnumMemberReference(ctx, raw, name, raw_id, indexed.scope_id)) raw_id else resolveInExactScopes(ctx, name, indexed.scope_id);
+        } else if (isEnumMemberReference(ctx, raw, name, raw_id, indexed.scope_id)) raw_id else resolveInExactScopesForSymbol(ctx, name, raw_id, indexed.scope_id);
         if (expected) |expected_id| {
             if (expected_id != raw_id) {
                 ctx.report.scope_resolution_mismatch += 1;
@@ -3648,6 +3749,7 @@ pub fn checkExact(
         null,
         null,
         null,
+        null,
     );
 }
 
@@ -3692,6 +3794,7 @@ pub fn checkExactWithDeclarationAnchors(
         null,
         true,
         true,
+        null,
         null,
         null,
         null,
@@ -3740,6 +3843,7 @@ pub fn checkExactWithCompleteSourceScopeOwners(
         0,
         true,
         true,
+        null,
         null,
         null,
         null,
@@ -3793,6 +3897,7 @@ pub fn checkExactWithScopeBoundary(
         null,
         null,
         null,
+        null,
     );
 }
 
@@ -3840,6 +3945,7 @@ pub fn checkExactWithNamespaceMetadata(
         pre_transform_scope_count,
         false,
         true,
+        null,
         null,
         null,
         null,
@@ -3895,6 +4001,7 @@ pub fn checkExactWithNamespaceMetadataAndDeclarationAnchors(
         pre_transform_scope_count,
         true,
         true,
+        null,
         null,
         null,
         null,
@@ -3998,7 +4105,7 @@ pub fn checkExactQuiet(
     origins: *const std.AutoHashMapUnmanaged(u32, u32),
     options: ExactQuietOptions,
 ) std.mem.Allocator.Error!ExactReport {
-    return checkExactImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_maps, scope_owner_map, references, helper_reference_nodes, helper_scope_map, unresolved_nodes, explicit_global_nodes, origins, options.erased_const_enum_external_origins, options.namespace_member_owners, options.namespace_declaration_owners, options.pre_transform_scope_count, options.require_declaration_anchors, false, null, null, null);
+    return checkExactImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_maps, scope_owner_map, references, helper_reference_nodes, helper_scope_map, unresolved_nodes, explicit_global_nodes, origins, options.erased_const_enum_external_origins, options.namespace_member_owners, options.namespace_declaration_owners, options.pre_transform_scope_count, options.require_declaration_anchors, false, null, null, null, null);
 }
 
 pub const OutputNormalFormReport = struct {
@@ -4194,7 +4301,7 @@ pub fn checkOutputNormalFormQuiet(
     const valid = runtime_valid and frame_index.valid and lowered_proof != null and try @import("../semantic/source_owned_retirement.zig").validateWithIndex(allocator, ast, retirements, &reachable, symbols, symbol_ids, scopes, scope_maps, scope_owner_map, references, helper_scope_map, retirement_roots, &frame_index) and
         try validateNodeScopeProvenance(allocator, ast, root, scope_owner_map, retirement_roots.node_scope_provenance) and
         @import("../semantic/source_external_origin.zig").validate(ast, parser_node_count, symbol_ids, scopes, unresolved_nodes, retirement_roots.node_scope_provenance, &frame_index);
-    const exact = try checkExactImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_maps, scope_owner_map, references, helper_reference_nodes, helper_scope_map, unresolved_nodes, explicit_global_nodes, origins, options.erased_const_enum_external_origins, options.namespace_member_owners, options.namespace_declaration_owners, exact_scope_boundary, options.require_declaration_anchors, false, if (valid) retirements else null, if (valid) retirement_roots.node_scope_provenance else null, if (valid) if (lowered_proof) |*proof| proof else null else null);
+    const exact = try checkExactImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_maps, scope_owner_map, references, helper_reference_nodes, helper_scope_map, unresolved_nodes, explicit_global_nodes, origins, options.erased_const_enum_external_origins, options.namespace_member_owners, options.namespace_declaration_owners, exact_scope_boundary, options.require_declaration_anchors, false, if (valid) retirements else null, if (valid) retirement_roots.node_scope_provenance else null, if (valid) if (lowered_proof) |*proof| proof else null else null, options.known_output_names);
     return .{
         .retirement_state_mismatch = @intFromBool(!valid),
         .scope_boundary_missing = @intFromBool(options.pre_transform_scope_count == null),
@@ -4229,6 +4336,7 @@ fn checkExactImpl(
     retired_symbols: ?*const @import("../semantic/source_owned_retirement.zig").Map,
     output_external_origins: ?*const @import("../semantic/node_scope_provenance.zig").Map,
     lowered_classes: ?*const @import("../semantic/lowered_worklet_class.zig").Proof,
+    known_output_names: ?*const std.AutoHashMapUnmanaged(u32, []const u8),
 ) std.mem.Allocator.Error!ExactReport {
     const VisitState = enum { visiting, visited };
     const VisitFrame = struct {
@@ -4256,6 +4364,16 @@ fn checkExactImpl(
     };
 
     var report: ExactReport = .{};
+    var output_scope_maps_storage: ?[]std.StringHashMapUnmanaged(usize) = null;
+    defer if (output_scope_maps_storage) |maps| {
+        for (maps) |*scope_map| scope_map.deinit(allocator);
+        allocator.free(maps);
+    };
+    if (known_output_names) |names| if (names.count() != 0) {
+        var collisions: usize = 0;
+        output_scope_maps_storage = try buildExactOutputScopeMaps(allocator, scope_maps, names, &collisions);
+        report.scope_resolution_mismatch += collisions;
+    };
     var reachable_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer reachable_nodes.deinit(allocator);
     var parent_by_node: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -5478,6 +5596,8 @@ fn checkExactImpl(
         .symbols = symbols,
         .scopes = scopes,
         .scope_maps = scope_maps,
+        .resolution_scope_maps = output_scope_maps_storage,
+        .known_output_names = known_output_names,
         .namespace_member_owners = namespace_member_owners,
         .namespace_scope_owners = &namespace_scope_owners,
         .dynamic_eval_units = &dynamic_eval_units,
@@ -5586,7 +5706,7 @@ fn isRetainedSourceScopeReference(
     // lexical lookup from the actual output AST scope too, or a same-name
     // binding introduced below the removed source owner can silently capture
     // this reference while the stale source scope continues to resolve cleanly.
-    const output_resolution = resolveInExactScopes(ctx, name, output_scope);
+    const output_resolution = resolveInExactScopesForSymbol(ctx, name, raw_id, output_scope);
     if (output_resolution != raw_id and
         !ctx.isEnumMemberReference(node, name, raw_id, output_scope)) return false;
     var child = node;
