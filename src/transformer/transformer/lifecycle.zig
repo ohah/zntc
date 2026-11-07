@@ -223,6 +223,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.legacy_assignment_field_applications.deinit(self.allocator);
     self.computed_object_helper_applications.deinit(self.allocator);
     self.runtime_helper_symbol_ids.deinit(self.allocator);
+    self.native_module_using_declaration_extras.deinit(self.allocator);
     self.parameter_capture_statements.deinit(self.allocator);
     self.parameter_body_var_copies.deinit(self.allocator);
     self.destructuring_temp_bindings.deinit(self.allocator);

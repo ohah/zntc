@@ -24,6 +24,13 @@ pub fn visitListNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     if (self.options.unsupported.block_scoping and node.tag == .block_statement) {
         return visitBlockWithScoping(self, node);
     }
+    if (node.tag == .program and self.native_module_using_boundary and !self.options.unsupported.using) {
+        const Using = es2025_using.ES2025Using(Transformer);
+        if (try Using.rewriteNativeModuleUsing(self, node.data.list)) |rewritten| {
+            const visited = try visitExtraListWithCssHoist(self, rewritten, true);
+            return self.ast.addNode(.{ .tag = .program, .span = node.span, .data = .{ .list = visited } });
+        }
+    }
     // ES2025: using/await using → try-finally 래핑
     if (self.options.unsupported.using) {
         const Using = es2025_using.ES2025Using(Transformer);

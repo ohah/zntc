@@ -156,6 +156,9 @@ pub fn shouldRun(
     }
 
     const ast = &module.ast.?;
+    // This native syntax now creates typed helper imports and module cleanup
+    // guards even when no downlevel/minifier transform was otherwise needed.
+    if (!self.transform_options_base.unsupported.using and nativeModuleUsingDemand(ast)) return true;
     {
         var ast_flags_scope = profile.begin(.graph_discover_pm_prepass_decision_ast_flags);
         defer ast_flags_scope.end();
@@ -184,6 +187,22 @@ pub fn shouldRun(
         defer options_scope.end();
         return self.transform_options_base.requiresGraphPrePass(ast);
     }
+}
+
+fn nativeModuleUsingDemand(ast: *const ast_mod.Ast) bool {
+    if (ast.nodes.items.len == 0) return false;
+    const root_idx = ast.transformed_root orelse @as(ast_mod.NodeIndex, @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
+    const root = ast.getNode(root_idx);
+    if (root.tag != .program) return false;
+    var found = false;
+    for (0..root.data.list.len) |i| {
+        const stmt = ast.getNode(ast.readExtraNode(root.data.list.start, @intCast(i)));
+        if (stmt.tag != .variable_declaration) continue;
+        const kind = ast.variableDeclarationKind(stmt);
+        if (kind == .await_using) return false;
+        if (kind == .using) found = true;
+    }
+    return found;
 }
 
 fn hasAstTransformPlugin(plugins: []const plugin_mod.Plugin, ast: *const ast_mod.Ast) bool {
@@ -22334,6 +22353,7 @@ fn runCandidate(self: anytype, module: *Module, source_classes: @import("../../s
     const pre_transform_scope_history_event_count = if (pre_transform_has_scope_history) module.semantic.?.scope_history.events.len else 0;
 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
+    transformer.native_module_using_boundary = !opts.unsupported.using;
     if (can_keep_semantic_graph) {
         if (module.semantic) |*sem| {
             if (prepared_native_source) |value| {

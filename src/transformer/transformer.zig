@@ -506,6 +506,10 @@ pub const Transformer = struct {
     generator_native_var_scope: ScopeId = .none,
     /// 첫 합성 바인딩이 필요할 때만 기존 의미 정보를 복사한다.
     semantic_edit_enabled: bool = false,
+    /// Query-local bundler capability; never part of parser cache options.
+    native_module_using_boundary: bool = false,
+    /// Exact constructor-owned declaration payloads whose lexical storage survives copies.
+    native_module_using_declaration_extras: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// An AST plugin supplied trailing code that could not be copied with
     /// exact syntax and lexical identity. The graph prepass turns this into a
     /// diagnostic so generated code is never silently omitted.
