@@ -6651,13 +6651,22 @@ fn checkSuspensionEvaluationRuntimeDetailed(source: []const u8, keep_names: bool
     for ([_]Cell{ .{ .target = .es5, .full = false }, .{ .target = .es5, .full = true }, .{ .target = .es2017, .full = false } }) |cell| {
         errdefer std.debug.print("suspension evaluation target={s} full={} source={s}\n", .{ @tagName(cell.target), cell.full, source });
         if (trace_preparation) std.debug.print("prepared pattern target={s} full={} source={s}\n", .{ @tagName(cell.target), cell.full, source });
-        const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
+        const result = @import("../transpile.zig").transpile(a, source, "input.cjs", .{
             .keep_names = keep_names,
             .unsupported = @import("compat.zig").fromESTarget(cell.target),
             .minify_identifiers = cell.full,
             .minify_syntax = cell.full,
             .minify_whitespace = cell.full,
-        });
+        }) catch |err| {
+            if (trace_preparation) {
+                // These exact valid inputs must produce code. Keep the real
+                // compiler error/normal-form diagnostics, then assert that
+                // public success contract before the unchanged Node checks.
+                std.debug.print("prepared pattern public transpile rejected valid source: {s} target={s} full={} source={s}\n", .{ @errorName(err), @tagName(cell.target), cell.full, source });
+                try std.testing.expect(false);
+            }
+            return err;
+        };
         const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
         if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
             std.debug.print("suspension result code={s} stderr={s} expected={s} actual={s}\n", .{ result.code, actual.stderr, native.stdout, actual.stdout });
