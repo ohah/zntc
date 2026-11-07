@@ -4515,3 +4515,180 @@ test "class wrapper scope preparation preserves selected and enclosing self cell
         if (inner_self) |sid| try std.testing.expectEqual(if (mode == .named) wrapper else inner_scope, editor.symbols.items[sid].scope_id);
     }
 }
+
+fn expectClassLoopHeaderOriginRuntime(source: []const u8) !void {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const Bundler = @import("../bundler/bundler.zig").Bundler;
+    const a = std.testing.allocator;
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    defer a.free(native.stdout);
+    defer a.free(native.stderr);
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("[0,1]\n", native.stdout);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.cjs", source);
+    const entry = try helpers.absPath(&tmp, "entry.cjs");
+    defer a.free(entry);
+    for ([_]TransformOptions.compat.ESTarget{ .es5, .esnext }) |target| {
+        for ([_]bool{ false, true }) |minify| {
+            var bundler = Bundler.init(a, .{
+                .entry_points = &.{entry},
+                .platform = .node,
+                .format = .cjs,
+                .unsupported = TransformOptions.compat.fromESTarget(target),
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+                .minify_whitespace = minify,
+            });
+            defer bundler.deinit();
+            const result = bundler.bundle(std.testing.io) catch |err| {
+                std.debug.print("KNOWN_ORIGIN_BUNDLE_REJECT target={s} minify={} error={s}\n", .{ @tagName(target), minify, @errorName(err) });
+                return err;
+            };
+            defer result.deinit(a);
+            try std.testing.expect(!result.hasErrors());
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+            defer a.free(actual.stdout);
+            defer a.free(actual.stderr);
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+}
+
+test "class method loop header keeps its explicit same-spelled binding origin" {
+    try expectClassLoopHeaderOriginRuntime("var readers=[];class C{method(){for(let C=0;C<2;C++){readers.push(()=>C)}}}new C().method();console.log(JSON.stringify(readers.map(fn=>fn())));");
+    try expectClassLoopHeaderOriginRuntime("var readers=[];class C{method(){for(let index=0;index<2;index++){readers.push(()=>index)}}}new C().method();console.log(JSON.stringify(readers.map(fn=>fn())));");
+}
+
+test "class static method loop header keeps its explicit same-spelled binding origin" {
+    try expectClassLoopHeaderOriginRuntime("var readers=[];class C{static method(){for(let C=0;C<2;C++){readers.push(()=>C)}}}C.method();console.log(JSON.stringify(readers.map(fn=>fn())));");
+    try expectClassLoopHeaderOriginRuntime("var readers=[];class C{static method(){for(let index=0;index<2;index++){readers.push(()=>index)}}}C.method();console.log(JSON.stringify(readers.map(fn=>fn())));");
+}
+
+test "class constructor loop header keeps its explicit same-spelled binding origin" {
+    try expectClassLoopHeaderOriginRuntime("var readers=[];class C{constructor(){for(let C=0;C<2;C++){readers.push(()=>C)}}}new C();console.log(JSON.stringify(readers.map(fn=>fn())));");
+}
+
+test "class getter loop header keeps its explicit same-spelled binding origin" {
+    try expectClassLoopHeaderOriginRuntime("var readers=[];class C{get values(){for(let C=0;C<2;C++){readers.push(()=>C)}return readers.map(fn=>fn())}}console.log(JSON.stringify(new C().values));");
+}
+
+test "class nested-function loop header keeps its explicit same-spelled binding origin" {
+    try expectClassLoopHeaderOriginRuntime("var readers=[];class C{method(){function collect(){for(let C=0;C<2;C++){readers.push(()=>C)}}collect()}}new C().method();console.log(JSON.stringify(readers.map(fn=>fn())));");
+}
+
+test "class generator-method loop header keeps its explicit same-spelled binding origin" {
+    try expectClassLoopHeaderOriginRuntime("var readers=[];class C{*method(){for(let C=0;C<2;C++){readers.push(()=>C)}yield 42}}Array.from(new C().method());console.log(JSON.stringify(readers.map(fn=>fn())));");
+}
+
+test "class async-method loop header keeps its explicit same-spelled binding origin" {
+    try expectClassLoopHeaderOriginRuntime("var readers=[];class C{async method(){for(let C=0;C<2;C++){readers.push(()=>C)}await 0}}new C().method().then(()=>console.log(JSON.stringify(readers.map(fn=>fn()))));");
+}
+
+test "class escaped-header loop header keeps its explicit same-spelled binding origin" {
+    try expectClassLoopHeaderOriginRuntime("var readers=[];class C{method(){for(let \\u0043=0;C<2;C++){readers.push(()=>C)}}}new C().method();console.log(JSON.stringify(readers.map(fn=>fn())));");
+}
+
+test "class parameter-shadow-control loop header keeps its explicit same-spelled binding origin" {
+    try expectClassLoopHeaderOriginRuntime("var readers=[];class C{method(C){for(let index=0;index<C;index++){readers.push(()=>index)}}}new C().method(2);console.log(JSON.stringify(readers.map(fn=>fn())));");
+}
+
+test "class nested-loop loop header keeps its explicit same-spelled binding origin" {
+    try expectClassLoopHeaderOriginRuntime("var readers=[];class C{method(){for(let index=0;index<1;index++){for(let C=0;C<2;C++){readers.push(()=>C)}}}}new C().method();console.log(JSON.stringify(readers.map(fn=>fn())));");
+}
+
+test "class producer keeps its explicit same-spelled binding origin and validated class handles" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "class C{static keep=C;method(){let C=42;return C}}C;";
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    var class_node: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_declaration) {
+            class_node = @fromBackingInt(@intCast(@as(u32, @intCast(raw))));
+            break;
+        }
+    }
+    try std.testing.expect(!class_node.isNone());
+    const name = parser.ast.readExtraNode(parser.ast.getNode(class_node).data.extra, @import("../parser/ast.zig").ClassExtra.name);
+    const declaration_id = analyzer.symbol_ids.items[@backingInt(name)] orelse return error.MissingClassDeclaration;
+    const self_id = analyzer.class_self_symbol_map.get(@backingInt(class_node)) orelse return error.MissingClassSelf;
+    try std.testing.expect(declaration_id != self_id);
+    var local_binding: NodeIndex = .none;
+    var local_read: NodeIndex = .none;
+    var self_read: NodeIndex = .none;
+    var declaration_read: NodeIndex = .none;
+    var local_id: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (raw >= analyzer.symbol_ids.items.len) continue;
+        const sid = analyzer.symbol_ids.items[raw] orelse continue;
+        const idx: NodeIndex = @fromBackingInt(@intCast(@as(u32, @intCast(raw))));
+        if (node.tag == .binding_identifier and analyzer.symbols.items[sid].kind == .variable_let) {
+            local_binding = idx;
+            local_id = sid;
+        }
+        if (node.tag == .identifier_reference and sid == self_id) self_read = idx;
+        if (node.tag == .identifier_reference and sid == declaration_id) declaration_read = idx;
+    }
+    const foreign_id = local_id orelse return error.MissingForeignBinding;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (raw >= analyzer.symbol_ids.items.len) continue;
+        if (node.tag == .identifier_reference and analyzer.symbol_ids.items[raw] == foreign_id)
+            local_read = @fromBackingInt(@intCast(@as(u32, @intCast(raw))));
+    }
+    try std.testing.expect(!local_binding.isNone() and !local_read.isNone() and !self_read.isNone() and !declaration_read.isNone());
+    const class_scope = analyzer.symbols.items[self_id].scope_id;
+    const local_scope = analyzer.symbols.items[foreign_id].scope_id;
+    var transformer = try Transformer.init(a, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_class_name_node = name;
+    transformer.current_class_self_symbol_id = self_id;
+    transformer.current_scope = local_scope;
+    const cases = .{
+        .{ local_binding, local_scope, foreign_id },
+        .{ local_read, local_scope, foreign_id },
+        .{ name, class_scope, self_id },
+        .{ self_read, class_scope, self_id },
+        .{ declaration_read, class_scope, self_id },
+    };
+    inline for (cases) |case| {
+        const ref = try transformer.makeUserRefNamedAtScope("C", case[0], case[1]);
+        try std.testing.expectEqual(@as(?u32, case[2]), transformer.getSymbolIdAt(ref));
+        const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+        const maybe_recorded = try editor.referenceForNode(ref);
+        try std.testing.expect(maybe_recorded != null);
+        const recorded = maybe_recorded.?;
+        try std.testing.expectEqual(case[2], @backingInt(recorded.symbol_id));
+        try std.testing.expectEqual(case[1], recorded.scope_id);
+        try std.testing.expect(recorded.flags.read and !recorded.flags.write);
+    }
+    // Absent-origin synthesis remains a separate existing class-context path.
+    const absent = try transformer.makeUserRefNamedAtScope("C", .none, class_scope);
+    try std.testing.expectEqual(@as(?u32, self_id), transformer.getSymbolIdAt(absent));
+    // A different emitted spelling still copies the explicit declaration origin.
+    const renamed = try transformer.makeUserRefNamedAtScope("RenamedC", name, class_scope);
+    try std.testing.expectEqual(@as(?u32, declaration_id), transformer.getSymbolIdAt(renamed));
+    transformer.semantic_edit_enabled = false;
+    const legacy = try transformer.makeUserRefNamedAtScope("C", name, class_scope);
+    try std.testing.expectEqual(@as(?u32, self_id), transformer.getSymbolIdAt(legacy));
+}
