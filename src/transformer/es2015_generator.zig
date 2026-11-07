@@ -1615,11 +1615,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const test_idx: NodeIndex = self.readNodeIdx(e, 1);
             const update_idx: NodeIndex = self.readNodeIdx(e, 2);
             const body_idx: NodeIndex = self.readNodeIdx(e, 3);
-            // 헤더의 let/const 는 루프 스코프 — 고유 이름으로 바꿔 wrapper 에 등록한다 (#4712).
-            var header_plan = try prepareLoopHeadBindings(self, init_idx);
-            defer header_plan.deinit(self.allocator);
-            try consumeStateMachineBindingPlan(self, &header_plan);
-
             // body 는 statement → hasYieldOrReturn, 헤더 세 칸은 expression → containsYield.
             // ⚠️ init/update 를 빼면 헤더에만 yield 가 있을 때 루프가 상태 기계를 안 타고
             // raw `yield` 가 남아 **산출물이 파싱조차 안 된다** (#4721).
@@ -1634,6 +1629,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 }
                 return;
             }
+
+            // The ordinary native-region producer owns any extracted
+            // per-iteration parameter/outer carrier handoff. Only a loop
+            // selected for state collection may register this header plan.
+            var header_plan = try prepareLoopHeadBindings(self, init_idx);
+            defer header_plan.deinit(self.allocator);
+            try consumeStateMachineBindingPlan(self, &header_plan);
 
             // 반복별 바인딩 복원(#4716) — 필요하면 body 를 `yield* _loopN(x)` 로 바꾼 새
             // 노드로 다시 수집한다. 이 검사는 위 early-return **뒤**라, 상태 기계로 접히는
