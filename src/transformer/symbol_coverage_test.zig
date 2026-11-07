@@ -8375,6 +8375,7 @@ test "strict accepted identities require per-finding SymbolId and ScopeId eviden
             .marked_synthetic = false,
             .symbol_id = 4,
             .expected_scope_id = 2,
+            .binding_required_scope_id = 2,
             .symbol_scope_id = 2,
             .symbol_origin_scope_id = 1,
         },
@@ -8418,6 +8419,7 @@ test "strict accepted identities require per-finding SymbolId and ScopeId eviden
             .is_binding = true,
             .symbol_id = 9,
             .expected_scope_id = 3,
+            .binding_required_scope_id = 3,
             .symbol_scope_id = 3,
             .symbol_origin_scope_id = 2,
         },
@@ -8468,7 +8470,7 @@ test "strict accepted identities require per-finding SymbolId and ScopeId eviden
         .{ .node = 30, .name = "x", .tag = .binding_identifier, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .symbol_scope_id = 0, .symbol_origin_scope_id = 0 },
         .{ .node = 31, .name = "x", .tag = .identifier_reference, .status = .external, .marked_synthetic = false, .reference_symbol_id = 1 },
         .{ .node = 32, .name = "x", .tag = .identifier_reference, .status = .external, .marked_synthetic = false, .reference_scope_id = 0 },
-        .{ .node = 33, .name = "x", .tag = .binding_identifier, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_origin_scope_id = 0 },
+        .{ .node = 33, .name = "x", .tag = .binding_identifier, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 0 },
         .{ .node = 34, .name = "x", .tag = .identifier_reference, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 0, .reference_scope_id = 0 },
         .{ .node = 35, .name = "x", .tag = .identifier_reference, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 0 },
         .{ .node = 36, .name = "x", .tag = .binding_identifier, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 0, .reference_symbol_id = 1 },
@@ -8485,6 +8487,10 @@ test "strict accepted identities require per-finding SymbolId and ScopeId eviden
         .{ .node = 47, .name = "x", .tag = .binding_identifier, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_origin_scope_id = 0 },
         .{ .node = 48, .name = "x", .tag = .binding_identifier, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 1 },
         .{ .node = 49, .name = "x", .tag = .binding_identifier, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 8, .binding_required_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 1 },
+        .{ .node = 50, .name = "x", .tag = .binding_identifier, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .symbol_origin_scope_id = 0, .binding_required_scope_id = 1 },
+        .{ .node = 51, .name = "x", .tag = .identifier_reference, .status = .bound, .marked_synthetic = false, .symbol_id = 1, .reference_symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .reference_scope_id = 0, .binding_required_scope_id = 0 },
+        .{ .node = 52, .name = "x", .tag = .identifier_reference, .status = .external, .marked_synthetic = false, .binding_required_scope_id = 0 },
+        .{ .node = 53, .name = "x", .tag = .identifier_reference, .status = .scope_mismatch, .marked_synthetic = false, .symbol_id = 1, .reference_symbol_id = 1, .expected_scope_id = 0, .symbol_scope_id = 0, .reference_scope_id = 1, .binding_required_scope_id = 0 },
     };
     for (rejected) |finding| {
         var report: coverage.StrictReport = .{};
