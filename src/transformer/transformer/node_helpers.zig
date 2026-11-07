@@ -430,7 +430,14 @@ pub fn makeUserRefNamed(self: anytype, name: []const u8, origin: NodeIndex) Erro
 /// synthesized argument will live, so `current_scope` is not sufficient.
 pub fn makeUserRefNamedAtScope(self: anytype, name: []const u8, origin: NodeIndex, scope: @import("../../semantic/scope.zig").ScopeId) Error!NodeIndex {
     const name_span = try self.ast.addString(name);
-    const same_class_name = !self.current_class_name_node.isNone() and
+    // An explicit known foreign origin wins over a same-spelled class context.
+    // Preserve legacy graphless and absent-origin synthesis; they do not carry
+    // a known foreign SymbolId that can authorize this narrower decision.
+    const origin_symbol_id = if (origin.isNone()) null else self.getSymbolIdAt(origin);
+    const class_declaration_symbol_id = if (self.current_class_name_node.isNone()) null else self.getSymbolIdAt(self.current_class_name_node);
+    const known_foreign_origin = self.semantic_edit_enabled and origin_symbol_id != null and
+        origin_symbol_id != self.current_class_self_symbol_id and origin_symbol_id != class_declaration_symbol_id;
+    const same_class_name = !known_foreign_origin and !self.current_class_name_node.isNone() and
         std.mem.eql(u8, self.ast.getText(self.ast.getNode(self.current_class_name_node).data.string_ref), name);
     const static_class_name = isCurrentStaticClassName(self, name_span);
     if (self.semantic_edit_enabled and same_class_name) {

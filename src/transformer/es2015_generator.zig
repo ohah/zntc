@@ -1589,9 +1589,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const test_idx: NodeIndex = self.readNodeIdx(e, 1);
             const update_idx: NodeIndex = self.readNodeIdx(e, 2);
             const body_idx: NodeIndex = self.readNodeIdx(e, 3);
-            // 헤더의 let/const 는 루프 스코프 — 고유 이름으로 바꿔 wrapper 에 등록한다 (#4712).
-            try registerLoopHeadBindings(self, init_idx);
-
             // body 는 statement → hasYieldOrReturn, 헤더 세 칸은 expression → containsYield.
             // ⚠️ init/update 를 빼면 헤더에만 yield 가 있을 때 루프가 상태 기계를 안 타고
             // raw `yield` 가 남아 **산출물이 파싱조차 안 된다** (#4721).
@@ -1606,6 +1603,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 }
                 return;
             }
+
+            // Native regions keep the ordinary visitor's header storage. That
+            // visitor can split an iteration binding into an inner parameter
+            // and a distinct outer cell; pre-registering its old SID here
+            // would later hoist the inner binding back into the outer cell.
+            // Only loops consumed by this state collector own this registration.
+            try registerLoopHeadBindings(self, init_idx);
 
             // 반복별 바인딩 복원(#4716) — 필요하면 body 를 `yield* _loopN(x)` 로 바꾼 새
             // 노드로 다시 수집한다. 이 검사는 위 early-return **뒤**라, 상태 기계로 접히는
