@@ -2639,7 +2639,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (binding.isNone()) return binding;
             const node = self.ast.getNode(binding);
             if (node.tag != .binding_identifier) return binding;
-            const target = try self.makeIdentifierRefWithSymbol(node.data.string_ref, binding);
+            // Preparation does not visit the source binding. Consume its
+            // exact SID's selected spelling before creating the write edge.
+            const target_span = if (self.tableRenameOf(binding)) |selected|
+                try self.ast.addString(selected)
+            else
+                node.data.string_ref;
+            const target = try self.makeIdentifierRefWithSymbolAt(target_span, node.span, binding);
             if (self.getSymbolIdAt(binding)) |raw_id| {
                 const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
                 if (raw_id >= symbols.len) std.debug.panic("generator assignment binding id is out of range", .{});
