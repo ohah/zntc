@@ -75,11 +75,18 @@ pub fn setJobs(max_threads: u32) void {
 
 // ── NAPI 환경변수 스냅샷 (0.16) ───────────────────────────────────────────
 // std.process.getEnvVarOwned 제거 → libc environ(std.c.environ) 으로 Map 을
-// 만들어 env_flag 에 등록. Map 은 프로세스 수명 동안 유지(deinit 안 함).
+// 만들어 env_flag 에 등록. Map 은 여러 NAPI env가 빌려 쓰는 process-lifetime
+// snapshot이므로 env cleanup에서 해제하지 않는다. 요청별 DebugAllocator와
+// 수명을 분리하여 살아 있는 전역 snapshot을 요청 누수로 보고하지 않는다.
 var g_env_map: ?std.process.Environ.Map = null;
+var g_env_map_mutex: std.Io.Mutex = .init;
 
 /// register 에서 1회 호출 — libc environ 을 env_flag 로 등록.
 pub fn captureEnvironFromLibc() void {
+    // This backend does not require initIo. Publish the immutable borrowed map
+    // once even when multiple worker isolates register the addon concurrently.
+    std.Io.Threaded.mutexLockUncancelable(&g_env_map_mutex);
+    defer std.Io.Threaded.mutexUnlock(&g_env_map_mutex);
     if (g_env_map != null) return;
     // Block 은 OS 별 comptime 타입: Windows=GlobalBlock(use_global→PEB), POSIX=PosixBlock(slice).
     const block: std.process.Environ.Block = if (builtin.target.os.tag == .windows)
@@ -90,7 +97,9 @@ pub fn captureEnvironFromLibc() void {
         while (c_environ[env_count] != null) : (env_count += 1) {}
         break :blk .{ .slice = @ptrCast(c_environ[0..env_count :null]) };
     };
-    g_env_map = std.process.Environ.createMap(.{ .block = block }, nativeAlloc()) catch return;
+    // createMap cleans partial allocations on failure. Leave null so a later
+    // registration can retry; never publish a partially initialized map.
+    g_env_map = std.process.Environ.createMap(.{ .block = block }, std.heap.c_allocator) catch return;
     @import("zntc_lib").env_flag.captureEnviron(&g_env_map.?);
 }
 
