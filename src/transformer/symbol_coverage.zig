@@ -4254,9 +4254,10 @@ test "output normal form gate rejects every aggregate invariant counter" {
     try binding_scope_delegation.strict.findings.append(std.testing.allocator, .{
         .node = 2,
         .name = "generated",
-        .tag = .binding_identifier,
+        .tag = .identifier_reference,
         .status = .scope_mismatch,
         .marked_synthetic = false,
+        .is_binding = true,
         .symbol_id = 1,
         .expected_scope_id = 0,
         .binding_required_scope_id = 0,
