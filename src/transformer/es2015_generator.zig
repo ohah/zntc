@@ -393,7 +393,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const statement: NodeIndex = @fromBackingInt(@intCast(raw_idx));
                 if (root_classes.contains(statement) and rootClassKeepsOrdinaryStorage(self, statement, wrapper_scope)) {
                     const ordinary_plan: es2015_block_scoping.ES2015BlockScoping(Transformer).StateMachineBindingPlan = .{};
-                    const ordinary_declaration_plan: PreparedDeclarationPlan = .{ .wrapper_scope = self.generator_state_machine_scope };
+                    const ordinary_declaration_plan: PreparedDeclarationPlan = .{ .wrapper_scope = self.generator_state_machine_scope, .span = self.ast.getNode(statement).span };
                     try collectPreparedOperations(self, statement, &ordinary_plan, &ordinary_declaration_plan, &ops, &next_label);
                 } else {
                     try collectRewrittenUsingStatement(self, statement, body_list.disposal_try, &ops, &next_label);
