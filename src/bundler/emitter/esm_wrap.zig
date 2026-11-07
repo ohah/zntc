@@ -479,6 +479,12 @@ pub fn emitEsmWrappedModule(
                 try body_stmts.append(allocator, raw_idx);
             },
             .variable_declaration => {
+                // Native resource registrations belong to this factory. Turning
+                // them into outer assignments drops abrupt cleanup entirely.
+                if (esm_ast.variableDeclarationKind(esm_ast.getNode(effective_node)) == .using) {
+                    try body_stmts.append(allocator, raw_idx);
+                    continue;
+                }
                 // 변수명 수집 (래퍼 밖 var 선언용)
                 const de = var_decl_extra orelse {
                     try body_stmts.append(allocator, raw_idx);

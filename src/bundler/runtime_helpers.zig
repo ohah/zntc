@@ -1775,23 +1775,23 @@ pub const INIT_CALL_END = ";\n";
 /// __using: 리소스를 dispose 스택에 등록 (esbuild 호환).
 /// __callDispose: 스택의 리소스를 역순으로 dispose (esbuild 호환).
 pub const USING_RUNTIME =
-    \\var __using = (stack, value, async) => {
+    \\var __using = ((disposeSymbol, apply, TypeErrorCtor) => (stack, value, async, guard) => {
     \\  if (value != null) {
-    \\    if (typeof value !== "object" && typeof value !== "function") throw new TypeError("Object expected");
+    \\    if (typeof value !== "object" && typeof value !== "function") throw new (guard ? TypeErrorCtor : TypeError)("Object expected");
     \\    var dispose, inner;
     \\    if (async) dispose = value[Symbol.asyncDispose];
     \\    if (dispose === void 0) {
-    \\      dispose = value[Symbol.dispose];
+    \\      dispose = value[guard ? disposeSymbol : Symbol.dispose];
     \\      if (async) inner = dispose;
     \\    }
-    \\    if (typeof dispose !== "function") throw new TypeError("Object not disposable");
+    \\    if (typeof dispose !== "function") throw new (guard ? TypeErrorCtor : TypeError)("Object not disposable");
     \\    if (inner) dispose = function() { try { inner.call(this); } catch (e) { return Promise.reject(e); } };
-    \\    stack.push([async, dispose, value]);
+    \\    if (!guard) stack.push([async, dispose, value]);
     \\  } else if (async) {
     \\    stack.push([async]);
     \\  }
-    \\  return value;
-    \\};
+    \\  return guard ? { value: value, [disposeSymbol]: function() { if (dispose) { var method = dispose; dispose = void 0; apply(method, value, []); } } } : value;
+    \\})(typeof Symbol === "function" ? Symbol.dispose : void 0, typeof Reflect === "object" && Reflect !== null ? Reflect.apply : void 0, typeof TypeError === "function" ? TypeError : void 0);
     \\var __callDispose = (stack, error, hasError) => {
     \\  var E = typeof SuppressedError === "function" ? SuppressedError : function(e, s, m) {
     \\    var err = new Error(m);
@@ -1815,7 +1815,7 @@ pub const USING_RUNTIME =
     \\};
     \\
 ;
-pub const USING_RUNTIME_MIN = "var " ++ NAMES.USING_MIN ++ "=(stack,value,async)=>{if(value!=null){if(typeof value!==\"object\"&&typeof value!==\"function\")throw new TypeError(\"Object expected\");var dispose,inner;if(async)dispose=value[Symbol.asyncDispose];if(dispose===void 0){dispose=value[Symbol.dispose];if(async)inner=dispose}if(typeof dispose!==\"function\")throw new TypeError(\"Object not disposable\");if(inner)dispose=function(){try{inner.call(this)}catch(e){return Promise.reject(e)}};stack.push([async,dispose,value])}else if(async){stack.push([async])}return value};var " ++ NAMES.CALL_DISPOSE_MIN ++ "=(stack,error,hasError)=>{var E=typeof SuppressedError===\"function\"?SuppressedError:function(e,s,m){var err=new Error(m);err.error=e;err.suppressed=s;return err};var fail=(e)=>error=hasError?new E(e,error,\"An error was suppressed during disposal\"):(hasError=true,e);var next=(it)=>{while(it=stack.pop()){try{var result=it[1]&&it[1].call(it[2]);if(it[0])return Promise.resolve(result).then(next,(e)=>{fail(e);return next()})}catch(e){fail(e)}}if(hasError)throw error};return next()};";
+pub const USING_RUNTIME_MIN = "var " ++ NAMES.USING_MIN ++ "=((disposeSymbol,apply,TypeErrorCtor)=>(stack,value,async,guard)=>{if(value!=null){if(typeof value!==\"object\"&&typeof value!==\"function\")throw new(guard?TypeErrorCtor:TypeError)(\"Object expected\");var dispose,inner;if(async)dispose=value[Symbol.asyncDispose];if(dispose===void 0){dispose=value[guard?disposeSymbol:Symbol.dispose];if(async)inner=dispose}if(typeof dispose!==\"function\")throw new(guard?TypeErrorCtor:TypeError)(\"Object not disposable\");if(inner)dispose=function(){try{inner.call(this)}catch(e){return Promise.reject(e)}};if(!guard)stack.push([async,dispose,value])}else if(async){stack.push([async])}return guard?{value:value,[disposeSymbol]:function(){if(dispose){var method=dispose;dispose=void 0;apply(method,value,[])}}}:value})(typeof Symbol===\"function\"?Symbol.dispose:void 0,typeof Reflect===\"object\"&&Reflect!==null?Reflect.apply:void 0,typeof TypeError===\"function\"?TypeError:void 0);var " ++ NAMES.CALL_DISPOSE_MIN ++ "=(stack,error,hasError)=>{var E=typeof SuppressedError===\"function\"?SuppressedError:function(e,s,m){var err=new Error(m);err.error=e;err.suppressed=s;return err};var fail=(e)=>error=hasError?new E(e,error,\"An error was suppressed during disposal\"):(hasError=true,e);var next=(it)=>{while(it=stack.pop()){try{var result=it[1]&&it[1].call(it[2]);if(it[0])return Promise.resolve(result).then(next,(e)=>{fail(e);return next()})}catch(e){fail(e)}}if(hasError)throw error};return next()};";
 
 /// __using/__callDispose ES5 호환: arrow → function.
 pub const USING_RUNTIME_ES5 =

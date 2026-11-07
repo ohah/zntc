@@ -34,19 +34,20 @@ const testOnlyHelpers = new Set([
 const constructorHelpers = new Set(constructors);
 
 const expected = {
-  revision: 'a33381d4fc0096e9ad5569cb1c51c5d321f03e33',
-  total: 138,
+  // Base-plus-feature source label, not a claim that the base commit contains it.
+  revision: '2798bb50735f680c5313bfb0dd089ee57a8a5fd7+native-module-using',
+  total: 140,
   files: 45,
-  functions: 89,
+  functions: 90,
   byConstructor: {
     makeSyntheticBinding: 52,
-    makeExactSyntheticBinding: 42,
-    makeExactSyntheticBindingFromSpan: 29,
+    makeExactSyntheticBinding: 43,
+    makeExactSyntheticBindingFromSpan: 30,
     createSyntheticTempBinding: 9,
     makeUsingBinding: 4,
     createSyntheticTempBindingWithIdentity: 2,
   },
-  fingerprint: '246344339d6250038c5dc248cd41d3fdeaebe9b265dcdc7e77dd6e68ebccddb8',
+  fingerprint: 'd7283ab0073c53213c0f571b1cde149a9611032f3e8e9015761627fdcdb1ddb7',
 };
 
 const historicalBaseline = {

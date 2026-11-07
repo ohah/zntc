@@ -61,8 +61,6 @@ const KNOWN_FAILURES: Record<string, string[]> = {
     'transpile/es5/plain',
     'transpile/es5/minify',
   ],
-  // #4740 esnext 번들에서 의존 모듈 최상위 using 의 dispose 가 번들 끝으로 밀린다
-  '4730-using-module': ['esnext/plain', 'esnext/minify'],
 };
 
 type Run = { stdout: string; exitCode: number };

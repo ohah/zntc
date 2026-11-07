@@ -1768,7 +1768,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const tdz_index = std.mem.indexOf(u8, combined.items, "var __tdz2 = function(name)").?;
     const read_index = std.mem.indexOf(u8, combined.items, "var __read2 = function(o, n)").?;
     const tagged_index = std.mem.indexOf(u8, combined.items, "var __taggedTemplateLiteral2 = function").?;
-    const using_index = std.mem.indexOf(u8, combined.items, "var __using2 = (stack, value, async) =>").?;
+    const using_index = std.mem.indexOf(u8, combined.items, "var __using2 = ((disposeSymbol, apply, TypeErrorCtor) => (stack, value, async, guard) =>").?;
     const call_dispose_index = std.mem.indexOf(u8, combined.items, "var __callDispose2 = (stack, error, hasError) =>").?;
     const metadata_index = std.mem.indexOf(u8, combined.items, "var __metadata2 = (key, value) =>").?;
     const array_like_to_array_index = std.mem.indexOf(u8, combined.items, "var __arrayLikeToArray2 = function(arr, len)").?;
@@ -1938,7 +1938,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected using help
             .es5 = false,
             .using_name = "__using2",
             .call_dispose_name = "__callDispose2",
-            .using_declaration = "var __using2 = (stack, value, async) =>",
+            .using_declaration = "var __using2 = ((disposeSymbol, apply, TypeErrorCtor) => (stack, value, async, guard) =>",
             .call_dispose_declaration = "var __callDispose2 = (stack, error, hasError) =>",
         },
         .{
@@ -1946,7 +1946,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected using help
             .es5 = false,
             .using_name = "$us2",
             .call_dispose_name = "$cD2",
-            .using_declaration = "var $us2=(stack,value,async)=>",
+            .using_declaration = "var $us2=((disposeSymbol,apply,TypeErrorCtor)=>(stack,value,async,guard)=>",
             .call_dispose_declaration = "var $cD2=(stack,error,hasError)=>",
         },
         .{

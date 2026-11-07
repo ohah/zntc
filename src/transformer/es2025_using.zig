@@ -88,6 +88,82 @@ pub fn ES2025Using(comptime Transformer: type) type {
             return false;
         }
 
+        /// Native synchronous using keeps its source lexical binding and TDZ.
+        /// Each resource owns one idempotent guard: normal module completion
+        /// drains it in a final native block; abrupt completion uses the outer
+        /// native registration. Async registrations cannot use this protocol:
+        /// their later no-op disposal would still introduce an observable await.
+        pub fn rewriteNativeModuleUsing(self: *Transformer, list: NodeList) Transformer.Error!?NodeList {
+            var found = false;
+            for (0..list.len) |i| {
+                const stmt = self.ast.getNode(self.readNodeIdx(list.start, @intCast(i)));
+                if (stmt.tag != .variable_declaration) continue;
+                const kind = self.ast.variableDeclarationKind(stmt);
+                if (kind == .await_using) return null;
+                if (kind == .using) found = true;
+            }
+            if (!found) return null;
+            var out: std.ArrayList(NodeIndex) = .empty;
+            defer out.deinit(self.allocator);
+            var end_decls: std.ArrayList(NodeIndex) = .empty;
+            defer end_decls.deinit(self.allocator);
+            const zero = Span{ .start = 0, .end = 0 };
+            const end_block = try self.ast.addNode(.{ .tag = .block_statement, .span = zero, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+            const end_scope = if (self.semantic_edit_enabled) try self.addGeneratedScope(self.current_scope, end_block, .block) else self.current_scope;
+            self.runtime_helpers.using_ctx = true;
+            for (0..list.len) |i| {
+                const stmt_idx = self.readNodeIdx(list.start, @intCast(i));
+                const stmt = self.ast.getNode(stmt_idx);
+                if (stmt.tag != .variable_declaration or self.ast.variableDeclarationKind(stmt) != .using) {
+                    try out.append(self.allocator, stmt_idx);
+                    continue;
+                }
+                const decl_start = self.readU32(stmt.data.extra, 1);
+                const decl_len = self.readU32(stmt.data.extra, 2);
+                for (0..decl_len) |j| {
+                    const decl = self.ast.getNode(self.readNodeIdx(decl_start, @intCast(j)));
+                    const source_binding = self.readNodeIdx(decl.data.extra, 0);
+                    var init = self.readNodeIdx(decl.data.extra, 2);
+                    if (self.ast.isAnonymousFunctionDefinition(init)) {
+                        // Keep the source binding's NamedEvaluation even though
+                        // acquisition now passes through a helper call. A data
+                        // property performs this without an extra binding/SID.
+                        const source_name = self.ast.getNode(source_binding).data.string_ref;
+                        const literal = try es_helpers.buildQuotedKeyLiteral(self, source_name);
+                        const key = try self.ast.addNode(.{ .tag = .computed_property_key, .span = decl.span, .data = .{ .unary = .{ .operand = literal, .flags = 0 } } });
+                        const property = try self.ast.addNode(.{ .tag = .object_property, .span = decl.span, .data = .{ .binary = .{ .left = key, .right = init, .flags = 0 } } });
+                        const object = try self.ast.addNode(.{ .tag = .object_expression, .span = decl.span, .data = .{ .list = try self.ast.addNodeList(&.{property}) } });
+                        init = try es_helpers.makeComputedMember(self, object, try es_helpers.buildQuotedKeyLiteral(self, source_name), decl.span);
+                    }
+                    const guard_name = try uniqueSynthName(self, "_moduleUsing", &self.using_head_counter);
+                    const guard_span = try self.ast.addString(guard_name);
+                    const guard = try es_helpers.makeExactSyntheticBindingFromSpan(self, guard_span);
+                    const guard_id = if (self.semantic_edit_enabled) try self.declareSyntheticInScope(guard, zero, .variable_const, self.current_scope) else null;
+                    const stack = try self.ast.addNode(.{ .tag = .array_expression, .span = zero, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+                    const acquire = try es_helpers.makeCallExpr(self, try es_helpers.makeRuntimeHelperRef(self, "__using"), &.{ stack, init, try es_helpers.makeBoolLiteral(self, false), try es_helpers.makeBoolLiteral(self, true) }, stmt.span);
+                    try out.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, guard, acquire, zero)}, .using, zero));
+                    const guard_read = try es_helpers.makeExactSyntheticRefFromSpan(self, guard_span);
+                    try registerUsingRef(self, guard_read, guard_id, self.current_scope, .{ .read = true });
+                    const value = try es_helpers.makeStaticMember(self, guard_read, try es_helpers.makePropertyName(self, "value"), zero);
+                    const source_decl = try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, source_binding, value, decl.span)}, .@"const", stmt.span);
+                    // Native module lexical bindings must not be demoted by the
+                    // cycle output policy merely because their resource moved.
+                    try self.ast.preserve_lexical_declaration_indices.append(self.allocator, @backingInt(source_decl));
+                    try self.native_module_using_declaration_extras.put(self.allocator, self.ast.getNode(source_decl).data.extra, {});
+                    try out.append(self.allocator, source_decl);
+                    const end_name = try uniqueSynthName(self, "_moduleUsingEnd", &self.using_head_counter);
+                    const end_binding = try es_helpers.makeExactSyntheticBinding(self, end_name);
+                    if (self.semantic_edit_enabled) _ = try self.declareSyntheticInScope(end_binding, zero, .variable_const, end_scope);
+                    const end_ref = try es_helpers.makeExactSyntheticRefFromSpan(self, guard_span);
+                    try registerUsingRef(self, end_ref, guard_id, end_scope, .{ .read = true });
+                    try end_decls.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, end_binding, end_ref, zero)}, .using, zero));
+                }
+            }
+            self.ast.nodes.items[@backingInt(end_block)].data.list = try self.ast.addNodeList(end_decls.items);
+            try out.append(self.allocator, end_block);
+            return try self.ast.addNodeList(out.items);
+        }
+
         /// 낮추는 문장 목록의 종류. 모듈 최상위는 `import`/`export` 가 try 안에 들어갈 수
         /// 없어 따로 다룬다.
         pub const ListKind = enum { program, body };

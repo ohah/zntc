@@ -34,6 +34,7 @@ comptime {
     _ = @import("bundler_test/splitting_mangle.zig");
     _ = @import("bundler_test/minify_loader.zig");
     _ = @import("bundler_test/lowered_tla_publication.zig");
+    _ = @import("bundler_test/native_module_using.zig");
     _ = @import("bundler_test/plugin_misc.zig");
     _ = @import("bundler_test/function_map.zig");
     _ = @import("bundler_test/virtual_ns_treeshake.zig");

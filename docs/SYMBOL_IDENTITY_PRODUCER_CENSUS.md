@@ -127,7 +127,8 @@ This refresh pins callsite inventory only. The 37 added expressions now have a r
 
 ## Outside-census identity domains (2026-11-07)
 
-The 138 transformer constructor expressions and 41 `SyntheticKind` roles are
+The historical 138 transformer constructor expressions (140 after the native
+module-using delta below) and 41 `SyntheticKind` roles are
 bounded inventories. They do not enumerate every independent parsed program or
 foreign-module callsite. These additions are separate domains, not new rows
 silently absorbed into that constructor count:
@@ -153,3 +154,32 @@ spelling reservations only: physical parameter edges still select the SymbolId.
 The existing unique-name allocator handles collisions, including escaped names;
 direct-eval/with scopes retain their actual source parameter names. A fresh name
 such as `__zntcArtifact0` must never capture an existing free read of that name.
+
+
+## Native module using boundary delta (2026-11-07)
+
+The synchronous module-disposal change on base `2798bb50735f680c5313bfb0dd089ee57a8a5fd7`
+adds exactly two production constructor expressions in
+`src/transformer/es2025_using.zig::rewriteNativeModuleUsing`. The bounded current
+inventory is **140 expressions, 90 functions, 45 files** (139 reachable production
+expressions and the same one historical unreachable expression). Its fingerprint
+is `d7283ab0073c53213c0f571b1cde149a9611032f3e8e9015761627fdcdb1ddb7`.
+The script's base-plus-feature revision string is a source label, not a claim
+that the unmodified base commit contains these expressions.
+
+| Exact producer | Binding authority and final consumer |
+| --- | --- |
+| `makeExactSyntheticBindingFromSpan` for the acquisition guard | A fresh private binding declared by `declareSyntheticInScope` as `variable_const` in the actual program scope. Its exact SID is attached to references reading the original resource value and to the end-block reference; the linker/name planner consumes these same handles. Native `using` registers the guard only after the initializer and original dispose-method lookup succeed. |
+| `makeExactSyntheticBinding` for the end-block guard | A distinct private binding declared in the constructor-owned generated block scope. Its initializer references the acquisition guard's exact SID from that scope; native block exit invokes the same idempotent per-resource guard. It is not a second acquisition or a name-based identity recovery. |
+
+The original source binding is reused as a lexical `const` with its source SID;
+its constructor-owned declaration payload carries lexical preservation through
+actual visitor copies. Imports, exports, other lexical declarations, and class
+self bindings retain their existing roles. The graph prepass admits this demand
+from actual top-level synchronous `using` statements and publishes only through
+the existing retained-graph output checks; it adds no Analyzer or reanalysis.
+Programs with top-level `await using` retain the previous path. Ordinary TLA is
+not itself an async-disposal request. The native helper captures disposal/call
+intrinsics at its own initialization; this does not certify host-mutated or
+late-loaded helper primordial environments. The two new constructor rows do not
+expand the separate output-program/Worklet domains or claim whole-epic closure.
