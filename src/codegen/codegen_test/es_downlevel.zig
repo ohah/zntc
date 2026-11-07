@@ -2404,8 +2404,9 @@ test "#1960-B: ES5 async + binding pattern destructuring lowering" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "{x:x}=") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "{ x:x }=") == null);
     // sequence expression 으로 분해되어 있어야 함
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=_state.sent()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "x=_a.x") != null);
+    try expectPreparedPatternShape(r.output, &.{"x"}, false);
+    try expectPreparedOutputRuntime(r.output, "async function f(){const {x}=await fetch('');return x;}", "globalThis.fetch=async()=>({x:42});f().then(value=>console.log(JSON.stringify(value)));");
+    try expectGeneratorNativeValues("async function f(){const {x}=await fetch('');return x;}globalThis.fetch=async()=>({x:42});f().then(value=>console.log(JSON.stringify(value)));", "42\n");
 }
 
 test "#1960-B: ES5 async + array binding pattern destructuring lowering" {
@@ -2416,9 +2417,9 @@ test "#1960-B: ES5 async + array binding pattern destructuring lowering" {
     );
     defer r.deinit();
     // await 결과가 이터러블이어도 되도록 `__read` 로 배열을 만든다 (#4791).
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=__read(_state.sent(),2)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "a=_a[0]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "b=_a[1]") != null);
+    try expectPreparedPatternShape(r.output, &.{}, true);
+    try expectPreparedOutputRuntime(r.output, "async function f(){const [a,b]=await fetch('');return a+b;}", "globalThis.fetch=async()=>new Set([20,22]);f().then(value=>console.log(JSON.stringify(value)));");
+    try expectGeneratorNativeValues("async function f(){const [a,b]=await fetch('');return a+b;}globalThis.fetch=async()=>new Set([20,22]);f().then(value=>console.log(JSON.stringify(value)));", "42\n");
 }
 
 // --- ES2015: let/const → var ---
@@ -4714,13 +4715,17 @@ test "ES5 상태 기계: 구조분해 catch 파라미터는 단순 대입으로 
     // 속성을 읽고, minify 가 값 자리를 선언과 잇지 못한다.
     var r = try e2eTarget(std.testing.allocator, "function* g(){ try { yield 1; } catch ({ message }) { yield 2; log(message); } }", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "message$1=_b.message,") != null);
+    try expectPreparedPatternShape(r.output, &.{"message"}, false);
+    try expectPreparedOutputRuntime(r.output, "function* g(){ try { yield 1; } catch ({ message }) { yield 2; log(message); } }", "var logs=[];function log(value){logs.push(value)}var iterator=g();iterator.next();iterator.throw({message:42});iterator.next();console.log(JSON.stringify(logs));");
+    try expectGeneratorNativeValues("function* g(){ try { yield 1; } catch ({ message }) { yield 2; log(message); } }var logs=[];function log(value){logs.push(value)}var iterator=g();iterator.next();iterator.throw({message:42});iterator.next();console.log(JSON.stringify(logs));", "[42]\n");
     try std.testing.expect(std.mem.indexOf(u8, r.output, "({") == null);
 
     // 기본값이 붙은 중첩 패턴도 재귀로 푼다.
     var rn = try e2eTarget(std.testing.allocator, "function* g(){ try { yield 1; } catch ({ b: [c] = d }) { yield 2; log(c); } }", .es5);
     defer rn.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, rn.output, "c$1=_c[0]") != null);
+    try expectPreparedPatternShape(rn.output, &.{"b"}, true);
+    try expectPreparedOutputRuntime(rn.output, "function* g(){ try { yield 1; } catch ({ b: [c] = d }) { yield 2; log(c); } }", "var d=new Set([42]),logs=[];function log(value){logs.push(value)}var iterator=g();iterator.next();iterator.throw({});iterator.next();console.log(JSON.stringify(logs));");
+    try expectGeneratorNativeValues("function* g(){ try { yield 1; } catch ({ b: [c] = d }) { yield 2; log(c); } }var d=new Set([42]),logs=[];function log(value){logs.push(value)}var iterator=g();iterator.next();iterator.throw({});iterator.next();console.log(JSON.stringify(logs));", "[42]\n");
     try std.testing.expect(std.mem.indexOf(u8, rn.output, "[c") == null);
 }
 
@@ -4856,11 +4861,15 @@ test "ES5 상태 기계: 구조분해 대입의 array rest 를 slice 로 채우�
 test "ES5 상태 기계: 배열 구조분해 대입이 __read 를 거친다 (#4791)" {
     var r = try e2eTarget(std.testing.allocator, "function* g(){ const [x, ...r] = yield 0; }", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=__read(_state.sent()),x=_a[0],r=_a.slice(1)") != null);
+    try expectPreparedPatternShape(r.output, &.{"slice"}, true);
+    try expectPreparedOutputRuntime(r.output, "function* g(){ const [x, ...r] = yield 0; }", "var iterator=g();iterator.next();console.log(JSON.stringify(iterator.next(new Set([1,2,3]))));");
+    try expectGeneratorNativeValues("function* g(){ const [x, ...r] = yield 0; }var iterator=g();iterator.next();console.log(JSON.stringify(iterator.next(new Set([1,2,3]))));", "{\"done\":true}\n");
 
     var rn = try e2eTarget(std.testing.allocator, "function* g(){ const { l: [a] } = yield 0; }", .es5);
     defer rn.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, rn.output, "_b=__read(_a.l,1),a=_b[0]") != null);
+    try expectPreparedPatternShape(rn.output, &.{"l"}, true);
+    try expectPreparedOutputRuntime(rn.output, "function* g(){ const { l: [a] } = yield 0; }", "var iterator=g();iterator.next();console.log(JSON.stringify(iterator.next({l:new Set([42])})));");
+    try expectGeneratorNativeValues("function* g(){ const { l: [a] } = yield 0; }var iterator=g();iterator.next();console.log(JSON.stringify(iterator.next({l:new Set([42])})));", "{\"done\":true}\n");
 }
 
 // #4791: 끌어올린 변수 목록에 배열 구멍(`.elision`)이 빈 이름으로 들어가 `var a,,b` 가 됐다.
@@ -5011,6 +5020,51 @@ test "ES5 블록 스코핑: 함수 본문 var 와 같은 이름의 블록 let �
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var x$") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var x=0;") != null);
+}
+
+// Preparation may split a suspended RHS/callee into exact producer temps.
+// Assert the resulting AST contract, not a particular temp spelling or comma.
+fn expectPreparedPatternShape(output: []const u8, keys: []const []const u8, needs_read: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(a, output);
+    var parser = @import("../../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var reads: usize = 0;
+    for (parser.ast.nodes.items) |node| {
+        try std.testing.expect(node.tag != .object_pattern and node.tag != .array_pattern);
+        if (node.tag == .identifier_reference and std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "__read")) reads += 1;
+    }
+    if (needs_read) try std.testing.expect(reads > 0);
+    for (keys) |key| {
+        var found = false;
+        for (parser.ast.nodes.items) |node| {
+            if (node.tag != .static_member_expression) continue;
+            const property = parser.ast.getNode(parser.ast.readExtraNode(node.data.extra, 1));
+            if (std.mem.eql(u8, parser.ast.getText(property.span), key)) found = true;
+        }
+        try std.testing.expect(found);
+    }
+}
+
+// Execute the exact semantic-less e2e output with the official helpers too;
+// public-transpile runtime checks below exercise a separate caller contract.
+fn expectPreparedOutputRuntime(output: []const u8, source: []const u8, driver: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const rt = @import("../../bundler/runtime_helpers.zig");
+    const native_source = try std.fmt.allocPrint(a, "{s}\n{s}", .{ source, driver });
+    const lowered_source = try std.fmt.allocPrint(a, "{s}\n{s}\n{s}", .{ rt.ASYNC_RUNTIME_ES5 ++ rt.GENERATOR_RUNTIME ++ rt.READ_RUNTIME, output, driver });
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", native_source } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", lowered_source } });
+    if (actual.term != .exited or actual.term.exited != 0) std.debug.print("prepared e2e runtime stderr: {s}\n", .{actual.stderr});
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    try std.testing.expectEqualStrings(native.stdout, actual.stdout);
 }
 
 // Real runtime helpers and the full transpile API complement the AST checks.
