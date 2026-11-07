@@ -479,9 +479,12 @@ pub fn emitEsmWrappedModule(
                 try body_stmts.append(allocator, raw_idx);
             },
             .variable_declaration => {
-                // Native resource registrations belong to this factory. Turning
-                // them into outer assignments drops abrupt cleanup entirely.
-                if (esm_ast.variableDeclarationKind(esm_ast.getNode(effective_node)) == .using) {
+                // Only the boundary producer's hidden native guards belong to
+                // this factory. Source using declarations retain the existing
+                // export-storage route, including mixed await-using programs.
+                if (esm_ast.variableDeclarationKind(esm_ast.getNode(effective_node)) == .using and
+                    std.mem.indexOfScalar(u32, esm_ast.preserve_lexical_declaration_indices.items, @backingInt(effective_node)) != null)
+                {
                     try body_stmts.append(allocator, raw_idx);
                     continue;
                 }

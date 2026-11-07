@@ -156,12 +156,12 @@ pub fn visitVariableDeclaration(self: *Transformer, node: Node) Error!NodeIndex 
 
     const new_list = try self.visitExtraList(.{ .start = list_start, .len = list_len });
     const output = try self.addExtraNode(.variable_declaration, node.span, &.{ @backingInt(kind), new_list.start, new_list.len });
-    if (self.native_module_using_declaration_extras.contains(e)) {
+    if (self.native_module_using_declaration_extras.get(e)) |expected_kind| {
         // The native resource producer owns this exact declaration payload;
         // carry its lexical storage requirement across this actual AST copy.
-        if (kind != .@"const") std.debug.panic("native module resource lost lexical storage", .{});
+        if (kind != expected_kind) std.debug.panic("native module resource lost its producer declaration kind", .{});
         try self.ast.preserve_lexical_declaration_indices.append(self.allocator, @backingInt(output));
-        try self.native_module_using_declaration_extras.put(self.allocator, self.ast.getNode(output).data.extra, {});
+        try self.native_module_using_declaration_extras.put(self.allocator, self.ast.getNode(output).data.extra, expected_kind);
     }
     return output;
 }

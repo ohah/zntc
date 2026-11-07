@@ -141,7 +141,10 @@ pub fn ES2025Using(comptime Transformer: type) type {
                     const guard_id = if (self.semantic_edit_enabled) try self.declareSyntheticInScope(guard, zero, .variable_const, self.current_scope) else null;
                     const stack = try self.ast.addNode(.{ .tag = .array_expression, .span = zero, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
                     const acquire = try es_helpers.makeCallExpr(self, try es_helpers.makeRuntimeHelperRef(self, "__using"), &.{ stack, init, try es_helpers.makeBoolLiteral(self, false), try es_helpers.makeBoolLiteral(self, true) }, stmt.span);
-                    try out.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, guard, acquire, zero)}, .using, zero));
+                    const acquisition_guard = try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, guard, acquire, zero)}, .using, zero);
+                    try self.ast.preserve_lexical_declaration_indices.append(self.allocator, @backingInt(acquisition_guard));
+                    try self.native_module_using_declaration_extras.put(self.allocator, self.ast.getNode(acquisition_guard).data.extra, .using);
+                    try out.append(self.allocator, acquisition_guard);
                     const guard_read = try es_helpers.makeExactSyntheticRefFromSpan(self, guard_span);
                     try registerUsingRef(self, guard_read, guard_id, self.current_scope, .{ .read = true });
                     const value = try es_helpers.makeStaticMember(self, guard_read, try es_helpers.makePropertyName(self, "value"), zero);
@@ -149,14 +152,17 @@ pub fn ES2025Using(comptime Transformer: type) type {
                     // Native module lexical bindings must not be demoted by the
                     // cycle output policy merely because their resource moved.
                     try self.ast.preserve_lexical_declaration_indices.append(self.allocator, @backingInt(source_decl));
-                    try self.native_module_using_declaration_extras.put(self.allocator, self.ast.getNode(source_decl).data.extra, {});
+                    try self.native_module_using_declaration_extras.put(self.allocator, self.ast.getNode(source_decl).data.extra, .@"const");
                     try out.append(self.allocator, source_decl);
                     const end_name = try uniqueSynthName(self, "_moduleUsingEnd", &self.using_head_counter);
                     const end_binding = try es_helpers.makeExactSyntheticBinding(self, end_name);
                     if (self.semantic_edit_enabled) _ = try self.declareSyntheticInScope(end_binding, zero, .variable_const, end_scope);
                     const end_ref = try es_helpers.makeExactSyntheticRefFromSpan(self, guard_span);
                     try registerUsingRef(self, end_ref, guard_id, end_scope, .{ .read = true });
-                    try end_decls.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, end_binding, end_ref, zero)}, .using, zero));
+                    const end_guard = try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, end_binding, end_ref, zero)}, .using, zero);
+                    try self.ast.preserve_lexical_declaration_indices.append(self.allocator, @backingInt(end_guard));
+                    try self.native_module_using_declaration_extras.put(self.allocator, self.ast.getNode(end_guard).data.extra, .using);
+                    try end_decls.append(self.allocator, end_guard);
                 }
             }
             self.ast.nodes.items[@backingInt(end_block)].data.list = try self.ast.addNodeList(end_decls.items);
