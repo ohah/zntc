@@ -6750,16 +6750,19 @@ fn strictFindingEvidenceIsConsistent(finding: StrictFinding) bool {
                 !hasStrictScopeEvidence(finding.symbol_scope_id)) return false;
             if (is_binding) {
                 return hasStrictScopeEvidence(finding.symbol_origin_scope_id) and
+                    finding.binding_required_scope_id == finding.symbol_scope_id and
                     finding.reference_symbol_id == null and finding.reference_scope_id == null;
             }
             const reference_symbol_id = finding.reference_symbol_id orelse return false;
             return reference_symbol_id == symbol_id and
+                finding.binding_required_scope_id == null and
                 hasStrictScopeEvidence(finding.reference_scope_id) and
                 finding.reference_scope_id == finding.expected_scope_id;
         },
         .external => return !is_binding and
             finding.symbol_id == null and
             finding.reference_symbol_id == null and
+            finding.binding_required_scope_id == null and
             finding.symbol_scope_id == null and
             finding.symbol_origin_scope_id == null and
             finding.reference_scope_id == null,
@@ -6776,7 +6779,7 @@ fn strictFindingEvidenceIsConsistent(finding: StrictFinding) bool {
             }
             const symbol_id = finding.symbol_id orelse return false;
             const reference_symbol_id = finding.reference_symbol_id orelse return false;
-            if (reference_symbol_id != symbol_id or
+            if (reference_symbol_id != symbol_id or finding.binding_required_scope_id != null or
                 !hasStrictScopeEvidence(finding.expected_scope_id) or
                 !hasStrictScopeEvidence(finding.symbol_scope_id) or
                 !hasStrictScopeEvidence(finding.reference_scope_id)) return false;
