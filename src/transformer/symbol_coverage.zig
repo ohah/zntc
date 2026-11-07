@@ -4100,6 +4100,7 @@ test "output normal form gate rejects every aggregate invariant counter" {
         .marked_synthetic = false,
         .symbol_id = 1,
         .expected_scope_id = 0,
+        .binding_required_scope_id = 0,
         .symbol_scope_id = 1,
         .symbol_origin_scope_id = 0,
     });
@@ -6764,10 +6765,13 @@ fn strictFindingEvidenceIsConsistent(finding: StrictFinding) bool {
             finding.reference_scope_id == null,
         .scope_mismatch => {
             if (is_binding) {
+                // Delegation only covers a real trace/storage-scope disagreement.
                 return finding.symbol_id != null and
                     hasStrictScopeEvidence(finding.expected_scope_id) and
+                    hasStrictScopeEvidence(finding.binding_required_scope_id) and
                     hasStrictScopeEvidence(finding.symbol_scope_id) and
                     hasStrictScopeEvidence(finding.symbol_origin_scope_id) and
+                    finding.binding_required_scope_id != finding.symbol_scope_id and
                     finding.reference_symbol_id == null and finding.reference_scope_id == null;
             }
             const symbol_id = finding.symbol_id orelse return false;
@@ -6812,6 +6816,7 @@ pub const StrictFinding = struct {
     symbol_id: ?u32 = null,
     reference_symbol_id: ?u32 = null,
     expected_scope_id: ?u32 = null,
+    binding_required_scope_id: ?u32 = null,
     symbol_scope_id: ?u32 = null,
     symbol_origin_scope_id: ?u32 = null,
     reference_scope_id: ?u32 = null,
@@ -6967,12 +6972,32 @@ const StrictCtx = struct {
             .symbol_id = sid,
             .reference_symbol_id = if (reference) |e| @backingInt(e.reference.symbol_id) else null,
             .expected_scope_id = if (trace) |s| s.scope_id else null,
+            .binding_required_scope_id = if (is_binding) self.bindingRequiredScope(sid, trace) else null,
             .symbol_scope_id = if (sid) |id| if (id < self.symbols.len) @backingInt(self.symbols[id].scope_id) else null else null,
             .symbol_origin_scope_id = if (sid) |id| if (id < self.symbols.len) @backingInt(self.symbols[id].origin_scope) else null else null,
             .reference_scope_id = if (reference) |e| @backingInt(e.reference.scope_id) else null,
         }) catch {
             self.oom = true;
         };
+    }
+
+    /// Return the output storage scope that binding classification compares
+    /// against the Symbol's ScopeId. This can differ from the raw AST trace
+    /// for generated `_using` vars, which are stored in the nearest var scope.
+    fn bindingRequiredScope(self: *const StrictCtx, sid: ?u32, trace: ?ScopeTrace) ?u32 {
+        const id = sid orelse return null;
+        if (id >= self.symbols.len) return null;
+        const expected = trace orelse return null;
+        if (!expected.valid or expected.ambiguous) return null;
+        const lexical_scope = expected.scope_id orelse return null;
+        if (!validScope(@fromBackingInt(@intCast(lexical_scope)), self.scopes)) return null;
+        const symbol = self.symbols[id];
+        const is_output_var = symbol.kind == .variable_var or
+            (symbol.kind == .variable_const and std.mem.startsWith(u8, symbol.synthetic_name, "_using"));
+        return if (is_output_var)
+            nearestVarScope(lexical_scope, self.scopes)
+        else
+            lexical_scope;
     }
 
     fn classify(
@@ -7036,18 +7061,10 @@ const StrictCtx = struct {
             if (!expected.valid) return .invalid_scope;
             const lexical_scope = expected.scope_id orelse return .scope_unknown;
             if (!validScope(@fromBackingInt(@intCast(lexical_scope)), self.scopes)) return .invalid_scope;
-            // Lowering a lexical `let`/`const` declaration to emitted `var`
-            // syntax does not change that source binding's semantic scope.
-            // The transformer keeps those SymbolIds in their lexical scopes
-            // and renames colliding output names separately. Resource helpers
-            // are the exception: their synthetic `_using` bindings are
-            // deliberately stored in the nearest var scope.
-            const is_output_var = symbol.kind == .variable_var or
-                (symbol.kind == .variable_const and std.mem.startsWith(u8, symbol.synthetic_name, "_using"));
-            const declaration_scope = if (is_output_var)
-                nearestVarScope(lexical_scope, self.scopes) orelse return .invalid_scope
-            else
-                lexical_scope;
+            // Lowered output bindings can use a derived storage scope. Keep
+            // that scope explicit in the finding instead of treating the raw
+            // AST trace as the classifier's comparison target.
+            const declaration_scope = self.bindingRequiredScope(sid, trace) orelse return .invalid_scope;
             if (@backingInt(symbol.scope_id) != declaration_scope) return .scope_mismatch;
             // scope_id is the binding's current output storage scope.
             // origin_scope is source provenance and may name a detached
@@ -7733,10 +7750,10 @@ pub fn printStrict(file_path: []const u8, report: *const StrictReport) void {
         if (finding.status == .bound or finding.status == .external) continue;
         const group = @backingInt(finding.status);
         if (printed[group] == 8) continue;
-        std.debug.print("  synthetic-coverage {s} node={d} {s}({s}) marked={any} sid={any} ref_sid={any} scope={any} symbol_scope={any} origin_scope={any} ref_scope={any}\n", .{
-            @tagName(finding.status),   finding.node,                finding.name,              @tagName(finding.tag),   finding.marked_synthetic,
-            finding.symbol_id,          finding.reference_symbol_id, finding.expected_scope_id, finding.symbol_scope_id, finding.symbol_origin_scope_id,
-            finding.reference_scope_id,
+        std.debug.print("  synthetic-coverage {s} node={d} {s}({s}) marked={any} sid={any} ref_sid={any} scope={any} binding_required_scope={any} symbol_scope={any} origin_scope={any} ref_scope={any}\n", .{
+            @tagName(finding.status),       finding.node,                finding.name,              @tagName(finding.tag),             finding.marked_synthetic,
+            finding.symbol_id,              finding.reference_symbol_id, finding.expected_scope_id, finding.binding_required_scope_id, finding.symbol_scope_id,
+            finding.symbol_origin_scope_id, finding.reference_scope_id,
         });
         printed[group] += 1;
     }

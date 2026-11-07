@@ -4053,9 +4053,9 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(successful + observedParseFailures.size).toBe(fixtures.length);
       expect([...observedParseFailures].sort()).toEqual([...expectedParseFailures].sort());
       const expectedSuccessful = fixtures.length - expectedParseFailures.size;
-      expect(expectedSuccessful).toBe(300);
+      expect(expectedSuccessful).toBe(304);
       expect(successful).toBe(expectedSuccessful);
-      expect(retained).toBe(300);
+      expect(retained).toBe(304);
       expect(retained).toBe(expectedSuccessful - LENIENT_UNKNOWN_REANALYZED_FIXTURES.length);
       expect(reanalyzedFixtures.sort()).toEqual([...LENIENT_UNKNOWN_REANALYZED_FIXTURES].sort());
 
@@ -47326,9 +47326,9 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       (file) => file.endsWith('.mjs') && !file.endsWith('.reference.mjs'),
     );
     const runtimeFixtures = mjsFixtures.filter((file) => !file.endsWith('.flow.mjs'));
-    expect(mjsFixtures).toHaveLength(302);
+    expect(mjsFixtures).toHaveLength(306);
     expect(mjsFixtures.filter((file) => file.endsWith('.flow.mjs'))).toHaveLength(1);
-    expect(runtimeFixtures).toHaveLength(301);
+    expect(runtimeFixtures).toHaveLength(305);
 
     const dir = mkdtempSync(join(tmpdir(), 'zntc-esnext-runtime-oracle-'));
     const referenceDir = join(dir, 'reference');
@@ -47416,7 +47416,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       for (const file of fixtures) {
         for (const target of MINIFY_TARGETS) {
           for (const mode of MINIFY_MODES) {
-            const { stderr, exitCode } = runCoverage(file, target, dir, false, [...mode]);
+            // Keep fixture observations independent of tests/integration/tsconfig.json.
+            const { stderr, exitCode } = runCoverage(file, target, dir, false, [
+              ...mode,
+              '--tsconfig-raw={}',
+            ]);
             const censusRow = exactMatrixObservationCensusRow(file, target.name, mode, stderr);
             observationCensusRows.push(censusRow);
             const censusValues = censusRow.split('\t').slice(4);
