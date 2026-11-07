@@ -4871,7 +4871,7 @@ fn requireStandaloneOutputNormalForm(
         std.debug.print("R1_OUTPUT_INVALID file={s}\n", .{file_path});
         cov.printStrict(file_path, &normal.strict);
         cov.printExact(file_path, normal.exact);
-        std.debug.print("R1_RETIREMENT_STATE_INVALID count={d} scope_boundary_missing={d} scope_boundary_mismatch={d}\n", .{ normal.retirement_state_mismatch, normal.scope_boundary_missing, normal.scope_boundary_mismatch });
+        std.debug.print("R1_RETIREMENT_STATE_INVALID count={d} scope_boundary_missing={d} scope_boundary_mismatch={d} unproven_binding_scope_delegations={d}\n", .{ normal.retirement_state_mismatch, normal.scope_boundary_missing, normal.scope_boundary_mismatch, normal.unproven_binding_scope_delegations });
     }
     return error.TransformError;
 }
@@ -5270,7 +5270,7 @@ fn transpileWithCallbackInternal(
             if (normal.hasCompleteOutputIdentityBeforeNames()) {
                 coverage.printExact(file_path, normal.exact);
             } else {
-                std.debug.print("zntc: symbol-identity-output-normal-form-rejected {s}: retirement_state_mismatch={d}\n", .{ file_path, normal.retirement_state_mismatch });
+                std.debug.print("zntc: symbol-identity-output-normal-form-rejected {s}: retirement_state_mismatch={d} unproven_binding_scope_delegations={d}\n", .{ file_path, normal.retirement_state_mismatch, normal.unproven_binding_scope_delegations });
                 coverage.printExactRejectedOutput(file_path, normal.exact);
                 coverage.printStrict(file_path, &normal.strict);
             }
