@@ -4429,6 +4429,269 @@ test "output binding-scope delegation requires exact proof from the same node an
     try std.testing.expectEqual(@as(usize, 1), countUnprovenBindingScopeDelegations(&strict, &exact_scope_proofs));
 }
 
+test "output binding-scope delegation rejects ten neighboring node-SymbolId proofs" {
+    const Case = struct {
+        node: u32,
+        symbol_id: u32,
+        tag: Node.Tag,
+        is_binding: bool,
+    };
+    const cases = [_]Case{
+        .{ .node = 100, .symbol_id = 200, .tag = .binding_identifier, .is_binding = false },
+        .{ .node = 107, .symbol_id = 205, .tag = .identifier_reference, .is_binding = true },
+        .{ .node = 114, .symbol_id = 210, .tag = .assignment_target_identifier, .is_binding = true },
+        .{ .node = 121, .symbol_id = 215, .tag = .identifier_reference, .is_binding = true },
+        .{ .node = 128, .symbol_id = 220, .tag = .binding_identifier, .is_binding = true },
+        .{ .node = 135, .symbol_id = 225, .tag = .identifier_reference, .is_binding = true },
+        .{ .node = 142, .symbol_id = 230, .tag = .assignment_target_identifier, .is_binding = true },
+        .{ .node = 149, .symbol_id = 235, .tag = .identifier_reference, .is_binding = true },
+        .{ .node = 156, .symbol_id = 240, .tag = .binding_identifier, .is_binding = false },
+        .{ .node = 163, .symbol_id = 245, .tag = .identifier_reference, .is_binding = true },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var strict: StrictReport = .{};
+    defer strict.deinit(allocator);
+    strict.counts[@intCast(@backingInt(StrictStatus.scope_mismatch))] = cases.len + 1;
+    strict.counts[@intCast(@backingInt(StrictStatus.bound))] = 1;
+    for (cases, 0..) |case, index| {
+        const name = try std.fmt.allocPrint(allocator, "candidate_{d}", .{index});
+        try strict.findings.append(allocator, .{
+            .node = case.node,
+            .name = name,
+            .tag = case.tag,
+            .status = .scope_mismatch,
+            .marked_synthetic = false,
+            .is_binding = case.is_binding,
+            .symbol_id = case.symbol_id,
+            .expected_scope_id = 0,
+            .binding_required_scope_id = 0,
+            .symbol_scope_id = 1,
+            .symbol_origin_scope_id = 1,
+        });
+    }
+    try strict.findings.append(allocator, .{
+        .node = 998,
+        .name = "nonbinding_reference",
+        .tag = .identifier_reference,
+        .status = .scope_mismatch,
+        .marked_synthetic = false,
+        .is_binding = false,
+        .symbol_id = 600,
+        .reference_symbol_id = 600,
+        .expected_scope_id = 0,
+        .symbol_scope_id = 0,
+        .reference_scope_id = 1,
+    });
+    try strict.findings.append(allocator, .{
+        .node = 999,
+        .name = "ordinary",
+        .tag = .binding_identifier,
+        .status = .bound,
+        .marked_synthetic = false,
+        .is_binding = true,
+        .symbol_id = 500,
+        .expected_scope_id = 0,
+        .binding_required_scope_id = 0,
+        .symbol_scope_id = 0,
+        .symbol_origin_scope_id = 0,
+    });
+    try std.testing.expect(strict.isConsistent());
+    try std.testing.expect(!strict.hasCompleteSymbolIdentity());
+
+    var proofs = try prepareBindingScopeProofs(allocator, &strict);
+    defer proofs.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, cases.len), proofs.count());
+    try std.testing.expectEqual(@as(usize, cases.len), countUnprovenBindingScopeDelegations(&strict, &proofs));
+    for (cases) |candidate| {
+        try proofs.put(allocator, bindingScopeProofKey(candidate.node, candidate.symbol_id), true);
+    }
+    try std.testing.expectEqual(@as(usize, 0), countUnprovenBindingScopeDelegations(&strict, &proofs));
+
+    for (cases, 0..) |missing, missing_index| {
+        for (cases, 0..) |candidate, proof_index| {
+            try proofs.put(allocator, bindingScopeProofKey(candidate.node, candidate.symbol_id), proof_index != missing_index);
+        }
+        try std.testing.expectEqual(@as(usize, 1), countUnprovenBindingScopeDelegations(&strict, &proofs));
+
+        const wrong_node_key = bindingScopeProofKey(missing.node + 1, missing.symbol_id);
+        try proofs.put(allocator, wrong_node_key, true);
+        try std.testing.expectEqual(@as(usize, 1), countUnprovenBindingScopeDelegations(&strict, &proofs));
+        try std.testing.expect(proofs.remove(wrong_node_key));
+
+        const wrong_symbol_key = bindingScopeProofKey(missing.node, missing.symbol_id + 1);
+        try proofs.put(allocator, wrong_symbol_key, true);
+        try std.testing.expectEqual(@as(usize, 1), countUnprovenBindingScopeDelegations(&strict, &proofs));
+        try std.testing.expect(proofs.remove(wrong_symbol_key));
+    }
+
+    var missing_symbol: StrictReport = .{};
+    defer missing_symbol.deinit(allocator);
+    missing_symbol.counts[@intCast(@backingInt(StrictStatus.scope_mismatch))] = 1;
+    try missing_symbol.findings.append(allocator, .{
+        .node = 900,
+        .name = "missing_sid",
+        .tag = .identifier_reference,
+        .status = .scope_mismatch,
+        .marked_synthetic = false,
+        .is_binding = true,
+        .expected_scope_id = 0,
+        .binding_required_scope_id = 0,
+        .symbol_scope_id = 1,
+        .symbol_origin_scope_id = 1,
+    });
+    try std.testing.expect(!missing_symbol.isConsistent());
+    var missing_symbol_proofs = try prepareBindingScopeProofs(allocator, &missing_symbol);
+    defer missing_symbol_proofs.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), missing_symbol_proofs.count());
+    try std.testing.expectEqual(@as(usize, 1), countUnprovenBindingScopeDelegations(&missing_symbol, &missing_symbol_proofs));
+}
+
+test "output normal-form report counts a binding delegation the exact walker rejects" {
+    const History = @import("../semantic/scope_frame_history.zig");
+    const Retirement = @import("../semantic/source_owned_retirement.zig");
+    const Provenance = @import("../semantic/node_scope_provenance.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("x");
+    const binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const none = @backingInt(NodeIndex.none);
+    const declarator_extra = try ast.addExtras(&.{ @backingInt(binding), none, none });
+    const declarator = try ast.addNode(.{ .tag = .variable_declarator, .span = name, .data = .{ .extra = declarator_extra } });
+    const declarators = try ast.addNodeList(&.{declarator});
+    const declaration_extra = try ast.addExtras(&.{
+        @backingInt(ast_mod.VariableDeclarationKind.let),
+        declarators.start,
+        declarators.len,
+    });
+    const declaration = try ast.addNode(.{ .tag = .variable_declaration, .span = name, .data = .{ .extra = declaration_extra } });
+    const root = try ast.addListNode(.program, name, try ast.addNodeList(&.{declaration}));
+
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .block, .is_strict = false },
+    };
+    var global_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer global_names.deinit(allocator);
+    var retained_source_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer retained_source_names.deinit(allocator);
+    try retained_source_names.put(allocator, "x", 0);
+    var scope_maps = [_]std.StringHashMapUnmanaged(usize){ global_names, retained_source_names };
+    const symbols = [_]Symbol{
+        .{
+            .name = name,
+            .scope_id = @fromBackingInt(@intCast(1)),
+            .origin_scope = @fromBackingInt(@intCast(1)),
+            .kind = .variable_let,
+            .declaration_span = name,
+        },
+        .{
+            .name = name,
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .origin_scope = @fromBackingInt(@intCast(0)),
+            .kind = .variable_let,
+            .declaration_span = name,
+        },
+    };
+    var symbol_ids = try allocator.alloc(?u32, ast.nodes.items.len);
+    @memset(symbol_ids, null);
+    symbol_ids[@backingInt(binding)] = 0;
+    const references = [_]Reference{
+        .{
+            .node_index = .none,
+            .scope_id = @fromBackingInt(@intCast(1)),
+            .symbol_id = @fromBackingInt(@intCast(0)),
+            .flags = .{ .declare = true },
+            .declaration_node_index = binding,
+        },
+    };
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @backingInt(root), 0);
+    const helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const history: History.History = .{ .source_scopes = &scopes };
+    var provenance: Provenance.Map = .empty;
+    defer provenance.deinit(allocator);
+    var retirements: Retirement.Map = .empty;
+    defer retirements.deinit(allocator);
+    const class_self_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const namespace_member_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const namespace_declaration_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const options: ExactQuietOptions = .{
+        .pre_transform_scope_count = scopes.len,
+        .pre_transform_scope_history_event_count = 0,
+    };
+    const roots: Retirement.Roots = .{
+        .node_scope_provenance = &provenance,
+        .scope_history = &history,
+        .class_self_symbols = &class_self_symbols,
+        .namespace_member_owners = &namespace_member_owners,
+        .namespace_declaration_owners = &namespace_declaration_owners,
+    };
+
+    var valid = try checkOutputNormalFormQuiet(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &helper_scope_map,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+        options,
+        &retirements,
+        roots,
+    );
+    defer valid.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), valid.strict.counts[@intCast(@backingInt(StrictStatus.scope_mismatch))]);
+    try std.testing.expectEqual(@as(usize, 0), valid.exact.binding_scope_mismatch);
+    try std.testing.expectEqual(@as(usize, 0), valid.unproven_binding_scope_delegations);
+
+    try global_names.put(allocator, "x", 1);
+    scope_maps[0] = global_names;
+    var rejected = try checkOutputNormalFormQuiet(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &helper_scope_map,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+        options,
+        &retirements,
+        roots,
+    );
+    defer rejected.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), rejected.strict.counts[@intCast(@backingInt(StrictStatus.scope_mismatch))]);
+    try std.testing.expect(rejected.exact.binding_scope_mismatch > 0);
+    try std.testing.expectEqual(@as(usize, 1), rejected.unproven_binding_scope_delegations);
+    try std.testing.expect(!rejected.hasCompleteOutputIdentityBeforeNames());
+}
+
 pub fn checkOutputNormalFormQuiet(
     allocator: std.mem.Allocator,
     ast: *const Ast,
