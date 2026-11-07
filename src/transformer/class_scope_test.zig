@@ -4674,7 +4674,8 @@ test "class producer keeps its explicit same-spelled binding origin and validate
     inline for (cases) |case| {
         const ref = try transformer.makeUserRefNamedAtScope("C", case[0], case[1]);
         try std.testing.expectEqual(@as(?u32, case[2]), transformer.getSymbolIdAt(ref));
-        const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+        try std.testing.expect(transformer.semantic_editor != null);
+        const editor = if (transformer.semantic_editor) |*value| value else unreachable;
         const maybe_recorded = try editor.referenceForNode(ref);
         try std.testing.expect(maybe_recorded != null);
         const recorded = maybe_recorded.?;
