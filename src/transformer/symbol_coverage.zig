@@ -4549,6 +4549,108 @@ test "output binding-scope delegation rejects ten neighboring node-SymbolId proo
     try std.testing.expectEqual(@as(usize, 1), countUnprovenBindingScopeDelegations(&missing_symbol, &missing_symbol_proofs));
 }
 
+test "output binding-scope proof preparation propagates allocation OOM and releases partial maps" {
+    const candidate_count = 128;
+    var strict: StrictReport = .{};
+    defer strict.deinit(std.testing.allocator);
+    strict.counts[@intCast(@backingInt(StrictStatus.scope_mismatch))] = candidate_count + 2;
+    strict.counts[@intCast(@backingInt(StrictStatus.bound))] = 1;
+
+    for (0..candidate_count) |index| {
+        try strict.findings.append(std.testing.allocator, .{
+            .node = @intCast(index * 3 + 10),
+            .name = "generated_binding",
+            .tag = .identifier_reference,
+            .status = .scope_mismatch,
+            .marked_synthetic = false,
+            .is_binding = true,
+            .symbol_id = @intCast(index + 100),
+            .expected_scope_id = 0,
+            .binding_required_scope_id = 0,
+            .symbol_scope_id = 1,
+            .symbol_origin_scope_id = 1,
+        });
+    }
+    // Neither an ordinary reference mismatch nor a binding with no SID is a
+    // candidate for delegated proof. A healthy bound declaration is ignored too.
+    try strict.findings.append(std.testing.allocator, .{
+        .node = 700,
+        .name = "ordinary_reference",
+        .tag = .identifier_reference,
+        .status = .scope_mismatch,
+        .marked_synthetic = false,
+        .is_binding = false,
+        .symbol_id = 900,
+        .reference_symbol_id = 900,
+        .expected_scope_id = 0,
+        .symbol_scope_id = 0,
+        .reference_scope_id = 1,
+    });
+    try strict.findings.append(std.testing.allocator, .{
+        .node = 701,
+        .name = "missing_sid_binding",
+        .tag = .identifier_reference,
+        .status = .scope_mismatch,
+        .marked_synthetic = true,
+        .is_binding = true,
+        .expected_scope_id = 0,
+        .binding_required_scope_id = 0,
+        .symbol_scope_id = 1,
+        .symbol_origin_scope_id = 1,
+    });
+    try strict.findings.append(std.testing.allocator, .{
+        .node = 702,
+        .name = "ordinary_binding",
+        .tag = .binding_identifier,
+        .status = .bound,
+        .marked_synthetic = false,
+        .is_binding = true,
+        .symbol_id = 901,
+        .expected_scope_id = 0,
+        .binding_required_scope_id = 0,
+        .symbol_scope_id = 0,
+        .symbol_origin_scope_id = 0,
+    });
+
+    // First measure the helper's successful allocation path. The large proof
+    // set forces map growth so the sweep includes failures after partial work.
+    var measured = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const measured_allocator = measured.allocator();
+    var complete = try prepareBindingScopeProofs(measured_allocator, &strict);
+    try std.testing.expectEqual(@as(usize, candidate_count), complete.count());
+    for (0..candidate_count) |index| {
+        const node: u32 = @intCast(index * 3 + 10);
+        const symbol_id: u32 = @intCast(index + 100);
+        try std.testing.expectEqual(@as(?bool, false), complete.get(bindingScopeProofKey(node, symbol_id)));
+    }
+    try std.testing.expectEqual(@as(?bool, null), complete.get(bindingScopeProofKey(700, 900)));
+    try std.testing.expectEqual(@as(?bool, null), complete.get(bindingScopeProofKey(701, 0)));
+    try std.testing.expectEqual(@as(?bool, null), complete.get(bindingScopeProofKey(702, 901)));
+    const allocation_count = measured.alloc_index;
+    complete.deinit(measured_allocator);
+    try std.testing.expect(allocation_count >= 2);
+    try std.testing.expectEqual(measured.allocated_bytes, measured.freed_bytes);
+    try std.testing.expectEqual(measured.allocations, measured.deallocations);
+
+    var injected_failures: usize = 0;
+    for (0..allocation_count) |fail_index| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        const failing_allocator = failing.allocator();
+        if (prepareBindingScopeProofs(failing_allocator, &strict)) |value| {
+            var partial = value;
+            partial.deinit(failing_allocator);
+            try std.testing.expect(false);
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+        }
+        try std.testing.expect(failing.has_induced_failure);
+        try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        try std.testing.expectEqual(failing.allocations, failing.deallocations);
+        injected_failures += 1;
+    }
+    try std.testing.expectEqual(allocation_count, injected_failures);
+}
+
 test "output normal-form report counts a binding delegation the exact walker rejects" {
     const History = @import("../semantic/scope_frame_history.zig");
     const Retirement = @import("../semantic/source_owned_retirement.zig");
