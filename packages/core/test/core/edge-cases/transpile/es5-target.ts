@@ -139,6 +139,49 @@ describe('@zntc/core edge cases: transpile ES5 target', () => {
     }
   });
 
+  test('bundler ES5 retains outer field reads alongside renamed constructor branch locals', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-derived-alias-'));
+    try {
+      writeFileSync(
+        join(dir, 'entry.js'),
+        `
+          const label = "outer", log = [];
+          class Base { constructor(value) { this.value = value; } }
+          class Child extends Base {
+            field = label + ":" + this.value;
+            constructor(flag) {
+              if (flag) { let label = "first"; super(7); log.push(label); }
+              else { let label = "second"; super(9); log.push(label); }
+              log.push(this.field, label);
+            }
+          }
+          new Child(true);
+          new Child(false);
+          globalThis.__derivedResult = log;
+        `,
+      );
+
+      const vm = require('node:vm') as typeof import('node:vm');
+      const expected = JSON.stringify(['first', 'outer:7', 'outer', 'second', 'outer:9', 'outer']);
+      for (const minify of [false, true]) {
+        const result = buildSync({
+          entryPoints: [join(dir, 'entry.js')],
+          bundle: true,
+          format: 'iife',
+          target: 'es5',
+          minify,
+          write: false,
+        });
+        expect(result.errors.length).toBe(0);
+        const sandbox: { __derivedResult?: unknown } = {};
+        vm.runInNewContext(result.outputFiles[0].text, sandbox);
+        expect(JSON.stringify(sandbox.__derivedResult)).toBe(expected);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('build target es5 keeps optional chaining temp declarations in nested functions', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-optional-temp-'));
     try {
