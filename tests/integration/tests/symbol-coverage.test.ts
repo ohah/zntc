@@ -137,27 +137,30 @@ const EXACT_MATRIX_REPORT_PREFIX_BY_KIND = {
 // 8f15b12의 전역 identity 가드로 undefined 4개 읽기를 보존한다.
 // signed-numeric-spread 원/reference의 24셀만 post refs/external +4이며,
 // census96-independent-diagnosis에서 원문과 양 출력 48회의 Node 값이 일치했다.
+// stage4/5 준비·소비 분리의 실제 35셀/12입력 변화만 반영한다.
+// fixture별 원문/옛 출력/새 출력 Node82회 결과가 일치했고,
+// invariant5850셀은 문제0이다. census-attribution의 producer·행별 증거를 보존한다.
 const EXACT_MATRIX_OBSERVATION_FINGERPRINT =
-  'a9f72bb734f9ccc1168153a528c7ac723ebf0046c8acfb3c16a6b87e4d0c626b';
+  '1ed38f69580a226a2fdfcc170092ef90a11d3a4a185a81725da7b56fdd8439ae';
 // Qualified 325-fixture observations retain all invariant and field checks.
 // The original 321 inputs are unchanged; four suspension/class-key fixtures
 // add 72 cells. ES5 switch discriminants now have exact frozen producers,
 // and destructuring temps use their actual state-machine storage owner.
 // Refresh only with the row-level baseline/candidate attribution retained.
 const EXACT_MATRIX_OBSERVATION_TOTALS = {
-  'exact.generated_bindings': 15048,
-  'exact.generated_references': 48102,
+  'exact.generated_bindings': 15090,
+  'exact.generated_references': 48204,
   'exact.generated_scope_owners_checked': 12972,
   'exact.external': 15675,
-  'exact.declaration_anchors_checked': 49914,
+  'exact.declaration_anchors_checked': 49956,
   'exact.namespace_iife_params': 270,
   'exact.enum_iife_params': 36,
-  'coverage.new_user_idents': 8313,
-  'strict.bound': 60912,
+  'coverage.new_user_idents': 8331,
+  'strict.bound': 61056,
   'strict.external': 2109,
-  'strict.marked_synthetic': 52776,
-  'post.bindings': 51422,
-  'post.references': 117738,
+  'strict.marked_synthetic': 52902,
+  'post.bindings': 51464,
+  'post.references': 117822,
   'post.external': 15675,
   'post.helpers': 8379,
   'post.preserved_transform_refs': 204,
