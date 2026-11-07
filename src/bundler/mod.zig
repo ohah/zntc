@@ -136,6 +136,7 @@ test {
 
     // test files
     _ = @import("bundler_test.zig");
+    _ = @import("statement_owner_projection.zig"); // erased declaration coordinate regressions
     _ = @import("runtime_interop_ast.zig");
     _ = @import("interop_callsite.zig");
     _ = @import("strict_function_context.zig");

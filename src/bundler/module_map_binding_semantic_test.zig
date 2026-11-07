@@ -611,6 +611,10 @@ const IifeOwnerMutation = enum {
     missing_all_declarations,
     missing_role_and_all_declarations,
     dead_owner_without_declarations,
+    dead_owner_with_declaration,
+    dead_owner_with_live_read,
+    missing_erased_creator_owner,
+    wrong_erased_creator_owner,
     missing_parameter_declaration,
     duplicate_parameter_declaration,
     duplicate_parameter_sid,
@@ -633,7 +637,10 @@ fn checkIifeEntryProjection(is_enum: bool, mutation: IifeOwnerMutation) !void {
     const a = arena.allocator();
     const ast_mod = @import("../parser/ast.zig");
     const symbol_mod = @import("../semantic/symbol.zig");
-    const parameter_only = mutation == .missing_all_declarations or mutation == .missing_role_and_all_declarations or mutation == .dead_owner_without_declarations;
+    const parameter_only = mutation == .missing_all_declarations or mutation == .missing_role_and_all_declarations or
+        mutation == .dead_owner_without_declarations or mutation == .dead_owner_with_declaration or
+        mutation == .dead_owner_with_live_read or mutation == .missing_erased_creator_owner or
+        mutation == .wrong_erased_creator_owner;
     var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, if (is_enum)
         (if (parameter_only) "enum First{Value=1}" else "enum First{Value=arguments.length}")
     else
@@ -704,6 +711,28 @@ fn checkIifeEntryProjection(is_enum: bool, mutation: IifeOwnerMutation) !void {
             if (mutation == .dead_owner_without_declarations)
                 ast.nodes.items[@backingInt(root)].data.list = try ast.addNodeList(&.{empty});
         },
+        .dead_owner_with_declaration, .dead_owner_with_live_read, .missing_erased_creator_owner, .wrong_erased_creator_owner => {
+            ast.nodes.items[@backingInt(root)].data.list = try ast.addNodeList(&.{empty});
+            if (mutation == .dead_owner_with_live_read) {
+                const name = try ast.addString(semantic.symbols.items[sid].synthetic_name);
+                const read = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
+                const statement = try ast.addNode(.{ .tag = .expression_statement, .span = name, .data = .{ .unary = .{ .operand = read, .flags = 0 } } });
+                ast.nodes.items[@backingInt(root)].data.list = try ast.addNodeList(&.{ empty, statement });
+                const rows = try a.alloc(symbol_mod.Reference, semantic.references.len + 1);
+                @memcpy(rows[0..semantic.references.len], semantic.references);
+                rows[semantic.references.len] = .{
+                    .node_index = read,
+                    .scope_id = selected.scope_id,
+                    .symbol_id = selected.symbol_id,
+                    .flags = .{ .read = true },
+                };
+                semantic.references = rows;
+            } else if (mutation == .missing_erased_creator_owner) {
+                _ = semantic.scope_owner_map.remove(@backingInt(primary));
+            } else if (mutation == .wrong_erased_creator_owner) {
+                ast.nodes.items[@backingInt(primary)].tag = .empty_statement;
+            }
+        },
         .missing_parameter_declaration => mutable_references[pi].flags.declare = false,
         .duplicate_parameter_declaration, .duplicate_engine_declaration => {
             const rows = try a.alloc(symbol_mod.Reference, semantic.references.len + 1);
@@ -761,6 +790,13 @@ fn checkIifeEntryProjection(is_enum: bool, mutation: IifeOwnerMutation) !void {
     if (mutation == .dead_owner_without_declarations) {
         const empty_result = result orelse return error.ErasedIifeRejected;
         try std.testing.expectEqual(@as(usize, 0), empty_result.count());
+        return;
+    }
+    if (mutation == .dead_owner_with_declaration) {
+        const erased_result = result orelse return error.ErasedIifeRejected;
+        const projected = erased_result.get(sid) orelse return error.MissingErasedIifeContext;
+        try std.testing.expectEqual(symbol_mod.Reference.NO_STMT, projected.stmt_idx);
+        try std.testing.expectEqual(symbol_mod.Reference.NO_STMT, projected.scope_stmt_idx);
         return;
     }
     if (mutation != .none) {

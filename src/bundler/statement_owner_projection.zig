@@ -6,6 +6,82 @@ const SemanticReference = @import("../semantic/symbol.zig").Reference;
 pub const Context = @import("../semantic/statement_coordinates.zig").Context;
 pub const collect = @import("../semantic/statement_coordinates.zig").collect;
 
+/// Resolve anchorless namespace and enum declarations from one scan of the
+/// current typed owner map. Erased owners keep NO_STMT; malformed or
+/// conflicting owners leave their slot unresolved so projection fails closed.
+fn projectSourceTsDeclarationContexts(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    contexts: []const ?Context,
+    symbols: []const @import("../semantic/symbol.zig").Symbol,
+    scopes: []const @import("../semantic/scope.zig").Scope,
+    symbol_ids: []const ?u32,
+    owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    namespace_declaration_owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    pending: *std.AutoHashMapUnmanaged(u32, ?Context),
+) !void {
+    const Candidate = struct {
+        matched_owner: bool = false,
+        invalid_owner: bool = false,
+        live_context: ?Context = null,
+    };
+    var candidates: std.AutoHashMapUnmanaged(u32, Candidate) = .empty;
+    defer candidates.deinit(allocator);
+    var pending_iterator = pending.iterator();
+    while (pending_iterator.next()) |entry| {
+        if (entry.value_ptr.* != null) continue;
+        try candidates.put(allocator, entry.key_ptr.*, .{});
+    }
+    if (candidates.count() == 0) return;
+
+    var iterator = owners.iterator();
+    while (iterator.next()) |entry| {
+        const raw = entry.key_ptr.*;
+        if (raw >= ast.nodes.items.len or raw >= contexts.len) continue;
+        const declaration = ast.nodes.items[raw];
+        const name = switch (declaration.tag) {
+            .ts_module_declaration => blk: {
+                if (declaration.data.binary.flags != 0) continue;
+                break :blk declaration.data.binary.left;
+            },
+            .ts_enum_declaration => blk: {
+                if (!ast.hasExtra(declaration.data.extra, ast_mod.EnumExtra.name) or
+                    !ast.hasExtra(declaration.data.extra, ast_mod.EnumExtra.flags) or
+                    ast.readExtra(declaration.data.extra, ast_mod.EnumExtra.flags) & 2 != 0) continue;
+                break :blk ast.readExtraNode(declaration.data.extra, ast_mod.EnumExtra.name);
+            },
+            else => continue,
+        };
+        if (name.isNone() or @backingInt(name) >= symbol_ids.len) continue;
+        const name_sid = symbol_ids[@backingInt(name)] orelse continue;
+        const canonical_sid = namespace_declaration_owners.get(name_sid) orelse name_sid;
+        const candidate = candidates.getPtr(canonical_sid) orelse continue;
+        candidate.matched_owner = true;
+        if (canonical_sid >= symbols.len) {
+            candidate.invalid_owner = true;
+            continue;
+        }
+        const owner_scope = entry.value_ptr.*;
+        if (owner_scope >= scopes.len or scopes[owner_scope].kind != .function or
+            scopes[owner_scope].parent != symbols[canonical_sid].scope_id)
+        {
+            candidate.invalid_owner = true;
+            continue;
+        }
+        const current = contexts[raw] orelse continue;
+        if (candidate.live_context) |previous| {
+            if (!std.meta.eql(previous, current)) candidate.invalid_owner = true;
+        } else candidate.live_context = current;
+    }
+    var candidates_iterator = candidates.iterator();
+    while (candidates_iterator.next()) |entry| {
+        const candidate = entry.value_ptr.*;
+        if (!candidate.matched_owner or candidate.invalid_owner) continue;
+        const slot = pending.getPtr(entry.key_ptr.*) orelse continue;
+        slot.* = candidate.live_context orelse .{};
+    }
+}
+
 // Native Annex B creates a var-entry declaration without a source binding leaf.
 // Only a reachable declaration's existing typed alias can select that entry.
 fn projectNativeAnnexBEntries(
@@ -133,8 +209,9 @@ pub fn project(
     var anchorless_contexts: std.AutoHashMapUnmanaged(u32, ?Context) = .empty;
     defer anchorless_contexts.deinit(allocator);
     for (updated) |reference| {
-        if (reference.flags.declare and reference.declaration_node_index.isNone())
+        if (reference.flags.declare and reference.declaration_node_index.isNone()) {
             try anchorless_contexts.put(allocator, @backingInt(reference.symbol_id), null);
+        }
     }
     if (anchorless_contexts.count() != 0) {
         var facade_owners: std.AutoHashMapUnmanaged(u32, ast_mod.NodeIndex) = .empty;
@@ -199,6 +276,19 @@ pub fn project(
             const slot = anchorless_contexts.getPtr(entry.key_ptr.*) orelse return null;
             if (slot.*) |previous| if (!std.meta.eql(previous, entry.value_ptr.*)) return null;
             slot.* = entry.value_ptr.*;
+        }
+        if (comptime @hasField(@TypeOf(semantic.*), "namespace_declaration_owners")) {
+            try projectSourceTsDeclarationContexts(
+                allocator,
+                ast,
+                contexts,
+                semantic.symbols.items,
+                semantic.scopes,
+                semantic.symbol_ids,
+                &semantic.scope_owner_map,
+                &semantic.namespace_declaration_owners,
+                &anchorless_contexts,
+            );
         }
     }
     if (anchorless_contexts.count() != 0 and !try projectNativeAnnexBEntries(allocator, ast, contexts, semantic, &anchorless_contexts)) return null;
@@ -439,6 +529,174 @@ test "native Annex B alias entry projection requires exact declaration scope and
     try std.testing.expect((try project(a, &parser.ast, root, &semantic)) == null);
     try semantic.scope_owner_map.put(a, other_owner.?, old_other_scope);
     try std.testing.expect((try project(a, &parser.ast, root, &semantic)) != null);
+}
+
+const ErasedTsDeclarationMutation = enum {
+    none,
+    namespace_name_missing,
+    enum_name_missing,
+    namespace_name_foreign,
+    enum_name_foreign,
+    namespace_owner_missing,
+    enum_owner_missing,
+    namespace_owner_scope_out_of_range,
+    enum_owner_scope_out_of_range,
+    namespace_owner_wrong_kind,
+    enum_owner_wrong_kind,
+    namespace_owner_wrong_parent,
+    enum_owner_wrong_parent,
+    enum_owner_map_foreign,
+};
+
+fn erasedTsDeclarationProjectionAccepted(source: []const u8, mutation: ErasedTsDeclarationMutation) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Parser = @import("../parser/parser.zig").Parser;
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const Reference = @import("../semantic/symbol.zig").Reference;
+
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".ts");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var namespace_node: ?u32 = null;
+    var enum_node: ?u32 = null;
+    var namespace_binding: ?NodeIndex = null;
+    var enum_binding: ?NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| switch (node.tag) {
+        .ts_module_declaration => {
+            if (namespace_node == null and node.data.binary.flags == 0) {
+                namespace_node = @intCast(raw);
+                namespace_binding = node.data.binary.left;
+            }
+        },
+        .ts_enum_declaration => {
+            if (enum_node == null and parser.ast.hasExtra(node.data.extra, @import("../parser/ast.zig").EnumExtra.name)) {
+                enum_node = @intCast(raw);
+                enum_binding = parser.ast.readExtraNode(node.data.extra, @import("../parser/ast.zig").EnumExtra.name);
+            }
+        },
+        else => {},
+    };
+    const namespace_raw = namespace_node orelse return error.MissingNamespaceOwner;
+    const enum_raw = enum_node orelse return error.MissingConstEnumOwner;
+    const namespace_name = namespace_binding orelse return error.MissingNamespaceBinding;
+    const enum_name = enum_binding orelse return error.MissingConstEnumBinding;
+    const namespace_name_sid = analyzer.symbol_ids.items[@backingInt(namespace_name)] orelse return error.MissingNamespaceSymbol;
+    const enum_name_sid = analyzer.symbol_ids.items[@backingInt(enum_name)] orelse return error.MissingConstEnumSymbol;
+    const namespace_sid = analyzer.namespace_declaration_owners.get(namespace_name_sid) orelse namespace_name_sid;
+    const enum_sid = analyzer.namespace_declaration_owners.get(enum_name_sid) orelse enum_name_sid;
+    try std.testing.expect(namespace_sid != enum_sid);
+    const namespace_owner_scope = analyzer.scope_owner_map.get(namespace_raw) orelse return error.MissingNamespaceOwnerScope;
+    const enum_owner_scope = analyzer.scope_owner_map.get(enum_raw) orelse return error.MissingConstEnumOwnerScope;
+
+    parser.ast.nodes.items[@backingInt(root)].data.list = try parser.ast.addNodeList(&.{});
+    switch (mutation) {
+        .none => {},
+        .namespace_name_missing => analyzer.symbol_ids.items[@backingInt(namespace_name)] = null,
+        .enum_name_missing => analyzer.symbol_ids.items[@backingInt(enum_name)] = null,
+        .namespace_name_foreign => analyzer.symbol_ids.items[@backingInt(namespace_name)] = enum_sid,
+        .enum_name_foreign => analyzer.symbol_ids.items[@backingInt(enum_name)] = namespace_sid,
+        .namespace_owner_missing => _ = analyzer.scope_owner_map.remove(namespace_raw),
+        .enum_owner_missing => _ = analyzer.scope_owner_map.remove(enum_raw),
+        .namespace_owner_scope_out_of_range => try analyzer.scope_owner_map.put(a, namespace_raw, std.math.maxInt(u32)),
+        .enum_owner_scope_out_of_range => try analyzer.scope_owner_map.put(a, enum_raw, std.math.maxInt(u32)),
+        .namespace_owner_wrong_kind => analyzer.scopes.items[namespace_owner_scope].kind = .block,
+        .enum_owner_wrong_kind => analyzer.scopes.items[enum_owner_scope].kind = .block,
+        .namespace_owner_wrong_parent => analyzer.scopes.items[namespace_owner_scope].parent = .none,
+        .enum_owner_wrong_parent => analyzer.scopes.items[enum_owner_scope].parent = .none,
+        .enum_owner_map_foreign => try analyzer.namespace_declaration_owners.put(a, enum_name_sid, namespace_sid),
+    }
+
+    var references: std.ArrayList(Reference) = .empty;
+    // The post-transform declaration rows retain their source SymbolIds but
+    // can lose their AST declaration anchors when the TS owners are erased.
+    try references.append(a, .{
+        .node_index = .none,
+        .symbol_id = @fromBackingInt(namespace_sid),
+        .scope_id = analyzer.symbols.items[namespace_sid].scope_id,
+        .flags = .{ .declare = true },
+    });
+    try references.append(a, .{
+        .node_index = .none,
+        .symbol_id = @fromBackingInt(enum_sid),
+        .scope_id = analyzer.symbols.items[enum_sid].scope_id,
+        .flags = .{ .declare = true },
+    });
+    const semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .references = references.items,
+    };
+    const projected = try project(a, &parser.ast, root, &semantic);
+    if (projected) |rows| {
+        defer a.free(rows);
+        if (mutation != .none) return true;
+        try std.testing.expectEqual(references.items.len, rows.len);
+        for (rows) |reference| {
+            try std.testing.expect(reference.flags.declare and reference.node_index.isNone() and reference.declaration_node_index.isNone());
+            try std.testing.expectEqual(Reference.NO_STMT, reference.stmt_idx);
+            try std.testing.expectEqual(Reference.NO_STMT, reference.scope_stmt_idx);
+        }
+        return true;
+    }
+    return false;
+}
+
+test "erased namespace and const enum declarations require exact owners across ten inputs and thirteen hostile mutations" {
+    const sources = [_][]const u8{
+        "namespace N { export const enum F { D = 1 } }",
+        "namespace N { export const enum F { D = `y` } }",
+        "namespace N { export const enum F { D = 'y' } }",
+        "namespace N { export const enum F { D = 1, E = 2 } }",
+        "namespace N { export const enum F { D = 1 } export const v = F.D; }",
+        "namespace O.I { export const enum F { D = 2, E = D * 3 } }",
+        "namespace N { export namespace M { export const enum F { D = 1 } } }",
+        "namespace N { export const enum F { D = 1 } } namespace N { export const enum G { D = 2 } }",
+        "export namespace N { export const enum F { D = 1 } }",
+        "namespace N { export function f() { return F.D; } export const enum F { D = 1 } }",
+    };
+    var admitted_inputs: usize = 0;
+    for (sources) |source| {
+        try std.testing.expect(try erasedTsDeclarationProjectionAccepted(source, .none));
+        admitted_inputs += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 10), admitted_inputs);
+
+    const mutations = [_]ErasedTsDeclarationMutation{
+        .namespace_name_missing,
+        .enum_name_missing,
+        .namespace_name_foreign,
+        .enum_name_foreign,
+        .namespace_owner_missing,
+        .enum_owner_missing,
+        .namespace_owner_scope_out_of_range,
+        .enum_owner_scope_out_of_range,
+        .namespace_owner_wrong_kind,
+        .enum_owner_wrong_kind,
+        .namespace_owner_wrong_parent,
+        .enum_owner_wrong_parent,
+        .enum_owner_map_foreign,
+    };
+    var rejected_mutations: usize = 0;
+    for (mutations) |mutation| {
+        try std.testing.expect(!try erasedTsDeclarationProjectionAccepted(sources[0], mutation));
+        rejected_mutations += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 13), rejected_mutations);
 }
 
 test "native Annex B shadow eval CJS full minify preserves original runtime" {
