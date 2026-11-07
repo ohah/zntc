@@ -1,3 +1,4 @@
+import { runInNewContext } from 'node:vm';
 import {
   build,
   describe,
@@ -23,9 +24,22 @@ describe('@zntc/core define/alias > outputExports modes', () => {
       });
       expect(result.errors.length).toBe(0);
       const text = result.outputFiles[0].text;
-      expect(text).toContain('exports.default = ');
-      expect(text).toContain('__esModule');
-      expect(text).not.toContain('module.exports = ');
+      const initialExports: Record<string, unknown> = {};
+      const module = { exports: initialExports };
+      runInNewContext(text, { module, exports: initialExports });
+      const published = module.exports;
+      expect(published).toBe(initialExports);
+      expect(Object.keys(published).sort()).toEqual(['default']);
+      expect(Reflect.ownKeys(published).sort()).toEqual(['__esModule', 'default']);
+      expect(published.default).toEqual('NAMED_DEFAULT');
+      expect(Object.getOwnPropertyDescriptor(published, '__esModule')).toEqual({
+        value: true,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
+      expect(Reflect.set(published, 'default', 99)).toBe(false);
+      expect(published.default).toEqual('NAMED_DEFAULT');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

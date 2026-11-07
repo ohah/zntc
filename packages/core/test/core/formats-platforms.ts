@@ -1,3 +1,4 @@
+import { runInNewContext } from 'node:vm';
 import {
   describe,
   test,
@@ -62,8 +63,17 @@ describe('@zntc/core 번들 포맷/플랫폼', () => {
     });
     expect(result.errors.length).toBe(0);
     const text = result.outputFiles[0].text;
-    expect(text).toContain('return { answer: internal, default: internal };');
-    expect(text).not.toContain(' as ');
+    const context = { MyLib: undefined as Record<string, unknown> | undefined };
+    runInNewContext(text, context);
+    const published = context.MyLib!;
+    expect(Object.keys(published).sort()).toEqual(['answer', 'default']);
+    expect(Reflect.ownKeys(published).sort()).toEqual(['answer', 'default']);
+    expect(published.answer).toBe(1);
+    expect(published.default).toBe(1);
+    expect(Reflect.set(published, 'answer', 99)).toBe(false);
+    expect(Reflect.set(published, 'default', 99)).toBe(false);
+    expect(published.answer).toBe(1);
+    expect(published.default).toBe(1);
     rmSync(aliasDir, { recursive: true, force: true });
   });
 
