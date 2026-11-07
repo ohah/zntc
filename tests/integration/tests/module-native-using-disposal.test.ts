@@ -7,8 +7,8 @@ import { createFixture, ZNTC_BIN } from './helpers';
 
 // #4740: each dependency module owns its synchronous using lifetime. Compare
 // actual Node module evaluation, not just the bundle's eventual side effects.
-// await-using has an asynchronous module contract and is tracked separately;
-// it is deliberately absent from this synchronous regression cohort.
+// Asynchronous disposal timing is tracked separately. The mixed await/sync
+// case below checks only its already-supported exported value, not timing.
 // CLI-only is an explicit baseline cohort, never a skipped NAPI pass.
 const cliOnly = process.env.ZNTC_TEST_CLI_ONLY === '1';
 const surfaces: readonly ('cli' | 'napi')[] = cliOnly ? ['cli'] : ['cli', 'napi'];
@@ -303,6 +303,18 @@ advance(); console.log(initial, value);
 `,
     },
     expectedText: '1 2\n1 3\n',
+  },
+  {
+    // Preserve the already-supported mixed-module exported value. This does
+    // not assert that asynchronous disposal timing is fixed by #4740.
+    name: 'healthy-mixed-await-sync-export-value',
+    files: {
+      'lib.mjs': `using resource={label:"ok",[Symbol.dispose](){}}; await using other={async [Symbol.asyncDispose](){}}; export {resource};
+`,
+      'main.mjs': `const {resource}=await import("./lib.mjs"); console.log(resource.label);
+`,
+    },
+    expectedText: 'ok\n',
   },
 ];
 

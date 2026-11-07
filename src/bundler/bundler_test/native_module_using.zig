@@ -100,3 +100,37 @@ test "native module using guard mode does not require Symbol for legacy null acq
     try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
     try std.testing.expectEqualStrings("null\n", actual.stdout);
 }
+
+test "native module using keeps source mixed await resource exports on existing storage" {
+    for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "lib.mjs", "using resource={label:'ok',[Symbol.dispose](){}};await using other={async[Symbol.asyncDispose](){}};export{resource};");
+        try helpers.writeFile(tmp.dir, "main.mjs", "const{resource}=await import('./lib.mjs');console.log(resource.label);");
+        const entry = try helpers.absPath(&tmp, "main.mjs");
+        defer std.testing.allocator.free(entry);
+        var bundler = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .platform = .node,
+            .format = .esm,
+            .inline_dynamic_imports = true,
+            .unsupported = compat.fromESTarget(.esnext),
+            .minify_syntax = minify,
+            .minify_identifiers = minify,
+            .minify_whitespace = minify,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        try helpers.writeFile(tmp.dir, "output.mjs", result.output);
+        const output = try helpers.absPath(&tmp, "output.mjs");
+        defer std.testing.allocator.free(output);
+        const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", output } });
+        defer std.testing.allocator.free(actual.stdout);
+        defer std.testing.allocator.free(actual.stderr);
+        if (actual.term != .exited or actual.term.exited != 0) std.debug.print("native module using mixed export minify={} stderr={s} code={s}\n", .{ minify, actual.stderr, result.output });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("ok\n", actual.stdout);
+    }
+}
