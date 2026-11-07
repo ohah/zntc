@@ -4819,6 +4819,11 @@ pub const SemanticAnalyzer = struct {
             }
         }
 
+        // All catch bindings exist before BindingInitialization evaluates
+        // computed keys and lazy defaults. Record those expressions in the
+        // actual catch scope, before entering the distinct body block scope.
+        if (!param_idx.isNone()) try self.visitBindingPatternExpressions(param_idx);
+
         // Visit body (block statement) with catch param conflict checking
         const body_idx = node.data.binary.right;
         if (!body_idx.isNone()) {
@@ -6250,4 +6255,52 @@ test "namespace parameter selector owns decoded source and rejected candidates o
         }
     };
     try std.testing.checkAllAllocationFailures(std.testing.allocator, Probe.run, .{});
+}
+
+test "suspension binding preparation records initial catch key and default references" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "function mark(){return 42}function key(){return 'value'}try{throw {}}catch({[key()]:first=mark(),nested:[last=mark()]=[]}){first;last;}";
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.enable_source_external_origins = true;
+    try analyzer.analyze();
+    var catch_scope: ScopeId = .none;
+    var mark_id: ?u32 = null;
+    var key_id: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, index| {
+        const name = symbol.nameText(parser.ast.source);
+        if (symbol.kind == .catch_binding) {
+            if (catch_scope.isNone()) catch_scope = symbol.scope_id;
+            try std.testing.expectEqual(catch_scope, symbol.scope_id);
+        }
+        if (symbol.kind.isFunctionLike() and std.mem.eql(u8, name, "mark")) mark_id = @intCast(index);
+        if (symbol.kind.isFunctionLike() and std.mem.eql(u8, name, "key")) key_id = @intCast(index);
+    }
+    try std.testing.expect(!catch_scope.isNone() and mark_id != null and key_id != null);
+    var key_reads: usize = 0;
+    var default_reads: usize = 0;
+    var body_reads: usize = 0;
+    for (analyzer.references.items) |reference| {
+        if (!reference.flags.read or reference.node_index.isNone()) continue;
+        const raw_id = @backingInt(reference.symbol_id);
+        const raw_node = @backingInt(reference.node_index);
+        if (raw_id == mark_id.? or raw_id == key_id.?) {
+            try std.testing.expectEqual(catch_scope, reference.scope_id);
+            try std.testing.expectEqual(@as(?u32, raw_id), analyzer.symbol_ids.items[raw_node]);
+            if (raw_id == mark_id.?) default_reads += 1 else key_reads += 1;
+        } else if (analyzer.symbols.items[raw_id].kind == .catch_binding) {
+            try std.testing.expect(reference.scope_id != catch_scope);
+            try std.testing.expectEqual(catch_scope, analyzer.scopes.items[reference.scope_id.toIndex()].parent);
+            body_reads += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), key_reads);
+    try std.testing.expectEqual(@as(usize, 2), default_reads);
+    try std.testing.expectEqual(@as(usize, 2), body_reads);
 }

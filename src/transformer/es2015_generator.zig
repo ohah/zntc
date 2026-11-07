@@ -393,7 +393,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const statement: NodeIndex = @fromBackingInt(@intCast(raw_idx));
                 if (root_classes.contains(statement) and rootClassKeepsOrdinaryStorage(self, statement, wrapper_scope)) {
                     const ordinary_plan: es2015_block_scoping.ES2015BlockScoping(Transformer).StateMachineBindingPlan = .{};
-                    try collectPreparedOperations(self, statement, &ordinary_plan, &ops, &next_label);
+                    const ordinary_declaration_plan: PreparedDeclarationPlan = .{ .wrapper_scope = self.generator_state_machine_scope };
+                    try collectPreparedOperations(self, statement, &ordinary_plan, &ordinary_declaration_plan, &ops, &next_label);
                 } else {
                     try collectRewrittenUsingStatement(self, statement, body_list.disposal_try, &ops, &next_label);
                 }
@@ -880,10 +881,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
             var plan = try prepareStateMachineBindingPlan(self, bindings.items, false);
             defer plan.deinit(self.allocator);
-            try collectPreparedOperations(self, stmt_idx, &plan, ops, next_label);
+            var declaration_plan = try prepareDeclarationPlan(self, self.ast.getNode(stmt_idx));
+            defer declaration_plan.deinit(self.allocator);
+            try collectPreparedOperations(self, stmt_idx, &plan, &declaration_plan, ops, next_label);
         }
 
-        fn collectPreparedOperations(self: *Transformer, stmt_idx: NodeIndex, plan: *const es2015_block_scoping.ES2015BlockScoping(Transformer).StateMachineBindingPlan, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+        fn collectPreparedOperations(self: *Transformer, stmt_idx: NodeIndex, plan: *const es2015_block_scoping.ES2015BlockScoping(Transformer).StateMachineBindingPlan, declaration_plan: *const PreparedDeclarationPlan, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             try consumeStateMachineBindingPlan(self, plan);
             if (self.generator_collected_function_declarations.get(@backingInt(stmt_idx))) |sid| {
                 try appendCollectedFunctionAlias(self, stmt_idx, sid, ops);
@@ -961,7 +964,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 },
                 .variable_declaration => {
                     // 모든 var는 호이스팅됨. init를 assignment로 변환.
-                    _ = try collectVarDeclWithYield(self, stmt, ops, next_label, null);
+                    _ = try collectPreparedDeclaration(self, declaration_plan, ops, next_label, null);
                 },
                 .block_statement, .function_body => {
                     try collectBodyOperations(self, stmt_idx, ops, next_label);
@@ -1303,8 +1306,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = node_idx } });
                 return;
             }
-            _ = try collectVarDeclWithYield(self, node, ops, next_label, null);
-            // 등록은 collectVarDeclWithYield **뒤** — 그 안에서 다른 상태 기계가 만들어지면
+            var declaration_plan = try prepareDeclarationPlan(self, node);
+            defer declaration_plan.deinit(self.allocator);
+            _ = try collectPreparedDeclaration(self, &declaration_plan, ops, next_label, null);
+            // 등록은 collectPreparedDeclaration **뒤** — 그 안에서 다른 상태 기계가 만들어지면
             // 먼저 넣은 이름이 그쪽 리스트로 빨려 들어간다(#4716 에서 밟음).
             const e = node.data.extra;
             const list_start = self.readU32(e, 1);
@@ -1484,12 +1489,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (loop_binding_node.tag != .binding_identifier)
                 std.debug.panic("extracted generator loop result lost its exact binding node", .{});
             const loop_name_span = loop_binding_node.data.string_ref;
-            // ⚠️ 등록은 **collectVarDeclWithYield 뒤**에 해야 한다. 그 안에서 `_loopN` 의
+            // ⚠️ 등록은 **collectPreparedDeclaration 뒤**에 해야 한다. 그 안에서 `_loopN` 의
             // generator 본문이 낮아지며 자기 상태 기계를 만드는데, 먼저 넣어 두면 그
             // 안쪽 리스트로 들어가 `var _loop;` 이 엉뚱한 함수에 선언된다.
-            const loop_producer_index = try collectVarDeclWithYield(
+            var declaration_plan = try prepareDeclarationPlan(self, loop_fn_node);
+            defer declaration_plan.deinit(self.allocator);
+            const loop_producer_index = try collectPreparedDeclaration(
                 self,
-                loop_fn_node,
+                &declaration_plan,
                 ops,
                 next_label,
                 result.loop_binding,
@@ -1683,7 +1690,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const init_node = self.ast.getNode(init_idx);
                 if (init_node.tag == .variable_declaration) {
                     // var i = 0 → i = 0 (var는 이미 호이스팅됨)
-                    _ = try collectVarDeclWithYield(self, init_node, ops, next_label, null);
+                    var declaration_plan = try prepareDeclarationPlan(self, init_node);
+                    defer declaration_plan.deinit(self.allocator);
+                    _ = try collectPreparedDeclaration(self, &declaration_plan, ops, next_label, null);
                 } else {
                     const new_init = try self.visitNode(init_idx);
                     if (!new_init.isNone()) {
@@ -2181,6 +2190,27 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             fixupSentinel(ops.items[ops_start..], dw_continue_sent, cond_label);
         }
 
+        const CatchInitializationPlan = struct {
+            statement: NodeIndex = .none,
+            wrapper_scope: ScopeId,
+        };
+
+        // No visitNode or operation collection. Common pattern reconstruction
+        // publishes its own exact wrapper temp identities before any try op.
+        fn prepareCatchInitialization(self: *Transformer, clause: NodeIndex, span: Span) Transformer.Error!CatchInitializationPlan {
+            const owner = self.generator_state_machine_scope;
+            if (clause.isNone()) return .{ .wrapper_scope = owner };
+            const parameter = self.ast.getNode(clause).data.binary.left;
+            if (parameter.isNone()) return .{ .wrapper_scope = owner };
+            const caught = try buildSentCall(self, span);
+            const pattern = self.ast.getNode(parameter);
+            const expression = if (pattern.tag == .object_pattern or pattern.tag == .array_pattern)
+                try es2015_destructuring.ES2015Destructuring(Transformer).prepareBindingPatternAssignment(self, pattern, caught, span, owner)
+            else
+                try es_helpers.makeAssignExpr(self, try bindingToAssignTarget(self, parameter), caught, span, 0);
+            return .{ .statement = try es_helpers.makeExprStmt(self, expression, span), .wrapper_scope = owner };
+        }
+
         const TryCollectionRole = enum { source, using_cleanup };
 
         /// try/catch/finally 안의 yield를 상태 머신으로 변환.
@@ -2224,6 +2254,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
             var catch_plan = try prepareStateMachineBindingPlan(self, catch_bindings.items, !stateMachineRenamesBlockScope(self));
             defer catch_plan.deinit(self.allocator);
+            const catch_initialization = try prepareCatchInitialization(self, catch_clause, stmt.span);
 
             // try_label = 현재 case 번호. next_label은 1에서 시작하고
             // 각 nop append 직전에 +1되므로, next_label - 1 == 현재 case 번호.
@@ -2249,43 +2280,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
 
                 const catch_node = self.ast.getNode(catch_clause);
-                const catch_param = catch_node.data.binary.left;
                 const catch_body_idx = catch_node.data.binary.right;
 
                 try consumeStateMachineBindingPlan(self, &catch_plan);
 
-                const param_is_pattern = !catch_param.isNone() and self.ast.getNode(catch_param).tag != .binding_identifier;
-                if (param_is_pattern) {
-                    // `catch ({ message })` — 받은 값을 임시 변수에 담고 `let <패턴> = 임시변수` 를
-                    // 일반 선언 수집으로 넘긴다. 패턴을 대입 좌변에 그대로 쓰면 (a) es5 에 구조분해
-                    // 문법이 남고 (b) 축약형 키가 리네임되고 (c) minify 가 값 자리를 선언과 연결하지
-                    // 못한다. 선언 경로는 셋 다 처리한다 (#4712).
-                    const tmp = try es_helpers.makeTempVarSpan(self);
-                    const producer = try captureGeneratorTempProducer(self, tmp, stmt.span);
-                    try appendAssignTempStmt(self, ops, producer, try buildSentCall(self, stmt.span), stmt.span);
-                    const decl = try es_helpers.makeVarDeclaration(self, &.{
-                        try es_helpers.makeDeclarator(self, catch_param, try makeGeneratorTempRefForProducer(self, producer, tmp, .{ .read = true }), stmt.span),
-                    }, .let, stmt.span);
-                    _ = try collectVarDeclWithYield(self, self.ast.getNode(decl), ops, next_label, null);
-                } else if (!catch_param.isNone()) {
-                    const visited_param = try self.visitNode(catch_param);
-                    // `catch (e) {…}` → `case N: e = _state.sent();` 로 접을 때, catch 의
-                    // **바인딩** 노드를 그대로 대입 좌변에 재사용하면 안 된다. 좌변은 선언이
-                    // 아니라 **참조**다. 소스에서 온 catch param 은 스코프 분석이 이미 등록해
-                    // 둬서 우연히 해석되지만, 트랜스포머가 합성한 temp(예: for-await 의 `_e`)는
-                    // 분석 이후에 만들어져 바인딩 노드가 심볼로 해석되지 않는다 → minify 때
-                    // 호이스트된 `var` 선언만 리네임되고 이 좌변은 원래 이름으로 남아
-                    // `ReferenceError: _e is not defined` (#4703).
-                    const new_param = try bindingToAssignTarget(self, visited_param);
-                    const sent = try buildSentCall(self, stmt.span);
-                    const assign = try self.ast.addNode(.{
-                        .tag = .assignment_expression,
-                        .span = stmt.span,
-                        .data = .{ .binary = .{ .left = new_param, .right = sent, .flags = 0 } },
-                    });
-                    const assign_stmt = try es_helpers.makeExprStmt(self, assign, stmt.span);
-                    try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
-                }
+                if (catch_initialization.wrapper_scope != self.generator_state_machine_scope)
+                    @panic("prepared catch initialization changed its exact wrapper owner");
+                if (!catch_initialization.statement.isNone())
+                    try collectOperations(self, catch_initialization.statement, ops, next_label);
 
                 try collectBodyOperations(self, catch_body_idx, ops, next_label);
             }
@@ -2551,81 +2553,55 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return es_helpers.makeExprStmt(self, assign, span);
         }
 
-        /// The shared destructuring lowerer produces ordered assignments and
-        /// lazy default conditionals. Extract their suspension points only
-        /// after that common AST reconstruction, not from the pattern itself.
-        fn appendDestructuringAssignment(
-            self: *Transformer,
-            lhs: NodeIndex,
-            rhs: NodeIndex,
+        const PreparedDeclarationPlan = struct {
+            const Entry = struct { binding: NodeIndex, symbol: ?u32, expression: NodeIndex };
+            entries: std.ArrayListUnmanaged(Entry) = .empty,
+            wrapper_scope: ScopeId,
             span: Span,
-            ops: *std.ArrayList(Operation),
-            next_label: *u32,
-        ) Transformer.Error!void {
-            const statement = try makeDestructuringAssignStmt(self, lhs, rhs, span, self.generator_state_machine_scope);
-            const expression = self.ast.getNode(statement).data.unary.operand;
-            const lowered = if (es2015_scan.containsYield(self, expression))
-                try visitExprWithYieldExtraction(self, expression, ops, next_label)
-            else
-                expression;
-            const output = if (lowered == expression) statement else try es_helpers.makeExprStmt(self, lowered, span);
-            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = output } });
+            fn deinit(plan: *PreparedDeclarationPlan, allocator: std.mem.Allocator) void {
+                plan.entries.deinit(allocator);
+            }
+        };
+
+        /// No visiting, yield extraction or operation emission. Reconstruct
+        /// source declaration patterns with the same common builder as catch.
+        fn prepareDeclarationPlan(self: *Transformer, declaration: Node) Transformer.Error!PreparedDeclarationPlan {
+            var plan = PreparedDeclarationPlan{ .wrapper_scope = self.generator_state_machine_scope, .span = declaration.span };
+            errdefer plan.deinit(self.allocator);
+            if (declaration.tag != .variable_declaration) return plan;
+            const start = self.readU32(declaration.data.extra, 1);
+            const len = self.readU32(declaration.data.extra, 2);
+            for (0..len) |index| {
+                const raw = self.ast.extra_data.items[start + index];
+                const item = self.ast.getNode(@fromBackingInt(raw));
+                if (item.tag != .variable_declarator) continue;
+                const binding = self.readNodeIdx(item.data.extra, 0);
+                const initializer = self.readNodeIdx(item.data.extra, 2);
+                if (initializer.isNone()) continue;
+                const pattern = self.ast.getNode(binding);
+                const expression = if (pattern.tag == .object_pattern or pattern.tag == .array_pattern)
+                    try es2015_destructuring.ES2015Destructuring(Transformer).prepareBindingPatternAssignment(self, pattern, initializer, declaration.span, plan.wrapper_scope)
+                else
+                    try es_helpers.makeAssignExpr(self, try bindingToAssignTarget(self, binding), initializer, declaration.span, 0);
+                try plan.entries.append(self.allocator, .{ .binding = binding, .symbol = self.getSymbolIdAt(binding), .expression = expression });
+            }
+            return plan;
         }
 
-        /// yield가 있는 variable_declaration의 각 declarator를 개별 연산으로 변환.
-        /// var x = yield 1 → yield 1 (op) + x = _state.sent() (op)
-        /// var x = expr (no yield) → x = expr (statement op)
-        /// `capture_binding`이 있으면 그 exact binding의 등록 슬롯을 직접 반환한다.
-        fn collectVarDeclWithYield(
-            self: *Transformer,
-            stmt: Node,
-            ops: *std.ArrayList(Operation),
-            next_label: *u32,
-            capture_binding: ?NodeIndex,
-        ) Transformer.Error!?usize {
-            const e = stmt.data.extra;
-            const list_start = self.readU32(e, 1);
-            const list_len = self.readU32(e, 2);
+        /// Only suspension scheduling remains here. Pattern/key/default AST
+        /// and exact wrapper temp producers were completed by the ready plan.
+        fn collectPreparedDeclaration(self: *Transformer, plan: *const PreparedDeclarationPlan, ops: *std.ArrayList(Operation), next_label: *u32, capture_binding: ?NodeIndex) Transformer.Error!?usize {
+            if (plan.wrapper_scope != self.generator_state_machine_scope)
+                @panic("prepared declaration changed its exact wrapper owner");
             var captured_producer_index: ?usize = null;
-
-            // visitNode가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
-            var i_loop: u32 = 0;
-            while (i_loop < list_len) : (i_loop += 1) {
-                const decl_raw = self.ast.extra_data.items[list_start + i_loop];
-                const decl = self.ast.getNode(@fromBackingInt(@intCast(decl_raw)));
-                if (decl.tag != .variable_declarator) continue;
-
-                const binding: NodeIndex = self.readNodeIdx(decl.data.extra, 0);
-                const init_idx: NodeIndex = self.readNodeIdx(decl.data.extra, 2);
-
-                if (init_idx.isNone()) continue;
-
-                const init_node = self.ast.getNode(init_idx);
-                if (init_node.tag == .yield_expression or init_node.tag == .await_expression) {
-                    // var x = yield/await value → yield value + x = _state.sent()
-                    const yield_val = init_node.data.unary.operand;
-                    const new_val = try visitExprWithYieldExtraction(self, yield_val, ops, next_label);
-                    try ops.append(self.allocator, .{ .code = yieldOpCodeFor(init_node), .arg = .{ .node = try asyncGenAwaitValue(self, init_node, new_val) } });
-                    next_label.* += 1;
-                    try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
-
-                    // x = _state.sent()
-                    const new_binding = try bindingToAssignTarget(self, try self.visitNode(binding));
-                    const sent_call = try buildSentCall(self, stmt.span);
-                    try appendDestructuringAssignment(self, new_binding, sent_call, stmt.span, ops, next_label);
-                } else if (es2015_scan.containsYield(self, init_idx)) {
-                    // var x = foo(await y) → 중첩 yield 추출 후 x = foo(_state.sent())
-                    const new_binding = try bindingToAssignTarget(self, try self.visitNode(binding));
-                    const new_init = try visitExprWithYieldExtraction(self, init_idx, ops, next_label);
-                    try appendDestructuringAssignment(self, new_binding, new_init, stmt.span, ops, next_label);
-                } else {
-                    // var x = expr (no yield) → x = expr
-                    const new_binding = try bindingToAssignTarget(self, try self.visitNode(binding));
-                    const new_init = try self.visitNode(init_idx);
-                    if (self.unsupported_generator_native_lexical != null) return null;
-                    try appendDestructuringAssignment(self, new_binding, new_init, stmt.span, ops, next_label);
-                }
-
+            for (plan.entries.items) |entry| {
+                const binding = entry.binding;
+                if (self.getSymbolIdAt(binding) != entry.symbol)
+                    @panic("prepared declaration changed its exact source SymbolId");
+                const expression = try visitExprWithYieldExtraction(self, entry.expression, ops, next_label);
+                if (self.unsupported_generator_native_lexical != null) return null;
+                const statement = try es_helpers.makeExprStmt(self, expression, plan.span);
+                try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = statement } });
                 // `var` 는 대입으로 접혔으니 이름을 **바깥 함수** var 리스트에 등록한다 (#4722).
                 // 소스에 있던 선언은 사전 스캔(collectHoistedVars)이 이미 잡지만, 다른 lowering
                 // 이 **만들어 낸** 선언(예: 일반 경로 for-of 의 `var _loop = function* …`)은
@@ -2657,8 +2633,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// 그대로도 우연히 해석되지만, 트랜스포머가 합성한 이름(`_loopN`, `_ret`,
         /// for-await 의 `_e` …)은 분석 이후에 생겨 해석되지 않는다 → minify 때 호이스트된
         /// `var` 선언만 리네임되고 좌변만 원래 이름으로 남아 `ReferenceError`.
-        /// 구조분해 패턴은 바인딩 노드가 아니므로 그대로 둔다 — 상태 기계의 구조분해 대입은
-        /// `makeDestructuringAssignStmt` 가 항상 단순 대입으로 낮춘다.
+        /// 구조분해 패턴은 여기서 재구성하지 않는다. 선언/catch 준비 단계의 공통
+        /// pattern builder가 단순 대입 AST를 완성하고 수집기는 suspension만 스케줄한다.
         fn bindingToAssignTarget(self: *Transformer, binding: NodeIndex) Transformer.Error!NodeIndex {
             if (binding.isNone()) return binding;
             const node = self.ast.getNode(binding);
@@ -5290,9 +5266,11 @@ fn checkGeneratorVarProducerHandleSelection() !void {
         } else continue;
 
         const expected_index: usize = if (declarations_seen == 0) 1 else 5;
-        const producer_index = (try ES2015Generator(Transformer).collectVarDeclWithYield(
+        var declaration_plan = try ES2015Generator(Transformer).prepareDeclarationPlan(&transformer, node);
+        defer declaration_plan.deinit(allocator);
+        const producer_index = (try ES2015Generator(Transformer).collectPreparedDeclaration(
             &transformer,
-            node,
+            &declaration_plan,
             &ops,
             &next_label,
             target_binding,
@@ -6655,6 +6633,14 @@ fn checkSuspensionEvaluationRuntime(source: []const u8) !void {
 }
 
 fn checkSuspensionEvaluationRuntimeWithNames(source: []const u8, keep_names: bool) !void {
+    return checkSuspensionEvaluationRuntimeDetailed(source, keep_names, false);
+}
+
+fn checkPreparedPatternRuntime(source: []const u8) !void {
+    return checkSuspensionEvaluationRuntimeDetailed(source, false, true);
+}
+
+fn checkSuspensionEvaluationRuntimeDetailed(source: []const u8, keep_names: bool, trace_preparation: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -6664,6 +6650,7 @@ fn checkSuspensionEvaluationRuntimeWithNames(source: []const u8, keep_names: boo
     const Cell = struct { target: @import("compat.zig").ESTarget, full: bool };
     for ([_]Cell{ .{ .target = .es5, .full = false }, .{ .target = .es5, .full = true }, .{ .target = .es2017, .full = false } }) |cell| {
         errdefer std.debug.print("suspension evaluation target={s} full={} source={s}\n", .{ @tagName(cell.target), cell.full, source });
+        if (trace_preparation) std.debug.print("prepared pattern target={s} full={} source={s}\n", .{ @tagName(cell.target), cell.full, source });
         const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
             .keep_names = keep_names,
             .unsupported = @import("compat.zig").fromESTarget(cell.target),
@@ -7114,6 +7101,66 @@ test "suspension lexical preparation preserves var retention and every lexical d
         "function* run(){for(var index=0;index<2;index++){let first,last;if(index===0){first=41;last=42}yield [first,last]}}console.log(JSON.stringify([...run()]));",
     };
     for (sources) |source| try checkSuspensionEvaluationRuntime(source);
+}
+
+test "suspension binding preparation shares catch pattern AST and exact source owners" {
+    const sources = [_][]const u8{
+        "function* run(){try{throw {value:42}}catch({value}){yield value}}console.log(JSON.stringify([...run()]));",
+        "function* run(){try{throw [42,9,3]}catch([value,,tail]){yield [value,tail]}}console.log(JSON.stringify([...run()]));",
+        "function* run(){try{throw {value:42,other:3}}catch({value,...rest}){yield [value,rest.other]}}console.log(JSON.stringify([...run()]));",
+        "function* run(){try{throw [42,3,4]}catch([value,...rest]){yield [value,rest]}}console.log(JSON.stringify([...run()]));",
+        "var events=[];function mark(){events.push('default');return 42}function* run(){try{throw {}}catch({value=mark()}){yield value;yield events}}console.log(JSON.stringify([...run()]));",
+        "var events=[];function mark(){events.push('default');return 42}function* run(){try{throw {}}catch({value:[first=mark()]=[]}){yield first;yield events}}console.log(JSON.stringify([...run()]));",
+        "function* run(){try{throw {value:42}}catch({value}){yield value;try{throw {value:3}}catch({value}){yield value}yield value}}console.log(JSON.stringify([...run()]));",
+        "var events=[];function key(){events.push('key');return 'value'}function* run(){try{throw {value:42}}catch({[key()]:value}){yield value;yield events}}console.log(JSON.stringify([...run()]));",
+        "var events=[];function* run(){outer:for(var index=0;index<2;index++){try{try{throw {get value(){events.push('get');throw 42}}}catch({value}){yield value}}catch(error){yield error;break outer}finally{events.push('finally')}}yield events}console.log(JSON.stringify([...run()]));",
+        "async function* run(){try{throw {value:42}}catch({value}){yield await Promise.resolve(value);yield value+1}}(async function(){var out=[];for await(var value of run())out.push(value);console.log(JSON.stringify(out))})();",
+    };
+    for (sources) |source| try checkPreparedPatternRuntime(source);
+}
+
+test "suspension binding preparation shares declaration patterns before statement and header collection" {
+    const sources = [_][]const u8{
+        "function* run(){var {value}=yield 'source';return value}var iter=run();console.log(JSON.stringify([iter.next(),iter.next({value:42})]));",
+        "function* run(){let [value,...remaining]=yield 'source';return [value,remaining]}var iter=run();console.log(JSON.stringify([iter.next(),iter.next([42,3])]));",
+        "function* run(){const {value=yield 'default'}={};return value}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(42)]));",
+        "function* run(){var [value=yield 'default',...remaining]=[];return [value,remaining]}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(42)]));",
+        "function* run(){let {[(yield 'key')]:value,...remaining}={answer:42,other:3};return [value,remaining]}var iter=run();console.log(JSON.stringify([iter.next(),iter.next('answer')]));",
+        "function* run(){const {nested:[value=yield 'default']=[]}={};return value}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(42)]));",
+        "function* run(){for(var {value}=yield 'source';value<43;value++){yield value}}var iter=run();console.log(JSON.stringify([iter.next(),iter.next({value:42}),iter.next()]));",
+        "function* run(){for(let [value=yield 'default']=[];value<43;value++){yield value}}var iter=run();console.log(JSON.stringify([iter.next(),iter.next(42),iter.next()]));",
+        "function* run(){for(const {value}=yield 'source';;){yield value;break}}var iter=run();console.log(JSON.stringify([iter.next(),iter.next({value:42}),iter.next()]));",
+        "async function run(){const {[await Promise.resolve('value')]:value=await Promise.resolve(42),...remaining}={other:3};return [value,remaining]}run().then(function(value){console.log(JSON.stringify(value))});",
+    };
+    for (sources) |source| try checkPreparedPatternRuntime(source);
+}
+
+test "suspension binding preparation preserves native catch default TDZ ownership" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "var value=42;function* run(){try{try{throw {}}catch({value=value}){yield ['bad',value]}}catch(error){yield error.name}try{try{throw {}}catch({first=last,last=1}){yield [first,last]}}catch(error){yield error.name}}console.log(JSON.stringify([...run()]));";
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("[\"ReferenceError\",\"ReferenceError\"]\n", native.stdout);
+    const unsupported = @import("compat.zig").fromESTarget(.es2017);
+    try std.testing.expect(!unsupported.generator and !unsupported.block_scoping);
+    // This is the native-generator/native-catch ownership contract. ES5's
+    // separately recorded #4739 TDZ-erasure policy is not a passing cell here.
+    for ([_]bool{ false, true }) |full| {
+        const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
+            .unsupported = unsupported,
+            .minify_syntax = full,
+            .minify_identifiers = full,
+            .minify_whitespace = full,
+        });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, actual.stdout, native.stdout))
+            std.debug.print("native catch TDZ full={} code={s} stderr={s} actual={s}\n", .{ full, result.code, actual.stderr, actual.stdout });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("", actual.stderr);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    }
 }
 
 test "suspension lexical preparation leaves native captured loop storage with ordinary producer" {
