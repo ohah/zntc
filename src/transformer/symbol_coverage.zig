@@ -4549,6 +4549,117 @@ test "output binding-scope delegation rejects ten neighboring node-SymbolId proo
     try std.testing.expectEqual(@as(usize, 1), countUnprovenBindingScopeDelegations(&missing_symbol, &missing_symbol_proofs));
 }
 
+test "output binding-scope proof aliases sharing one SymbolId require separate node proofs" {
+    const allocator = std.testing.allocator;
+    const shared_symbol_id: u32 = 700;
+    const first_node: u32 = 41;
+    const second_node: u32 = 43;
+
+    var strict: StrictReport = .{};
+    defer strict.deinit(allocator);
+    strict.counts[@intCast(@backingInt(StrictStatus.scope_mismatch))] = 4;
+    strict.counts[@intCast(@backingInt(StrictStatus.bound))] = 1;
+    try strict.findings.append(allocator, .{
+        .node = first_node,
+        .name = "shared_alias",
+        .tag = .binding_identifier,
+        .status = .scope_mismatch,
+        .marked_synthetic = false,
+        .symbol_id = shared_symbol_id,
+        .expected_scope_id = 0,
+        .binding_required_scope_id = 0,
+        .symbol_scope_id = 1,
+        .symbol_origin_scope_id = 1,
+    });
+    try strict.findings.append(allocator, .{
+        .node = second_node,
+        .name = "shared_alias",
+        .tag = .identifier_reference,
+        .status = .scope_mismatch,
+        .marked_synthetic = false,
+        .is_binding = true,
+        .symbol_id = shared_symbol_id,
+        .expected_scope_id = 0,
+        .binding_required_scope_id = 0,
+        .symbol_scope_id = 1,
+        .symbol_origin_scope_id = 1,
+    });
+    // Ordinary references, bindings without a SID, and non-mismatching
+    // bindings must not inflate the proof map for the aliased SymbolId.
+    try strict.findings.append(allocator, .{
+        .node = 47,
+        .name = "shared_alias_reference",
+        .tag = .identifier_reference,
+        .status = .scope_mismatch,
+        .marked_synthetic = false,
+        .symbol_id = shared_symbol_id,
+        .reference_symbol_id = shared_symbol_id,
+        .expected_scope_id = 0,
+        .symbol_scope_id = 0,
+        .reference_scope_id = 1,
+    });
+    try strict.findings.append(allocator, .{
+        .node = 49,
+        .name = "missing_sid_alias",
+        .tag = .identifier_reference,
+        .status = .scope_mismatch,
+        .marked_synthetic = true,
+        .is_binding = true,
+        .expected_scope_id = 0,
+        .binding_required_scope_id = 0,
+        .symbol_scope_id = 1,
+        .symbol_origin_scope_id = 1,
+    });
+    try strict.findings.append(allocator, .{
+        .node = 51,
+        .name = "ordinary_binding",
+        .tag = .binding_identifier,
+        .status = .bound,
+        .marked_synthetic = false,
+        .is_binding = true,
+        .symbol_id = 701,
+        .expected_scope_id = 0,
+        .binding_required_scope_id = 0,
+        .symbol_scope_id = 0,
+        .symbol_origin_scope_id = 0,
+    });
+
+    var no_proofs: BindingScopeProofMap = .empty;
+    defer no_proofs.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 3), countUnprovenBindingScopeDelegations(&strict, &no_proofs));
+
+    var proofs = try prepareBindingScopeProofs(allocator, &strict);
+    defer proofs.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), proofs.count());
+    try std.testing.expectEqual(@as(?bool, false), proofs.get(bindingScopeProofKey(first_node, shared_symbol_id)));
+    try std.testing.expectEqual(@as(?bool, false), proofs.get(bindingScopeProofKey(second_node, shared_symbol_id)));
+    try std.testing.expectEqual(@as(?bool, null), proofs.get(bindingScopeProofKey(47, shared_symbol_id)));
+    try std.testing.expectEqual(@as(?bool, null), proofs.get(bindingScopeProofKey(49, 0)));
+    try std.testing.expectEqual(@as(?bool, null), proofs.get(bindingScopeProofKey(51, 701)));
+    try std.testing.expectEqual(@as(usize, 3), countUnprovenBindingScopeDelegations(&strict, &proofs));
+
+    proofs.clearRetainingCapacity();
+    try proofs.put(allocator, bindingScopeProofKey(first_node, shared_symbol_id), true);
+    try std.testing.expectEqual(@as(usize, 2), countUnprovenBindingScopeDelegations(&strict, &proofs));
+
+    proofs.clearRetainingCapacity();
+    try proofs.put(allocator, bindingScopeProofKey(second_node, shared_symbol_id), true);
+    try std.testing.expectEqual(@as(usize, 2), countUnprovenBindingScopeDelegations(&strict, &proofs));
+
+    proofs.clearRetainingCapacity();
+    try proofs.put(allocator, bindingScopeProofKey(first_node + 1, shared_symbol_id), true);
+    try std.testing.expectEqual(@as(usize, 3), countUnprovenBindingScopeDelegations(&strict, &proofs));
+
+    proofs.clearRetainingCapacity();
+    try proofs.put(allocator, bindingScopeProofKey(first_node, shared_symbol_id + 1), true);
+    try std.testing.expectEqual(@as(usize, 3), countUnprovenBindingScopeDelegations(&strict, &proofs));
+
+    proofs.clearRetainingCapacity();
+    try proofs.put(allocator, bindingScopeProofKey(first_node, shared_symbol_id), true);
+    try proofs.put(allocator, bindingScopeProofKey(second_node, shared_symbol_id), true);
+    try std.testing.expectEqual(@as(usize, 1), countUnprovenBindingScopeDelegations(&strict, &proofs));
+}
+
 test "output binding-scope proof preparation propagates allocation OOM and releases partial maps" {
     const candidate_count = 128;
     var strict: StrictReport = .{};
