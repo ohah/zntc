@@ -2586,7 +2586,7 @@ fn exactVisit(ctx: *ExactCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
     return .descend;
 }
 
-const BindingScopeProofMap = std.AutoHashMapUnmanaged(u64, void);
+const BindingScopeProofMap = std.AutoHashMapUnmanaged(u64, bool);
 
 fn bindingScopeProofKey(node: u32, symbol_id: u32) u64 {
     return (@as(u64, node) << 32) | symbol_id;
@@ -2622,9 +2622,8 @@ const ExactCtx = struct {
     origins: *const std.AutoHashMapUnmanaged(u32, u32),
     erased_const_enum_external_origins: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     output_external_origins: ?*const @import("../semantic/node_scope_provenance.zig").Map = null,
-    /// Output-normal-form admission records the exact binding nodes whose
-    /// storage ScopeIds passed this walk. Strict scope delegations must match
-    /// one of these node/SymbolId pairs before the combined gate can pass.
+    /// Output-normal-form admission records only StrictReport's delegated
+    /// binding candidates whose storage ScopeIds pass this walk.
     binding_scope_proofs: ?*BindingScopeProofMap = null,
     reachable_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     report: *ExactReport,
@@ -3106,9 +3105,7 @@ const ExactCtx = struct {
                     {
                         ctx.report.binding_scope_mismatch += 1;
                     } else if (ctx.binding_scope_proofs) |proofs| {
-                        proofs.put(ctx.allocator, bindingScopeProofKey(raw, raw_id), {}) catch {
-                            ctx.oom = true;
-                        };
+                        if (proofs.getPtr(bindingScopeProofKey(raw, raw_id))) |proven| proven.* = true;
                     }
                 } else {
                     ctx.report.binding_scope_unknown += 1;
@@ -4128,6 +4125,20 @@ pub fn checkExactQuiet(
     return checkExactImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_maps, scope_owner_map, references, helper_reference_nodes, helper_scope_map, unresolved_nodes, explicit_global_nodes, origins, options.erased_const_enum_external_origins, options.namespace_member_owners, options.namespace_declaration_owners, options.pre_transform_scope_count, options.require_declaration_anchors, false, null, null, null, null, null);
 }
 
+fn prepareBindingScopeProofs(
+    allocator: std.mem.Allocator,
+    strict: *const StrictReport,
+) std.mem.Allocator.Error!BindingScopeProofMap {
+    var proofs: BindingScopeProofMap = .empty;
+    errdefer proofs.deinit(allocator);
+    for (strict.findings.items) |finding| {
+        if (finding.status != .scope_mismatch or !strictFindingIsBinding(finding)) continue;
+        const symbol_id = finding.symbol_id orelse continue;
+        try proofs.put(allocator, bindingScopeProofKey(finding.node, symbol_id), false);
+    }
+    return proofs;
+}
+
 fn countUnprovenBindingScopeDelegations(
     strict: *const StrictReport,
     exact_scope_proofs: *const BindingScopeProofMap,
@@ -4139,7 +4150,7 @@ fn countUnprovenBindingScopeDelegations(
             unproven += 1;
             continue;
         };
-        if (!exact_scope_proofs.contains(bindingScopeProofKey(finding.node, symbol_id))) unproven += 1;
+        if (!(exact_scope_proofs.get(bindingScopeProofKey(finding.node, symbol_id)) orelse false)) unproven += 1;
     }
     return unproven;
 }
@@ -4239,6 +4250,7 @@ test "output normal form gate rejects every aggregate invariant counter" {
     var binding_scope_delegation: OutputNormalFormReport = .{ .exact = .{}, .strict = .{} };
     defer binding_scope_delegation.deinit(std.testing.allocator);
     binding_scope_delegation.strict.counts[@intCast(@backingInt(StrictStatus.scope_mismatch))] = 1;
+    binding_scope_delegation.strict.counts[@intCast(@backingInt(StrictStatus.bound))] = 1;
     try binding_scope_delegation.strict.findings.append(std.testing.allocator, .{
         .node = 2,
         .name = "generated",
@@ -4251,23 +4263,37 @@ test "output normal form gate rejects every aggregate invariant counter" {
         .symbol_scope_id = 1,
         .symbol_origin_scope_id = 0,
     });
+    try binding_scope_delegation.strict.findings.append(std.testing.allocator, .{
+        .node = 4,
+        .name = "ordinary",
+        .tag = .binding_identifier,
+        .status = .bound,
+        .marked_synthetic = false,
+        .is_binding = true,
+        .symbol_id = 2,
+        .expected_scope_id = 0,
+        .binding_required_scope_id = 0,
+        .symbol_scope_id = 0,
+        .symbol_origin_scope_id = 0,
+    });
     try std.testing.expect(binding_scope_delegation.strict.isConsistent());
     try std.testing.expect(!binding_scope_delegation.strict.hasCompleteExactCoverage());
     try std.testing.expect(binding_scope_delegation.strict.hasCompleteSymbolIdentity());
 
-    var exact_scope_proofs: BindingScopeProofMap = .empty;
+    var exact_scope_proofs = try prepareBindingScopeProofs(std.testing.allocator, &binding_scope_delegation.strict);
     defer exact_scope_proofs.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), exact_scope_proofs.count());
     try std.testing.expectEqual(@as(usize, 1), countUnprovenBindingScopeDelegations(&binding_scope_delegation.strict, &exact_scope_proofs));
     binding_scope_delegation.unproven_binding_scope_delegations = countUnprovenBindingScopeDelegations(&binding_scope_delegation.strict, &exact_scope_proofs);
     try std.testing.expect(!binding_scope_delegation.hasCompleteOutputIdentityBeforeNames());
 
-    try exact_scope_proofs.put(std.testing.allocator, bindingScopeProofKey(3, 1), {});
+    try exact_scope_proofs.put(std.testing.allocator, bindingScopeProofKey(3, 1), true);
     try std.testing.expectEqual(@as(usize, 1), countUnprovenBindingScopeDelegations(&binding_scope_delegation.strict, &exact_scope_proofs));
     exact_scope_proofs.clearRetainingCapacity();
-    try exact_scope_proofs.put(std.testing.allocator, bindingScopeProofKey(2, 2), {});
+    try exact_scope_proofs.put(std.testing.allocator, bindingScopeProofKey(2, 2), true);
     try std.testing.expectEqual(@as(usize, 1), countUnprovenBindingScopeDelegations(&binding_scope_delegation.strict, &exact_scope_proofs));
     exact_scope_proofs.clearRetainingCapacity();
-    try exact_scope_proofs.put(std.testing.allocator, bindingScopeProofKey(2, 1), {});
+    try exact_scope_proofs.put(std.testing.allocator, bindingScopeProofKey(2, 1), true);
     try std.testing.expectEqual(@as(usize, 0), countUnprovenBindingScopeDelegations(&binding_scope_delegation.strict, &exact_scope_proofs));
     binding_scope_delegation.unproven_binding_scope_delegations = countUnprovenBindingScopeDelegations(&binding_scope_delegation.strict, &exact_scope_proofs);
     try std.testing.expect(binding_scope_delegation.hasCompleteOutputIdentityBeforeNames());
@@ -4332,8 +4358,35 @@ test "output binding-scope delegation requires exact proof from the same node an
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
-    var exact_scope_proofs: BindingScopeProofMap = .empty;
+
+    var strict = try checkStrictImpl(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_owner_map,
+        &references,
+        null,
+        .{
+            .unresolved_reference_nodes = &unresolved,
+            .explicit_global_reference_nodes = &explicit_globals,
+            .reference_origin_map = &origins,
+        },
+        true,
+        null,
+        null,
+        null,
+    );
+    defer strict.deinit(allocator);
+    try std.testing.expect(strict.isConsistent());
+    try std.testing.expectEqual(@as(usize, 1), strict.counts[@intCast(@backingInt(StrictStatus.scope_mismatch))]);
+
+    var exact_scope_proofs = try prepareBindingScopeProofs(allocator, &strict);
     defer exact_scope_proofs.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), exact_scope_proofs.count());
 
     const exact = try checkExactImpl(
         allocator,
@@ -4364,39 +4417,14 @@ test "output binding-scope delegation requires exact proof from the same node an
         &exact_scope_proofs,
     );
     try std.testing.expect(exact.isClean());
-    try std.testing.expect(exact_scope_proofs.contains(bindingScopeProofKey(@backingInt(binding), 0)));
-
-    var strict = try checkStrictImpl(
-        allocator,
-        &ast,
-        root,
-        @intCast(ast.nodes.items.len),
-        symbol_ids,
-        &symbols,
-        &scopes,
-        &scope_owner_map,
-        &references,
-        null,
-        .{
-            .unresolved_reference_nodes = &unresolved,
-            .explicit_global_reference_nodes = &explicit_globals,
-            .reference_origin_map = &origins,
-        },
-        true,
-        null,
-        null,
-        null,
-    );
-    defer strict.deinit(allocator);
-    try std.testing.expect(strict.isConsistent());
-    try std.testing.expectEqual(@as(usize, 1), strict.counts[@intCast(@backingInt(StrictStatus.scope_mismatch))]);
+    try std.testing.expect(exact_scope_proofs.get(bindingScopeProofKey(@backingInt(binding), 0)) orelse false);
     try std.testing.expectEqual(@as(usize, 0), countUnprovenBindingScopeDelegations(&strict, &exact_scope_proofs));
 
     exact_scope_proofs.clearRetainingCapacity();
-    try exact_scope_proofs.put(allocator, bindingScopeProofKey(@backingInt(binding) + 1, 0), {});
+    try exact_scope_proofs.put(allocator, bindingScopeProofKey(@backingInt(binding) + 1, 0), true);
     try std.testing.expectEqual(@as(usize, 1), countUnprovenBindingScopeDelegations(&strict, &exact_scope_proofs));
     exact_scope_proofs.clearRetainingCapacity();
-    try exact_scope_proofs.put(allocator, bindingScopeProofKey(@backingInt(binding), 1), {});
+    try exact_scope_proofs.put(allocator, bindingScopeProofKey(@backingInt(binding), 1), true);
     try std.testing.expectEqual(@as(usize, 1), countUnprovenBindingScopeDelegations(&strict, &exact_scope_proofs));
 }
 
@@ -4484,10 +4512,11 @@ pub fn checkOutputNormalFormQuiet(
     const valid = runtime_valid and frame_index.valid and lowered_proof != null and try @import("../semantic/source_owned_retirement.zig").validateWithIndex(allocator, ast, retirements, &reachable, symbols, symbol_ids, scopes, scope_maps, scope_owner_map, references, helper_scope_map, retirement_roots, &frame_index) and
         try validateNodeScopeProvenance(allocator, ast, root, scope_owner_map, retirement_roots.node_scope_provenance) and
         @import("../semantic/source_external_origin.zig").validate(ast, parser_node_count, symbol_ids, scopes, unresolved_nodes, retirement_roots.node_scope_provenance, &frame_index);
-    var binding_scope_proofs: BindingScopeProofMap = .empty;
+    var strict = try checkStrictImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_owner_map, references, null, .{ .unresolved_reference_nodes = unresolved_nodes, .explicit_global_reference_nodes = explicit_global_nodes, .reference_origin_map = origins, .output_external_origins = if (valid) retirement_roots.node_scope_provenance else null }, true, options.known_output_names, if (valid) retirements else null, if (valid) runtime_proof else null);
+    errdefer strict.deinit(allocator);
+    var binding_scope_proofs = try prepareBindingScopeProofs(allocator, &strict);
     defer binding_scope_proofs.deinit(allocator);
     const exact = try checkExactImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_maps, scope_owner_map, references, helper_reference_nodes, helper_scope_map, unresolved_nodes, explicit_global_nodes, origins, options.erased_const_enum_external_origins, options.namespace_member_owners, options.namespace_declaration_owners, exact_scope_boundary, options.require_declaration_anchors, false, if (valid) retirements else null, if (valid) retirement_roots.node_scope_provenance else null, if (valid) if (lowered_proof) |*proof| proof else null else null, options.known_output_names, &binding_scope_proofs);
-    const strict = try checkStrictImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, scopes, scope_owner_map, references, null, .{ .unresolved_reference_nodes = unresolved_nodes, .explicit_global_reference_nodes = explicit_global_nodes, .reference_origin_map = origins, .output_external_origins = if (valid) retirement_roots.node_scope_provenance else null }, true, options.known_output_names, if (valid) retirements else null, if (valid) runtime_proof else null);
     return .{
         .retirement_state_mismatch = @intFromBool(!valid),
         .scope_boundary_missing = @intFromBool(options.pre_transform_scope_count == null),
