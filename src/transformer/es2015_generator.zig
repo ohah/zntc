@@ -7086,3 +7086,9 @@ test "suspension lexical preparation preserves var retention and every lexical d
     };
     for (sources) |source| try checkSuspensionEvaluationRuntime(source);
 }
+
+test "suspension lexical preparation leaves native captured loop storage with ordinary producer" {
+    // No class/header name collision: the stale early header registration
+    // independently made the original cell collide with the captured carrier.
+    try checkSuspensionEvaluationRuntime("var readers=[];class Holder{*method(){for(let value=0;value<2;value++){readers.push(()=>value)}yield 42}}Array.from(new Holder().method());console.log(JSON.stringify(readers.map(fn=>fn())));");
+}
