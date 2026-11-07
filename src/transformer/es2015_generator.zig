@@ -356,6 +356,16 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .none;
             defer self.generator_native_var_scope = saved_native_scope;
 
+            // Preserve the ordinary class lowerer's storage policy only for
+            // actual function-root declarations. Flattened block/case classes
+            // still require the common lexical binding plan.
+            var root_classes: std.AutoHashMapUnmanaged(NodeIndex, void) = .empty;
+            defer root_classes.deinit(self.allocator);
+            for (0..body.data.list.len) |i| {
+                const statement: NodeIndex = @fromBackingInt(self.ast.extra_data.items[body.data.list.start + i]);
+                if (self.ast.getNode(statement).tag == .class_declaration)
+                    try root_classes.put(self.allocator, statement, {});
+            }
             try es2015_block_scoping.ES2015BlockScoping(Transformer).prepareStateMachineDeclarations(self, body.data.list);
             const body_list = try rewriteUsingForStateMachine(self, body.data.list);
             const stmts_start = body_list.statements.start;
@@ -380,7 +390,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             var i_stmts: u32 = 0;
             while (i_stmts < stmts_len) : (i_stmts += 1) {
                 const raw_idx = self.ast.extra_data.items[stmts_start + i_stmts];
-                try collectRewrittenUsingStatement(self, @fromBackingInt(@intCast(raw_idx)), body_list.disposal_try, &ops, &next_label);
+                const statement: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+                if (root_classes.contains(statement) and rootClassKeepsOrdinaryStorage(self, statement, wrapper_scope)) {
+                    const ordinary_plan: es2015_block_scoping.ES2015BlockScoping(Transformer).StateMachineBindingPlan = .{};
+                    try collectPreparedOperations(self, statement, &ordinary_plan, &ops, &next_label);
+                } else {
+                    try collectRewrittenUsingStatement(self, statement, body_list.disposal_try, &ops, &next_label);
+                }
                 if (self.unsupported_generator_native_lexical != null) return .{ .body = .none, .var_decl = .none };
             }
 
@@ -836,6 +852,19 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return visitExprWithYieldExtraction(self, value_idx, ops, next_label);
             }
             return self.visitNode(value_idx);
+        }
+
+        /// Called only after exact membership in buildStateMachine's original
+        /// root list is established. Semantic operation additionally requires
+        /// the selected source symbol to already belong to the actual storage.
+        fn rootClassKeepsOrdinaryStorage(self: *Transformer, statement: NodeIndex, storage: ScopeId) bool {
+            if (!self.semantic_edit_enabled) return true;
+            const binding = self.readNodeIdx(self.ast.getNode(statement).data.extra, ast_mod.ClassExtra.name);
+            if (binding.isNone()) return false;
+            const sid = self.getSymbolIdAt(binding) orelse return false;
+            const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+            if (sid >= symbols.len or storage.isNone()) return false;
+            return symbols[sid].scope_id == storage and symbols[sid].origin_scope == storage;
         }
 
         /// AST 문을 순회하며 연산을 수집.
@@ -7091,4 +7120,12 @@ test "suspension lexical preparation leaves native captured loop storage with or
     // No class/header name collision: the stale early header registration
     // independently made the original cell collide with the captured carrier.
     try checkSuspensionEvaluationRuntime("var readers=[];class Holder{*method(){for(let value=0;value<2;value++){readers.push(()=>value)}yield 42}}Array.from(new Holder().method());console.log(JSON.stringify(readers.map(fn=>fn())));");
+}
+
+test "suspension root class storage preserves forward references and constructor names" {
+    const sources = [_][]const u8{
+        "function* run(value){class Base{read(){return Child}}class Child extends Base{read(){return [super.read()===Child,Child.name,value]}}yield new Child().read()}console.log(JSON.stringify([...run(42)]));",
+        "function* run(){class Cell{read(){return 20}}var outer=new Cell();{class Cell{read(){return 22}}yield outer.read()+new Cell().read()}yield Cell.name}console.log(JSON.stringify([...run()]));",
+    };
+    for (sources) |source| try checkSuspensionEvaluationRuntime(source);
 }
