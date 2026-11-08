@@ -176,6 +176,11 @@ const MODULES = [_]HelperModule{
         .body = .{ .plain = rt.READINESS_ALL_RUNTIME, .min = rt.READINESS_ALL_RUNTIME_MIN },
     },
     .{
+        .short = "spread-props",
+        .helpers = &.{ "__spreadProps", "__spreadValues" },
+        .body = .{ .plain = rt.SPREAD_PROPS_RUNTIME ++ rt.SPREAD_VALUES_RUNTIME, .min = rt.SPREAD_PROPS_RUNTIME_MIN ++ rt.SPREAD_VALUES_RUNTIME_MIN },
+    },
+    .{
         .short = "class-define-property",
         .helpers = &.{"__classDefineProperty"},
         .body = .{ .plain = rt.CLASS_DEFINE_PROPERTY_RUNTIME, .min = rt.CLASS_DEFINE_PROPERTY_RUNTIME_MIN },

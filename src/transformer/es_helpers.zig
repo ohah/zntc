@@ -3442,6 +3442,12 @@ pub fn makeObjectAssignCall(self: anytype, args: []const NodeIndex, span: Span) 
 /// evaluate later values (including await operands) before copying earlier
 /// spread getters. The first spread always copies into a fresh target, even
 /// when its operand itself happens to be an object literal.
+fn copyObjectPropertyGroup(self: anytype, target: NodeIndex, group: NodeIndex, span: Span) !NodeIndex {
+    self.spread_props_used = true;
+    const callee = try makeRuntimeHelperRef(self, "__spreadProps");
+    return makeCallExpr(self, callee, &.{ target, group }, span);
+}
+
 const IdentityObjectGroupFinalizer = struct {
     pub fn finalize(_: @This(), _: anytype, group: NodeIndex) std.mem.Allocator.Error!NodeIndex {
         return group;
@@ -3466,6 +3472,16 @@ pub fn lowerObjectSpreadPropsWithFinalizer(self: anytype, properties: []const No
     for (owned_props) |prop_idx| {
         const prop = self.ast.getNode(prop_idx);
         if (prop.tag != .spread_element) {
+            if (!result.isNone()) {
+                // After a spread, each definition must reach the target before
+                // the next one. Collapsing `x: 0, get x(){}` into one literal
+                // loses the intervening data definition that clears an older
+                // setter (computed keys can alias in exactly the same way).
+                const literal = try makeObjectLiteral(self, &.{prop_idx}, span);
+                const group = try finalizer.finalize(self, literal);
+                result = try copyObjectPropertyGroup(self, result, group, span);
+                continue;
+            }
             try self.scratch.append(self.allocator, prop_idx);
             continue;
         }
@@ -3474,16 +3490,18 @@ pub fn lowerObjectSpreadPropsWithFinalizer(self: anytype, properties: []const No
             const literal = try makeObjectLiteral(self, self.scratch.items[scratch_top..], span);
             const group = try finalizer.finalize(self, literal);
             self.scratch.shrinkRetainingCapacity(scratch_top);
-            result = if (result.isNone()) group else try makeObjectAssignCall(self, &.{ result, group }, span);
+            result = if (result.isNone()) group else try copyObjectPropertyGroup(self, result, group, span);
         }
         if (result.isNone()) result = try makeObjectLiteral(self, &.{}, span);
-        result = try makeObjectAssignCall(self, &.{ result, prop.data.unary.operand }, span);
+        self.spread_props_used = true;
+        const spread_callee = try makeRuntimeHelperRef(self, "__spreadValues");
+        result = try makeCallExpr(self, spread_callee, &.{ result, prop.data.unary.operand }, span);
     }
 
     if (self.scratch.items.len > scratch_top) {
         const literal = try makeObjectLiteral(self, self.scratch.items[scratch_top..], span);
         const group = try finalizer.finalize(self, literal);
-        result = if (result.isNone()) group else try makeObjectAssignCall(self, &.{ result, group }, span);
+        result = if (result.isNone()) group else try copyObjectPropertyGroup(self, result, group, span);
     }
     return if (result.isNone()) makeObjectLiteral(self, &.{}, span) else result;
 }
