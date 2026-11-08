@@ -570,17 +570,17 @@ test "Codegen: SymbolId output name override preserves public ESM export names" 
         expected: []const u8,
     };
     const cases = [_]Case{
-        .{ .source = "export let original=1;export {original as publicName};", .output_name = "chosen", .expected = "let chosen=1;export{chosen as original};export {chosen as publicName};" },
-        .{ .source = "export let original=1;export {original};", .output_name = "chosen", .expected = "let chosen=1;export{chosen as original};export {chosen as original};" },
-        .{ .source = "export let original=1;export {original as first,original as second};", .output_name = "chosen", .expected = "let chosen=1;export{chosen as original};export {chosen as first,chosen as second};" },
-        .{ .source = "export {original as publicName};export let original=1;", .output_name = "chosen", .expected = "export {chosen as publicName};let chosen=1;export{chosen as original};" },
-        .{ .source = "export let original=1;export {original as chosen};", .output_name = "chosen", .expected = "let chosen=1;export{chosen as original};export {chosen};" },
-        .{ .source = "export let original=1;let other=2;export {original as publicName,other as otherPublic};", .output_name = "chosen", .expected = "let chosen=1;export{chosen as original};let other=2;export {chosen as publicName,other as otherPublic};" },
+        .{ .source = "export let original=1;export {original as publicName};", .output_name = "chosen", .expected = "let chosen=1;export {chosen as original};export {chosen as publicName};" },
+        .{ .source = "export let original=1;export {original};", .output_name = "chosen", .expected = "let chosen=1;export {chosen as original};export {chosen as original};" },
+        .{ .source = "export let original=1;export {original as first,original as second};", .output_name = "chosen", .expected = "let chosen=1;export {chosen as original};export {chosen as first,chosen as second};" },
+        .{ .source = "export {original as publicName};export let original=1;", .output_name = "chosen", .expected = "export {chosen as publicName};let chosen=1;export {chosen as original};" },
+        .{ .source = "export let original=1;export {original as chosen};", .output_name = "chosen", .expected = "let chosen=1;export {chosen as original};export {chosen};" },
+        .{ .source = "export let original=1;let other=2;export {original as publicName,other as otherPublic};", .output_name = "chosen", .expected = "let chosen=1;export {chosen as original};let other=2;export {chosen as publicName,other as otherPublic};" },
         .{ .source = "export let original=1;export {original};", .output_name = "original", .expected = "export let original=1;export {original};" },
-        .{ .source = "export let original=1;export {original as publicName};", .output_name = "renamedx", .expected = "let renamedx=1;export{renamedx as original};export {renamedx as publicName};" },
-        .{ .source = "export let original=1;export {original as publicName};", .output_name = "oChosen", .expected = "let oChosen=1;export{oChosen as original};export {oChosen as publicName};" },
-        .{ .source = "export let original=1;export {original as publicName};", .output_name = "chosenl", .expected = "let chosenl=1;export{chosenl as original};export {chosenl as publicName};" },
-        .{ .source = "export let original=1;export {original as publicName} from './remote';", .output_name = "chosen", .expected = "let chosen=1;export{chosen as original};export {original as publicName} from \"./remote\";" },
+        .{ .source = "export let original=1;export {original as publicName};", .output_name = "renamedx", .expected = "let renamedx=1;export {renamedx as original};export {renamedx as publicName};" },
+        .{ .source = "export let original=1;export {original as publicName};", .output_name = "oChosen", .expected = "let oChosen=1;export {oChosen as original};export {oChosen as publicName};" },
+        .{ .source = "export let original=1;export {original as publicName};", .output_name = "chosenl", .expected = "let chosenl=1;export {chosenl as original};export {chosenl as publicName};" },
+        .{ .source = "export let original=1;export {original as publicName} from './remote';", .output_name = "chosen", .expected = "let chosen=1;export {chosen as original};export {original as publicName} from \"./remote\";" },
     };
 
     for (cases) |case| {
