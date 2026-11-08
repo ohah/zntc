@@ -70,7 +70,7 @@ fn isModuleDeclaration(tag: Tag) bool {
 }
 
 /// 서브트리(statement)에 top-level await (함수 경계를 넘지 않는 await) 가 있는지 검사.
-const TopLevelAwaitCtx = struct { found: bool };
+const TopLevelAwaitCtx = struct { ast: *const ast_mod.Ast, found: bool };
 
 fn topLevelAwaitVisit(ctx: *TopLevelAwaitCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
     _ = idx;
@@ -95,6 +95,15 @@ fn topLevelAwaitVisit(ctx: *TopLevelAwaitCtx, idx: NodeIndex, node: Node) ast_wa
             ctx.found = true;
             return .stop;
         },
+        // Disposal has an implicit Await even for a null resource. Establish
+        // its owned program wrapper before using/async lowering can emit yield.
+        .variable_declaration => {
+            if (ctx.ast.hasExtra(node.data.extra, 2) and ctx.ast.variableDeclarationKind(node) == .await_using) {
+                ctx.found = true;
+                return .stop;
+            }
+            return .descend;
+        },
         else => return .descend,
     }
 }
@@ -103,7 +112,7 @@ pub fn hasTopLevelAwait(ast: *const ast_mod.Ast, idx: NodeIndex) std.mem.Allocat
     // 반복 순회(#4123): top-level 깊은 좌결합 체인에서 재귀 시 스택 오버플로우. OOM 은
     // 호출자(lowerProgram=Error!)로 전파한다 — true/false 어느 기본값도 안전하지 않으므로
     // (false=미지원 타깃에 unwrapped await / true=불필요 IIFE wrap) 추측 대신 에러 전파.
-    var c = TopLevelAwaitCtx{ .found = false };
+    var c = TopLevelAwaitCtx{ .ast = ast, .found = false };
     try ast_walk.walkPreorderIterative(ast.allocator, ast, idx, &c, topLevelAwaitVisit);
     return c.found;
 }
@@ -448,7 +457,14 @@ fn placeWrappedStatement(comptime Transformer: type, self: *Transformer, stmt: N
     const node = self.ast.getNode(stmt);
     switch (node.tag) {
         .function_declaration => try (if (hoist_function) prelude else body).append(self.allocator, stmt),
-        .variable_declaration => try splitWrappedDeclaration(Transformer, self, stmt, false, program_scope, bindings, body),
+        .variable_declaration => {
+            const kind = self.ast.variableDeclarationKind(node);
+            // Resource registration belongs to the actual async body. Splitting
+            // it into an outer var plus assignment erases disposal entirely.
+            if (kind == .using or kind == .await_using) {
+                try body.append(self.allocator, stmt);
+            } else try splitWrappedDeclaration(Transformer, self, stmt, false, program_scope, bindings, body);
+        },
         .class_declaration => if (!try splitWrappedClass(Transformer, self, stmt, false, program_scope, bindings, body)) try body.append(self.allocator, stmt),
         .export_named_declaration => {
             const declaration: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.extra]));
@@ -710,6 +726,17 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
             try drainPendingAroundTo(Transformer, self, pt, tt, visited, &prelude_stmts);
             try prelude_exports.put(self.allocator, @backingInt(child), {});
             continue;
+        }
+        // Resource declarations must reach the generated body's list visitor
+        // before block-scoping can turn their kind into var. That visitor owns
+        // disposal lowering and must still see the original registration.
+        if (child_node.tag == .variable_declaration) {
+            const kind = self.ast.variableDeclarationKind(child_node);
+            if (kind == .using or kind == .await_using) {
+                wrapper_started = true;
+                try self.scratch.append(self.allocator, child);
+                continue;
+            }
         }
         const pt = self.pending_nodes.items.len;
         const tt = self.trailing_nodes.items.len;

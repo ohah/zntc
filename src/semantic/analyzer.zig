@@ -4928,6 +4928,13 @@ pub const SemanticAnalyzer = struct {
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return; // 바운드 방어
         const kind = self.ast.variableDeclarationKind(node);
+        // Await-using performs an implicit Await during disposal, including a
+        // null resource. Its module evaluation is asynchronous even when the
+        // initializer/body contains no explicit await expression.
+        if (kind == .await_using and self.is_module and !self.has_top_level_await and !self.isInsideFunctionScope()) {
+            self.has_top_level_await = true;
+            try self.emitTopLevelAwaitDiag(node.span);
+        }
         const decl_start = extras[extra_start + 1];
         const decl_len = extras[extra_start + 2];
 
