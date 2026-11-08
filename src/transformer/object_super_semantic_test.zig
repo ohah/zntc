@@ -700,6 +700,9 @@ test "spread groups preserve intermediate data resets of accessor halves" {
 
 test "spread helper identities do not call same-named user bindings" {
     const sources = [_][]const u8{
+        "function Object(){}function Reflect(){}const o={...{a:1},get x(){return 42}};console.log(o.a,o.x,Object.name,Reflect.name);",
+        "const Object=class{};const Reflect=function(){};const o={...{a:1},get x(){return 42}};console.log(o.a,o.x,Object.name,Reflect.name);",
+        "const Object={};const Reflect={};const o={...{a:1},get x(){return 42}};console.log(o.a,o.x,typeof Object,typeof Reflect);",
         "const saved=Reflect;Reflect=null;const o={...{a:1},b:2};Reflect=saved;console.log(o.a,o.b);",
         "const __spreadValues=()=>{throw Error(\"user spreadValues\")};const __spreadProps=()=>{throw Error(\"user spreadProps\")};function make(__spreadValues,__spreadProps){return {__proto__:{value:42},...{extra:1},read(){return super.value},get extraRead(){return this.extra}}}const o=make(__spreadValues,__spreadProps);console.log(o.read(),o.extraRead,typeof __spreadValues,typeof __spreadProps);",
     };
@@ -711,7 +714,7 @@ test "spread helper identities do not call same-named user bindings" {
         try std.testing.expect(native.term == .exited and native.term.exited == 0);
         for ([_]TransformOptions.compat.ESTarget{ .es5, .es2015, .es2017, .esnext }) |target| for ([_]bool{ false, true }) |minify| {
             std.debug.print("SPREAD_HELPER_HYGIENE case={d} target={s} minify={}\n", .{ case_index, @tagName(target), minify });
-            const result = try @import("../transpile.zig").transpile(a, source, "input.mjs", .{ .unsupported = TransformOptions.compat.fromESTarget(target), .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify });
+            const result = try @import("../transpile.zig").transpile(a, source, "input.mjs", .{ .unsupported = TransformOptions.compat.fromESTarget(target), .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify, .keep_names = true });
             if (target == .es5) try checkSpreadES5ObjectDefinitions(a, result.code);
             const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
             try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
