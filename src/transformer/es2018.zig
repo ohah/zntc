@@ -1,10 +1,6 @@
-//! ES2018 다운레벨링: object spread → Object.assign
-//!
-//! --target < es2018 일 때 활성화.
-//! { ...obj }           → Object.assign({}, obj)
-//! { a: 1, ...obj }     → Object.assign({ a: 1 }, obj)
-//! { ...obj, b: 2 }     → Object.assign(Object.assign({}, obj), { b: 2 })
-//! { a: 1, ...x, b: 2 } → Object.assign(Object.assign({ a: 1 }, x), { b: 2 })
+//! ES2018 object spread: operand values are copied as fresh data properties;
+//! ordinary groups define their descriptors on the same final target.
+//! Object-super methods share that target through their typed home producer.
 //!
 //! 스펙:
 //! - object rest/spread: https://tc39.es/ecma262/#sec-object-initializer (ES2018, TC39 Stage 4: 2018-01)
@@ -39,13 +35,29 @@ pub fn ES2018(comptime Transformer: type) type {
             return false;
         }
 
-        /// `{ a: 1, ...obj, b: 2 }` → `Object.assign(Object.assign({ a: 1 }, obj), { b: 2 })`
+        /// `{ a: 1, ...obj, b: 2 }` → `__spreadProps(__spreadValues({ a: 1 }, obj), { b: 2 })`
         ///
         /// ast의 object_expression을 방문하면서 각 프로퍼티를 visitNode로 변환하고,
-        /// 결과를 es_helpers.lowerObjectSpreadProps에 넘겨 Object.assign 호출을 생성한다.
-        pub fn lowerObjectSpread(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+        /// 결과를 공통 visited-group finalizer에 넘겨 값 복사와 프로퍼티 정의를 구분한다.
+        pub fn lowerObjectSpread(self: *Transformer, source_object: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const list_start = node.data.list.start;
             const list_len = node.data.list.len;
+            const builtin = @import("object_builtin_reference.zig");
+            var origins: ?builtin.AccessorOrigins = null;
+            defer if (origins) |*batch| batch.deinit(self.allocator);
+            if (self.options.unsupported.object_extensions) {
+                var members = self.ast.iterateExtraList(node.data.list);
+                while (members.next()) |member_idx| {
+                    const member = self.ast.getNode(member_idx);
+                    if (member.tag == .method_definition and
+                        self.ast.readExtra(member.data.extra, @import("../parser/ast.zig").MethodExtra.flags) &
+                            (@import("../parser/ast.zig").MethodFlags.is_getter | @import("../parser/ast.zig").MethodFlags.is_setter) != 0)
+                    {
+                        origins = builtin.AccessorOrigins.init(self, source_object) catch |err| return builtin.productionFailure(err);
+                        break;
+                    }
+                }
+            }
 
             // ast 프로퍼티를 방문하여 ast 노드로 변환
             const scratch_top = self.scratch.items.len;
@@ -67,7 +79,14 @@ pub fn ES2018(comptime Transformer: type) type {
                     try self.scratch.append(self.allocator, new_spread);
                 } else {
                     // non-spread: 자식을 방문하고 추가
-                    const new_child = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
+                    const source_member: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+                    const is_accessor = child.tag == .method_definition and
+                        self.ast.readExtra(child.data.extra, ast_mod.MethodExtra.flags) &
+                            (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter) != 0;
+                    const new_child = try @import("es2015_object_methods.zig").ES2015ObjectMethods(Transformer).lowerObjectMember(self, @fromBackingInt(@intCast(raw_idx)));
+                    if (origins) |*batch| {
+                        if (is_accessor and !new_child.isNone()) batch.record(self, source_member, new_child) catch |err| return builtin.productionFailure(err);
+                    }
                     if (!new_child.isNone()) {
                         try self.scratch.append(self.allocator, new_child);
                     }
@@ -75,7 +94,9 @@ pub fn ES2018(comptime Transformer: type) type {
             }
 
             const new_props = self.scratch.items[scratch_top..];
-            return helpers.lowerObjectSpreadProps(self, new_props, node.span);
+            // Children have already been visited. Finish method/computed-key
+            // syntax through the same source-owned groups as suspension lowering.
+            return @import("es2015_computed.zig").ES2015Computed(Transformer).lowerObjectWithVisitedChildren(self, source_object, node, new_props, if (origins) |*batch| batch else null);
         }
     };
 }

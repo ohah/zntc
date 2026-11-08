@@ -1763,8 +1763,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const private_field_set_index = std.mem.indexOf(u8, combined.items, "var __zntcClassPrivateFieldSet2 = function(wm, obj, value)").?;
     const class_call_check_index = std.mem.indexOf(u8, combined.items, "var __classCallCheck2 = function(instance, Constructor)").?;
     const call_super_index = std.mem.indexOf(u8, combined.items, "var __callSuper2 = function(Parent, args, NewTarget)").?;
-    const super_get_index = std.mem.indexOf(u8, combined.items, "var __superGet2 = function(parent, prop, receiver)").?;
-    const super_set_index = std.mem.indexOf(u8, combined.items, "var __superSet2 = function(parent, prop, value, receiver)").?;
+    const super_get_index = std.mem.indexOf(u8, combined.items, "var __superGet2 = (function(O)").?;
+    const super_set_index = std.mem.indexOf(u8, combined.items, "var __superSet2 = (function(O)").?;
     const tdz_index = std.mem.indexOf(u8, combined.items, "var __tdz2 = function(name)").?;
     const read_index = std.mem.indexOf(u8, combined.items, "var __read2 = function(o, n)").?;
     const tagged_index = std.mem.indexOf(u8, combined.items, "var __taggedTemplateLiteral2 = function").?;
@@ -2343,8 +2343,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected super get 
         false,
         .{ .super_get = "__superGet2" },
     );
-    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __superGet2 = function(parent, prop, receiver)"));
-    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __superGet = function(parent, prop, receiver)"));
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __superGet2 = (function(O)"));
+    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __superGet = (function(O)"));
 
     var minified: std.ArrayList(u8) = .empty;
     defer minified.deinit(std.testing.allocator);
@@ -2356,8 +2356,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected super get 
         false,
         .{ .super_get = "$sPg2" },
     );
-    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $sPg2=function(parent,prop,receiver)"));
-    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $sPg=function(parent,prop,receiver)"));
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $sPg2=(function(O)"));
+    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $sPg=(function(O)"));
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected super set local directly" {
@@ -2371,8 +2371,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected super set 
         false,
         .{ .super_set = "__superSet2" },
     );
-    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __superSet2 = function(parent, prop, value, receiver)"));
-    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __superSet = function(parent, prop, value, receiver)"));
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __superSet2 = (function(O)"));
+    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __superSet = (function(O)"));
 
     var minified: std.ArrayList(u8) = .empty;
     defer minified.deinit(std.testing.allocator);
@@ -2384,8 +2384,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected super set 
         false,
         .{ .super_set = "$sPs2" },
     );
-    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $sPs2=function(parent,prop,value,receiver)"));
-    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $sPs=function(parent,prop,value,receiver)"));
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $sPs2=(function(O)"));
+    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $sPs=(function(O)"));
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected class call check local directly" {

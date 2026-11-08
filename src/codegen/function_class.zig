@@ -286,7 +286,7 @@ pub fn emitClass(self: anytype, node: Node) !void {
 
     const class_hint = self.pending_class_hint;
     self.pending_class_hint = null;
-    const inferred_name: ?[]const u8 = if (!name.isNone()) keep_names.renamedOriginal(self, name) else class_hint;
+    const inferred_name: ?[]const u8 = if (!name.isNone()) keep_names.renamedClassOriginal(self, name) else class_hint;
     const keep_name = if (inferred_name != null and keep_names.classHasStaticName(self, body)) null else inferred_name;
 
     // class는 block-scoped → __esm 콜백 밖 __export getter가 접근 불가.

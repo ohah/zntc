@@ -602,3 +602,211 @@ test "static class capture nested reads preserve optimization and original anony
         try std.testing.expectEqualStrings("outer,10,21,true,true,parameter\n", actual.stdout);
     };
 }
+
+fn checkSpreadES5ObjectDefinitions(a: std.mem.Allocator, code: []const u8) !void {
+    var scanner = try Scanner.init(a, code);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    for (parser.ast.nodes.items) |node| {
+        try std.testing.expect(node.tag != .computed_property_key);
+        if (node.tag == .method_definition) {
+            const flags = parser.ast.readExtra(node.data.extra, ast_mod.MethodExtra.flags);
+            try std.testing.expect(flags & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter) != 0);
+        }
+    }
+}
+
+test "spread object super preserves final home receiver keys and suspension" {
+    const sources = [_][]const u8{
+        "const o={__proto__:{m(){return 1}},...{a:1},n(){return super.m()}};console.log(o.n(),o.a);",
+        "const o={__proto__:{m(){return this.value}},...{},n(){return super.m()}};console.log(o.n.call({value:42}));Object.setPrototypeOf(o,{m(){return this.value+1}});console.log(o.n.call({value:42}));",
+        "const events=[];const key={toString(){events.push(\"key\");return \"read\"}};const o={__proto__:{value:42},...{get x(){events.push(\"spread\");return 1}},[key](){return super.value}};console.log(JSON.stringify([o.read(),events]));",
+        "const base={get value(){return this.local},set value(v){this.local=v}};const o={__proto__:base,get read(){return super.value},set write(v){super.value=v},...{extra:1},local:4};o.write=42;const d=Object.getOwnPropertyDescriptor(o,\"read\");console.log(JSON.stringify([o.read,typeof d.get,o.extra]));",
+        "const objects=[];for(let i=0;i<2;i++){objects.push({__proto__:{value:i},...{},read(){return super.value}})}console.log(JSON.stringify(objects.map(o=>o.read())));",
+        "const o={__proto__:{value:40},...{},async read(){await 0;return super.value+2}};o.read().then(console.log);",
+        "const o={__proto__:{value:42},...{},*read(){yield super.value}};console.log(o.read().next().value);",
+        "async function make(){return {__proto__:{value:42},...{},x:await Promise.resolve(1),read(){return super.value}}}make().then(o=>console.log(o.read(),o.x));",
+    };
+    for (sources, 0..) |source, case_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2015, .es2017, .esnext }) |target| for ([_]bool{ false, true }) |minify| {
+            std.debug.print("SPREAD_OBJECT_SUPER case={d} target={s} minify={}\n", .{ case_index, @tagName(target), minify });
+            const result = try @import("../transpile.zig").transpile(a, source, "input.mjs", .{ .unsupported = TransformOptions.compat.fromESTarget(target), .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify });
+            if (target == .es5) try checkSpreadES5ObjectDefinitions(a, result.code);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+            try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+        };
+    }
+}
+
+test "spread groups define accessors while operands copy enumerable values" {
+    const sources = [_][]const u8{
+        "const o={get value(){return this.local},...{},set value(v){this.local=v}};o.value=42;console.log(o.value,typeof Object.getOwnPropertyDescriptor(o,\"value\").get);",
+        "const o={...{x:1},__proto__:{value:42},read(){return super.value}};const n={...{},__proto__:null};console.log(o.read(),Object.getPrototypeOf(n)===null);",
+        "let reads=0;const o={...{},get value(){reads++;return 42},set value(v){reads+=v}};const d=Object.getOwnPropertyDescriptor(o,\"value\");console.log(JSON.stringify([reads,typeof d.get,typeof d.set,o.value,reads]));",
+        "const o={__proto__:{get value(){return this.local},set value(v){this.local=v}},...{},local:1,get read(){return super.value},set write(v){super.value=v}};o.write=42;console.log(o.read,Object.getOwnPropertyDescriptor(o,\"read\").get.call({local:7}));",
+        "let calls=0;const o={get value(){throw Error(\"getter\")},set value(v){calls++},...{value:42}};console.log(JSON.stringify([calls,o.value,Object.getOwnPropertyDescriptor(o,\"value\").writable]));",
+        "const symbol=Symbol(\"key\");const source={};Object.defineProperty(source,\"__proto__\",{value:42,enumerable:true});source[symbol]=7;const o={...source,get value(){return 9}};console.log(JSON.stringify([Object.getPrototypeOf(o)===Object.prototype,o.__proto__,o[symbol],typeof Object.getOwnPropertyDescriptor(o,\"value\").get]));",
+        "const events=[];const source=new Proxy({a:1},{ownKeys(t){events.push(\"keys\");return Reflect.ownKeys(t)},getOwnPropertyDescriptor(t,k){events.push(\"desc:\"+k);return Reflect.getOwnPropertyDescriptor(t,k)},get(t,k){events.push(\"get:\"+k);return t[k]}});const o={...source,get value(){events.push(\"getter\");return 42}};console.log(JSON.stringify([events,o.value]));",
+    };
+    for (sources, 0..) |source, case_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2015, .es2017, .esnext }) |target| for ([_]bool{ false, true }) |minify| {
+            std.debug.print("SPREAD_PROPERTY_DEFINITION case={d} target={s} minify={}\n", .{ case_index, @tagName(target), minify });
+            const result = try @import("../transpile.zig").transpile(a, source, "input.mjs", .{ .unsupported = TransformOptions.compat.fromESTarget(target), .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify });
+            if (target == .es5) try checkSpreadES5ObjectDefinitions(a, result.code);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+            try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+        };
+    }
+}
+
+test "spread groups preserve intermediate data resets of accessor halves" {
+    const sources = [_][]const u8{
+        "const o={set x(v){},...{},x:0,get x(){return 42}};const d=Object.getOwnPropertyDescriptor(o,\"x\");console.log(typeof d.set,o.x);",
+        "const o={get x(){return 42},...{},x:0,set x(v){}};const d=Object.getOwnPropertyDescriptor(o,\"x\");console.log(typeof d.get,typeof d.set);",
+        "let calls=0;const key=()=>{calls++;return \"x\"};const o={set x(v){},...{},[key()]:0,get [key()](){return 42}};const d=Object.getOwnPropertyDescriptor(o,\"x\");console.log(typeof d.set,o.x,calls);",
+    };
+    for (sources, 0..) |source, case_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2015, .es2017, .esnext }) |target| for ([_]bool{ false, true }) |minify| {
+            std.debug.print("SPREAD_ACCESSOR_RESET case={d} target={s} minify={}\n", .{ case_index, @tagName(target), minify });
+            const result = try @import("../transpile.zig").transpile(a, source, "input.mjs", .{ .unsupported = TransformOptions.compat.fromESTarget(target), .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify });
+            if (target == .es5) try checkSpreadES5ObjectDefinitions(a, result.code);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+            try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+        };
+    }
+}
+
+test "spread helper identities do not call same-named user bindings" {
+    const sources = [_][]const u8{
+        "function Object(){}function Reflect(){}const o={...{a:1},get x(){return 42}};console.log(o.a,o.x,Object.name,Reflect.name);",
+        "const Object=class{};const Reflect=function(){};const o={...{a:1},get x(){return 42}};console.log(o.a,o.x,Object.name,Reflect.name);",
+        "const Object={};const Reflect={};const o={...{a:1},get x(){return 42}};console.log(o.a,o.x,typeof Object,typeof Reflect);",
+        "const saved=Reflect;Reflect=null;const o={...{a:1},b:2};Reflect=saved;console.log(o.a,o.b);",
+        "const __spreadValues=()=>{throw Error(\"user spreadValues\")};const __spreadProps=()=>{throw Error(\"user spreadProps\")};function make(__spreadValues,__spreadProps){return {__proto__:{value:42},...{extra:1},read(){return super.value},get extraRead(){return this.extra}}}const o=make(__spreadValues,__spreadProps);console.log(o.read(),o.extraRead,typeof __spreadValues,typeof __spreadProps);",
+    };
+    for (sources, 0..) |source, case_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2015, .es2017, .esnext }) |target| for ([_]bool{ false, true }) |minify| {
+            std.debug.print("SPREAD_HELPER_HYGIENE case={d} target={s} minify={}\n", .{ case_index, @tagName(target), minify });
+            const result = try @import("../transpile.zig").transpile(a, source, "input.mjs", .{ .unsupported = TransformOptions.compat.fromESTarget(target), .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify, .keep_names = true });
+            if (target == .es5) try checkSpreadES5ObjectDefinitions(a, result.code);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+            try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+        };
+    }
+}
+
+test "spread helper source aliases preserve external export names and ESM live values" {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const sources = [_][]const u8{
+        "export default function Object(){}export const Reflect={};export const output={...{a:1},get x(){return 42}};",
+        "export const Object={};export const Reflect={};export const output={...{a:1},get x(){return 42}};",
+        "export function Object(){}export function Reflect(){}export const output={...{a:1},get x(){return 42}};",
+        "export class Object{}export const Reflect=function(){};export const output={...{a:1},get x(){return 42}};",
+        "export const {Object={},Reflect=function(){}}={};export const output={...{a:1},get x(){return 42}};",
+        "export class Object{static seen=this.name;static name='custom'}export const Reflect={};export const output={...{a:1},get x(){return 42}};",
+        "export class Object{static get name(){return 'custom'}static seen=this.name}export const Reflect={};export const output={...{a:1},get x(){return 42}};",
+        "export class \\u004fbject{static seen=this.name}export const \\u0052eflect={};export const output={...{a:1},get x(){return 42}};",
+        "export let Object=0;export const Reflect={};export function advance(){Object++}export const output={...{a:1},get x(){return 42}};",
+    };
+    const probe_body = "console.log(JSON.stringify([Object.keys(m).sort(),m.output.a,m.output.x,typeof m.Object==='function'?m.Object.name:typeof m.Object,typeof m.Reflect==='function'?m.Reflect.name:typeof m.Reflect,m.default?m.default.name:null,m.Object&&m.Object.seen!==void 0?m.Object.seen:null]));if(m.advance){m.advance();console.log(m.Object)}";
+    const probe = "import * as m from './lib.mjs';" ++ probe_body;
+    const cjs_probe = "import{createRequire}from'node:module';const m=createRequire(import.meta.url)('./lib.cjs');" ++ probe_body;
+    for (sources, 0..) |source, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "lib.mjs", source);
+        try helpers.writeFile(tmp.dir, "probe.mjs", probe);
+        const filename = try helpers.absPath(&tmp, "probe.mjs");
+        defer std.testing.allocator.free(filename);
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", filename } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        const native_default = if (index == 0) blk: {
+            try helpers.writeFile(tmp.dir, "probe.mjs", "import * as m from './lib.mjs';console.log(m.default.name,typeof m.default);");
+            break :blk try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", filename } });
+        } else native;
+        try std.testing.expect(native_default.term == .exited and native_default.term.exited == 0);
+        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2015, .es2017, .esnext }) |target| for ([_]bool{ false, true }) |minify| for ([_]@import("../codegen/options.zig").ModuleFormat{ .esm, .cjs }) |format| {
+            // CJS rows compare public keys and reflection names; ESM also
+            // verifies a live exported value after an importer calls advance.
+            if (format == .cjs and index == sources.len - 1) continue;
+            const result = try @import("../transpile.zig").transpile(a, source, "lib.mjs", .{ .unsupported = TransformOptions.compat.fromESTarget(target), .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify, .keep_names = minify, .module_format = format });
+            try helpers.writeFile(tmp.dir, if (format == .esm) "lib.mjs" else "lib.cjs", result.code);
+            const default_cjs = format == .cjs and index == 0;
+            const expected = if (default_cjs) native_default.stdout else native.stdout;
+            try helpers.writeFile(tmp.dir, "probe.mjs", if (default_cjs)
+                "import{createRequire}from'node:module';const m=createRequire(import.meta.url)('./lib.cjs');console.log(m.name,typeof m);"
+            else if (format == .esm) probe else cjs_probe);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", filename } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, expected, actual.stdout))
+                std.debug.print("spread exported alias case={d} target={s} minify={} format={s} expected={s} actual={s} stderr={s} code={s}\n", .{ index, @tagName(target), minify, @tagName(format), expected, actual.stdout, actual.stderr, result.code });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(expected, actual.stdout);
+        };
+    }
+}
+
+test "spread helpers isolate builtin intrinsics from direct eval source globals" {
+    const sources = [_][]const u8{
+        "const Object=42;eval('');const proto={x:42};const o={__proto__:proto,...{},get read(){return super.x}};let value;try{({}).constructor.prototype.get=function(){return 7};value=o.read}finally{delete({}).constructor.prototype.get}console.log(JSON.stringify([Object,value]));",
+        "const Object=42;eval('');const getter=function(){return this.value};getter.call=function(){return 7};const proto={};({}).constructor.defineProperty(proto,'x',{get:getter});const o={__proto__:proto,...{},value:42,get read(){return super.x}};console.log(JSON.stringify([Object,o.read]));",
+        "const Object=42;eval('');const setter=function(v){this.value=v};setter.call=function(){return 7};const proto={};({}).constructor.defineProperty(proto,'x',{set:setter});const o={__proto__:proto,...{},set write(v){super.x=v}};o.write=42;console.log(JSON.stringify([Object,o.value]));",
+        "const Object=42;eval('');const log=[];const s=new Proxy({x:42},{ownKeys(){log.push('keys');return ['x']},getOwnPropertyDescriptor(t,k){log.push('desc:'+k);return {value:t[k],enumerable:true,configurable:true,writable:true}},get(t,k){log.push('get:'+k);Array.prototype.concat=function(){log.push('concat');return []};return t[k]}});const o={...s};console.log(JSON.stringify([o.x,log]));",
+        "const Object=42;eval('');const O=({}).constructor;let o,error;try{o={...{get x(){O.prototype.get=function(){return 7};return 42}},get y(){return 1}}}catch(e){error=e.name}finally{delete O.prototype.get}console.log(JSON.stringify([Object,o?o.x:null,error||null]));",
+        "let o,error;try{o={...{get x(){Object.prototype.get=function(){return 7};return 42}},get y(){return 1}}}catch(e){error=e.name}finally{delete Object.prototype.get}console.log(JSON.stringify([o?o.x:null,error||null]));",
+        "const Object=42;eval('');const o={__proto__:{m(){return this.value}},...{},value:42,n(){return super.m()}};console.log(JSON.stringify([Object,o.n()]));",
+        "const Object=42;eval('');const o={...{x:42}};console.log(JSON.stringify([eval('Object'),o.x]));",
+        "const Reflect=42;eval('');const events=[];const s=new Proxy({x:42},{ownKeys(){events.push('keys');return ['x']},getOwnPropertyDescriptor(t,k){events.push('desc');return {value:t[k],enumerable:true,configurable:true,writable:true}},get(t,k){events.push('get');return t[k]}});const o={...s};console.log(JSON.stringify([Reflect,o.x,events]));",
+        "const Object=42;eval('');let calls=0;const o={set x(v){calls++},...{x:42}};console.log(JSON.stringify([Object,o.x,calls]));",
+        "const Object=42;eval('');let calls=0;const o={...{},get x(){calls++;return 42}};console.log(JSON.stringify([Object,calls,o.x,calls]));",
+        "const Object=42;eval('');const O=({}).constructor;O.assign=function(){throw Error('user assign')};const o={...{x:42}};console.log(JSON.stringify([Object,o.x]));",
+        "const Reflect=42;eval('');const O=({}).constructor;const key=Symbol('key');const source={x:42};source[key]=7;const o={...source,__proto__:null};console.log(JSON.stringify([Reflect,o.x,o[key],O.getPrototypeOf(o)===null]));",
+    };
+    for (sources, 0..) |source, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2015, .es2017, .esnext }) |target| for ([_]bool{ false, true }) |minify| {
+            const result = try @import("../transpile.zig").transpile(a, source, "input.mjs", .{ .unsupported = TransformOptions.compat.fromESTarget(target), .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify, .keep_names = true });
+            if (target == .es5) try checkSpreadES5ObjectDefinitions(a, result.code);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", result.code } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                std.debug.print("spread dynamic intrinsic case={d} target={s} minify={} expected={s} actual={s} stderr={s} code={s}\n", .{ index, @tagName(target), minify, native.stdout, actual.stdout, actual.stderr, result.code });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        };
+    }
+}

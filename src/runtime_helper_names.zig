@@ -39,6 +39,8 @@ pub const NAMES = struct {
     pub const EXTENDS_MIN = "$eX"; // __extends (ES2015 class)
     pub const CLASS_CALL_CHECK_MIN = "$cC"; // __classCallCheck
     pub const CLASS_DEFINE_PROPERTY_MIN = "$cDp"; // __classDefineProperty
+    pub const SPREAD_PROPS_MIN = "$sPr"; // __spreadProps
+    pub const SPREAD_VALUES_MIN = "$sVa"; // __spreadValues
     pub const CALL_SUPER_MIN = "$cS"; // __callSuper
     pub const SUPER_GET_MIN = "$sPg"; // __superGet
     pub const SUPER_SET_MIN = "$sPs"; // __superSet
@@ -236,6 +238,8 @@ pub const PAIRS = [_]struct { base: []const u8, short: []const u8 }{
     .{ .base = "__extends", .short = NAMES.EXTENDS_MIN },
     .{ .base = "__classCallCheck", .short = NAMES.CLASS_CALL_CHECK_MIN },
     .{ .base = "__classDefineProperty", .short = NAMES.CLASS_DEFINE_PROPERTY_MIN },
+    .{ .base = "__spreadProps", .short = NAMES.SPREAD_PROPS_MIN },
+    .{ .base = "__spreadValues", .short = NAMES.SPREAD_VALUES_MIN },
     .{ .base = "__callSuper", .short = NAMES.CALL_SUPER_MIN },
     .{ .base = "__superGet", .short = NAMES.SUPER_GET_MIN },
     .{ .base = "__superSet", .short = NAMES.SUPER_SET_MIN },

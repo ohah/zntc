@@ -124,6 +124,8 @@ pub const CodegenOptions = struct {
     /// present; this carries non-minified transforms such as ES5 block names
     /// through codegen without relying on each copied AST node's text.
     semantic_symbol_name_overrides: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null,
+    /// Exact compiler-selected source binding aliases, independent of mangling.
+    source_binding_aliases: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null,
     semantic_scope_maps: []const std.StringHashMapUnmanaged(usize) = &.{},
     generated_iife_scope_owner_map: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     /// Fail closed when runtime TypeScript IIFEs are emitted without their

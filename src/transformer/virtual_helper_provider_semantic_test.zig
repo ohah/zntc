@@ -162,8 +162,8 @@ fn observe(a: std.mem.Allocator, id: []const u8, minify: bool, full_driver: bool
         try std.testing.expect(completed);
         if (selected.?.externals.len != 0) {
             const expected_externals: usize = switch (selected.?.origin.catalog) {
-                .super_get => 2,
-                .super_set => 3,
+                .super_get => 0,
+                .super_set => 2,
                 .wrap_regex => 21,
                 else => 0,
             };
@@ -198,7 +198,7 @@ fn observe(a: std.mem.Allocator, id: []const u8, minify: bool, full_driver: bool
             external_rows[0] = saved_external;
             try std.testing.expect(!accepted_wrong_use_scope);
             try std.testing.expect(try certificate.complete(&t, &semantic, loaded.contents, root));
-            const duplicate_index: usize = if (selected.?.origin.catalog == .super_set) 2 else 1;
+            const duplicate_index: usize = 1;
             const saved_second = external_rows[duplicate_index];
             external_rows[duplicate_index] = external_rows[0];
             const accepted_duplicate_external = try certificate.complete(&t, &semantic, loaded.contents, root);
@@ -220,7 +220,7 @@ fn observe(a: std.mem.Allocator, id: []const u8, minify: bool, full_driver: bool
             if (selected.?.origin.catalog == .super_set) {
                 const witness = t.virtual_provider_source.?;
                 const error_index = for (witness.externals, 0..) |item, i| {
-                    if (std.mem.eql(u8, witness.syntax.getText(witness.syntax.nodes.items[item.node].data.string_ref), "TypeError")) break i;
+                    if (i != 0 and std.mem.eql(u8, witness.syntax.getText(witness.syntax.nodes.items[item.node].data.string_ref), "TypeError")) break i;
                 } else return error.MissingSourceTypeErrorRole;
                 const error_external = witness.externals[error_index];
                 const error_output = t.virtual_provider_visits.get(error_external.node) orelse return error.MissingTypeErrorVisit;
@@ -1064,8 +1064,8 @@ test "virtual super-set provider observes exact initial lexical external roles" 
             } else return error.UnexpectedSuperSetLexicalExternal;
             std.debug.print("super-set initial min={any} role={s} node={d} null-slot=1 owner={d}:{s} scope={d}:{s} rows=0\n", .{ minify, spelling, raw, owner, @tagName(parser.ast.nodes.items[owner].tag), scope, @tagName(analyzer.scopes.items[scope].kind) });
         }
-        try std.testing.expectEqual(@as(usize, 2), objects);
-        try std.testing.expectEqual(@as(usize, 1), errors);
+        try std.testing.expectEqual(@as(usize, 0), objects);
+        try std.testing.expectEqual(@as(usize, 2), errors);
     }
 }
 

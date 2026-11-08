@@ -5158,6 +5158,12 @@ fn transpileWithCallbackInternal(
     }
     if (transformer.used_unsupported_static_initializer_dynamic_scope)
         return error.StaticInitializerDynamicScope;
+    if (transformer.spread_props_used) {
+        // Both declarations belong to the same provider. A source containing
+        // only a spread operand may never create a __spreadProps call node.
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__spreadProps", options.minify_whitespace);
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__spreadValues", options.minify_whitespace);
+    }
     if (transformer.runtime_helpers.values or transformer.runtime_helpers.async_values) {
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__values", options.minify_whitespace);
     }
@@ -5200,7 +5206,20 @@ fn transpileWithCallbackInternal(
     }
     // Reserve a typed candidate before mangling. A raw name call may be emitted
     // later, but a no-rename file must not execute an unused runtime preamble.
-    if (options.keep_names)
+    var has_compiler_class_name_alias = false;
+    if (transformer.block_rename_map) |*aliases| {
+        const symbols = if (transformer.semantic_editor) |*editor| editor.symbols.items else transformer.symbols;
+        var ids = aliases.keyIterator();
+        while (ids.next()) |sid| {
+            if (sid.* >= symbols.len) return error.TransformError;
+            const symbol = symbols[sid.*];
+            if (symbol.synthetic_kind == null and symbol.kind == .class_decl) {
+                has_compiler_class_name_alias = true;
+                break;
+            }
+        }
+    }
+    if (options.keep_names or has_compiler_class_name_alias)
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__name", options.minify_whitespace);
     if (analyzer_storage) |*analyzer| {
         // The transformer took the analyzer's map header by value and kept
@@ -5534,6 +5553,10 @@ fn transpileWithCallbackInternal(
                 reserveCommonJsCodegenNames(arena_alloc, &reserved) catch return error.OutOfMemory;
             }
             reserveFlowEnumCodegenNames(arena_alloc, transformer.ast, &reserved) catch return error.OutOfMemory;
+            if (transformer.spread_props_used) {
+                for ([_][]const u8{ "Object", "Reflect" }) |global|
+                    try reserved.put(arena_alloc, global, {});
+            }
             if (options.keep_names) {
                 const staging_name = try standaloneRuntimeHelperSymbolName(&transformer, "__name", options.minify_whitespace);
                 try reserved.put(arena_alloc, staging_name, {});
@@ -5725,7 +5748,7 @@ fn transpileWithCallbackInternal(
     // All output consumers share the producer's live map, with or without
     // identifier/syntax minification. Graphless callers retain their empty map.
     const codegen_symbol_ids = transformer.symbol_ids.items;
-    var has_helpers = transformer.runtime_helpers.hasAny();
+    var has_helpers = transformer.runtime_helpers.hasAny() or transformer.spread_props_used;
     var helper_final_renames: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null;
     if (mangle_result) |*mr| helper_final_renames = &mr.renames;
     const helper_name_resolver: StandaloneRuntimeHelperNameResolver = .{
@@ -5733,7 +5756,7 @@ fn transpileWithCallbackInternal(
         .final_renames = helper_final_renames,
         .final_output_names = if (use_late_helper_names) &standalone_late_output_name_overrides else null,
     };
-    const keep_names_helper_name = if (options.keep_names or transformer.runtime_helpers.keep_names)
+    const keep_names_helper_name = if (options.keep_names or has_compiler_class_name_alias or transformer.runtime_helpers.keep_names)
         try helper_name_resolver.resolve("__name", options.minify_whitespace)
     else
         null;
@@ -5760,7 +5783,7 @@ fn transpileWithCallbackInternal(
             }
         }
     }
-    if (mangle_metadata == null and analyzer_storage != null) {
+    if (analyzer_storage != null) {
         reserveStandaloneExplicitGlobalShadows(
             arena_alloc,
             &transformer,
@@ -5792,6 +5815,11 @@ fn transpileWithCallbackInternal(
         }
         if (transformer.runtime_helpers.class_call_check)
             local_names.class_call_check = try helper_name_resolver.resolve("__classCallCheck", options.minify_whitespace);
+        if (transformer.spread_props_used) {
+            local_names.spread_props = try helper_name_resolver.resolve("__spreadProps", options.minify_whitespace);
+            local_names.spread_intrinsics_isolated = transformer.spread_intrinsics_isolated;
+            local_names.spread_values = try helper_name_resolver.resolve("__spreadValues", options.minify_whitespace);
+        }
         if (transformer.suspension_invoke_used)
             local_names.suspension_invoke = try helper_name_resolver.resolve("__suspensionInvoke", options.minify_whitespace);
         if (transformer.class_define_property_used)
@@ -5900,6 +5928,7 @@ fn transpileWithCallbackInternal(
         .semantic_symbol_ids = codegen_symbol_ids,
         .semantic_symbols = if (analyzer_storage) |*analyzer| analyzer.symbols.items else &.{},
         .semantic_symbol_name_overrides = codegen_symbol_name_overrides,
+        .source_binding_aliases = codegen_transform_name_overrides,
         .semantic_scope_maps = if (analyzer_storage) |*analyzer| analyzer.scope_maps.items else &.{},
         .generated_iife_scope_owner_map = if (analyzer_storage) |*analyzer| &analyzer.scope_owner_map else null,
         .require_generated_iife_symbols = true,
@@ -5917,7 +5946,7 @@ fn transpileWithCallbackInternal(
         cg.line_offsets = scanner.line_offsets.items;
     }
     var output = cg.generate(root) catch return error.CodegenError;
-    if (options.keep_names and cg.keep_names_used and !transformer.runtime_helpers.keep_names) {
+    if ((options.keep_names or has_compiler_class_name_alias) and cg.keep_names_used and !transformer.runtime_helpers.keep_names) {
         // Demand is known only after the selected names and emit contexts are
         // resolved. Re-emit with the helper before user code so source maps and
         // directive/hashbang boundaries use the final preamble from the start.

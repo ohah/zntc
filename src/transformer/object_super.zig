@@ -47,6 +47,17 @@ fn superMustBeLowered(self: *const Transformer, flags: u32) bool {
     return members.methodNeedsAsyncOrGeneratorLowering(self, flags);
 }
 
+/// Splitting this actual literal into spread groups changes native methods'
+/// [[HomeObject]], even when the target retains method syntax.
+pub fn spreadChangesHome(self: *const Transformer, node: Node) bool {
+    if (!self.options.unsupported.object_spread) return false;
+    var properties = self.ast.iterateExtraList(node.data.list);
+    while (properties.next()) |property| {
+        if (self.ast.getNode(property).tag == .spread_element) return true;
+    }
+    return false;
+}
+
 /// ES2015 async-arrow lowering moves the arrow body into an ordinary generator.
 /// A lexical `super` in that body must use the object method's home object too,
 /// even when the containing method itself remains native.
@@ -374,6 +385,7 @@ fn allocHome(self: *Transformer, producer_node: NodeIndex, node: Node, allow_lat
 /// 끝나면 `release(mark)` 로 등록을 되돌린다.
 pub fn prepareHome(self: *Transformer, producer_node: NodeIndex, allow_late_output_name: bool) Transformer.Error!?Home {
     const node = self.ast.getNode(producer_node);
+    const spread_changes_home = spreadChangesHome(self, node);
     const list = node.data.list;
     var home: ?Home = null;
     var i: u32 = 0;
@@ -383,7 +395,7 @@ pub fn prepareHome(self: *Transformer, producer_node: NodeIndex, allow_late_outp
         const m = self.ast.getNode(m_idx);
         if (m.tag != .method_definition) continue;
         const flags = self.readU32(m.data.extra, ast_mod.MethodExtra.flags);
-        if (!superMustBeLowered(self, flags) and !hasDownleveledAsyncArrowSuper(self, m)) continue;
+        if (!spread_changes_home and !superMustBeLowered(self, flags) and !hasDownleveledAsyncArrowSuper(self, m)) continue;
         if (!methodUsesSuper(self, m)) continue;
         if (home == null) {
             var created = try allocHome(self, producer_node, node, allow_late_output_name);
@@ -1067,7 +1079,10 @@ pub fn leaveMethod(self: *Transformer, saved: Saved) void {
 pub fn buildHomeProto(self: *Transformer, home: ObjectSuperHomeIdentity, span: Span) Transformer.Error!NodeIndex {
     const builtin = @import("object_builtin_reference.zig");
     const context = builtin.captureHome(self, home) catch |err| return builtin.productionFailure(err);
-    const object_ref = builtin.makeReference(self, context) catch |err| return builtin.productionFailure(err);
+    const object_ref = if (self.spread_intrinsics_isolated)
+        try es_helpers.makeRuntimeHelperRef(self, "__spreadProps")
+    else
+        builtin.makeReference(self, context) catch |err| return builtin.productionFailure(err);
     const get_proto = try es_helpers.makePropertyName(self, "getPrototypeOf");
     const callee = try es_helpers.makeStaticMember(self, object_ref, get_proto, span);
     const home_ref = try es_helpers.makeTempVarRef(self, home.span, home.span);

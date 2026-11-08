@@ -94,6 +94,35 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
     defer parameter_renames.deinit(self.allocator);
     var existing_parameter_renames = try @import("../parameter_environment.zig").collectRenames(self);
     defer existing_parameter_renames.deinit(self.allocator);
+    var runtime_global_renames: @import("../block_rename_table.zig").Table = .empty;
+    defer runtime_global_renames.deinit(self.allocator);
+    if (self.options.unsupported.object_spread and !self.options.emit_runtime_helper_imports) {
+        try @import("../runtime_builtin_global_roles.zig").inspectRootSourceBindings(self, &.{ .object, .reflect }, &runtime_global_renames);
+        if (runtime_global_renames.count() != 0) {
+            // Only a reachable source object spread activates these raw helper
+            // roles. Source SIDs are selected above; AST text never finds one.
+            const source_root: NodeIndex = @fromBackingInt(@intCast(self.parser_node_count - 1));
+            const reachable = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(self.allocator, self.ast, source_root);
+            defer self.allocator.free(reachable);
+            var active = false;
+            for (reachable) |raw| {
+                const node = self.ast.getNode(@fromBackingInt(@intCast(raw)));
+                if (node.tag != .object_expression) continue;
+                var properties = self.ast.iterateExtraList(node.data.list);
+                while (properties.next()) |property| {
+                    if (self.ast.getNode(property).tag == .spread_element) {
+                        active = true;
+                        break;
+                    }
+                }
+                if (active) break;
+            }
+            if (!active) runtime_global_renames.clearRetainingCapacity() else if (self.scopes[0].blocksMangling()) {
+                self.spread_intrinsics_isolated = true;
+                runtime_global_renames.clearRetainingCapacity();
+            }
+        }
+    }
     // Constructor bindings that hide a name a lowered field initializer reads
     // are renamed like a split parameter environment (#5668).
     var field_capture_renames = try @import("../parameter_environment.zig").collectFieldCaptureRenames(self);
@@ -176,6 +205,7 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
         };
         const parameter_rename = parameter_renames.contains(@intCast(i));
         const block_rename = lower_block_scoping and table.contains(@intCast(i));
+        const runtime_global_rename = runtime_global_renames.contains(@intCast(i));
         // Explicit lexical bindings do not use a function's implicit arguments
         // object. Give that exact binding a non-special spelling so generated
         // ordinary functions can close over its live cell, including writes.
@@ -192,7 +222,7 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
                 (sym.kind == .variable_var and @import("../live_arguments.zig").isArrowLocal(self, sym.scope_id))) and
             sym.scope_id.toIndex() < scopes.len and !scopes[sym.scope_id.toIndex()].blocksMangling() and
             std.mem.eql(u8, try canonicalIdentifier(arena, self.ast.getText(sym.name)), "arguments"));
-        if (!block_rename and !parameter_rename and !arguments_rename) continue;
+        if (!block_rename and !parameter_rename and !arguments_rename and !runtime_global_rename) continue;
         const base_name = try canonicalIdentifier(arena, self.ast.getText(sym.name));
         const name = while (true) {
             self.block_rename_counter += 1;
@@ -213,6 +243,7 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
     for (live_plans.items) |plan| try @import("../live_arguments.zig").prepare(self, plan.id, plan.name, plan.owner);
     self.block_rename_map = map;
     try @import("../parameter_environment.zig").collectInferredNames(self, &parameter_renames);
+    try @import("../parameter_environment.zig").collectInferredNames(self, &runtime_global_renames);
 }
 
 /// Source spellings such as x, \\u0078 and \\u{78} reserve the same JS name.

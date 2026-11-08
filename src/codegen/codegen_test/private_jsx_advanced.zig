@@ -829,30 +829,31 @@ test "JSX refactor guard: boolean and null props" {
 // JSX + ES target: spread attribute lowering (Object.assign)
 // ============================================================
 
-test "JSX automatic + ES5: spread props → Object.assign" {
+test "JSX automatic + ES5: spread props → __spreadValues" {
     var r = try e2eJSXAutomaticTarget(std.testing.allocator,
         \\const x = <div {...props} id="a" />;
     , .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__spreadValues") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...props") == null);
 }
 
-test "JSX automatic + ES5: spread with children → Object.assign" {
+test "JSX automatic + ES5: spread with children → __spreadValues" {
     var r = try e2eJSXAutomaticTarget(std.testing.allocator,
         \\const x = <span style={s} {...rest}>hello</span>;
     , .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__spreadValues") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...rest") == null);
 }
 
-test "JSX automatic + ES5: multiple spreads → Object.assign" {
+test "JSX automatic + ES5: multiple spread operands preserve property definitions" {
     var r = try e2eJSXAutomaticTarget(std.testing.allocator,
         \\const x = <div {...a} {...b} id="c" />;
     , .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") != null);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, r.output, "__spreadValues("));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, r.output, "__spreadProps("));
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...") == null);
 }
 
@@ -874,30 +875,30 @@ test "JSX automatic + esnext: spread preserved (no lowering)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...props") != null);
 }
 
-test "JSX classic + ES5: spread props → Object.assign" {
+test "JSX classic + ES5: spread props → __spreadValues" {
     var r = try e2eJSXClassicTarget(std.testing.allocator,
         \\const x = <div {...props} id="a" />;
     , .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__spreadValues") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...props") == null);
 }
 
-test "JSX automatic + ES5: spread only → Object.assign with empty target" {
+test "JSX automatic + ES5: spread only → __spreadValues with empty target" {
     var r = try e2eJSXAutomaticTarget(std.testing.allocator,
         \\const x = <div {...props} />;
     , .es5);
     defer r.deinit();
-    // spread만 있으면 Object.assign({}, props) 형태
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign({}") != null);
+    // spread만 있으면 __spreadValues({}, props) 형태
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__spreadValues({}") != null);
 }
 
-test "JSX automatic + ES5: props before spread → Object.assign({id:\"a\"}, props)" {
+test "JSX automatic + ES5: props before spread → __spreadValues({id:\"a\"}, props)" {
     var r = try e2eJSXAutomaticTarget(std.testing.allocator,
         \\const x = <div id="a" {...props} />;
     , .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__spreadValues({") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...") == null);
 }
 

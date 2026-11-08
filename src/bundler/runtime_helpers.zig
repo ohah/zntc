@@ -40,6 +40,9 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     super_set: ?[]const u8 = null,
     class_call_check: ?[]const u8 = null,
     class_define_property: ?[]const u8 = null,
+    spread_props: ?[]const u8 = null,
+    spread_intrinsics_isolated: bool = false,
+    spread_values: ?[]const u8 = null,
     suspension_invoke: ?[]const u8 = null,
     async_helper: ?[]const u8 = null,
     async_generator: ?[]const u8 = null,
@@ -570,6 +573,98 @@ pub const CLASS_CALL_CHECK_RUNTIME_MIN = "var " ++ NAMES.CLASS_CALL_CHECK_MIN ++
 
 /// The provider is outside a pinned source parameter's lexical environment.
 /// Keep this a pure declaration: unused class families must not read Object.
+// Ordinary object groups define properties; unlike spread operands, their
+// accessors must not be invoked while composing the final object.
+pub const SPREAD_VALUES_RUNTIME =
+    \\var __spreadValues = (function(O,R) {
+    \\  var ownKeys=R&&R.ownKeys, names=O.getOwnPropertyNames, symbols=O.getOwnPropertySymbols, descriptor=O.getOwnPropertyDescriptor, define=O.defineProperty, create=O.create;
+    \\  return function(target,source) {
+    \\    if (source==null) return target;
+    \\    source=O(source);
+    \\    var keys=ownKeys?ownKeys(source):names(source), extra=!ownKeys&&symbols?symbols(source):[], d=create(null);
+    \\    d.enumerable=true;d.configurable=true;d.writable=true;
+    \\    for(var pass=0;pass<2;pass++) {
+    \\      var list=pass?extra:keys;
+    \\      for(var i=0;i<list.length;i++) {
+    \\        var key=list[i], property=descriptor(source,key);
+    \\        if(property&&property.enumerable){d.value=source[key];define(target,key,d);}
+    \\      }
+    \\    }
+    \\    return target;
+    \\  };
+    \\})(({}).constructor,typeof Reflect==="object"&&Reflect!==null?Reflect:null);
+;
+pub const SPREAD_VALUES_RUNTIME_MIN = "var " ++ NAMES.SPREAD_VALUES_MIN ++ "=(function(O,R){var n=R&&R.ownKeys,u=O.getOwnPropertyNames,s=O.getOwnPropertySymbols,f=O.getOwnPropertyDescriptor,p=O.defineProperty,h=O.create;return function(r,t){if(t==null)return r;t=O(t);var g=n?n(t):u(t),_=!n&&s?s(t):[],d=h(null);d.enumerable=!0;d.configurable=!0;d.writable=!0;for(var a=0;a<2;a++){var c=a?_:g;for(var i=0;i<c.length;i++){var o=c[i],l=f(t,o);if(l&&l.enumerable)d.value=t[o],p(r,o,d)}}return r}})({}.constructor,typeof Reflect==\"object\"&&Reflect!==null?Reflect:null);";
+
+pub const SPREAD_PROPS_RUNTIME =
+    \\var __spreadProps = (function(O) {
+    \\  var getProto=O.getPrototypeOf,setProto=O.setPrototypeOf,objectProto=O.prototype,names=O.getOwnPropertyNames,symbols=O.getOwnPropertySymbols,descriptor=O.getOwnPropertyDescriptor,define=O.defineProperty,create=O.create;
+    \\  var copy=function(target,source) {
+    \\    var proto=getProto(source);
+    \\    if(proto!==objectProto)setProto(target,proto);
+    \\    var keys=names(source),extra=symbols?symbols(source):[];
+    \\    for(var pass=0;pass<2;pass++) {
+    \\      var list=pass?extra:keys;
+    \\      for(var i=0;i<list.length;i++) {
+    \\        var key=list[i],original=descriptor(source,key),d=create(null);
+    \\        d.enumerable=original.enumerable;d.configurable=original.configurable;
+    \\        if(descriptor(original,"value")){d.value=original.value;d.writable=original.writable;}
+    \\        else {if(original.get!==void 0)d.get=original.get;if(original.set!==void 0)d.set=original.set;}
+    \\        define(target,key,d);
+    \\      }
+    \\    }
+    \\    return target;
+    \\  };
+    \\  var property=create(null);property.value=getProto;define(copy,"getPrototypeOf",property);
+    \\  return copy;
+    \\})(({}).constructor);
+;
+pub const SPREAD_PROPS_RUNTIME_MIN = "var " ++ NAMES.SPREAD_PROPS_MIN ++ "=(function(O){var o=O.getPrototypeOf,v=O.setPrototypeOf,y=O.prototype,b=O.getOwnPropertyNames,s=O.getOwnPropertySymbols,c=O.getOwnPropertyDescriptor,l=O.defineProperty,u=O.create,f=function(r,n){var h=o(n);h!==y&&v(r,h);var x=b(n),S=s?s(n):[];for(var a=0;a<2;a++){var g=a?S:x;for(var i=0;i<g.length;i++){var _=g[i],t=c(n,_),d=u(null);d.enumerable=t.enumerable;d.configurable=t.configurable;if(c(t,\"value\"))d.value=t.value,d.writable=t.writable;else{if(t.get!==void 0)d.get=t.get;if(t.set!==void 0)d.set=t.set}l(r,_,d)}}return r},p=u(null);p.value=o;l(f,\"getPrototypeOf\",p);return f})({}.constructor);";
+
+// Dynamic source names stay visible to eval. These providers capture their
+// intrinsics before source execution and never read its Object/Reflect cells.
+pub const SPREAD_VALUES_ISOLATED_RUNTIME =
+    \\var __spreadValues = (function(O) {
+    \\  var assign=O.assign, create=O.create, names=O.getOwnPropertyNames, symbols=O.getOwnPropertySymbols, define=O.defineProperty;
+    \\  return function(target,source) {
+    \\    if(source==null)return target;
+    \\    var values=assign(create(null),source), keys=names(values), extra=symbols?symbols(values):[],d=create(null);
+    \\    d.enumerable=true;d.configurable=true;d.writable=true;
+    \\    for(var pass=0;pass<2;pass++) {
+    \\      var list=pass?extra:keys;
+    \\      for(var i=0;i<list.length;i++){var key=list[i];d.value=values[key];define(target,key,d);}
+    \\    }
+    \\    return target;
+    \\  };
+    \\})(({}).constructor);
+;
+pub const SPREAD_VALUES_ISOLATED_RUNTIME_MIN = "var " ++ NAMES.SPREAD_VALUES_MIN ++ "=(function(O){var u=O.assign,a=O.create,f=O.getOwnPropertyNames,o=O.getOwnPropertySymbols,p=O.defineProperty;return function(t,s){if(s==null)return t;var n=u(a(null),s),h=f(n),g=o?o(n):[],d=a(null);d.enumerable=!0;d.configurable=!0;d.writable=!0;for(var r=0;r<2;r++){var c=r?g:h;for(var i=0;i<c.length;i++){var l=c[i];d.value=n[l];p(t,l,d)}}return t}})({}.constructor);";
+
+pub const SPREAD_PROPS_ISOLATED_RUNTIME =
+    \\var __spreadProps = (function(O) {
+    \\  var getProto=O.getPrototypeOf,setProto=O.setPrototypeOf,objectProto=O.prototype,names=O.getOwnPropertyNames,symbols=O.getOwnPropertySymbols,descriptor=O.getOwnPropertyDescriptor,define=O.defineProperty,create=O.create;
+    \\  var copy=function(target,source) {
+    \\    var proto=getProto(source);
+    \\    if(proto!==objectProto)setProto(target,proto);
+    \\    var keys=names(source),extra=symbols?symbols(source):[];
+    \\    for(var pass=0;pass<2;pass++) {
+    \\      var list=pass?extra:keys;
+    \\      for(var i=0;i<list.length;i++) {
+    \\        var key=list[i],original=descriptor(source,key),d=create(null);
+    \\        d.enumerable=original.enumerable;d.configurable=original.configurable;
+    \\        if(descriptor(original,"value")){d.value=original.value;d.writable=original.writable;}
+    \\        else {if(original.get!==void 0)d.get=original.get;if(original.set!==void 0)d.set=original.set;}
+    \\        define(target,key,d);
+    \\      }
+    \\    }
+    \\    return target;
+    \\  };
+    \\  var property=create(null);property.value=getProto;define(copy,"getPrototypeOf",property);
+    \\  return copy;
+    \\})(({}).constructor);
+;
+pub const SPREAD_PROPS_ISOLATED_RUNTIME_MIN = "var " ++ NAMES.SPREAD_PROPS_MIN ++ "=(function(O){var o=O.getPrototypeOf,v=O.setPrototypeOf,y=O.prototype,b=O.getOwnPropertyNames,s=O.getOwnPropertySymbols,c=O.getOwnPropertyDescriptor,l=O.defineProperty,u=O.create,f=function(r,n){var h=o(n);h!==y&&v(r,h);var x=b(n),S=s?s(n):[];for(var a=0;a<2;a++){var g=a?S:x;for(var i=0;i<g.length;i++){var _=g[i],t=c(n,_),d=u(null);d.enumerable=t.enumerable;d.configurable=t.configurable;if(c(t,\"value\"))d.value=t.value,d.writable=t.writable;else{if(t.get!==void 0)d.get=t.get;if(t.set!==void 0)d.set=t.set}l(r,_,d)}}return r},p=u(null);p.value=o;l(f,\"getPrototypeOf\",p);return f})({}.constructor);";
+
 pub const CLASS_DEFINE_PROPERTY_RUNTIME =
     \\var __classDefineProperty = function(target, key, descriptor) {
     \\  return Object.defineProperty(target, key, descriptor);
@@ -600,45 +695,22 @@ pub const CALL_SUPER_RUNTIME_MIN = "var " ++ NAMES.CALL_SUPER_MIN ++ "=function(
 /// `Parent.prototype.x` 직접 접근은 getter/setter의 this를 Parent.prototype으로 바꾸므로
 /// ES2015 [[Get]]/[[Set]]의 receiver 인자를 helper에서 명시적으로 전달한다.
 pub const SUPER_GET_RUNTIME =
-    \\var __superGet = function(parent, prop, receiver) {
-    \\  var desc;
-    \\  while (parent) {
-    \\    desc = Object.getOwnPropertyDescriptor(parent, prop);
-    \\    if (desc) {
-    \\      if (desc.get) return desc.get.call(receiver);
-    \\      return desc.value;
-    \\    }
-    \\    parent = Object.getPrototypeOf(parent);
-    \\  }
-    \\};
-    \\
+    \\var __superGet = (function(O){
+    \\var getDesc=O.getOwnPropertyDescriptor,getProto=O.getPrototypeOf,invoke=(function(){}).call.bind((function(){}).apply);
+    \\return function(parent,prop,receiver){
+    \\while(parent){var desc=getDesc(parent,prop);if(desc){var getter=getDesc(desc,"get");if(getter)return getter.value?invoke(getter.value,receiver,[]):void 0;return desc.value;}parent=getProto(parent);}
+    \\};})(({}).constructor);
 ;
-pub const SUPER_GET_RUNTIME_MIN = "var " ++ NAMES.SUPER_GET_MIN ++ "=function(parent,prop,receiver){var desc;while(parent){desc=Object.getOwnPropertyDescriptor(parent,prop);if(desc){if(desc.get)return desc.get.call(receiver);return desc.value}parent=Object.getPrototypeOf(parent)}};";
+pub const SUPER_GET_RUNTIME_MIN = "var " ++ NAMES.SUPER_GET_MIN ++ "=(function(O){var i=O.getOwnPropertyDescriptor,a=O.getPrototypeOf,o=(function(){}).call.bind((function(){}).apply);return function(t,s,c){while(t){var n=i(t,s);if(n){var r=i(n,\"get\");return r?r.value?o(r.value,c,[]):void 0:n.value}t=a(t)}}})({}.constructor);";
 
 pub const SUPER_SET_RUNTIME =
-    \\var __superSet = function(parent, prop, value, receiver) {
-    \\  var desc;
-    \\  while (parent) {
-    \\    desc = Object.getOwnPropertyDescriptor(parent, prop);
-    \\    if (desc) {
-    \\      if (desc.set) {
-    \\        desc.set.call(receiver, value);
-    \\        return value;
-    \\      }
-    \\      if (desc.writable) {
-    \\        receiver[prop] = value;
-    \\        return value;
-    \\      }
-    \\      throw new TypeError("Cannot set property");
-    \\    }
-    \\    parent = Object.getPrototypeOf(parent);
-    \\  }
-    \\  receiver[prop] = value;
-    \\  return value;
-    \\};
-    \\
+    \\var __superSet = (function(O){
+    \\var getDesc=O.getOwnPropertyDescriptor,getProto=O.getPrototypeOf,invoke=(function(){}).call.bind((function(){}).apply);
+    \\return function(parent,prop,value,receiver){
+    \\while(parent){var desc=getDesc(parent,prop);if(desc){var setter=getDesc(desc,"set");if(setter){if(setter.value){invoke(setter.value,receiver,[value]);return value;}throw new TypeError("Cannot set property");}if(desc.writable){receiver[prop]=value;return value;}throw new TypeError("Cannot set property");}parent=getProto(parent);}receiver[prop]=value;return value;
+    \\};})(({}).constructor);
 ;
-pub const SUPER_SET_RUNTIME_MIN = "var " ++ NAMES.SUPER_SET_MIN ++ "=function(parent,prop,value,receiver){var desc;while(parent){desc=Object.getOwnPropertyDescriptor(parent,prop);if(desc){if(desc.set){desc.set.call(receiver,value);return value}if(desc.writable){receiver[prop]=value;return value}throw new TypeError(\"Cannot set property\")}parent=Object.getPrototypeOf(parent)}receiver[prop]=value;return value};";
+pub const SUPER_SET_RUNTIME_MIN = "var " ++ NAMES.SUPER_SET_MIN ++ "=(function(O){var s=O.getOwnPropertyDescriptor,c=O.getPrototypeOf,l=(function(){}).call.bind((function(){}).apply);return function(n,r,t,i){while(n){var a=s(n,r);if(a){var o=s(a,\"set\");if(o){if(o.value){l(o.value,i,[t]);return t}throw new TypeError(\"Cannot set property\")}if(a.writable){i[r]=t;return t}throw new TypeError(\"Cannot set property\")}n=c(n)}i[r]=t;return t}})({}.constructor);";
 
 /// derived constructor의 `this` 초기화 상태를 ES5 출력에서 보존한다.
 /// Babel/SWC helper와 같은 역할: super() 전 this 접근, super() 중복 호출,
@@ -2263,6 +2335,12 @@ fn appendRuntimeHelpersInternal(
             default_name,
             local_names.class_private_method_get orelse default_name,
         );
+    }
+    if (local_names.spread_values) |local| {
+        try appendRuntimeTemplateWithLocalName(buf, allocator, if (local_names.spread_intrinsics_isolated) (if (minify) SPREAD_VALUES_ISOLATED_RUNTIME_MIN else SPREAD_VALUES_ISOLATED_RUNTIME) else (if (minify) SPREAD_VALUES_RUNTIME_MIN else SPREAD_VALUES_RUNTIME), helperName("__spreadValues", minify), local);
+    }
+    if (local_names.spread_props) |local| {
+        try appendRuntimeTemplateWithLocalName(buf, allocator, if (local_names.spread_intrinsics_isolated) (if (minify) SPREAD_PROPS_ISOLATED_RUNTIME_MIN else SPREAD_PROPS_ISOLATED_RUNTIME) else (if (minify) SPREAD_PROPS_RUNTIME_MIN else SPREAD_PROPS_RUNTIME), helperName("__spreadProps", minify), local);
     }
     if (helpers.class_call_check) {
         const default_name = helperName("__classCallCheck", minify);
