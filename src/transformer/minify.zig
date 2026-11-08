@@ -1371,7 +1371,11 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
 /// 심볼이 어디서도 재할당되지 않는지 (`write_count == 0`). out-of-bounds
 /// 보수적 false. alias inline / pure compound inline 양쪽에서 공유.
 inline fn isImmutableSymbol(ctx: MinifyCtx, sid: u32) bool {
-    return sid < ctx.symbols.len and ctx.symbols[sid].write_count == 0;
+    if (sid >= ctx.symbols.len) return false;
+    const symbol = ctx.symbols[sid];
+    // Imports are read-only in this module, but their exporter can update the
+    // live binding between acquisition of a snapshot and its later use.
+    return !symbol.decl_flags.is_import and symbol.kind != .import_binding and symbol.write_count == 0;
 }
 
 /// `idx` 안의 모든 identifier_reference 의 referenced symbol 이 immutable 인지
