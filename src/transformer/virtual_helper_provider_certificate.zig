@@ -82,8 +82,10 @@ fn nearestOwner(a: std.mem.Allocator, tree: *const ast.Ast, root: NodeIndex, tar
 const ExternalRole = enum(u3) { object, type_error, regexp, weak_map, symbol, array, undefined };
 fn expectedExternalCounts(catalog: origin_mod.Catalog) [7]usize {
     return switch (catalog) {
-        .super_get => .{ 2, 0, 0, 0, 0, 0, 0 },
-        .super_set => .{ 2, 1, 0, 0, 0, 0, 0 },
+        // These sealed constructors capture Object through an object literal;
+        // only the two distinct throwing paths retain lexical externals.
+        .super_get => .{ 0, 0, 0, 0, 0, 0, 0 },
+        .super_set => .{ 0, 2, 0, 0, 0, 0, 0 },
         // The current ES5 named-capture provider normalizes helper pair arrays
         // with Array.isArray/Object.create(null) before constructing groups.
         .wrap_regex => .{ 6, 0, 4, 1, 5, 2, 3 },
