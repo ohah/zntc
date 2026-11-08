@@ -12641,11 +12641,13 @@ fn hasTopLevelAwaitInRetainedGraphFromRoot(
 
     for (reachable) |raw| {
         if (raw >= ast.nodes.items.len) continue;
-        const tag = ast.nodes.items[raw].tag;
-        // The semantic analyzer records both native `await` and top-level
-        // `for await` in its module-local bit. Keep the scan in sync with that
-        // contract; a for-await loop does not need an await_expression node.
-        if (tag != .await_expression and tag != .for_await_of_statement) continue;
+        const node = ast.nodes.items[raw];
+        const tag = node.tag;
+        // Keep cold analysis, retained transforms and cached semantic metadata
+        // in sync: await-using performs an implicit Await during disposal.
+        const async_resource = tag == .variable_declaration and ast.hasExtra(node.data.extra, 2) and
+            ast.variableDeclarationKind(node) == .await_using;
+        if (tag != .await_expression and tag != .for_await_of_statement and !async_resource) continue;
         if (scopes.len == 0) return null;
         var current_node: u32 = @intCast(raw);
         var scope_id: ?u32 = null;
@@ -16600,6 +16602,9 @@ test "retained graph refreshes only module-local TLA metadata" {
         false,
         .none,
     )).?);
+    try std.testing.expect((try refreshRetainedModuleTlaForTest("await using resource=null;", false, false, .none)).?);
+    try std.testing.expect((try refreshRetainedModuleTlaForTest("{await using resource=null;}", false, false, .none)).?);
+    try std.testing.expect(!(try refreshRetainedModuleTlaForTest("async function read(){await using resource=null;}", true, false, .none)).?);
 }
 
 test "lowered TLA graph fails closed when its generated async scope owner is missing" {

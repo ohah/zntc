@@ -233,6 +233,37 @@ test "native await using unsupported CJS module layout publishes diagnostics wit
     }
 }
 
+test "native await using lowered ESM preserved layout publishes diagnostics without JS" {
+    for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "import{answer}from './lib.mjs';console.log(answer);");
+        try helpers.writeFile(tmp.dir, "lib.mjs", "await using resource={async[Symbol.asyncDispose](){await 0}};export const answer=42;");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        var bundler = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .format = .esm,
+            .platform = .node,
+            .preserve_modules = true,
+            .minify_syntax = minify,
+            .minify_identifiers = minify,
+            .unsupported = compat.fromESTarget(.es5),
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(result.hasErrors());
+        try std.testing.expectEqual(@as(usize, 0), result.output.len);
+        if (result.outputs) |outputs| try std.testing.expectEqual(@as(usize, 0), outputs.len);
+        var found = false;
+        for (result.diagnostics orelse &.{}) |diagnostic| {
+            if (diagnostic.code == .top_level_await_target and diagnostic.severity == .@"error") found = true;
+        }
+        try std.testing.expect(found);
+    }
+}
+
 test "native await using worker layout forwards owned source diagnostics and no worker JS" {
     for ([_]bool{ false, true }) |module_worker| {
         var tmp = std.testing.tmpDir(.{});
