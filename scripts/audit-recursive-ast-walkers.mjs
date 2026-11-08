@@ -35,6 +35,14 @@ const srcRoot = join(root, 'src');
 // "<relpath>::<fn>" → { class, note }. class ∈ {iterative_safe, one_level, bounded_recursive, recursive_tracked}.
 // 파일 경로로 스코프해 동명 walker 가 분류를 상속하는 false-negative 를 차단.
 const ALLOWLIST = {
+  'src/transformer/es2015_destructuring.zig::movePatternExpression': {
+    class: 'iterative_safe',
+    note: 'explicit pending node stack and visited identity set relocate exact references; child iteration never recurses',
+  },
+  'src/transformer/transformer/semantic_edit.zig::publishCapturedLoopWrapper': {
+    class: 'iterative_safe',
+    note: 'explicit pending node stack and live identity set move only the actual helper frontier and synchronize exact reference coordinates',
+  },
   'src/transformer/ast_plugin.zig::registerInjectedFunctionScopes': {
     class: 'iterative_safe',
     note: 'explicit Work stack carries insertion ScopeId; visited node ids prevent repeated or cyclic descent',

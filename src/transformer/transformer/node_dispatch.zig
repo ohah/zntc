@@ -260,6 +260,13 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 discarded = self.ast.getNode(discarded).data.unary.operand;
             self.discarded_expression = discarded;
             defer self.discarded_expression = saved_discarded;
+            if (self.options.unsupported.destructuring and !discarded.isNone()) {
+                const Destructuring = @import("../es2015_destructuring.zig").ES2015Destructuring(Transformer);
+                if (try Destructuring.expressionNeedsIteratorStatements(self, discarded)) {
+                    const plan = try Destructuring.prepareIteratorExpressionStatement(self, discarded, .{ .use_scope = self.current_scope });
+                    return self.visitNode(plan.statement);
+                }
+            }
             // emotion `injectGlobal\`...\`;` 같은 expression-statement form 에 sourceMap
             // 적용. autoLabel 은 var 이름이 없어 미적용 — sourceMap 만 부여.
             if (self.options.emotion and self.options.emotion_source_map) {
@@ -268,10 +275,15 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             }
             return self.visitUnaryNode(idx);
         },
-        .return_statement,
-        .throw_statement,
-        .spread_element,
-        => self.visitUnaryNode(idx),
+        .return_statement, .throw_statement => {
+            if (self.options.unsupported.destructuring) {
+                const Destructuring = @import("../es2015_destructuring.zig").ES2015Destructuring(Transformer);
+                if (try Destructuring.expressionNeedsIteratorStatements(self, node.data.unary.operand))
+                    return Destructuring.lowerIteratorValueStatement(self, node, node.data.unary.operand);
+            }
+            return self.visitUnaryNode(idx);
+        },
+        .spread_element => self.visitUnaryNode(idx),
         .parenthesized_expression => {
             // (expr as T) → expr: 타입 래퍼는 noop 이라 보통 괄호가 불필요.
             const inner = node.data.unary.operand;

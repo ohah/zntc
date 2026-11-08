@@ -746,27 +746,74 @@ pub const TDZ_RUNTIME_MIN = "var " ++ NAMES.TDZ_MIN ++ "=function(name){throw ne
 
 /// array destructuring의 iterable protocol read helper. TypeScript __read와 같은
 /// 구조로 limit 개수만 읽고 iterator.return()으로 close한다.
-pub const READ_RUNTIME =
-    \\var __read = function(o, n) {
-    \\  var m = typeof Symbol === "function" && o[Symbol.iterator];
-    \\  if (!m) return o;
-    \\  var i = m.call(o), r, ar = [], e;
-    \\  try {
-    \\    while ((n === void 0 || n-- > 0) && !(r = i.next()).done) ar.push(r.value);
-    \\  } catch (error) {
-    \\    e = { error: error };
-    \\  } finally {
-    \\    try {
-    \\      if (r && !r.done && (m = i.return)) m.call(i);
-    \\    } finally {
-    \\      if (e) throw e.error;
+// The optional third argument is a per-pattern iterator protocol operation:
+// 0 open, 1 step/value, 2 elision, 3 rest, 4 close (n = pending throw).
+// Two-argument callers retain the original eager ABI during their migration.
+const READ_FACTORY =
+    \\(function(O,iteratorKey) {
+    \\  var call=(function(){}).call, invoke=call.bind((function(){}).apply), define=O.defineProperty, create=O.create;
+    \\  if(!iteratorKey&&O.getOwnPropertySymbols){
+    \\    var prototype=O.getPrototypeOf([]),values=O.getOwnPropertyDescriptor(prototype,"values");
+    \\    if(values&&typeof values.value==="function"){
+    \\      var keys=O.getOwnPropertySymbols(prototype),candidate;
+    \\      for(var index=0;index<keys.length;index++){
+    \\        var descriptor=O.getOwnPropertyDescriptor(prototype,keys[index]);
+    \\        if(descriptor&&descriptor.value===values.value){if(candidate!==void 0){candidate=void 0;break;}candidate=keys[index];}
+    \\      }
+    \\      iteratorKey=candidate;
     \\    }
     \\  }
-    \\  return ar;
-    \\};
-    \\
+    \\  function object(value){return value!==null&&(typeof value==="object"||typeof value==="function");}
+    \\  function fail(){invoke(void 0,void 0,[]);}
+    \\  function step(record,valueWanted){
+    \\    if(record.done)return void 0;
+    \\    try{
+    \\      var result=invoke(record.next,record.iterator,[]);
+    \\      if(!object(result))fail();
+    \\      if(result.done){record.done=true;return void 0;}
+    \\      return valueWanted?result.value:void 0;
+    \\    }catch(error){record.done=true;throw error;}
+    \\  }
+    \\  return function(o,n,operation){
+    \\    if(operation===void 0){
+    \\      var m=typeof Symbol==="function"&&o[Symbol.iterator];
+    \\      if(!m)return o;
+    \\      var iterator=m.call(o),r,ar=[],e;
+    \\      try{while((n===void 0||n-- >0)&&!(r=iterator.next()).done)ar.push(r.value);}
+    \\      catch(error){e={error:error};}
+    \\      finally{try{if(r&&!r.done&&(m=iterator.return))m.call(iterator);}finally{if(e)throw e.error;}}
+    \\      return ar;
+    \\    }
+    \\    if(operation===0){
+    \\      var method=iteratorKey&&o[iteratorKey];
+    \\      if(method==null||method===false)fail();
+    \\      var value=invoke(method,o,[]);
+    \\      if(!object(value))fail();
+    \\      return {iterator:value,next:value.next,done:false};
+    \\    }
+    \\    if(operation===1)return step(o,true);
+    \\    if(operation===2){step(o,false);return;}
+    \\    if(operation===3){
+    \\      var rest=[],index=0,property=create(null);property.enumerable=true;property.configurable=true;property.writable=true;
+    \\      while(!o.done){var item=step(o,true);if(!o.done){property.value=item;define(rest,index++,property);}}
+    \\      return rest;
+    \\    }
+    \\    if(operation===5){if(o==null)fail();return o;}
+    \\    if(operation===4){
+    \\      if(!o||o.done)return;
+    \\      o.done=true;
+    \\      try{
+    \\        var close=o.iterator.return;
+    \\        if(close!=null){var result=invoke(close,o.iterator,[]);if(!object(result))fail();}
+    \\      }catch(error){if(!n)throw error;}
+    \\      return;
+    \\    }
+    \\    fail();
+    \\  };
+    \\})(({}).constructor,typeof Symbol==="function"?Symbol.iterator:void 0)
 ;
-pub const READ_RUNTIME_MIN = "var " ++ NAMES.READ_MIN ++ "=function(o,n){var m=typeof Symbol===\"function\"&&o[Symbol.iterator];if(!m)return o;var i=m.call(o),r,ar=[],e;try{while((n===void 0||n-- >0)&&!(r=i.next()).done)ar.push(r.value)}catch(error){e={error:error}}finally{try{if(r&&!r.done&&(m=i.return))m.call(i)}finally{if(e)throw e.error}}return ar};";
+pub const READ_RUNTIME = "var __read = " ++ READ_FACTORY ++ ";";
+pub const READ_RUNTIME_MIN = "var " ++ NAMES.READ_MIN ++ "=" ++ READ_FACTORY ++ ";";
 
 /// __async: async/await → generator 변환 시 주입 (esbuild 호환).
 /// generator-to-Promise wrapper. this/arguments를 fn.apply로 보존.

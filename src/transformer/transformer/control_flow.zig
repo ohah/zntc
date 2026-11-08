@@ -453,6 +453,8 @@ pub fn maybeLowerForInOfDestructuring(self: *Transformer, source: NodeIndex, nod
     // 에서 native 잔존 → es2017 엔진 SyntaxError. object/array_assignment_target
     // 트리에 object rest 가 중첩 포함되면 lowering(plain `for({a} of)`/array rest
     // `for([a,...x] of)` 과트리거 회피).
+    if (left_node.tag == .array_assignment_target and self.options.unsupported.destructuring)
+        return try D.lowerForInOfDestructuring(self, source, node);
     if ((left_node.tag == .object_assignment_target or left_node.tag == .array_assignment_target) and
         self.options.unsupported.object_spread and
         D.destructuringTargetHasObjectRest(self, left))
@@ -537,7 +539,90 @@ fn buildForBodyWithPrefix(self: *Transformer, body_idx: NodeIndex, prefix_stmt: 
     self.ast.nodes.items[@backingInt(result)].data.list = try self.ast.addNodeList(if (body_idx.isNone()) &.{prefix_stmt} else &.{ prefix_stmt, body_idx });
 }
 
+/// A destructuring initializer needs statements with a real finally region.
+/// Keep its source loop environment around both initialization and iteration;
+/// the emitted for receives a fresh child scope rather than sharing an owner.
 pub fn visitForStatement(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
+    const source = self.ast.getNode(idx);
+    const initializer = self.readNodeIdx(source.data.extra, 0);
+    const Destructuring = @import("../es2015_destructuring.zig").ES2015Destructuring(Transformer);
+    const needs_region = self.options.unsupported.destructuring and self.options.unsupported.block_scoping and
+        !initializer.isNone() and try Destructuring.declarationNeedsIteratorStatements(self, self.ast.getNode(initializer));
+    var emitted_for: NodeIndex = .none;
+    if (!needs_region) return visitForStatementCore(self, idx, false, &.{}, &emitted_for);
+    const pending_start = self.pending_nodes.items.len;
+    const ready = try Destructuring.lowerDestructuringDeclarationStatementAt(self, initializer);
+    const declarations = try self.allocator.dupe(NodeIndex, self.pending_nodes.items[pending_start..]);
+    defer self.allocator.free(declarations);
+    self.pending_nodes.shrinkRetainingCapacity(pending_start);
+    var initializer_roots: std.ArrayList(NodeIndex) = .empty;
+    defer initializer_roots.deinit(self.allocator);
+    try initializer_roots.appendSlice(self.allocator, declarations);
+    try initializer_roots.append(self.allocator, ready);
+    const ordinary = try visitForStatementCore(self, idx, true, initializer_roots.items, &emitted_for);
+    return publishIteratorForInitializer(self, idx, initializer, declarations, ready, ordinary, emitted_for);
+}
+
+fn publishIteratorForInitializer(self: *Transformer, source: NodeIndex, initializer: NodeIndex, declarations: []const NodeIndex, ready: NodeIndex, ordinary: NodeIndex, emitted_for: NodeIndex) Error!NodeIndex {
+    const source_node = self.ast.getNode(source);
+    const loop = self.ast.getNode(emitted_for);
+    if (source_node.tag != .for_statement or loop.tag != .for_statement or
+        self.readNodeIdx(source_node.data.extra, 0) != initializer or !self.readNodeIdx(loop.data.extra, 0).isNone())
+        @panic("iterator initializer publication lost its exact source/loop edges");
+    const source_scope = self.outputOwnedScope(source) orelse self.current_scope;
+    const region = try self.ast.addNode(.{ .tag = .block_statement, .span = source_node.span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+    const output_for = try self.ast.addNode(loop);
+    const loop_scope = if (self.semantic_edit_enabled) try self.addGeneratedScope(source_scope, output_for, .block) else source_scope;
+    if (self.semantic_edit_enabled) {
+        if (source_scope.isNone()) @panic("iterator initializer publication has no source loop scope");
+        const ready_scope = self.outputOwnedScope(ready) orelse @panic("iterator initializer publication lost its ready block scope");
+        if (self.outputScopeParent(ready_scope) != source_scope) @panic("iterator initializer ready block has a foreign parent");
+        const origin = self.scope_owner_origins.get(@backingInt(source)) orelse @backingInt(source);
+        if (origin >= self.parser_node_count or self.ast.getNode(@fromBackingInt(origin)).tag != .for_statement)
+            @panic("iterator initializer publication has no immutable source for owner");
+        // Unlike generic copied-owner publication, this producer proves the
+        // source header's exact ready region and its unique emitted loop.
+        _ = self.scope_owner_remaps.remove(origin);
+        try self.scope_owner_origins.put(self.allocator, @backingInt(region), origin);
+        try self.transformed_scope_owner_map.put(self.allocator, @backingInt(region), @backingInt(source_scope));
+        const Destructuring = @import("../es2015_destructuring.zig").ES2015Destructuring(Transformer);
+        for ([_]u32{ 1, 2, 3 }) |slot| {
+            const edge = self.readNodeIdx(loop.data.extra, slot);
+            try Destructuring.movePatternExpression(self, edge, source_scope, loop_scope);
+        }
+    }
+    var region_statements: std.ArrayList(NodeIndex) = .empty;
+    defer region_statements.deinit(self.allocator);
+    try region_statements.appendSlice(self.allocator, declarations);
+    try region_statements.append(self.allocator, ready);
+    try region_statements.append(self.allocator, output_for);
+    self.ast.nodes.items[@backingInt(region)].data.list = try self.ast.addNodeList(region_statements.items);
+    if (self.semantic_edit_enabled) {
+        self.semantic_editor.?.publishIteratorForRegion(source, initializer, region, ready, output_for, source_scope) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            std.debug.panic("invalid typed iterator for region: {s}", .{@errorName(err)});
+        };
+    }
+    if (ordinary == emitted_for) return region;
+    const wrapper = self.ast.getNode(ordinary);
+    if (wrapper.tag != .block_statement) @panic("iterator initializer publication has an unexpected loop wrapper");
+    var children: std.ArrayList(NodeIndex) = .empty;
+    defer children.deinit(self.allocator);
+    var replaced: usize = 0;
+    for (0..wrapper.data.list.len) |offset| {
+        const child = self.ast.readExtraNode(wrapper.data.list.start, @intCast(offset));
+        if (child == emitted_for) {
+            replaced += 1;
+            try children.append(self.allocator, region);
+        } else try children.append(self.allocator, child);
+    }
+    if (replaced != 1) @panic("iterator initializer publication did not select one actual loop child");
+    const replacement = try self.ast.addNode(.{ .tag = .block_statement, .span = wrapper.span, .data = .{ .list = try self.ast.addNodeList(children.items) } });
+    try self.remapCopiedScopeOwner(ordinary, replacement);
+    return replacement;
+}
+
+fn visitForStatementCore(self: *Transformer, idx: NodeIndex, has_ready_initializer: bool, initializer_roots: []const NodeIndex, emitted_for: *NodeIndex) Error!NodeIndex {
     const node = self.ast.getNode(idx);
     const e = node.data.extra;
     const init_idx = self.readNodeIdx(e, 0);
@@ -570,7 +655,7 @@ pub fn visitForStatement(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 BlockScoping.analyzeControlFlow(self, orig_body_idx, &flow, 0, 0);
             }
 
-            const new_init = try self.visitNode(init_idx);
+            const new_init: NodeIndex = if (has_ready_initializer) .none else try self.visitNode(init_idx);
             const new_test = try self.visitNode(self.readNodeIdx(e, 1));
             const new_update = try self.visitNode(self.readNodeIdx(e, 2));
             // 본문에 `yield` 가 있으면(= 나중에 상태 기계로 접힐 generator 안, 예: 일반 방문되는
@@ -624,9 +709,13 @@ pub fn visitForStatement(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                     is_async and !yield_closure,
                 );
 
+                var header_roots: std.ArrayList(NodeIndex) = .empty;
+                defer header_roots.deinit(self.allocator);
+                try header_roots.appendSlice(self.allocator, initializer_roots);
+                try header_roots.appendSlice(self.allocator, &.{ new_init, new_test, new_update, result.call_and_check });
                 try splitCapturedLoopHeaderSymbols(
                     self,
-                    &.{ new_init, new_test, new_update, result.call_and_check },
+                    header_roots.items,
                     lexical_bindings.items,
                     result.loop_function,
                     node.span,
@@ -639,34 +728,42 @@ pub fn visitForStatement(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                     @backingInt(new_update), @backingInt(result.call_and_check),
                 });
 
+                emitted_for.* = for_node;
+
                 // The helper declaration is outside the source loop; the
                 // actual replacement loop retains its source lexical owner.
                 try self.remapCopiedScopeOwner(idx, for_node);
 
                 // 두 문을 블록으로 반환 (호이스팅 불필요 — for 문 바로 앞에 삽입)
                 const stmts = try self.ast.addNodeList(&.{ result.loop_fn, for_node });
-                return self.ast.addNode(.{
+                const wrapper = try self.ast.addNode(.{
                     .tag = .block_statement,
                     .span = node.span,
                     .data = .{ .list = stmts },
                 });
+                try @import("semantic_edit.zig").publishCapturedLoopWrapper(self, wrapper, result.loop_fn, for_node, self.current_scope);
+                return wrapper;
             }
 
-            return self.addExtraNode(.for_statement, node.span, &.{
+            const output = try self.addExtraNode(.for_statement, node.span, &.{
                 @backingInt(new_init), @backingInt(new_test), @backingInt(new_update), @backingInt(new_body),
             });
+            emitted_for.* = output;
+            return output;
         }
     }
 
-    const new_init = try self.visitNode(init_idx);
+    const new_init: NodeIndex = if (has_ready_initializer) .none else try self.visitNode(init_idx);
     const new_test = try self.visitNode(self.readNodeIdx(e, 1));
     const new_update = try self.visitNode(self.readNodeIdx(e, 2));
     const old_body = self.readNodeIdx(e, 3);
     const raw_body = try self.visitNode(old_body);
     const new_body = try ensureStatementBody(self, old_body, raw_body, node.span);
-    return self.addExtraNode(.for_statement, node.span, &.{
+    const output = try self.addExtraNode(.for_statement, node.span, &.{
         @backingInt(new_init), @backingInt(new_test), @backingInt(new_update), @backingInt(new_body),
     });
+    emitted_for.* = output;
+    return output;
 }
 
 const Scope = @import("../../semantic/scope.zig").Scope;
