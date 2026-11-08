@@ -101,8 +101,8 @@ test "native module using guard mode does not require Symbol for legacy null acq
     try std.testing.expectEqualStrings("null\n", actual.stdout);
 }
 
-test "native module using keeps source mixed await resource exports on existing storage" {
-    for ([_]bool{ false, true }) |minify| {
+test "native module using mixed await exports diagnose flattened scope and retain native PM value" {
+    for ([_]bool{ false, true }) |preserve| for ([_]bool{ false, true }) |minify| {
         var tmp = std.testing.tmpDir(.{});
         defer tmp.cleanup();
         try helpers.writeFile(tmp.dir, "lib.mjs", "using resource={label:'ok',[Symbol.dispose](){}};await using other={async[Symbol.asyncDispose](){}};export{resource};");
@@ -113,7 +113,10 @@ test "native module using keeps source mixed await resource exports on existing 
             .entry_points = &.{entry},
             .platform = .node,
             .format = .esm,
-            .inline_dynamic_imports = true,
+            .inline_dynamic_imports = !preserve,
+            .preserve_modules = preserve,
+            .preserve_modules_root = std.fs.path.dirname(entry),
+            .out_extension_js = ".mjs",
             .unsupported = compat.fromESTarget(.esnext),
             .minify_syntax = minify,
             .minify_identifiers = minify,
@@ -122,9 +125,24 @@ test "native module using keeps source mixed await resource exports on existing 
         defer bundler.deinit();
         const result = try bundler.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
+        if (!preserve) {
+            try std.testing.expect(result.hasErrors());
+            try std.testing.expectEqual(@as(usize, 0), result.output.len);
+            var found = false;
+            for (result.diagnostics orelse &.{}) |diagnostic| {
+                if (diagnostic.code == .top_level_await_target and diagnostic.severity == .@"error") found = true;
+            }
+            try std.testing.expect(found);
+            continue;
+        }
         try std.testing.expect(!result.hasErrors());
-        try helpers.writeFile(tmp.dir, "output.mjs", result.output);
-        const output = try helpers.absPath(&tmp, "output.mjs");
+        const outputs = result.outputs orelse return error.TestUnexpectedResult;
+        for (outputs) |file| {
+            const path = try std.fs.path.join(std.testing.allocator, &.{ "dist", file.path });
+            defer std.testing.allocator.free(path);
+            try helpers.writeFile(tmp.dir, path, file.contents);
+        }
+        const output = try helpers.absPath(&tmp, "dist/main.mjs");
         defer std.testing.allocator.free(output);
         const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", output } });
         defer std.testing.allocator.free(actual.stdout);
@@ -132,5 +150,5 @@ test "native module using keeps source mixed await resource exports on existing 
         if (actual.term != .exited or actual.term.exited != 0) std.debug.print("native module using mixed export minify={} stderr={s} code={s}\n", .{ minify, actual.stderr, result.output });
         try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
         try std.testing.expectEqualStrings("ok\n", actual.stdout);
-    }
+    };
 }

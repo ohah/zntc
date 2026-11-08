@@ -40,7 +40,7 @@ pub fn diagnose(graph: *ModuleGraph, options: *const EmitOptions, shaker: ?*cons
             .file_path = module.path,
             .span = span,
             .step = .link,
-            .message = "This output layout cannot preserve native await using module disposal before its importer runs",
+            .message = "This output layout cannot preserve native await using module disposal before its importer runs. Use --preserve-modules (API: preserveModules: true) with native ESM output.",
             .suggestion = "Use --preserve-modules with --format=esm and a native await-using/top-level-await target (API: preserveModules: true, format: 'esm').",
         });
         blocked = true;
