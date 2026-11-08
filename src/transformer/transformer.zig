@@ -944,6 +944,7 @@ pub const Transformer = struct {
     /// A real pinned class-descriptor callsite requires this standalone helper.
     class_define_property_used: bool = false,
     spread_props_used: bool = false,
+    spread_intrinsics_isolated: bool = false,
     suspension_invoke_used: bool = false,
 
     /// ES2025 inline modifier 다운레벨(#4210) 중, 못 내려 출력에 보존된 modifier

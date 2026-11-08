@@ -1079,7 +1079,10 @@ pub fn leaveMethod(self: *Transformer, saved: Saved) void {
 pub fn buildHomeProto(self: *Transformer, home: ObjectSuperHomeIdentity, span: Span) Transformer.Error!NodeIndex {
     const builtin = @import("object_builtin_reference.zig");
     const context = builtin.captureHome(self, home) catch |err| return builtin.productionFailure(err);
-    const object_ref = builtin.makeReference(self, context) catch |err| return builtin.productionFailure(err);
+    const object_ref = if (self.spread_intrinsics_isolated)
+        try es_helpers.makeRuntimeHelperRef(self, "__spreadProps")
+    else
+        builtin.makeReference(self, context) catch |err| return builtin.productionFailure(err);
     const get_proto = try es_helpers.makePropertyName(self, "getPrototypeOf");
     const callee = try es_helpers.makeStaticMember(self, object_ref, get_proto, span);
     const home_ref = try es_helpers.makeTempVarRef(self, home.span, home.span);

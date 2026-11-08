@@ -97,7 +97,7 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
     var runtime_global_renames: @import("../block_rename_table.zig").Table = .empty;
     defer runtime_global_renames.deinit(self.allocator);
     if (self.options.unsupported.object_spread and !self.options.emit_runtime_helper_imports) {
-        try @import("../runtime_builtin_global_roles.zig").collectRootSourceBindings(self, &.{ .object, .reflect }, &runtime_global_renames);
+        try @import("../runtime_builtin_global_roles.zig").inspectRootSourceBindings(self, &.{ .object, .reflect }, &runtime_global_renames);
         if (runtime_global_renames.count() != 0) {
             // Only a reachable source object spread activates these raw helper
             // roles. Source SIDs are selected above; AST text never finds one.
@@ -117,7 +117,10 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
                 }
                 if (active) break;
             }
-            if (!active) runtime_global_renames.clearRetainingCapacity();
+            if (!active) runtime_global_renames.clearRetainingCapacity() else if (self.scopes[0].blocksMangling()) {
+                self.spread_intrinsics_isolated = true;
+                runtime_global_renames.clearRetainingCapacity();
+            }
         }
     }
     // Constructor bindings that hide a name a lowered field initializer reads

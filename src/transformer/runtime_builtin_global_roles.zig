@@ -21,7 +21,14 @@ pub const Role = enum {
 };
 
 pub fn collectRootSourceBindings(self: anytype, roles: []const Role, selected: *Table) !void {
-    if (roles.len == 0 or self.scopes.len == 0 or self.scopes[0].blocksMangling()) return;
+    if (self.scopes.len == 0 or self.scopes[0].blocksMangling()) return;
+    try inspectRootSourceBindings(self, roles, selected);
+}
+
+/// Read-only selection is also safe in dynamic scopes; callers must preserve
+/// those source spellings and isolate their helper globals instead of renaming.
+pub fn inspectRootSourceBindings(self: anytype, roles: []const Role, selected: *Table) !void {
+    if (roles.len == 0 or self.scopes.len == 0) return;
     const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
     const maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;

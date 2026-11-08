@@ -776,3 +776,34 @@ test "spread helper source aliases preserve external export names and ESM live v
         };
     }
 }
+
+test "spread helpers isolate builtin intrinsics from direct eval source globals" {
+    const sources = [_][]const u8{
+        "const Object=42;eval('');const log=[];const s=new Proxy({x:42},{ownKeys(){log.push('keys');return ['x']},getOwnPropertyDescriptor(t,k){log.push('desc:'+k);return {value:t[k],enumerable:true,configurable:true,writable:true}},get(t,k){log.push('get:'+k);Array.prototype.concat=function(){log.push('concat');return []};return t[k]}});const o={...s};console.log(JSON.stringify([o.x,log]));",
+        "const Object=42;eval('');const O=({}).constructor;let o,error;try{o={...{get x(){O.prototype.get=function(){return 7};return 42}},get y(){return 1}}}catch(e){error=e.name}finally{delete O.prototype.get}console.log(JSON.stringify([Object,o?o.x:null,error||null]));",
+        "let o,error;try{o={...{get x(){Object.prototype.get=function(){return 7};return 42}},get y(){return 1}}}catch(e){error=e.name}finally{delete Object.prototype.get}console.log(JSON.stringify([o?o.x:null,error||null]));",
+        "const Object=42;eval('');const o={__proto__:{m(){return this.value}},...{},value:42,n(){return super.m()}};console.log(JSON.stringify([Object,o.n()]));",
+        "const Object=42;eval('');const o={...{x:42}};console.log(JSON.stringify([eval('Object'),o.x]));",
+        "const Reflect=42;eval('');const events=[];const s=new Proxy({x:42},{ownKeys(){events.push('keys');return ['x']},getOwnPropertyDescriptor(t,k){events.push('desc');return {value:t[k],enumerable:true,configurable:true,writable:true}},get(t,k){events.push('get');return t[k]}});const o={...s};console.log(JSON.stringify([Reflect,o.x,events]));",
+        "const Object=42;eval('');let calls=0;const o={set x(v){calls++},...{x:42}};console.log(JSON.stringify([Object,o.x,calls]));",
+        "const Object=42;eval('');let calls=0;const o={...{},get x(){calls++;return 42}};console.log(JSON.stringify([Object,calls,o.x,calls]));",
+        "const Object=42;eval('');const O=({}).constructor;O.assign=function(){throw Error('user assign')};const o={...{x:42}};console.log(JSON.stringify([Object,o.x]));",
+        "const Reflect=42;eval('');const O=({}).constructor;const key=Symbol('key');const source={x:42};source[key]=7;const o={...source,__proto__:null};console.log(JSON.stringify([Reflect,o.x,o[key],O.getPrototypeOf(o)===null]));",
+    };
+    for (sources, 0..) |source, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2015, .es2017, .esnext }) |target| for ([_]bool{ false, true }) |minify| {
+            const result = try @import("../transpile.zig").transpile(a, source, "input.mjs", .{ .unsupported = TransformOptions.compat.fromESTarget(target), .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify, .keep_names = true });
+            if (target == .es5) try checkSpreadES5ObjectDefinitions(a, result.code);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", result.code } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                std.debug.print("spread dynamic intrinsic case={d} target={s} minify={} expected={s} actual={s} stderr={s} code={s}\n", .{ index, @tagName(target), minify, native.stdout, actual.stdout, actual.stderr, result.code });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        };
+    }
+}
