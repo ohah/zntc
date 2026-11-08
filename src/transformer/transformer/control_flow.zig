@@ -741,7 +741,8 @@ fn visitForStatementCore(self: *Transformer, idx: NodeIndex, has_ready_initializ
                     .span = node.span,
                     .data = .{ .list = stmts },
                 });
-                try @import("semantic_edit.zig").publishCapturedLoopWrapper(self, wrapper, result.loop_fn, for_node, self.current_scope);
+                if (has_ready_initializer)
+                    try @import("semantic_edit.zig").publishCapturedLoopWrapper(self, wrapper, result.loop_fn, for_node, self.current_scope);
                 return wrapper;
             }
 

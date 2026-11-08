@@ -531,6 +531,14 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         }
 
         pub fn prepareIteratorExpressionStatement(self: *Transformer, expression: NodeIndex, context: BindingPatternContext) Transformer.Error!BindingPatternStatementPlan {
+            var direct = expression;
+            while (self.ast.getNode(direct).tag == .parenthesized_expression)
+                direct = self.ast.getNode(direct).data.unary.operand;
+            const assignment = self.ast.getNode(direct);
+            // The binding plan already owns the exact RHS value. A second
+            // result cell adds only a dead write for discarded assignments.
+            if (assignmentNeedsIteratorStatements(self, assignment))
+                return prepareBindingPatternStatement(self, self.ast.getNode(assignment.data.binary.left), assignment.data.binary.right, assignment.span, context);
             const span = self.ast.getNode(expression).span;
             const root = try newPatternBlock(self, context.use_scope, span);
             var actual = context;
@@ -1099,6 +1107,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             access_result.computed_key_temp_identity,
                             identity,
                             span,
+                            null,
                         );
                         if (try emitNestedPatternAssignment(self, inner_target_node, defaulted, span, identity.owner_scope, preparation)) continue;
                         const target_ref = if (inner_target_node.tag == .binding_identifier)
@@ -1370,6 +1379,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             access_result.computed_key_temp_identity,
                             identity,
                             span,
+                            null,
                         );
                     } else access;
                     if (comptime @hasDecl(Transformer, "patternPutValue")) {
@@ -1403,6 +1413,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             access_result.computed_key_temp_identity,
                             identity,
                             span,
+                            null,
                         );
                         try emitTargetAssignOrRecurse(self, right_node.data.binary.left, rhs, span, identity.owner_scope);
                     } else {
@@ -1637,6 +1648,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                                 access_result.computed_key_temp_identity,
                                 root_identity,
                                 span,
+                                decl_kind,
                             );
                             const nested_span = try es_helpers.makeTempVarSpan(self);
                             const nested_temp = try makeDestructuringTempBinding(self, nested_span, decl_kind);
@@ -1653,6 +1665,12 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             const binding = try self.visitNode(value_node.data.binary.left);
                             const default_val = try self.visitNode(value_node.data.binary.right);
                             try rewritePatternDefaultTDZ(self, default_val, pattern, i_loop);
+                            if (!self.options.unsupported.destructuring) {
+                                // Native object binding captures GetV once without
+                                // adding a compiler lexical name visible to eval.
+                                try self.scratch.append(self.allocator, try makeNativeDefaultDeclarator(self, binding, member_access, default_val, span));
+                                continue;
+                            }
                             const defaulted = try buildDefaulted(
                                 self,
                                 member_access,
@@ -1663,6 +1681,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                                 access_result.computed_key_temp_identity,
                                 root_identity,
                                 span,
+                                decl_kind,
                             );
                             const decl = try es_helpers.makeDeclarator(self, binding, defaulted, span);
                             try self.scratch.append(self.allocator, decl);
@@ -1805,6 +1824,20 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         }
 
         /// _ref.key === void 0 ? default : _ref.key (또는 _ref["key"])
+        /// The one-use own-data wrapper has no user hooks. Its value is the
+        /// already selected property access, and native binding initialization
+        /// applies the actual source default without a new lexical temporary.
+        fn makeNativeDefaultDeclarator(self: *Transformer, binding: NodeIndex, access: NodeIndex, fallback: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const key = try es_helpers.makePropertyName(self, "value");
+            const default = try self.ast.addNode(.{ .tag = .assignment_pattern, .span = span, .data = .{ .binary = .{ .left = binding, .right = fallback, .flags = 0 } } });
+            const property = try self.ast.addNode(.{ .tag = .binding_property, .span = span, .data = .{ .binary = .{ .left = key, .right = default, .flags = 0 } } });
+            const pattern = try self.ast.addNode(.{ .tag = .object_pattern, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{property}) } });
+            const value_key = try es_helpers.makePropertyName(self, "value");
+            const value = try self.ast.addNode(.{ .tag = .object_property, .span = span, .data = .{ .binary = .{ .left = value_key, .right = access, .flags = 0 } } });
+            const object = try self.ast.addNode(.{ .tag = .object_expression, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{value}) } });
+            return es_helpers.makeDeclarator(self, pattern, object, span);
+        }
+
         fn buildDefaulted(
             self: *Transformer,
             access: NodeIndex,
@@ -1815,6 +1848,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             computed_key_temp_identity: ?es_helpers.TempIdentityCapture,
             root_identity: es_helpers.TempIdentityCapture,
             span: Span,
+            declaration_kind: ?ast_mod.VariableDeclarationKind,
         ) Transformer.Error!NodeIndex {
             _ = ref_span;
             _ = key_idx;
@@ -1822,8 +1856,22 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 @panic("computed destructuring default lost its captured property key");
             // GetV happens exactly once. A getter can change state or throw;
             // the conditional's defined branch must reuse that same value.
-            const value = try reservePatternTemp(self, span, root_identity.owner_scope);
-            const captured = try es_helpers.makeAssignExpr(self, try patternTempRef(self, value, self.current_scope, span, true), access, span, 0);
+            // Declaration consumers (including Pass 2 parameter prologues)
+            // already own a physical declarator list. Capture GetV there;
+            // leaving a late counter slot would hoist a function-owned temp
+            // into the program after parameter lowering has finished.
+            var value: es_helpers.TempIdentityCapture = undefined;
+            const captured = if (declaration_kind) |kind| capture: {
+                const name = try es_helpers.makeTempVarSpan(self);
+                const temp = try makeDestructuringTempBinding(self, name, kind);
+                try self.scratch.append(self.allocator, try es_helpers.makeDeclarator(self, temp.binding, access, span));
+                try bindPatternTemp(self, temp.binding, name, span, kind, temp.identity);
+                value = temp.identity;
+                break :capture try makeDestructuringTempReadWithIdentity(self, name, value);
+            } else capture: {
+                value = try reservePatternTemp(self, span, root_identity.owner_scope);
+                break :capture try es_helpers.makeAssignExpr(self, try patternTempRef(self, value, self.current_scope, span, true), access, span, 0);
+            };
             const eq_check = try self.ast.addNode(.{
                 .tag = .binary_expression,
                 .span = span,

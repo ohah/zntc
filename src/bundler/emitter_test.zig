@@ -1766,7 +1766,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const super_get_index = std.mem.indexOf(u8, combined.items, "var __superGet2 = (function(O)").?;
     const super_set_index = std.mem.indexOf(u8, combined.items, "var __superSet2 = (function(O)").?;
     const tdz_index = std.mem.indexOf(u8, combined.items, "var __tdz2 = function(name)").?;
-    const read_index = std.mem.indexOf(u8, combined.items, "var __read2 = function(o, n)").?;
+    const read_index = std.mem.indexOf(u8, combined.items, "var __read2 = (").?;
     const tagged_index = std.mem.indexOf(u8, combined.items, "var __taggedTemplateLiteral2 = function").?;
     const using_index = std.mem.indexOf(u8, combined.items, "var __using2 = ((disposeSymbol, apply, TypeErrorCtor) => (stack, value, async, guard) =>").?;
     const call_dispose_index = std.mem.indexOf(u8, combined.items, "var __callDispose2 = (stack, error, hasError) =>").?;
@@ -2618,8 +2618,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected read local
         false,
         .{ .read = "__read2" },
     );
-    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __read2 = function(o, n)"));
-    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __read = function(o, n)"));
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __read2 = ("));
+    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __read = "));
 
     var minified: std.ArrayList(u8) = .empty;
     defer minified.deinit(std.testing.allocator);
@@ -2631,8 +2631,17 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected read local
         false,
         .{ .read = "$rd2" },
     );
-    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $rd2=function(o,n)"));
-    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $rd=function(o,n)"));
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $rd2=("));
+    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $rd="));
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    for ([_][]const u8{ plain.items, minified.items }, [_][]const u8{ "__read2", "$rd2" }) |source, name| {
+        const code = try std.fmt.allocPrint(allocator, "{s}\nconst record={s}([42],0,0);console.log(JSON.stringify([{s}(new Set([20,22]),2),{s}(record,0,1)]));{s}(record,false,4);", .{ source, name, name, name, name });
+        const result = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", code } });
+        try std.testing.expect(result.term == .exited and result.term.exited == 0);
+        try std.testing.expectEqualStrings("[[20,22],42]\n", result.stdout);
+    }
 }
 
 test "appendRuntimeHelpers: generator only" {
