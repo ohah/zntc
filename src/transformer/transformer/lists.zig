@@ -113,7 +113,20 @@ fn visitExtraListWithCssHoist(self: *Transformer, list: NodeList, program: bool)
     while (i < list.len) : (i += 1) {
         // 매 반복마다 extra_data에서 직접 읽기 (재할당 안전)
         const raw_idx = self.ast.extra_data.items[list.start + i];
-        const new_child = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
+        const source_child: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+        const Destructuring = @import("../es2015_destructuring.zig").ES2015Destructuring(Transformer);
+        const source_node = self.ast.getNode(source_child);
+        const iterator_statement = if (self.options.unsupported.block_scoping and source_node.tag == .variable_declaration) demand: {
+            const iteration_initialization = if (comptime @hasDecl(Transformer, "iterationDeclarationNeedsInitialization"))
+                self.iterationDeclarationNeedsInitialization(source_child)
+            else
+                false;
+            break :demand iteration_initialization or (self.options.unsupported.destructuring and try Destructuring.declarationNeedsIteratorStatements(self, source_node));
+        } else false;
+        const new_child = if (iterator_statement)
+            try Destructuring.lowerDestructuringDeclarationStatementAt(self, source_child)
+        else
+            try self.visitNode(source_child);
 
         // css-prop declarations are module-level storage, so drain only at
         // the actual program statement boundary. Appending at program end

@@ -5405,7 +5405,7 @@ fn transpileWithCallbackInternal(
         };
         var candidate_origins = try transformer.reference_origin_map.clone(arena_alloc);
         var candidate_class_self = try transformer.class_self_symbol_map.clone(arena_alloc);
-        var journal = minify_mod.SemanticJournal.init(arena_alloc, analyzer.references.items, .{ .domain = transformer.ast, .root = root, .symbol_ids = transformer.symbol_ids.items, .owners = &analyzer.scope_owner_map, .expressions = &analyzer.node_scope_provenance, .class_self = &transformer.class_self_symbol_map, .symbols = analyzer.symbols.items, .scopes = analyzer.scopes.items, .source_epoch = @intCast(analyzer.scope_history.events.len), .scope_maps = analyzer.scope_maps.items }) catch |err| switch (err) {
+        var journal = minify_mod.SemanticJournal.init(arena_alloc, analyzer.references.items, .{ .domain = transformer.ast, .root = root, .symbol_ids = transformer.symbol_ids.items, .owners = &analyzer.scope_owner_map, .expressions = &analyzer.node_scope_provenance, .class_self = &transformer.class_self_symbol_map, .symbols = analyzer.symbols.items, .scopes = analyzer.scopes.items, .source_scope_count = analyzer.scope_history.source_scopes.len, .source_epoch = @intCast(analyzer.scope_history.events.len), .scope_maps = analyzer.scope_maps.items }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.TransformError,
         };
@@ -5491,6 +5491,10 @@ fn transpileWithCallbackInternal(
             .namespace_member_owners = &analyzer.namespace_member_owners,
             .namespace_declaration_owners = &analyzer.namespace_declaration_owners,
         }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction,
+        };
+        journal.retireDiscardedGeneratedBranches(&editor, root, receipt) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => break :minify_transaction,
         };
@@ -16884,4 +16888,111 @@ test "native lexical state machine escaped collisions keep structured diagnostic
     for (sources) |source| for ([_]bool{ false, true }) |minify| {
         try std.testing.expectError(error.GeneratorNativeLexicalNesting, transpile(std.testing.allocator, source, "escaped-collision.mjs", .{ .unsupported = unsupported, .minify_identifiers = minify, .minify_syntax = minify }));
     };
+}
+
+test "lazy iterator generated branch receipt rejects foreign graph tuples and survives codec" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Retirement = @import("semantic/source_owned_retirement.zig");
+    const History = @import("semantic/scope_frame_history.zig");
+    const source = "const log=[];let a,b,last;function source(){return last={[Symbol.iterator](){return{next(){log.push('next');return{value:undefined,done:false}},return(){log.push('close');return{done:true}}}}}};false?([a=7,b]=source()):0;log.push('skip');console.log(JSON.stringify(log));";
+    const unsupported = TransformOptions.compat.fromESTarget(.es5);
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.unsupported = unsupported;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_source_external_origins = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var t = try Transformer.initFromOwnedAst(a, &parser.ast, .{ .unsupported = unsupported });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.source_owned_retirements = analyzer.source_owned_retirements;
+    t.scope_history = analyzer.scope_history;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.helper_scope_map = analyzer.helper_scope_map;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    t.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
+    t.record_explicit_global_references = true;
+    t.semantic_edit_enabled = true;
+    try t.buildBlockRenameMap();
+    const root = try t.transform();
+    analyzer.class_self_symbol_map = t.class_self_symbol_map;
+    if (try t.finishSemanticEdit()) |edited| analyzer.applyEdit(edited);
+    var editor = try analyzer.beginEdit();
+    // The transformer owns the actual output header; the analyzer's input
+    // pointer is the same header because initFromOwnedAst transfers it.
+    try std.testing.expect(editor.ast == t.ast);
+
+    const minify = @import("transformer/minify.zig");
+    var journal = try minify.SemanticJournal.init(a, editor.references.items, .{ .domain = t.ast, .root = root, .symbol_ids = editor.symbol_ids.items, .owners = &editor.scope_owner_map, .expressions = &editor.node_scope_provenance, .class_self = &analyzer.class_self_symbol_map, .symbols = editor.symbols.items, .scopes = editor.scopes.items, .scope_maps = editor.scope_maps.items, .source_scope_count = analyzer.scope_history.source_scopes.len, .source_epoch = @intCast(analyzer.scope_history.events.len) });
+    minify.minify(t.ast, .{ .symbols = editor.symbols.items, .symbol_ids = editor.symbol_ids.items, .symbol_ids_mut = editor.symbol_ids.items, .semantic_journal = &journal, .scopes = editor.scopes.items, .references = editor.references.items, .unresolved_globals = null, .allow_top_level_inline = true, .preserve_inferred_names = false }, a, root);
+    var origins = t.reference_origin_map;
+    var class_self = analyzer.class_self_symbol_map;
+    try std.testing.expectEqual(@as(usize, 1), journal.discarded_branches.items.len);
+    try journal.apply(&editor, root, &origins, &class_self);
+    try std.testing.expectEqual(@as(usize, 1), editor.source_owned_retirements.count());
+    var iterator = editor.source_owned_retirements.iterator();
+    const entry = iterator.next().?;
+    const sid = entry.key_ptr.*;
+    const original = entry.value_ptr.*;
+    try std.testing.expectEqual(.generated_branch, original.reason);
+    const nodes = try @import("parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, t.ast, root);
+    var live = try std.DynamicBitSet.initEmpty(a, t.ast.nodes.items.len);
+    for (nodes) |raw| live.set(raw);
+    const history = editor.scopeHistoryView();
+    var index = try History.validateAndIndex(a, t.ast, editor.scopes.items, &editor.scope_owner_map, &history, null);
+    try std.testing.expect(index.valid);
+    const roots: Retirement.Roots = .{ .node_scope_provenance = &editor.node_scope_provenance };
+    try std.testing.expect(try Retirement.validateWithIndex(a, t.ast, &editor.source_owned_retirements, &live, editor.symbols.items, editor.symbol_ids.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &editor.helper_scope_map, roots, &index));
+    for (0..10) |variant| {
+        var wrong = original;
+        switch (variant) {
+            0 => wrong.generated_branch.?.branch.dropped.index = .none,
+            1 => wrong.generated_branch.?.branch.condition.index = wrong.generated_branch.?.branch.control.index,
+            2 => wrong.generated_branch.?.branch.control.index = .none,
+            3 => wrong.generated_branch.?.catch_owner.index = wrong.generated_branch.?.branch.dropped.index,
+            4 => wrong.generated_branch.?.catch_scope = wrong.generated_branch.?.branch.root_scope,
+            5 => wrong.generated_branch.?.branch.source_epoch = 0,
+            6 => wrong.source_owner = .none,
+            7 => wrong.source_parent = .none,
+            8 => wrong.declaration.symbol_id = .none,
+            9 => wrong.before.kind = .variable_var,
+            else => unreachable,
+        }
+        editor.source_owned_retirements.getPtr(sid).?.* = wrong;
+        try std.testing.expect(!try Retirement.validateWithIndex(a, t.ast, &editor.source_owned_retirements, &live, editor.symbols.items, editor.symbol_ids.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, &editor.helper_scope_map, roots, &index));
+        editor.source_owned_retirements.getPtr(sid).?.* = original;
+    }
+    analyzer.applyEdit(try editor.finish());
+    var data: @import("bundler/module.zig").ModuleSemanticData = .{ .symbols = analyzer.symbols, .scopes = analyzer.scopes.items, .scope_maps = analyzer.scope_maps.items, .scope_owner_map = analyzer.scope_owner_map, .symbol_ids = analyzer.symbol_ids.items, .references = analyzer.references.items, .exported_names = analyzer.exported_names, .unresolved_references = analyzer.unresolved_references, .helper_scope_map = analyzer.helper_scope_map, .node_scope_provenance = analyzer.node_scope_provenance, .source_owned_retirements = analyzer.source_owned_retirements, .scope_history = analyzer.scope_history };
+    const codec = @import("bundler/semantic_codec.zig");
+    var wire: std.ArrayList(u8) = .empty;
+    try codec.serialize(&data, &wire, a);
+    const decoded = try codec.deserialize(wire.items, a);
+    const restored = decoded.source_owned_retirements.get(sid).?;
+    try std.testing.expect(std.meta.eql(original.generated_branch, restored.generated_branch));
+    try std.testing.expect(Retirement.equalSymbol(original.before, restored.before));
+    try std.testing.expect(std.meta.eql(original.declaration, restored.declaration));
+    var decoded_history = decoded.scope_history;
+    var decoded_index = try History.validateAndIndex(a, t.ast, decoded.scopes, &decoded.scope_owner_map, &decoded_history, null);
+    try std.testing.expect(decoded_index.valid);
+    try std.testing.expect(try Retirement.validateWithIndex(a, t.ast, &decoded.source_owned_retirements, &live, decoded.symbols.items, decoded.symbol_ids, decoded.scopes, decoded.scope_maps, &decoded.scope_owner_map, decoded.references, &decoded.helper_scope_map, .{ .node_scope_provenance = &decoded.node_scope_provenance }, &decoded_index));
+    var old = try a.dupe(u8, wire.items);
+    const stale: u32 = 52;
+    @memcpy(old[4..8], std.mem.asBytes(&stale));
+    try std.testing.expectError(error.UnsupportedVersion, codec.deserialize(old, a));
 }

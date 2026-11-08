@@ -30,6 +30,21 @@ const es_helpers = @import("es_helpers.zig");
 const es2015_class = @import("es2015_class.zig");
 const es2015_block_scoping = @import("es2015_block_scoping.zig");
 
+pub const BindingPatternContext = struct {
+    output_scope: ?@import("../semantic/scope.zig").ScopeId = null,
+    use_scope: @import("../semantic/scope.zig").ScopeId,
+    /// Initial evaluation owner already authenticated by the caller. Nested
+    /// generated blocks keep this frontier for the source default expressions.
+    source_scope: ?@import("../semantic/scope.zig").ScopeId = null,
+    /// Exact declaration key for a producer-recorded iteration initializer.
+    initialization_source: NodeIndex = .none,
+};
+
+pub const BindingPatternStatementPlan = struct {
+    statement: NodeIndex,
+    value: NodeIndex,
+};
+
 pub fn ES2015Destructuring(comptime Transformer: type) type {
     return struct {
         const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
@@ -319,6 +334,124 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             });
         }
 
+        /// Select only binding-pattern syntax; defaults' expressions, member
+        /// keys and nested function bodies never participate in this demand.
+        pub fn declarationNeedsIteratorStatements(self: *Transformer, declaration: Node) Transformer.Error!bool {
+            if (declaration.tag != .variable_declaration) return false;
+            var pending: std.ArrayList(NodeIndex) = .empty;
+            defer pending.deinit(self.allocator);
+            const start = self.ast.extra_data.items[declaration.data.extra + 1];
+            const length = self.ast.extra_data.items[declaration.data.extra + 2];
+            for (0..length) |index| {
+                const declarator = self.ast.getNode(self.ast.readExtraNode(start, @intCast(index)));
+                if (try expressionNeedsIteratorStatements(self, self.ast.readExtraNode(declarator.data.extra, 2))) return true;
+                try pending.append(self.allocator, self.ast.readExtraNode(declarator.data.extra, 0));
+            }
+            while (pending.pop()) |index| {
+                if (index.isNone()) continue;
+                const node = self.ast.getNode(index);
+                switch (node.tag) {
+                    .array_pattern => return true,
+                    .object_pattern => {
+                        const split = self.ast.nodeListSplitRest(node.data.list);
+                        for (split.elements) |raw| {
+                            const property = self.ast.getNode(@fromBackingInt(raw));
+                            if (property.tag == .binding_property) try pending.append(self.allocator, if (property.data.binary.right.isNone()) property.data.binary.left else property.data.binary.right);
+                        }
+                        if (split.rest_operand) |rest| try pending.append(self.allocator, rest);
+                    },
+                    .assignment_pattern => try pending.append(self.allocator, node.data.binary.left),
+                    .binding_rest_element => try pending.append(self.allocator, node.data.unary.operand),
+                    else => {},
+                }
+            }
+            return false;
+        }
+
+        /// A statement-list consumer may publish a real try/finally region.
+        /// Source declarations stay var storage in their original var owner;
+        /// each source binding leaf remains the physical declaration anchor.
+        pub fn lowerDestructuringDeclarationStatement(self: *Transformer, declaration: Node) Transformer.Error!NodeIndex {
+            return lowerDestructuringDeclarationStatementImpl(self, declaration, .none);
+        }
+
+        pub fn lowerDestructuringDeclarationStatementAt(self: *Transformer, declaration: NodeIndex) Transformer.Error!NodeIndex {
+            return lowerDestructuringDeclarationStatementImpl(self, self.ast.getNode(declaration), declaration);
+        }
+
+        fn lowerDestructuringDeclarationStatementImpl(self: *Transformer, declaration: Node, declaration_key: NodeIndex) Transformer.Error!NodeIndex {
+            std.debug.assert(self.options.unsupported.block_scoping);
+            const source_scope = self.current_scope;
+            const block = try newPatternBlock(self, source_scope, declaration.span);
+            const storage = if (self.semantic_edit_enabled) self.nearestVarScope(source_scope) else source_scope;
+            const saved = self.current_scope;
+            self.current_scope = block.scope;
+            defer self.current_scope = saved;
+            const context: BindingPatternContext = .{ .output_scope = if (storage.isNone()) null else storage, .use_scope = block.scope, .source_scope = source_scope, .initialization_source = declaration_key };
+            var statements: std.ArrayList(NodeIndex) = .empty;
+            defer statements.deinit(self.allocator);
+            var declarations: std.ArrayList(NodeIndex) = .empty;
+            defer declarations.deinit(self.allocator);
+            const start = self.ast.extra_data.items[declaration.data.extra + 1];
+            const length = self.ast.extra_data.items[declaration.data.extra + 2];
+            for (0..length) |index| {
+                const declarator_index = self.ast.readExtraNode(start, @intCast(index));
+                const declarator = self.ast.getNode(declarator_index);
+                const binding = self.ast.readExtraNode(declarator.data.extra, 0);
+                const source_initializer = self.ast.readExtraNode(declarator.data.extra, 2);
+                const pattern = self.ast.getNode(binding);
+                const initializer = if (comptime @hasDecl(Transformer, "patternInitializer"))
+                    if (pattern.tag == .array_pattern or pattern.tag == .object_pattern) try self.patternInitializer(binding, source_initializer) else source_initializer
+                else
+                    source_initializer;
+                if (pattern.tag != .array_pattern and pattern.tag != .object_pattern) {
+                    const value = if (try expressionNeedsIteratorStatements(self, initializer)) value: {
+                        const prepared = if (comptime @hasDecl(Transformer, "patternInitializer"))
+                            try self.patternInitializer(binding, initializer)
+                        else
+                            initializer;
+                        const plan = try prepareIteratorExpressionStatement(self, prepared, context);
+                        try statements.append(self.allocator, try self.visitNode(plan.statement));
+                        break :value plan.value;
+                    } else value: {
+                        try movePatternExpression(self, initializer, source_scope, block.scope);
+                        const visited = try self.visitNode(declarator_index);
+                        const selected = self.ast.readExtraNode(self.ast.getNode(visited).data.extra, 2);
+                        break :value if (comptime @hasDecl(Transformer, "patternInitializer"))
+                            try self.patternInitializer(binding, selected)
+                        else
+                            selected;
+                    };
+                    const source_leaf = self.ast.getNode(binding);
+                    const selected_name = if (self.renamedNameOf(binding)) |name| try self.ast.addString(name) else source_leaf.data.string_ref;
+                    const physical = try self.makeUserBinding(selected_name, binding);
+                    try declarations.append(self.allocator, try es_helpers.makeDeclarator(self, physical, .none, declaration.span));
+                    if (!value.isNone()) try emitBindingPatternAt(self, binding, value, declaration.span, context, .retain, &statements);
+                    continue;
+                }
+                var walker = try ast_walk.bindingIdentifiers(self.allocator, self.ast, binding, .{});
+                defer walker.deinit();
+                while (try walker.next()) |leaf| {
+                    const source = self.ast.getNode(leaf);
+                    const selected_name = if (self.renamedNameOf(leaf)) |name| try self.ast.addString(name) else source.data.string_ref;
+                    // This is a new physical declaration, not a retained
+                    // source leaf. Reuse the ordinary destructuring producer's
+                    // exact binding-copy/reanchor handoff before emitting it.
+                    const selected = try self.makeUserBinding(selected_name, leaf);
+                    try declarations.append(self.allocator, try es_helpers.makeDeclarator(self, selected, .none, declaration.span));
+                }
+                const plan = try prepareBindingPatternStatement(self, pattern, initializer, declaration.span, context);
+                try statements.append(self.allocator, try self.visitNode(plan.statement));
+            }
+            // The original lexical owner must keep the physical declarations.
+            // Only iterator evaluation enters the generated region. Otherwise
+            // outputBindingTargetScope would move source let/const storage into
+            // the new block and detach earlier TDZ initialization references.
+            if (declarations.items.len != 0) try self.pending_nodes.append(self.allocator, try es_helpers.makeVarDeclaration(self, declarations.items, .@"var", declaration.span));
+            self.ast.nodes.items[@backingInt(block.node)].data.list = try self.ast.addNodeList(statements.items);
+            return block.node;
+        }
+
         /// binding pattern (object_pattern / array_pattern) 을 destructuring assignment sequence
         /// 로 분해. async/generator 선언/catch 준비 단계 (es2015_generator.prepareDeclarationPlan)
         /// 처럼 `var { x } = await ...` 가 `({ x: x } = _state.sent())` 같은 binding-pattern-as-LHS
@@ -367,6 +500,498 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// keys. The state planner owns their later execution and suspension.
         pub fn prepareBindingPatternAssignment(self: *Transformer, pattern: Node, rhs: NodeIndex, span: Span, output_scope: @import("../semantic/scope.zig").ScopeId) Transformer.Error!NodeIndex {
             return lowerBindingPatternAssignmentWithPreparation(self, pattern, rhs, span, output_scope, .retain);
+        }
+
+        /// Only expression carriers whose evaluation order is explicitly
+        /// represented below participate. Calls retain their own Reference
+        /// protocol; this demand does not silently lift their arguments.
+        pub fn expressionNeedsIteratorStatements(self: *Transformer, expression: NodeIndex) Transformer.Error!bool {
+            var pending: std.ArrayList(NodeIndex) = .empty;
+            defer pending.deinit(self.allocator);
+            try pending.append(self.allocator, expression);
+            while (pending.pop()) |index| {
+                if (index.isNone()) continue;
+                const node = self.ast.getNode(index);
+                if (assignmentNeedsIteratorStatements(self, node)) return true;
+                switch (node.tag) {
+                    .parenthesized_expression => try pending.append(self.allocator, node.data.unary.operand),
+                    .sequence_expression => for (0..node.data.list.len) |offset| {
+                        try pending.append(self.allocator, self.ast.readExtraNode(node.data.list.start, @intCast(offset)));
+                    },
+                    .logical_expression => try pending.appendSlice(self.allocator, &.{ node.data.binary.left, node.data.binary.right }),
+                    .conditional_expression => try pending.appendSlice(self.allocator, &.{ node.data.ternary.a, node.data.ternary.b, node.data.ternary.c }),
+                    else => {},
+                }
+            }
+            return false;
+        }
+
+        fn iteratorValueBoundary(self: *Transformer, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            return self.ast.addNode(.{ .tag = .sequence_expression, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{ try es_helpers.makeNumericLiteral(self, 0), value }) } });
+        }
+
+        pub fn prepareIteratorExpressionStatement(self: *Transformer, expression: NodeIndex, context: BindingPatternContext) Transformer.Error!BindingPatternStatementPlan {
+            const span = self.ast.getNode(expression).span;
+            const root = try newPatternBlock(self, context.use_scope, span);
+            var actual = context;
+            actual.source_scope = context.source_scope orelse context.use_scope;
+            actual.use_scope = root.scope;
+            if (actual.output_scope == null and self.semantic_edit_enabled) actual.output_scope = self.nearestVarScope(context.use_scope);
+            const saved = self.current_scope;
+            self.current_scope = actual.use_scope;
+            defer self.current_scope = saved;
+            var statements: std.ArrayList(NodeIndex) = .empty;
+            defer statements.deinit(self.allocator);
+            const value = try emitIteratorExpressionValue(self, expression, actual, &statements);
+            const result = try reservePatternTemp(self, span, actual.output_scope);
+            try appendPatternExpression(self, &statements, try es_helpers.makeAssignExpr(self, try patternTempRef(self, result, actual.use_scope, span, true), try iteratorValueBoundary(self, value, span), span, 0), span);
+            self.ast.nodes.items[@backingInt(root.node)].data.list = try self.ast.addNodeList(statements.items);
+            return .{ .statement = root.node, .value = try patternTempRef(self, result, context.use_scope, span, false) };
+        }
+
+        fn emitIteratorExpressionValue(self: *Transformer, expression: NodeIndex, context: BindingPatternContext, out: *std.ArrayList(NodeIndex)) Transformer.Error!NodeIndex {
+            const Statements = std.ArrayList(NodeIndex);
+            const Value = struct { node: NodeIndex, context: BindingPatternContext, out: *Statements };
+            const Assign = struct { identity: es_helpers.TempIdentityCapture, context: BindingPatternContext, out: *Statements, span: Span };
+            const Finish = struct {
+                condition: NodeIndex,
+                yes: PatternBlock,
+                no: ?PatternBlock,
+                yes_statements: *Statements,
+                no_statements: ?*Statements,
+                identity: es_helpers.TempIdentityCapture,
+                context: BindingPatternContext,
+                out: *Statements,
+                span: Span,
+            };
+            const Work = union(enum) {
+                value: Value,
+                discard: struct { out: *Statements, span: Span },
+                conditional: Value,
+                logical: Value,
+                assign: Assign,
+                finish: Finish,
+            };
+            var work: std.ArrayList(Work) = .empty;
+            defer work.deinit(self.allocator);
+            var values: std.ArrayList(NodeIndex) = .empty;
+            defer values.deinit(self.allocator);
+            var owned: std.ArrayList(*Statements) = .empty;
+            defer {
+                for (owned.items) |statements| {
+                    statements.deinit(self.allocator);
+                    self.allocator.destroy(statements);
+                }
+                owned.deinit(self.allocator);
+            }
+            const saved = self.current_scope;
+            defer self.current_scope = saved;
+            try work.append(self.allocator, .{ .value = .{ .node = expression, .context = context, .out = out } });
+            while (work.pop()) |next| switch (next) {
+                .value => |item| {
+                    self.current_scope = item.context.use_scope;
+                    const node = self.ast.getNode(item.node);
+                    if (assignmentNeedsIteratorStatements(self, node)) {
+                        const plan = try prepareBindingPatternStatement(self, self.ast.getNode(node.data.binary.left), node.data.binary.right, node.span, item.context);
+                        try item.out.append(self.allocator, plan.statement);
+                        try values.append(self.allocator, plan.value);
+                    } else switch (node.tag) {
+                        .parenthesized_expression => try work.append(self.allocator, .{ .value = .{ .node = node.data.unary.operand, .context = item.context, .out = item.out } }),
+                        .sequence_expression => {
+                            var offset = node.data.list.len;
+                            while (offset > 0) {
+                                offset -= 1;
+                                if (offset + 1 < node.data.list.len) try work.append(self.allocator, .{ .discard = .{ .out = item.out, .span = node.span } });
+                                try work.append(self.allocator, .{ .value = .{ .node = self.ast.readExtraNode(node.data.list.start, offset), .context = item.context, .out = item.out } });
+                            }
+                        },
+                        .conditional_expression, .logical_expression => {
+                            try work.append(self.allocator, if (node.tag == .conditional_expression) .{ .conditional = item } else .{ .logical = item });
+                            try work.append(self.allocator, .{ .value = .{ .node = if (node.tag == .conditional_expression) node.data.ternary.a else node.data.binary.left, .context = item.context, .out = item.out } });
+                        },
+                        else => try values.append(self.allocator, try patternExpression(self, item.node, item.context, .retain)),
+                    }
+                },
+                .discard => |item| try appendPatternExpression(self, item.out, values.pop().?, item.span),
+                .assign => |item| {
+                    self.current_scope = item.context.use_scope;
+                    try appendPatternExpression(self, item.out, try es_helpers.makeAssignExpr(self, try patternTempRef(self, item.identity, item.context.use_scope, item.span, true), try iteratorValueBoundary(self, values.pop().?, item.span), item.span, 0), item.span);
+                },
+                .conditional, .logical => |item| {
+                    self.current_scope = item.context.use_scope;
+                    const node = self.ast.getNode(item.node);
+                    const left = values.pop().?;
+                    const identity = try reservePatternTemp(self, node.span, item.context.output_scope);
+                    var condition = left;
+                    if (next == .logical) {
+                        try appendPatternExpression(self, item.out, try es_helpers.makeAssignExpr(self, try patternTempRef(self, identity, item.context.use_scope, node.span, true), try iteratorValueBoundary(self, left, node.span), node.span, 0), node.span);
+                        const read = try patternTempRef(self, identity, item.context.use_scope, node.span, false);
+                        const op: token_mod.Kind = @fromBackingInt(@intCast(node.data.binary.flags));
+                        condition = switch (op) {
+                            .amp2 => read,
+                            .pipe2 => try es_helpers.makeUnaryNot(self, read, node.span),
+                            .question2 => nullish: {
+                                const is_null = try self.ast.addNode(.{ .tag = .binary_expression, .span = node.span, .data = .{ .binary = .{ .left = read, .right = try es_helpers.makeNullLiteral(self), .flags = @backingInt(token_mod.Kind.eq3) } } });
+                                const is_void = try self.ast.addNode(.{ .tag = .binary_expression, .span = node.span, .data = .{ .binary = .{ .left = try patternTempRef(self, identity, item.context.use_scope, node.span, false), .right = try es_helpers.makeVoidZero(self, node.span), .flags = @backingInt(token_mod.Kind.eq3) } } });
+                                break :nullish try self.ast.addNode(.{ .tag = .logical_expression, .span = node.span, .data = .{ .binary = .{ .left = is_null, .right = is_void, .flags = @backingInt(token_mod.Kind.pipe2) } } });
+                            },
+                            else => std.debug.panic("iterator expression has an invalid logical operator", .{}),
+                        };
+                    }
+                    const yes = try newPatternBlock(self, item.context.use_scope, node.span);
+                    const yes_statements = try self.allocator.create(Statements);
+                    yes_statements.* = .empty;
+                    owned.append(self.allocator, yes_statements) catch |err| {
+                        self.allocator.destroy(yes_statements);
+                        return err;
+                    };
+                    const no: ?PatternBlock = if (next == .conditional) try newPatternBlock(self, item.context.use_scope, node.span) else null;
+                    const no_statements: ?*Statements = if (no != null) no_list: {
+                        const statements = try self.allocator.create(Statements);
+                        statements.* = .empty;
+                        owned.append(self.allocator, statements) catch |err| {
+                            self.allocator.destroy(statements);
+                            return err;
+                        };
+                        break :no_list statements;
+                    } else null;
+                    try work.append(self.allocator, .{ .finish = .{ .condition = condition, .yes = yes, .no = no, .yes_statements = yes_statements, .no_statements = no_statements, .identity = identity, .context = item.context, .out = item.out, .span = node.span } });
+                    if (no) |alternative| {
+                        var alternate_context = item.context;
+                        alternate_context.use_scope = alternative.scope;
+                        try work.append(self.allocator, .{ .assign = .{ .identity = identity, .context = alternate_context, .out = no_statements.?, .span = node.span } });
+                        try work.append(self.allocator, .{ .value = .{ .node = node.data.ternary.c, .context = alternate_context, .out = no_statements.? } });
+                    }
+                    var yes_context = item.context;
+                    yes_context.use_scope = yes.scope;
+                    try work.append(self.allocator, .{ .assign = .{ .identity = identity, .context = yes_context, .out = yes_statements, .span = node.span } });
+                    try work.append(self.allocator, .{ .value = .{ .node = if (next == .conditional) node.data.ternary.b else node.data.binary.right, .context = yes_context, .out = yes_statements } });
+                },
+                .finish => |item| {
+                    self.ast.nodes.items[@backingInt(item.yes.node)].data.list = try self.ast.addNodeList(item.yes_statements.items);
+                    if (item.no) |alternative| self.ast.nodes.items[@backingInt(alternative.node)].data.list = try self.ast.addNodeList(item.no_statements.?.items);
+                    try item.out.append(self.allocator, try self.ast.addNode(.{ .tag = .if_statement, .span = item.span, .data = .{ .ternary = .{ .a = item.condition, .b = item.yes.node, .c = if (item.no) |alternative| alternative.node else .none } } }));
+                    try values.append(self.allocator, try patternTempRef(self, item.identity, item.context.use_scope, item.span, false));
+                },
+            };
+            if (values.items.len != 1) std.debug.panic("iterator expression lost its unique value", .{});
+            return values.items[0];
+        }
+
+        pub fn arrayAssignmentValue(self: *Transformer, expression: NodeIndex) ?Node {
+            var selected = expression;
+            while (!selected.isNone() and self.ast.getNode(selected).tag == .parenthesized_expression)
+                selected = self.ast.getNode(selected).data.unary.operand;
+            if (selected.isNone()) return null;
+            const assignment = self.ast.getNode(selected);
+            return if (assignmentNeedsIteratorStatements(self, assignment)) assignment else null;
+        }
+
+        pub fn lowerIteratorValueStatement(self: *Transformer, statement: Node, expression: NodeIndex) Transformer.Error!NodeIndex {
+            const source_scope = self.current_scope;
+            const region = try newPatternBlock(self, source_scope, statement.span);
+            const plan = try prepareIteratorExpressionStatement(self, expression, .{ .use_scope = region.scope, .source_scope = source_scope });
+            const saved = self.current_scope;
+            self.current_scope = region.scope;
+            defer self.current_scope = saved;
+            const ready = try self.visitNode(plan.statement);
+            var tail = statement;
+            tail.data.unary.operand = plan.value;
+            const returned = try self.ast.addNode(tail);
+            self.ast.nodes.items[@backingInt(region.node)].data.list = try self.ast.addNodeList(&.{ ready, returned });
+            return region.node;
+        }
+
+        pub fn assignmentNeedsIteratorStatements(self: *Transformer, assignment: Node) bool {
+            if (assignment.tag != .assignment_expression) return false;
+            return self.ast.getNode(assignment.data.binary.left).tag == .array_assignment_target;
+        }
+
+        /// Statement-producing binding initialization. Each array owns its own
+        /// IteratorRecord and try/finally lifetime; no source suspension moves
+        /// under a callback. The caller owns scheduling this actual ready AST.
+        pub fn prepareBindingPatternStatement(self: *Transformer, pattern: Node, rhs: NodeIndex, span: Span, context: BindingPatternContext) Transformer.Error!BindingPatternStatementPlan {
+            return bindingPatternStatement(self, pattern, rhs, span, context, .retain);
+        }
+
+        pub fn lowerBindingPatternStatement(self: *Transformer, pattern: Node, rhs: NodeIndex, span: Span, context: BindingPatternContext) Transformer.Error!BindingPatternStatementPlan {
+            return bindingPatternStatement(self, pattern, rhs, span, context, .visit);
+        }
+
+        fn bindingPatternStatement(self: *Transformer, pattern: Node, rhs: NodeIndex, span: Span, context: BindingPatternContext, comptime preparation: PatternPreparation) Transformer.Error!BindingPatternStatementPlan {
+            const saved = self.current_scope;
+            defer self.current_scope = saved;
+            const block = try newPatternBlock(self, context.use_scope, span);
+            var actual = context;
+            actual.source_scope = context.source_scope orelse context.use_scope;
+            actual.use_scope = block.scope;
+            if (actual.output_scope == null and self.semantic_edit_enabled) actual.output_scope = self.nearestVarScope(context.use_scope);
+            self.current_scope = actual.use_scope;
+            var statements: std.ArrayList(NodeIndex) = .empty;
+            defer statements.deinit(self.allocator);
+            const value = try reservePatternTemp(self, span, actual.output_scope);
+            try movePatternExpression(self, rhs, actual.source_scope.?, actual.use_scope);
+            try appendPatternExpression(self, &statements, try es_helpers.makeAssignExpr(self, try patternTempRef(self, value, actual.use_scope, span, true), rhs, span, 0), span);
+            if (!actual.initialization_source.isNone()) {
+                if (comptime @hasDecl(Transformer, "iterationInitialization"))
+                    try self.iterationInitialization(actual.initialization_source, block.node, actual.use_scope, &statements);
+                actual.initialization_source = .none;
+            }
+            try emitBindingPatternStatements(self, pattern, try patternTempRef(self, value, actual.use_scope, span, false), span, actual, preparation, &statements);
+            self.ast.nodes.items[@backingInt(block.node)].data.list = try self.ast.addNodeList(statements.items);
+            return .{ .statement = block.node, .value = try patternTempRef(self, value, context.use_scope, span, false) };
+        }
+
+        const PatternBlock = struct { node: NodeIndex, scope: @import("../semantic/scope.zig").ScopeId };
+
+        fn newPatternBlock(self: *Transformer, parent: @import("../semantic/scope.zig").ScopeId, span: Span) Transformer.Error!PatternBlock {
+            const block = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+            const scope = if (self.semantic_edit_enabled) try self.addGeneratedScope(parent, block, .block) else parent;
+            return .{ .node = block, .scope = scope };
+        }
+
+        /// Move only this actual source expression frontier into its generated
+        /// evaluation block. Bindings retain their source/storage SymbolIds.
+        pub fn movePatternExpression(self: *Transformer, root: NodeIndex, source: @import("../semantic/scope.zig").ScopeId, target: @import("../semantic/scope.zig").ScopeId) Transformer.Error!void {
+            if (!self.semantic_edit_enabled or source == target or root.isNone()) return;
+            try self.reparentGeneratedBodyScopes(source, target, root);
+            var pending: std.ArrayList(NodeIndex) = .empty;
+            defer pending.deinit(self.allocator);
+            var seen: std.AutoHashMapUnmanaged(NodeIndex, void) = .empty;
+            defer seen.deinit(self.allocator);
+            try pending.append(self.allocator, root);
+            while (pending.pop()) |index| {
+                if (index.isNone()) continue;
+                const slot = try seen.getOrPut(self.allocator, index);
+                if (slot.found_existing) continue;
+                const editor = &self.semantic_editor.?;
+                const maybe = editor.referenceForNode(index) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => std.debug.panic("iterator expression lost its source reference: {s}", .{@errorName(err)}),
+                };
+                if (maybe) |reference| {
+                    if (!reference.flags.declare and reference.scope_id == source) {
+                        if (self.tracked_runtime_helper_ref_index.contains(@backingInt(index))) try self.relocateRuntimeHelperRef(index, target) else editor.moveReference(index, target, reference.stmt_idx, reference.scope_stmt_idx) catch |err| switch (err) {
+                            error.OutOfMemory => return error.OutOfMemory,
+                            else => std.debug.panic("iterator expression cannot move its source reference: {s}", .{@errorName(err)}),
+                        };
+                    }
+                }
+                var children = ast_walk.children(self.ast, self.ast.getNode(index));
+                while (children.next()) |child| try pending.append(self.allocator, child);
+            }
+        }
+
+        fn patternExpression(self: *Transformer, source: NodeIndex, context: BindingPatternContext, comptime preparation: PatternPreparation) Transformer.Error!NodeIndex {
+            try movePatternExpression(self, source, context.source_scope orelse context.use_scope, context.use_scope);
+            return patternChild(self, source, preparation);
+        }
+
+        fn appendPatternExpression(self: *Transformer, out: *std.ArrayList(NodeIndex), expression: NodeIndex, span: Span) Transformer.Error!void {
+            try out.append(self.allocator, try es_helpers.makeExprStmt(self, expression, span));
+        }
+
+        fn patternTempRef(self: *Transformer, identity: es_helpers.TempIdentityCapture, scope: @import("../semantic/scope.zig").ScopeId, span: Span, write: bool) Transformer.Error!NodeIndex {
+            var at_use = identity;
+            at_use.reference_scope = scope;
+            return es_helpers.makeTempRefFromIdentity(self, at_use, span, if (write) .{ .write = true } else .{ .read = true });
+        }
+
+        fn iteratorOperation(self: *Transformer, value: NodeIndex, argument: NodeIndex, operation: u32, span: Span) Transformer.Error!NodeIndex {
+            self.runtime_helpers.read = true;
+            return es_helpers.makeCallExpr(self, try es_helpers.makeRuntimeHelperRef(self, "__read"), &.{ value, argument, try es_helpers.makeNumericLiteral(self, operation) }, span);
+        }
+
+        fn iteratorStep(self: *Transformer, record: es_helpers.TempIdentityCapture, operation: u32, context: BindingPatternContext, span: Span) Transformer.Error!NodeIndex {
+            return iteratorOperation(self, try patternTempRef(self, record, context.use_scope, span, false), try es_helpers.makeNumericLiteral(self, 0), operation, span);
+        }
+
+        fn emitBindingPatternStatements(self: *Transformer, pattern: Node, rhs: NodeIndex, span: Span, context: BindingPatternContext, comptime preparation: PatternPreparation, out: *std.ArrayList(NodeIndex)) Transformer.Error!void {
+            const saved = self.current_scope;
+            self.current_scope = context.use_scope;
+            defer self.current_scope = saved;
+            switch (pattern.tag) {
+                .assignment_pattern, .assignment_target_with_default => {
+                    const original_target = pattern.data.binary.left;
+                    const target_node = self.ast.getNode(original_target);
+                    const selected_target = if (target_node.tag == .static_member_expression or target_node.tag == .computed_member_expression)
+                        try prepareIteratorAssignmentReference(self, original_target, span, context, preparation, out)
+                    else
+                        original_target;
+                    const value = try reservePatternTemp(self, span, context.output_scope);
+                    try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, try patternTempRef(self, value, context.use_scope, span, true), rhs, span, 0), span);
+                    const check = try self.ast.addNode(.{ .tag = .binary_expression, .span = span, .data = .{ .binary = .{
+                        .left = try patternTempRef(self, value, context.use_scope, span, false),
+                        .right = try es_helpers.makeVoidZero(self, span),
+                        .flags = @backingInt(token_mod.Kind.eq3),
+                    } } });
+                    if (try expressionNeedsIteratorStatements(self, pattern.data.binary.right)) {
+                        const branch = try newPatternBlock(self, context.use_scope, span);
+                        var branch_context = context;
+                        branch_context.use_scope = branch.scope;
+                        const default_plan = try prepareIteratorExpressionStatement(self, pattern.data.binary.right, branch_context);
+                        const update = try es_helpers.makeExprStmt(self, try es_helpers.makeAssignExpr(self, try patternTempRef(self, value, branch.scope, span, true), default_plan.value, span, 0), span);
+                        self.ast.nodes.items[@backingInt(branch.node)].data.list = try self.ast.addNodeList(&.{ default_plan.statement, update });
+                        try out.append(self.allocator, try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{ .a = check, .b = branch.node, .c = .none } } }));
+                        return emitBindingPatternAt(self, selected_target, try patternTempRef(self, value, context.use_scope, span, false), span, context, preparation, out);
+                    }
+                    const selected = try self.ast.addNode(.{ .tag = .conditional_expression, .span = span, .data = .{ .ternary = .{
+                        .a = check,
+                        .b = try patternExpression(self, pattern.data.binary.right, context, preparation),
+                        .c = try patternTempRef(self, value, context.use_scope, span, false),
+                    } } });
+                    return emitBindingPatternAt(self, selected_target, selected, span, context, preparation, out);
+                },
+                .array_pattern, .array_assignment_target => return emitIteratorBindingStatements(self, pattern, rhs, span, context, preparation, out),
+                .object_pattern, .object_assignment_target => return emitObjectBindingStatements(self, pattern, rhs, span, context, preparation, out),
+                else => std.debug.panic("iterator binding plan received a non-binding pattern tag: {s}", .{@tagName(pattern.tag)}),
+            }
+        }
+
+        fn emitIteratorBindingStatements(self: *Transformer, pattern: Node, rhs: NodeIndex, span: Span, context: BindingPatternContext, comptime preparation: PatternPreparation, out: *std.ArrayList(NodeIndex)) Transformer.Error!void {
+            const record = try reservePatternTemp(self, span, context.output_scope);
+            const thrown = try reservePatternTemp(self, span, context.output_scope);
+            try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, try patternTempRef(self, record, context.use_scope, span, true), try es_helpers.makeVoidZero(self, span), span, 0), span);
+            try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, try patternTempRef(self, thrown, context.use_scope, span, true), try es_helpers.makeBoolLiteral(self, false), span, 0), span);
+            const try_block = try newPatternBlock(self, context.use_scope, span);
+            var inside = context;
+            inside.use_scope = try_block.scope;
+            const saved_scope = self.current_scope;
+            defer self.current_scope = saved_scope;
+            self.current_scope = inside.use_scope;
+            var body: std.ArrayList(NodeIndex) = .empty;
+            defer body.deinit(self.allocator);
+            try movePatternExpression(self, rhs, context.use_scope, inside.use_scope);
+            const opened = try iteratorOperation(self, rhs, try es_helpers.makeNumericLiteral(self, 0), 0, span);
+            try appendPatternExpression(self, &body, try es_helpers.makeAssignExpr(self, try patternTempRef(self, record, inside.use_scope, span, true), opened, span, 0), span);
+            const split = self.ast.nodeListSplitRest(pattern.data.list);
+            const length = split.elements.len;
+            const rest = split.rest_operand;
+            for (0..length) |index| {
+                const leaf = self.ast.readExtraNode(pattern.data.list.start, @intCast(index));
+                const node = self.ast.getNode(leaf);
+                if (node.tag == .elision) {
+                    try appendPatternExpression(self, &body, try iteratorStep(self, record, 2, inside, span), span);
+                } else try emitBindingPatternAt(self, leaf, try iteratorStep(self, record, 1, inside, span), span, inside, preparation, &body);
+            }
+            if (rest) |leaf| try emitBindingPatternAt(self, leaf, try iteratorStep(self, record, 3, inside, span), span, inside, preparation, &body);
+            self.ast.nodes.items[@backingInt(try_block.node)].data.list = try self.ast.addNodeList(body.items);
+            self.current_scope = context.use_scope;
+            const caught_name = try es_helpers.makeTempVarSpan(self);
+            const caught = try es_helpers.makeSyntheticBinding(self, caught_name);
+            es_helpers.consumeTempVarSpan(self, caught_name);
+            const catch_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+            const clause = try self.ast.addNode(.{ .tag = .catch_clause, .span = span, .data = .{ .binary = .{ .left = caught, .right = catch_body, .flags = 0 } } });
+            const catch_scope = if (self.semantic_edit_enabled) try self.addGeneratedScope(context.use_scope, clause, .catch_clause) else context.use_scope;
+            const catch_body_scope = if (self.semantic_edit_enabled) try self.addGeneratedScope(catch_scope, catch_body, .block) else catch_scope;
+            const caught_sid = if (self.semantic_edit_enabled) try self.declareSyntheticInScope(caught, span, .catch_binding, catch_scope) else null;
+            const caught_ref = try es_helpers.makeExactSyntheticRefAt(self, caught_name, span);
+            if (caught_sid) |sid| try self.addSyntheticRefInScope(caught_ref, sid, catch_body_scope, .{ .read = true });
+            const mark = try es_helpers.makeExprStmt(self, try es_helpers.makeAssignExpr(self, try patternTempRef(self, thrown, catch_body_scope, span, true), try es_helpers.makeBoolLiteral(self, true), span, 0), span);
+            const rethrow = try self.ast.addNode(.{ .tag = .throw_statement, .span = span, .data = .{ .unary = .{ .operand = caught_ref, .flags = 0 } } });
+            self.ast.nodes.items[@backingInt(catch_body)].data.list = try self.ast.addNodeList(&.{ mark, rethrow });
+            const final_body = try newPatternBlock(self, context.use_scope, span);
+            self.current_scope = final_body.scope;
+            const closed = try iteratorOperation(self, try patternTempRef(self, record, final_body.scope, span, false), try patternTempRef(self, thrown, final_body.scope, span, false), 4, span);
+            self.ast.nodes.items[@backingInt(final_body.node)].data.list = try self.ast.addNodeList(&.{try es_helpers.makeExprStmt(self, closed, span)});
+            try out.append(self.allocator, try self.ast.addNode(.{ .tag = .try_statement, .span = span, .data = .{ .ternary = .{ .a = try_block.node, .b = clause, .c = final_body.node } } }));
+        }
+
+        /// A default initializer runs after IteratorStep. Its member Reference
+        /// base and computed key expression must already have been evaluated.
+        /// ToPropertyKey remains at PutValue, after the default completes.
+        fn prepareIteratorAssignmentReference(self: *Transformer, source: NodeIndex, span: Span, context: BindingPatternContext, comptime preparation: PatternPreparation, out: *std.ArrayList(NodeIndex)) Transformer.Error!NodeIndex {
+            const member = self.ast.getNode(source);
+            const object = self.ast.readExtraNode(member.data.extra, 0);
+            const property = self.ast.readExtraNode(member.data.extra, 1);
+            const base = try reservePatternTemp(self, span, context.output_scope);
+            try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, try patternTempRef(self, base, context.use_scope, span, true), try patternExpression(self, object, context, preparation), span, 0), span);
+            const selected_property = if (member.tag == .computed_member_expression) key: {
+                const identity = try reservePatternTemp(self, span, context.output_scope);
+                const converted = try patternExpression(self, property, context, preparation);
+                try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, try patternTempRef(self, identity, context.use_scope, span, true), converted, span, 0), span);
+                break :key try patternTempRef(self, identity, context.use_scope, span, false);
+            } else property;
+            return self.ast.addNode(.{ .tag = member.tag, .span = member.span, .data = .{ .extra = try self.ast.addExtras(&.{ @backingInt(try patternTempRef(self, base, context.use_scope, span, false)), @backingInt(selected_property), self.ast.readExtra(member.data.extra, 2) }) } });
+        }
+
+        fn emitBindingPatternAt(self: *Transformer, binding: NodeIndex, rhs: NodeIndex, span: Span, context: BindingPatternContext, comptime preparation: PatternPreparation, out: *std.ArrayList(NodeIndex)) Transformer.Error!void {
+            const node = self.ast.getNode(binding);
+            if (node.tag == .assignment_target_identifier or node.tag == .identifier_reference) {
+                if (comptime @hasDecl(Transformer, "patternPutValue")) {
+                    if (try self.patternPutValue(binding, rhs, context.use_scope)) |checked| {
+                        try appendPatternExpression(self, out, checked, span);
+                        return;
+                    }
+                }
+                const target = try makeTrackedBindingWriteRefAt(self, binding, node.data.string_ref, span);
+                if (self.semantic_edit_enabled) {
+                    const row = (self.semantic_editor.?.referenceForNode(target) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => std.debug.panic("iterator assignment source write invalid: {s}", .{@errorName(err)}),
+                    }) orelse
+                        std.debug.panic("iterator assignment has no exact source write", .{});
+                    try movePatternExpression(self, target, row.scope_id, context.use_scope);
+                }
+                try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, target, rhs, span, 0), span);
+                return;
+            }
+            if (node.tag == .static_member_expression or node.tag == .computed_member_expression) {
+                const target = try patternExpression(self, binding, context, preparation);
+                try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, target, rhs, span, 0), span);
+                return;
+            }
+            if (node.tag == .binding_identifier) {
+                const target = try makeTrackedBindingWriteRefAt(self, binding, node.data.string_ref, span);
+                if (self.semantic_edit_enabled) {
+                    const editor = &self.semantic_editor.?;
+                    const row = (editor.referenceForNode(target) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => std.debug.panic("iterator binding write lost its source identity: {s}", .{@errorName(err)}),
+                    }) orelse std.debug.panic("iterator binding write has no exact reference row", .{});
+                    try movePatternExpression(self, target, row.scope_id, context.use_scope);
+                }
+                try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, target, rhs, span, 0), span);
+                return;
+            }
+            return emitBindingPatternStatements(self, node, rhs, span, context, preparation, out);
+        }
+
+        fn emitObjectBindingStatements(self: *Transformer, pattern: Node, rhs: NodeIndex, span: Span, context: BindingPatternContext, comptime preparation: PatternPreparation, out: *std.ArrayList(NodeIndex)) Transformer.Error!void {
+            const identity = try reservePatternTemp(self, span, context.output_scope);
+            try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, try patternTempRef(self, identity, context.use_scope, span, true), rhs, span, 0), span);
+            // RequireObjectCoercible has no iterator/Symbol dependency. Strict
+            // checks also retain HTMLDDA's distinct, non-nullish behavior.
+            const is_null = try self.ast.addNode(.{ .tag = .binary_expression, .span = span, .data = .{ .binary = .{ .left = try patternTempRef(self, identity, context.use_scope, span, false), .right = try es_helpers.makeNullLiteral(self), .flags = @backingInt(token_mod.Kind.eq3) } } });
+            const is_void = try self.ast.addNode(.{ .tag = .binary_expression, .span = span, .data = .{ .binary = .{ .left = try patternTempRef(self, identity, context.use_scope, span, false), .right = try es_helpers.makeVoidZero(self, span), .flags = @backingInt(token_mod.Kind.eq3) } } });
+            const nullish = try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{ .left = is_null, .right = is_void, .flags = @backingInt(token_mod.Kind.pipe2) } } });
+            const fail = try es_helpers.makeCallExpr(self, try es_helpers.makeVoidZero(self, span), &.{}, span);
+            try appendPatternExpression(self, out, try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{ .left = nullish, .right = fail, .flags = @backingInt(token_mod.Kind.amp2) } } }), span);
+            const split = self.ast.nodeListSplitRest(pattern.data.list);
+            const length = split.elements.len;
+            const rest = split.rest_operand;
+            var exclude: std.ArrayList(NodeIndex) = .empty;
+            defer exclude.deinit(self.allocator);
+            for (0..length) |index| {
+                const property = self.ast.getNode(self.ast.readExtraNode(pattern.data.list.start, @intCast(index)));
+                if (property.tag != .binding_property and property.tag != .assignment_target_property_identifier and property.tag != .assignment_target_property_property) continue;
+                const key = property.data.binary.left;
+                const target = if (property.tag == .assignment_target_property_identifier and
+                    (property.data.binary.flags & 1) != 0 and !property.data.binary.right.isNone())
+                    try self.ast.addNode(.{ .tag = .assignment_target_with_default, .span = property.span, .data = .{ .binary = .{ .left = key, .right = property.data.binary.right, .flags = 0 } } })
+                else if (property.tag == .assignment_target_property_identifier or property.data.binary.right.isNone()) key else property.data.binary.right;
+                if (self.ast.getNode(key).tag == .computed_property_key) try movePatternExpression(self, self.ast.getNode(key).data.unary.operand, context.source_scope orelse context.use_scope, context.use_scope);
+                const scratch_top = self.scratch.items.len;
+                const access = try emitObjectMemberAccessForRestWithPreparation(self, try patternTempRef(self, identity, context.use_scope, span, false), self.ast.getNode(key), key, &exclude, rest != null, .assign, span, .@"var", identity.owner_scope, preparation);
+                for (scratch_top..self.scratch.items.len) |capture| try appendPatternExpression(self, out, self.scratch.items[capture], span);
+                self.scratch.shrinkRetainingCapacity(scratch_top);
+                try emitBindingPatternAt(self, target, access.member, span, context, preparation, out);
+            }
+            if (rest) |target| {
+                self.runtime_helpers.rest = true;
+                const parts = try buildRestCallWithPreparation(self, target, identity.span, exclude.items, span, identity, .retain);
+                try emitBindingPatternAt(self, target, parts.call, span, context, preparation, out);
+            }
         }
 
         fn lowerBindingPatternAssignmentWithPreparation(
@@ -730,8 +1355,6 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         try self.ast.addString(renamed)
                     else
                         key_node.data.string_ref;
-                    const target_node = try makeTrackedBindingWriteRefAt(self, key_idx, target_name, key_node.span);
-
                     // shorthand_with_default: {a = 1} → a = _ref.a === void 0 ? 1 : _ref.a
                     // flags bit 0 = shorthand_with_default, right = default value
                     const is_shorthand_default = (prop.data.binary.flags & 0x01) != 0;
@@ -749,6 +1372,13 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             span,
                         );
                     } else access;
+                    if (comptime @hasDecl(Transformer, "patternPutValue")) {
+                        if (try self.patternPutValue(key_idx, rhs, self.current_scope)) |checked| {
+                            try self.scratch.append(self.allocator, checked);
+                            continue;
+                        }
+                    }
+                    const target_node = try makeTrackedBindingWriteRefAt(self, key_idx, target_name, key_node.span);
 
                     const assign = try self.ast.addNode(.{
                         .tag = .assignment_expression,
@@ -878,6 +1508,14 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     try emitArrayAssignments(self, target_node, inner_span, span, inner_identity);
                 }
                 return;
+            }
+            if (target_node.tag == .assignment_target_identifier or target_node.tag == .identifier_reference) {
+                if (comptime @hasDecl(Transformer, "patternPutValue")) {
+                    if (try self.patternPutValue(target_old_idx, value, self.current_scope)) |checked| {
+                        try self.scratch.append(self.allocator, checked);
+                        return;
+                    }
+                }
             }
             const visited_target = switch (target_node.tag) {
                 .identifier_reference, .assignment_target_identifier, .binding_identifier => try makeTrackedBindingWriteRef(self, target_old_idx, target_node.data.string_ref),
@@ -1178,34 +1816,23 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             root_identity: es_helpers.TempIdentityCapture,
             span: Span,
         ) Transformer.Error!NodeIndex {
-            const void_zero = try es_helpers.makeVoidZero(self, span);
+            _ = ref_span;
+            _ = key_idx;
+            if (key_tag == .computed_property_key and computed_key_temp_identity == null)
+                @panic("computed destructuring default lost its captured property key");
+            // GetV happens exactly once. A getter can change state or throw;
+            // the conditional's defined branch must reuse that same value.
+            const value = try reservePatternTemp(self, span, root_identity.owner_scope);
+            const captured = try es_helpers.makeAssignExpr(self, try patternTempRef(self, value, self.current_scope, span, true), access, span, 0);
             const eq_check = try self.ast.addNode(.{
                 .tag = .binary_expression,
                 .span = span,
-                .data = .{ .binary = .{ .left = access, .right = void_zero, .flags = @backingInt(token_mod.Kind.eq3) } },
+                .data = .{ .binary = .{ .left = captured, .right = try es_helpers.makeVoidZero(self, span), .flags = @backingInt(token_mod.Kind.eq3) } },
             });
-            // access는 이미 eq_check에서 소비되었으므로 다시 생성
-            const ref2 = try makeDestructuringTempReadWithIdentity(self, ref_span, root_identity);
-            // 계산되지 않은 키는 속성 이름 — 방문하면 블록 스코핑 리네임을 받아 `_ref.a$1` 처럼
-            // 다른 속성을 읽는다 (#4712).
-            const key_node = self.ast.getNode(key_idx);
-            // Shorthand defaults can reuse their binding node as the key. The
-            // emitted member property has no lexical SymbolId, so give it an
-            // independent node instead of aliasing that binding into another
-            // generated scope.
-            const new_key = if (key_tag == .computed_property_key) blk: {
-                const key_identity = computed_key_temp_identity orelse
-                    @panic("computed destructuring default lost its captured property key");
-                break :blk try makeDestructuringTempReadWithIdentity(self, span, key_identity);
-            } else switch (key_node.tag) {
-                .identifier_reference, .binding_identifier, .assignment_target_identifier => try es_helpers.makePropertyNameFromSpan(self, key_node.data.string_ref),
-                else => try self.copyNodeDirect(key_idx),
-            };
-            const access2 = try es_helpers.makeMemberFromKey(self, ref2, new_key, key_tag, span);
             return self.ast.addNode(.{
                 .tag = .conditional_expression,
                 .span = span,
-                .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = access2 } },
+                .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = try patternTempRef(self, value, self.current_scope, span, false) } },
             });
         }
 
@@ -1543,6 +2170,20 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             return result;
         }
 
+        fn assembleIterationStatements(self: *Transformer, plan: IterationBody, body: NodeIndex, prefix: []const NodeIndex) Transformer.Error!NodeIndex {
+            if (plan.wrapper) |wrapper| {
+                var statements: std.ArrayList(NodeIndex) = .empty;
+                defer statements.deinit(self.allocator);
+                try statements.appendSlice(self.allocator, prefix);
+                if (!body.isNone()) try statements.append(self.allocator, body);
+                try @import("loop_scope_producer.zig").fillBlock(self, wrapper, statements.items);
+                return wrapper;
+            }
+            const result = try self.prependStatementsToBody(body, prefix);
+            try self.remapCopiedScopeOwner(body, result);
+            return result;
+        }
+
         pub fn lowerForInOfDestructuring(self: *Transformer, source: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const span = node.span;
             const left = node.data.ternary.a; // variable_declaration
@@ -1603,6 +2244,30 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             self.current_scope = body_plan.scope;
             defer self.current_scope = loop_scope;
             const new_body = try self.visitNode(body);
+
+            if (self.options.unsupported.destructuring and self.options.unsupported.block_scoping and binding_node.tag == .array_pattern) {
+                // The physical declarations remain directly in the actual
+                // iteration body. Only iterator evaluation owns the nested
+                // ready region; do not drain its declarations outside the loop.
+                try movePatternExpression(self, binding_idx, loop_scope, body_plan.scope);
+                var body_identity = temp.identity;
+                body_identity.reference_scope = body_plan.scope;
+                const value = try makeDestructuringTempReadWithIdentity(self, span, body_identity);
+                const declarator = try es_helpers.makeDeclarator(self, binding_idx, value, span);
+                const declaration = try es_helpers.makeVarDeclaration(self, &.{declarator}, out_kind, span);
+                const pending_start = self.pending_nodes.items.len;
+                if (comptime @hasDecl(Transformer, "recordIterationDeclaration"))
+                    try self.recordIterationDeclaration(source, body_plan.scope, declaration);
+                const ready = try lowerDestructuringDeclarationStatementAt(self, declaration);
+                var prefix: std.ArrayList(NodeIndex) = .empty;
+                defer prefix.deinit(self.allocator);
+                try prefix.appendSlice(self.allocator, self.pending_nodes.items[pending_start..]);
+                self.pending_nodes.shrinkRetainingCapacity(pending_start);
+                try prefix.append(self.allocator, ready);
+                try bindPatternTemp(self, temp.binding, temp_span, span, out_kind, temp.identity);
+                const final_body = try assembleIterationStatements(self, body_plan, new_body, prefix.items);
+                return self.ast.addNode(.{ .tag = node.tag, .span = span, .data = .{ .ternary = .{ .a = new_left, .b = new_right, .c = final_body } } });
+            }
 
             // 5) body 앞에 삽입할 destructuring 선언문들을 생성
             //    var i = _ref[0], j = _ref[1], k = _ref[2]
@@ -1668,6 +2333,13 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             var body_identity = temp.identity;
             body_identity.reference_scope = body_plan.scope;
             const ref_for_assign = try makeDestructuringTempReadWithIdentity(self, span, body_identity);
+            if (self.options.unsupported.destructuring and self.ast.getNode(left).tag == .array_assignment_target) {
+                const ready = try prepareBindingPatternStatement(self, self.ast.getNode(left), ref_for_assign, span, .{ .use_scope = body_plan.scope, .source_scope = loop_scope });
+                const prefix = try self.visitNode(ready.statement);
+                try bindPatternTemp(self, temp.binding, temp_span, span, out_kind, temp.identity);
+                const final_body = try assembleIterationStatements(self, body_plan, new_body, &.{prefix});
+                return self.ast.addNode(.{ .tag = node.tag, .span = span, .data = .{ .ternary = .{ .a = new_left, .b = new_right, .c = final_body } } });
+            }
             const assign = try es_helpers.makeAssignExpr(self, left, ref_for_assign, span, 0);
             const visited_assign = try self.visitNode(assign);
             try bindPatternTemp(self, temp.binding, temp_span, span, out_kind, temp.identity);
@@ -1689,4 +2361,240 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
 test "ES2015 destructuring module compiles" {
     _ = ES2015Destructuring;
+}
+
+test "lazy iterator binding declarations preserve default abrupt elision and nested close order" {
+    const cases = [_][]const u8{
+        "globalThis.Symbol={};function f(){const[value]=[42];return value}console.log(f());",
+        "const log=[];const it={[Symbol.iterator](){log.push('open');return{next(){log.push('next');return{value:undefined,done:false}},return(){log.push('close');return{done:true}}}}};try{let[a=(()=>{log.push('default');throw Error('body')})(),b]=it}catch(e){log.push(e.message)}console.log(JSON.stringify(log));",
+        "const log=[];const it={[Symbol.iterator](){return{next(){log.push('next');return{get value(){log.push('value');return 42},done:false}},return(){log.push('close');return{done:true}}}}};let[,x]=it;console.log(JSON.stringify([x,log]));",
+        "const log=[];const it={[Symbol.iterator](){log.push('open');return{next(){log.push('next');return{value:42,done:false}},return(){log.push('close');return{done:true}}}}};let[]=it;console.log(JSON.stringify(log));",
+        "const log=[];function make(name,value){return{[Symbol.iterator](){return{next(){log.push(name+':next');return{value,done:false}},return(){log.push(name+':close');return{done:true}}}}}}try{let[[x=(()=>{throw Error('body')})()],y]=make('outer',make('inner',undefined))}catch(e){log.push(e.message)}console.log(JSON.stringify(log));",
+        "const log=[];let n=0;const it={[Symbol.iterator](){return{next(){log.push('next:'+n);return n++<3?{value:n===1?undefined:n,done:false}:{done:true}},return(){log.push('close');return{done:true}}}}};let[x=(log.push('default'),42),...tail]=it;console.log(JSON.stringify([x,tail,log]));",
+    };
+    for (cases, 0..) |source, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const native = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]bool{ false, true }) |minify| {
+            const result = try @import("../transpile.zig").transpile(allocator, source, "input.cjs", .{
+                .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5),
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+                .minify_whitespace = minify,
+            });
+            const actual = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) {
+                std.debug.print("lazy iterator binding case={d} minify={} native={s} actual={s} stderr={s} code={s}\n", .{ index, minify, native.stdout, actual.stdout, actual.stderr, result.code });
+            }
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+}
+
+test "lazy iterator binding bundle keeps the parsed runtime provider and close order" {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const Bundler = @import("../bundler/bundler.zig").Bundler;
+    const source = "const log=[];const it={[Symbol.iterator](){log.push('open');return{next(){log.push('next');return{value:undefined,done:false}},return(){log.push('close');return{done:true}}}}};try{let[a=(()=>{log.push('default');throw Error('body')})(),b]=it}catch(e){log.push(e.message)}console.log(JSON.stringify(log));";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const native = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "input.cjs", source);
+        const input = try helpers.absPath(&tmp, "input.cjs");
+        defer std.testing.allocator.free(input);
+        var bundler = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{input},
+            .format = .cjs,
+            .platform = .node,
+            .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5),
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+            .minify_whitespace = minify,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        const actual = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) {
+            std.debug.print("lazy iterator provider minify={} native={s} actual={s} stderr={s} code={s}\n", .{ minify, native.stdout, actual.stdout, actual.stderr, result.output });
+        }
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    }
+}
+
+test "lazy iterator traditional for initializer closes before test and preserves captured cells" {
+    const cases = [_][]const u8{
+        "const log=[];const source={[Symbol.iterator](){log.push('open');return{next(){log.push('next');return{value:42,done:false}},return(){log.push('close');return{done:true}}}}};for(var[value]=source;(log.push('test'),false);){}console.log(JSON.stringify([value,log]));",
+        "const log=[];const source={[Symbol.iterator](){log.push('open');return{next(){log.push('next');return{value:42,done:false}},return(){log.push('close');return{done:true}}}}};for(let[]=source;(log.push('test'),false);){}console.log(JSON.stringify(log));",
+        "const log=[];const source={[Symbol.iterator](){let n=0;log.push('open');return{next(){log.push('next');return{value:n++?7:undefined,done:false}},return(){log.push('close');return{done:true}}}}};for(let[x=(log.push('default'),42),y]=source;(log.push('test'),x<43);x++){log.push(x,y)}console.log(JSON.stringify(log));",
+        "const saved=[];for(let[value]=[42];value<44;value++){saved.push(()=>value)}console.log(JSON.stringify(saved.map(f=>f())));",
+    };
+    for (cases, 0..) |source, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const native = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]bool{ false, true }) |minify| {
+            const result = try @import("../transpile.zig").transpile(allocator, source, "input.cjs", .{
+                .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5),
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+                .minify_whitespace = minify,
+            });
+            const actual = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) {
+                std.debug.print("lazy iterator for case={d} minify={} native={s} actual={s} stderr={s} code={s}\n", .{ index, minify, native.stdout, actual.stdout, actual.stderr, result.code });
+            }
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+}
+
+test "lazy iterator discarded assignments preserve reference default and close order" {
+    const cases = [_][]const u8{
+        "const log=[];let value;const source={get value(){log.push('get');return 42}};({value=7}=source);console.log(JSON.stringify([value,log]));",
+        "const log=[];let value;const source={get x(){log.push('get');return 42}};({x:value=7}=source);console.log(JSON.stringify([value,log]));",
+        "const log=[];let a;const source={[Symbol.iterator](){return{next(){log.push('next');return{value:undefined,done:false}},return(){log.push('close');return{done:true}}}}};try{const result=([a=(()=>{log.push('default');throw 7})()]=source);log.push(result===source)}catch(e){log.push(e)}console.log(JSON.stringify(log));",
+        "const log=[];let a;const source={[Symbol.iterator](){return{next(){log.push('next');return{value:42,done:false}},return(){log.push('close');return{done:true}}}}};function run(){return([a]=source)}console.log(JSON.stringify([run()===source,a,log]));",
+        "const log=[];let a;const source={[Symbol.iterator](){return{next(){log.push('next');return{value:42,done:false}},return(){log.push('close');return{done:true}}}}};try{throw([a]=source)}catch(e){log.push(e===source,a)}console.log(JSON.stringify(log));",
+        "const log=[];let a,b;const source={[Symbol.iterator](){return{next(){log.push('next');return{value:{x:undefined,y:7},done:false}},return(){log.push('close');return{done:true}}}}};[{x:a=(log.push('default'),42),y:b}]=source;console.log(JSON.stringify([log,a,b]));",
+        "const log=[];const object={set x(v){log.push('set:'+v)}};const key={toString(){log.push('key');return'x'}};function base(){log.push('base');return object}function getKey(){log.push('keyexpr');return key}const source={[Symbol.iterator](){return{next(){log.push('next');return{value:undefined,done:false}},return(){log.push('close');return{done:true}}}}};[base()[getKey()]=(log.push('default'),42)]=source;console.log(JSON.stringify(log));",
+        "const log=[];let first,second;const source={[Symbol.iterator](){return{next(){log.push('next');return{value:undefined,done:false}},return(){log.push('close');return{done:true}}}}};try{[first=(()=>{throw 7})(),second]=source}catch(e){log.push(e)}console.log(JSON.stringify(log));",
+        "const log=[];const object={set x(v){log.push('set:'+v)}};const key={toString(){log.push('key');return'x'}};const source={[Symbol.iterator](){return{next(){log.push('next');return{value:undefined,done:false}},return(){log.push('close');return{done:true}}}}};function base(){log.push('base');return object}[base()[key]=(log.push('default'),42)]=source;console.log(JSON.stringify(log));",
+        "const log=[];let a,b;function source(label,values){return{[Symbol.iterator](){let i=0;return{next(){log.push(label+':next');return{value:values[i++],done:false}},return(){log.push(label+':close');return{done:true}}}}}}[[a],b]=source('outer',[source('inner',[42]),7]);console.log(JSON.stringify([log,a,b]));",
+        "let first,rest;[first=42,...rest]=[undefined,7,8];console.log(JSON.stringify([first,rest]));",
+        "const log=[];let a,b;function source(label){return{[Symbol.iterator](){return{next(){log.push(label+':next');return{value:undefined,done:false}},return(){log.push(label+':close');return{done:true}}}}}}[a=([b=7]=source('inner'),42)]=source('outer');console.log(JSON.stringify([log,a,b]));",
+    };
+    for (cases) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const native = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]bool{ false, true }) |minify| {
+            const result = try @import("../transpile.zig").transpile(allocator, source, "input.cjs", .{
+                .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5),
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+                .minify_whitespace = minify,
+            });
+            const actual = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                std.debug.print("lazy assignment minify={} native={s} actual={s} stderr={s} code={s}\n", .{ minify, native.stdout, actual.stdout, actual.stderr, result.code });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+}
+
+test "lazy iterator retains intrinsic array and custom iteration when host Symbol is absent" {
+    const source = "const log=[];const source={[savedIteratorSymbol](){let n=0;return{next(){log.push('next');return{value:++n,done:false}},return(){log.push('close');return{done:true}}}}};const [value]=source;const [arrayValue]=[42];console.log(JSON.stringify([value,arrayValue,log]));";
+    const preludes = [_][]const u8{
+        "globalThis.savedIteratorSymbol=Symbol.iterator;globalThis.Symbol=undefined;",
+        "globalThis.savedIteratorSymbol=Symbol.iterator;globalThis.Symbol={};",
+        "globalThis.savedIteratorSymbol=Symbol.iterator;delete globalThis.Symbol;",
+    };
+    for (preludes) |prelude| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const native_source = try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ prelude, source });
+        const native = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", native_source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]bool{ false, true }) |minify| {
+            const result = try @import("../transpile.zig").transpile(allocator, source, "input.cjs", .{
+                .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5),
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+                .minify_whitespace = minify,
+            });
+            const actual_source = try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ prelude, result.code });
+            const actual = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", actual_source } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                std.debug.print("lazy host prelude={s} minify={} native={s} actual={s} stderr={s} code={s}\n", .{ prelude, minify, native.stdout, actual.stdout, actual.stderr, result.code });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+}
+
+test "lazy iterator loop heads close before another binding initialization" {
+    const cases = [_][]const u8{
+        "const x=42;String.prototype[Symbol.iterator]=function(){return{next(){return{value:undefined,done:false}},return(){return{done:true}}}};let read;for(let[fn=()=>eval('x')]in{key:1}){let x=7;read=fn}console.log(read());",
+        "const log=[];let a,b;String.prototype[Symbol.iterator]=function(){return{next(){log.push('next');return{value:undefined,done:false}},return(){log.push('close');return{done:true}}}};try{for([a=(()=>{log.push('default');throw 7})(),b]in{key:1}){log.push('body')}}catch(e){log.push(e)}console.log(JSON.stringify(log));",
+        "const log=[];const inner={[Symbol.iterator](){return{next(){log.push('next');return{value:undefined,done:false}},return(){log.push('close');return{done:true}}}}};try{for(let[a=(()=>{log.push('default');throw 7})(),b]of[inner]){log.push('body')}}catch(e){log.push(e)}console.log(JSON.stringify(log));",
+        "const log=[];let a,b;const inner={[Symbol.iterator](){return{next(){log.push('next');return{value:undefined,done:false}},return(){log.push('close');return{done:true}}}}};try{for([a=(()=>{log.push('default');throw 7})(),b]of[inner]){log.push('body')}}catch(e){log.push(e)}console.log(JSON.stringify(log));",
+        "const saved=[];for(const[value]of[[1],[2]])saved.push(()=>value);console.log(JSON.stringify(saved.map(f=>f())));",
+        "const log=[];String.prototype[Symbol.iterator]=function(){return{next(){log.push('next');return{value:undefined,done:false}},return(){log.push('close');return{done:true}}}};try{for(let[a=(()=>{log.push('default');throw 7})(),b]in{key:1}){log.push('body')}}catch(e){log.push(e)}console.log(JSON.stringify(log));",
+    };
+    for (cases) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const native = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]bool{ false, true }) |minify| {
+            const result = try @import("../transpile.zig").transpile(allocator, source, "input.cjs", .{
+                .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5),
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+                .minify_whitespace = minify,
+            });
+            const actual = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                std.debug.print("lazy head minify={} native={s} actual={s} stderr={s} code={s}\n", .{ minify, native.stdout, actual.stdout, actual.stderr, result.code });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+}
+
+test "lazy iterator expression statements preserve sequence conditional and short circuit values" {
+    const prefix = "const log=[];let a,b,last;function source(){return last={[Symbol.iterator](){return{next(){log.push('next');return{value:undefined,done:false}},return(){log.push('close');return{done:true}}}}}};";
+    const bodies = [_][]const u8{
+        "false&&([a=(()=>{log.push('default');throw 7})(),b]=source());log.push('skip');console.log(JSON.stringify(log));",
+        "try{true&&([a=(()=>{log.push('default');throw 7})(),b]=source())}catch(e){log.push(e)}console.log(JSON.stringify(log));",
+        "const result=0||([a=42]=source());console.log(JSON.stringify([result===last,a,log]));",
+        "const result=0??([a=42]=source());console.log(JSON.stringify([result,log]));",
+        "const result=null??([a=42]=source());console.log(JSON.stringify([result===last,a,log]));",
+        "const result=false?([a]=source()):function(){};console.log(JSON.stringify([result.name,log]));",
+        "try{log.push('before'),([a=(()=>{log.push('default');throw 7})(),b]=source()),log.push('after')}catch(e){log.push(e)}console.log(JSON.stringify(log));",
+        "[a=([b=(log.push('inner-default'),7)]=source(),42)]=source();console.log(JSON.stringify([a,b,log]));",
+        "function run(){return true?([a=42]=source()):0}const result=run();console.log(JSON.stringify([result===last,a,log]));",
+        "const result=([a=42]=source())?(log.push('yes'),7):(log.push('no'),8);console.log(JSON.stringify([result,a,log]));",
+    };
+    for (bodies) |body| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const source = try std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, body });
+        const native = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]bool{ false, true }) |minify| {
+            const result = try @import("../transpile.zig").transpile(allocator, source, "input.cjs", .{
+                .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5),
+                .keep_names = true,
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+                .minify_whitespace = minify,
+            });
+            const actual = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                std.debug.print("lazy expression body={s} minify={} native={s} actual={s} stderr={s} code={s}\n", .{ body, minify, native.stdout, actual.stdout, actual.stderr, result.code });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
 }

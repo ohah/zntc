@@ -22058,7 +22058,7 @@ fn minifyGenericPrepassGraph(
         } else null;
         var candidate_origins = try transformer.reference_origin_map.clone(arena_alloc);
         var candidate_class_self = try transformer.class_self_symbol_map.clone(arena_alloc);
-        var journal = minify_mod.SemanticJournal.init(arena_alloc, semantic.references, .{ .domain = transformer.ast, .root = root, .symbol_ids = transformer.symbol_ids.items, .owners = &semantic.scope_owner_map, .expressions = &semantic.node_scope_provenance, .class_self = &transformer.class_self_symbol_map, .symbols = semantic.symbols.items, .scopes = semantic.scopes, .source_epoch = @intCast(semantic.scope_history.events.len), .scope_maps = semantic.scope_maps }) catch |err| switch (err) {
+        var journal = minify_mod.SemanticJournal.init(arena_alloc, semantic.references, .{ .domain = transformer.ast, .root = root, .symbol_ids = transformer.symbol_ids.items, .owners = &semantic.scope_owner_map, .expressions = &semantic.node_scope_provenance, .class_self = &transformer.class_self_symbol_map, .symbols = semantic.symbols.items, .scopes = semantic.scopes, .source_scope_count = semantic.scope_history.source_scopes.len, .source_epoch = @intCast(semantic.scope_history.events.len), .scope_maps = semantic.scope_maps }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.InvalidReferenceIdentity,
         };
@@ -22110,6 +22110,10 @@ fn minifyGenericPrepassGraph(
                 else => break :minify_transaction false,
             })) break :minify_transaction false;
         }
+        journal.retireDiscardedGeneratedBranches(&editor, root, receipt) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => break :minify_transaction false,
+        };
         journal.retireInlinedBindings(&editor, root, receipt) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => break :minify_transaction false,
