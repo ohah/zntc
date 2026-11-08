@@ -932,6 +932,89 @@ pub const SemanticEditor = struct {
         self.scope_owner_map.putAssumeCapacity(@backingInt(region), scope);
     }
 
+    /// A source for header keeps its condition/update slots and exact ScopeId.
+    /// The producer-owned cleanup region adds a fresh parent/try body without
+    /// replacing the source loop owner or its initializer publication lane.
+    pub fn publishIteratorForReferenceRegion(self: *SemanticEditor, source: NodeIndex, source_label: NodeIndex, region: NodeIndex, body: NodeIndex, loop: NodeIndex, expected_scope: ScopeId) Error!void {
+        for ([_]NodeIndex{ source, region, body, loop }) |index|
+            if (index.isNone() or @backingInt(index) >= self.ast.nodes.items.len) return error.InvalidNode;
+        const before = self.ast.getNode(source);
+        const after = self.ast.getNode(region);
+        const try_body = self.ast.getNode(body);
+        const iteration = self.ast.getNode(loop);
+        const extras = self.ast.extra_data.items.len;
+        if (before.tag != .for_statement or after.tag != .block_statement or
+            try_body.tag != .block_statement or iteration.tag != .for_statement or source != loop or
+            before.data.extra != iteration.data.extra or !std.meta.eql(before.span, iteration.span)) return error.InvalidNode;
+        if (before.data.extra > extras or extras - before.data.extra < 4 or
+            after.data.list.start > extras or after.data.list.len > extras - after.data.list.start or
+            try_body.data.list.start > extras or try_body.data.list.len > extras - try_body.data.list.start or
+            after.data.list.len == 0 or try_body.data.list.len != 1) return error.InvalidNode;
+        const child = self.ast.readExtraNode(try_body.data.list.start, 0);
+        if (source_label.isNone()) {
+            if (child != loop) return error.InvalidNode;
+        } else {
+            if (@backingInt(source_label) >= self.ast.nodes.items.len or child.isNone() or @backingInt(child) >= self.ast.nodes.items.len) return error.InvalidNode;
+            const source_labeled = self.ast.getNode(source_label);
+            const output_labeled = self.ast.getNode(child);
+            if (source_labeled.tag != .labeled_statement or source_labeled.data.binary.right != source or
+                output_labeled.tag != .labeled_statement or output_labeled.data.binary.left != source_labeled.data.binary.left or
+                output_labeled.data.binary.right != loop) return error.InvalidNode;
+        }
+        const statement_index = self.ast.readExtraNode(after.data.list.start, after.data.list.len - 1);
+        if (statement_index.isNone() or @backingInt(statement_index) >= self.ast.nodes.items.len) return error.InvalidNode;
+        const statement = self.ast.getNode(statement_index);
+        if (statement.tag != .try_statement or statement.data.ternary.a != body or
+            statement.data.ternary.b.isNone() or statement.data.ternary.c.isNone()) return error.InvalidNode;
+        const scope = self.scope_owner_map.get(@backingInt(source)) orelse return error.InvalidScope;
+        const body_scope = self.scope_owner_map.get(@backingInt(body)) orelse return error.InvalidScope;
+        const region_scope = self.scope_owner_map.get(@backingInt(region)) orelse return error.InvalidScope;
+        if (scope != @backingInt(expected_scope) or scope >= self.scopes.items.len or
+            body_scope >= self.scopes.items.len or region_scope >= self.scopes.items.len or
+            region_scope < self.scope_history.source_scopes.len or body_scope < self.scope_history.source_scopes.len or
+            self.scopes.items[scope].kind != .block or self.scopes.items[body_scope].kind != .block or
+            self.scopes.items[region_scope].kind != .block or self.scopes.items[body_scope].parent != @as(ScopeId, @fromBackingInt(region_scope)) or
+            self.scopes.items[region_scope].parent != self.scopes.items[scope].parent) return error.InvalidScope;
+        const owners = self.scope_history.source_owners;
+        var low: usize = 0;
+        var high = owners.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            if (@backingInt(owners[middle].owner.node) < @backingInt(source)) low = middle + 1 else high = middle;
+        }
+        if (low == owners.len or owners[low].owner.node != source or
+            owners[low].scope != expected_scope or owners[low].owner.tag != .for_statement) return error.InvalidNode;
+        // Prefix writes reset only exact generated temporary references. No
+        // user expression or physical source declaration can enter this lane.
+        for (0..after.data.list.len - 1) |offset| {
+            const prefix_index = self.ast.readExtraNode(after.data.list.start, @intCast(offset));
+            if (prefix_index.isNone() or @backingInt(prefix_index) >= self.ast.nodes.items.len) return error.InvalidNode;
+            const prefix = self.ast.getNode(prefix_index);
+            if (prefix.tag != .expression_statement) return error.InvalidNode;
+            const assignment_index = prefix.data.unary.operand;
+            if (assignment_index.isNone() or @backingInt(assignment_index) >= self.ast.nodes.items.len) return error.InvalidNode;
+            const assignment = self.ast.getNode(assignment_index);
+            if (assignment.tag != .assignment_expression) return error.InvalidNode;
+            const reference = (try self.referenceForNode(assignment.data.binary.left)) orelse return error.ReferenceNotFound;
+            if (!reference.flags.write or reference.flags.read or reference.scope_id != @as(ScopeId, @fromBackingInt(region_scope)) or
+                reference.symbol_id.isNone() or @backingInt(reference.symbol_id) >= self.symbols.items.len or
+                self.symbols.items[@backingInt(reference.symbol_id)].kind != .variable_var or
+                self.symbols.items[@backingInt(reference.symbol_id)].name.start & Ast.STRING_TABLE_BIT == 0 or
+                self.symbols.items[@backingInt(reference.symbol_id)].synthetic_name.len == 0) return error.InvalidSymbol;
+            const value_index = assignment.data.binary.right;
+            if (value_index.isNone() or @backingInt(value_index) >= self.ast.nodes.items.len) return error.InvalidNode;
+            const value = self.ast.getNode(value_index);
+            if (value.tag == .boolean_literal and value.data.none == 0) continue;
+            if (value.tag != .unary_expression or value.data.extra > extras or extras - value.data.extra < 2 or
+                self.ast.readExtra(value.data.extra, 1) != @backingInt(@import("../lexer/token.zig").Kind.kw_void)) return error.InvalidNode;
+            const zero_index = self.ast.readExtraNode(value.data.extra, 0);
+            if (zero_index.isNone() or @backingInt(zero_index) >= self.ast.nodes.items.len) return error.InvalidNode;
+            const zero = self.ast.getNode(zero_index);
+            if (zero.tag != .numeric_literal or !std.mem.eql(u8, self.ast.getText(zero.span), "0")) return error.InvalidNode;
+        }
+        try self.reparentScope(expected_scope, @fromBackingInt(body_scope));
+    }
+
     /// Transfer an owner after a controlled in-place rewrite changed the old
     /// node's tag before semantic edits are finalized. The caller must have
     /// recorded this exact replacement; all node, scope, and conflict checks

@@ -546,6 +546,8 @@ pub fn visitForStatement(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     const source = self.ast.getNode(idx);
     const initializer = self.readNodeIdx(source.data.extra, 0);
     const Destructuring = @import("../es2015_destructuring.zig").ES2015Destructuring(Transformer);
+    if (self.options.unsupported.destructuring and try Destructuring.forReferenceNeedsIterator(self, idx))
+        return self.visitNode(try Destructuring.prepareIteratorForReference(self, idx, .none));
     const needs_region = self.options.unsupported.destructuring and self.options.unsupported.block_scoping and
         !initializer.isNone() and try Destructuring.declarationNeedsIteratorStatements(self, self.ast.getNode(initializer));
     var emitted_for: NodeIndex = .none;

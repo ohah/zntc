@@ -30,6 +30,13 @@ const es_helpers = @import("es_helpers.zig");
 const es2015_class = @import("es2015_class.zig");
 const es2015_block_scoping = @import("es2015_block_scoping.zig");
 
+const InlineIteratorCleanup = struct {
+    record: es_helpers.TempIdentityCapture,
+    span: Span,
+    depth: u32,
+    order: usize,
+};
+
 pub const BindingPatternContext = struct {
     output_scope: ?@import("../semantic/scope.zig").ScopeId = null,
     use_scope: @import("../semantic/scope.zig").ScopeId,
@@ -38,6 +45,9 @@ pub const BindingPatternContext = struct {
     source_scope: ?@import("../semantic/scope.zig").ScopeId = null,
     /// Exact declaration key for a producer-recorded iteration initializer.
     initialization_source: NodeIndex = .none,
+    /// Query-local abrupt cleanup for expressions kept at their original slot.
+    inline_cleanup: ?*std.ArrayList(InlineIteratorCleanup) = null,
+    inline_depth: u32 = 0,
 };
 
 pub const BindingPatternStatementPlan = struct {
@@ -505,7 +515,192 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// Only expression carriers whose evaluation order is explicitly
         /// represented below participate. Calls retain their own Reference
         /// protocol; this demand does not silently lift their arguments.
+        /// Keep the original call/new Reference in the expression tree. Only
+        /// iterator operations become comma expressions; abrupt cleanup belongs
+        /// to the surrounding statement's real lexical region.
+        pub fn referenceExpressionNeedsIterator(self: *Transformer, expression: NodeIndex) Transformer.Error!bool {
+            const root = self.ast.getNode(expression);
+            if (root.tag != .call_expression and root.tag != .new_expression) return false;
+            const Pending = struct { node: NodeIndex, in_default: bool };
+            var pending: std.ArrayList(Pending) = .empty;
+            defer pending.deinit(self.allocator);
+            var seen: std.AutoHashMapUnmanaged(NodeIndex, void) = .empty;
+            defer seen.deinit(self.allocator);
+            var selected: usize = 0;
+            try pending.append(self.allocator, .{ .node = expression, .in_default = false });
+            while (pending.pop()) |item| {
+                const index = item.node;
+                if (index.isNone()) continue;
+                const slot = try seen.getOrPut(self.allocator, index);
+                if (slot.found_existing) continue;
+                const node = self.ast.getNode(index);
+                if (assignmentNeedsIteratorStatements(self, node)) {
+                    selected += 1;
+                }
+                switch (node.tag) {
+                    .function_expression, .arrow_function_expression, .class_expression => continue,
+                    else => {},
+                }
+                var children = ast_walk.children(self.ast, node);
+                while (children.next()) |child| try pending.append(self.allocator, .{
+                    .node = child,
+                    .in_default = item.in_default or ((node.tag == .assignment_target_with_default or node.tag == .assignment_pattern) and child == node.data.binary.right),
+                });
+            }
+            return selected != 0;
+        }
+
+        pub fn prepareReferenceExpressionStatement(self: *Transformer, expression: NodeIndex, outer: BindingPatternContext) Transformer.Error!BindingPatternStatementPlan {
+            return prepareReferenceRegion(self, expression, outer, .none, .none);
+        }
+
+        pub fn forReferenceNeedsIterator(self: *Transformer, source: NodeIndex) Transformer.Error!bool {
+            const loop = self.ast.getNode(source);
+            if (loop.tag != .for_statement) return false;
+            const condition = self.ast.readExtraNode(loop.data.extra, 1);
+            const update = self.ast.readExtraNode(loop.data.extra, 2);
+            const header = (!condition.isNone() and try referenceExpressionNeedsIterator(self, condition)) or
+                (!update.isNone() and try referenceExpressionNeedsIterator(self, update));
+            return header;
+        }
+
+        pub fn prepareIteratorForReference(self: *Transformer, source: NodeIndex, source_label: NodeIndex) Transformer.Error!NodeIndex {
+            const loop = self.ast.getNode(source);
+            const scope = self.outputOwnedScope(source) orelse self.current_scope;
+            const expression = try self.ast.addNode(.{ .tag = .sequence_expression, .span = loop.span, .data = .{ .list = try self.ast.addNodeList(&.{ self.ast.readExtraNode(loop.data.extra, 1), self.ast.readExtraNode(loop.data.extra, 2) }) } });
+            const plan = try prepareReferenceRegion(self, expression, .{ .use_scope = scope, .source_scope = scope }, source, source_label);
+            return plan.statement;
+        }
+
+        fn prepareReferenceRegion(self: *Transformer, expression: NodeIndex, outer: BindingPatternContext, source_for: NodeIndex, source_label: NodeIndex) Transformer.Error!BindingPatternStatementPlan {
+            const span = self.ast.getNode(expression).span;
+            const source_scope = outer.source_scope orelse outer.use_scope;
+            const region = try newPatternBlock(self, if (source_for.isNone()) outer.use_scope else self.outputScopeParent(source_scope), span);
+            const body = try newPatternBlock(self, region.scope, span);
+            const output_for = source_for;
+            // Header evaluation retains the original for ScopeId. The typed
+            // wrapper only reparents that owner beneath its fresh try body.
+            const evaluation_scope = if (source_for.isNone()) body.scope else source_scope;
+            var cleanup: std.ArrayList(InlineIteratorCleanup) = .empty;
+            defer cleanup.deinit(self.allocator);
+            const context: BindingPatternContext = .{
+                .use_scope = evaluation_scope,
+                .source_scope = source_scope,
+                .output_scope = outer.output_scope orelse if (self.semantic_edit_enabled) self.nearestVarScope(outer.use_scope) else null,
+                .inline_cleanup = &cleanup,
+            };
+            try movePatternExpression(self, expression, source_scope, evaluation_scope);
+            const saved_scope = self.current_scope;
+            self.current_scope = evaluation_scope;
+            defer self.current_scope = saved_scope;
+            // Children are processed first so nested source assignments retain
+            // their exact evaluation slot in the enclosing default/RHS.
+            const Pending = struct { node: NodeIndex, depth: u32 };
+            var pending: std.ArrayList(Pending) = .empty;
+            defer pending.deinit(self.allocator);
+            var order: std.ArrayList(Pending) = .empty;
+            defer order.deinit(self.allocator);
+            var seen: std.AutoHashMapUnmanaged(NodeIndex, void) = .empty;
+            defer seen.deinit(self.allocator);
+            try pending.append(self.allocator, .{ .node = expression, .depth = 0 });
+            while (pending.pop()) |item| {
+                const index = item.node;
+                if (index.isNone()) continue;
+                const slot = try seen.getOrPut(self.allocator, index);
+                if (slot.found_existing) continue;
+                const node = self.ast.getNode(index);
+                switch (node.tag) {
+                    .function_expression, .arrow_function_expression, .class_expression => continue,
+                    else => {},
+                }
+                try order.append(self.allocator, item);
+                var children = ast_walk.children(self.ast, node);
+                while (children.next()) |child| try pending.append(self.allocator, .{
+                    .node = child,
+                    .depth = item.depth + @as(u32, if (node.tag == .array_assignment_target or
+                        ((node.tag == .assignment_target_with_default or node.tag == .assignment_pattern) and child == node.data.binary.right)) 1 else 0),
+                });
+            }
+            while (order.pop()) |item| {
+                const index = item.node;
+                const node = self.ast.getNode(index);
+                if (!assignmentNeedsIteratorStatements(self, node)) continue;
+                const rhs = try reservePatternTemp(self, node.span, context.output_scope);
+                var statements: std.ArrayList(NodeIndex) = .empty;
+                defer statements.deinit(self.allocator);
+                try appendPatternExpression(self, &statements, try es_helpers.makeAssignExpr(self, try patternTempRef(self, rhs, evaluation_scope, node.span, true), node.data.binary.right, node.span, 0), node.span);
+                var assignment_context = context;
+                assignment_context.inline_depth = item.depth;
+                try emitBindingPatternAt(self, node.data.binary.left, try patternTempRef(self, rhs, evaluation_scope, node.span, false), node.span, assignment_context, .retain, &statements);
+                var values: std.ArrayList(NodeIndex) = .empty;
+                defer values.deinit(self.allocator);
+                for (statements.items) |statement| {
+                    const emitted = self.ast.getNode(statement);
+                    // Nested statement-producing defaults require their own
+                    // region bridge; never silently flatten their control flow.
+                    if (emitted.tag != .expression_statement) std.debug.panic("inline iterator expression produced non-expression control flow", .{});
+                    try values.append(self.allocator, emitted.data.unary.operand);
+                }
+                try values.append(self.allocator, try patternTempRef(self, rhs, evaluation_scope, node.span, false));
+                self.ast.nodes.items[@backingInt(index)] = .{ .tag = .sequence_expression, .span = node.span, .data = .{ .list = try self.ast.addNodeList(values.items) } };
+            }
+            const result: ?es_helpers.TempIdentityCapture = if (source_for.isNone()) try reservePatternTemp(self, span, context.output_scope) else null;
+            self.ast.nodes.items[@backingInt(body.node)].data.list = try self.ast.addNodeList(&.{if (result) |identity|
+                try es_helpers.makeExprStmt(self, try es_helpers.makeAssignExpr(self, try patternTempRef(self, identity, body.scope, span, true), try iteratorValueBoundary(self, expression, span), span, 0), span)
+            else if (source_label.isNone())
+                output_for
+            else label: {
+                var labeled = self.ast.getNode(source_label);
+                if (labeled.tag != .labeled_statement or labeled.data.binary.right != source_for)
+                    std.debug.panic("iterator Reference label lost its exact source loop", .{});
+                labeled.data.binary.right = output_for;
+                break :label try self.ast.addNode(labeled);
+            }});
+            const thrown = try reservePatternTemp(self, span, context.output_scope);
+            const caught_name = try es_helpers.makeTempVarSpan(self);
+            const caught = try es_helpers.makeSyntheticBinding(self, caught_name);
+            es_helpers.consumeTempVarSpan(self, caught_name);
+            const catch_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+            const clause = try self.ast.addNode(.{ .tag = .catch_clause, .span = span, .data = .{ .binary = .{ .left = caught, .right = catch_body, .flags = 0 } } });
+            const catch_scope = if (self.semantic_edit_enabled) try self.addGeneratedScope(region.scope, clause, .catch_clause) else region.scope;
+            const catch_body_scope = if (self.semantic_edit_enabled) try self.addGeneratedScope(catch_scope, catch_body, .block) else catch_scope;
+            const caught_sid = if (self.semantic_edit_enabled) try self.declareSyntheticInScope(caught, span, .catch_binding, catch_scope) else null;
+            const caught_ref = try es_helpers.makeExactSyntheticRefAt(self, caught_name, span);
+            if (caught_sid) |sid| try self.addSyntheticRefInScope(caught_ref, sid, catch_body_scope, .{ .read = true });
+            const mark = try es_helpers.makeExprStmt(self, try es_helpers.makeAssignExpr(self, try patternTempRef(self, thrown, catch_body_scope, span, true), try es_helpers.makeBoolLiteral(self, true), span, 0), span);
+            const rethrow = try self.ast.addNode(.{ .tag = .throw_statement, .span = span, .data = .{ .unary = .{ .operand = caught_ref, .flags = 0 } } });
+            self.ast.nodes.items[@backingInt(catch_body)].data.list = try self.ast.addNodeList(&.{ mark, rethrow });
+            const final_body = try newPatternBlock(self, region.scope, span);
+            var final_statements: std.ArrayList(NodeIndex) = .empty;
+            defer final_statements.deinit(self.allocator);
+            std.mem.sort(InlineIteratorCleanup, cleanup.items, {}, struct {
+                fn before(_: void, left: InlineIteratorCleanup, right: InlineIteratorCleanup) bool {
+                    if (left.depth != right.depth) return left.depth > right.depth;
+                    return left.order > right.order;
+                }
+            }.before);
+            for (cleanup.items) |entry| {
+                try appendPatternExpression(self, &final_statements, try iteratorOperation(self, try patternTempRef(self, entry.record, final_body.scope, entry.span, false), try patternTempRef(self, thrown, final_body.scope, span, false), 4, entry.span), entry.span);
+            }
+            self.ast.nodes.items[@backingInt(final_body.node)].data.list = try self.ast.addNodeList(final_statements.items);
+            var statements: std.ArrayList(NodeIndex) = .empty;
+            defer statements.deinit(self.allocator);
+            // Each invocation resets even records in unselected branches.
+            for (cleanup.items) |entry| try appendPatternExpression(self, &statements, try es_helpers.makeAssignExpr(self, try patternTempRef(self, entry.record, region.scope, entry.span, true), try es_helpers.makeVoidZero(self, entry.span), entry.span, 0), entry.span);
+            try appendPatternExpression(self, &statements, try es_helpers.makeAssignExpr(self, try patternTempRef(self, thrown, region.scope, span, true), try es_helpers.makeBoolLiteral(self, false), span, 0), span);
+            try statements.append(self.allocator, try self.ast.addNode(.{ .tag = .try_statement, .span = span, .data = .{ .ternary = .{ .a = body.node, .b = clause, .c = final_body.node } } }));
+            self.ast.nodes.items[@backingInt(region.node)].data.list = try self.ast.addNodeList(statements.items);
+            if (!source_for.isNone() and self.semantic_edit_enabled) {
+                self.semantic_editor.?.publishIteratorForReferenceRegion(source_for, source_label, region.node, body.node, output_for, source_scope) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                    std.debug.panic("invalid typed iterator for Reference region: {s}", .{@errorName(err)});
+                };
+            }
+            return .{ .statement = region.node, .value = if (result) |identity| try patternTempRef(self, identity, outer.use_scope, span, false) else .none };
+        }
+
         pub fn expressionNeedsIteratorStatements(self: *Transformer, expression: NodeIndex) Transformer.Error!bool {
+            if (!expression.isNone() and try referenceExpressionNeedsIterator(self, expression)) return true;
             var pending: std.ArrayList(NodeIndex) = .empty;
             defer pending.deinit(self.allocator);
             try pending.append(self.allocator, expression);
@@ -531,6 +726,8 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         }
 
         pub fn prepareIteratorExpressionStatement(self: *Transformer, expression: NodeIndex, context: BindingPatternContext) Transformer.Error!BindingPatternStatementPlan {
+            if (try referenceExpressionNeedsIterator(self, expression))
+                return prepareReferenceExpressionStatement(self, expression, context);
             var direct = expression;
             while (self.ast.getNode(direct).tag == .parenthesized_expression)
                 direct = self.ast.getNode(direct).data.unary.operand;
@@ -822,7 +1019,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 .assignment_pattern, .assignment_target_with_default => {
                     const original_target = pattern.data.binary.left;
                     const target_node = self.ast.getNode(original_target);
-                    const selected_target = if (target_node.tag == .static_member_expression or target_node.tag == .computed_member_expression)
+                    const selected_target = if (target_node.tag == .static_member_expression or target_node.tag == .computed_member_expression or target_node.tag == .private_field_expression)
                         try prepareIteratorAssignmentReference(self, original_target, span, context, preparation, out)
                     else
                         original_target;
@@ -857,6 +1054,26 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         }
 
         fn emitIteratorBindingStatements(self: *Transformer, pattern: Node, rhs: NodeIndex, span: Span, context: BindingPatternContext, comptime preparation: PatternPreparation, out: *std.ArrayList(NodeIndex)) Transformer.Error!void {
+            if (context.inline_cleanup) |cleanup| {
+                const record = try reservePatternTemp(self, span, context.output_scope);
+                try cleanup.append(self.allocator, .{ .record = record, .span = span, .depth = context.inline_depth, .order = cleanup.items.len });
+                const opened = try iteratorOperation(self, rhs, try es_helpers.makeNumericLiteral(self, 0), 0, span);
+                try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, try patternTempRef(self, record, context.use_scope, span, true), opened, span, 0), span);
+                var inner = context;
+                inner.inline_depth += 1;
+                const split = self.ast.nodeListSplitRest(pattern.data.list);
+                for (0..split.elements.len) |offset| {
+                    const leaf = self.ast.readExtraNode(pattern.data.list.start, @intCast(offset));
+                    if (self.ast.getNode(leaf).tag == .elision)
+                        try appendPatternExpression(self, out, try iteratorStep(self, record, 2, context, span), span)
+                    else
+                        try emitBindingPatternAt(self, leaf, try iteratorStep(self, record, 1, context, span), span, inner, preparation, out);
+                }
+                if (split.rest_operand) |leaf|
+                    try emitBindingPatternAt(self, leaf, try iteratorStep(self, record, 3, context, span), span, inner, preparation, out);
+                try appendPatternExpression(self, out, try iteratorOperation(self, try patternTempRef(self, record, context.use_scope, span, false), try es_helpers.makeBoolLiteral(self, false), 4, span), span);
+                return;
+            }
             const record = try reservePatternTemp(self, span, context.output_scope);
             const thrown = try reservePatternTemp(self, span, context.output_scope);
             try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, try patternTempRef(self, record, context.use_scope, span, true), try es_helpers.makeVoidZero(self, span), span, 0), span);
@@ -912,19 +1129,35 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const member = self.ast.getNode(source);
             const object = self.ast.readExtraNode(member.data.extra, 0);
             const property = self.ast.readExtraNode(member.data.extra, 1);
-            const base = try reservePatternTemp(self, span, context.output_scope);
-            try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, try patternTempRef(self, base, context.use_scope, span, true), try patternExpression(self, object, context, preparation), span, 0), span);
+            const unwrapped_object = es_helpers.unwrapTransparentWrappers(self, object);
+            const selected_object = if (!unwrapped_object.isNone() and self.ast.getNode(unwrapped_object).tag == .super_expression)
+                object
+            else captured: {
+                const base = try reservePatternTemp(self, span, context.output_scope);
+                try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, try patternTempRef(self, base, context.use_scope, span, true), try patternExpression(self, object, context, preparation), span, 0), span);
+                break :captured try patternTempRef(self, base, context.use_scope, span, false);
+            };
             const selected_property = if (member.tag == .computed_member_expression) key: {
                 const identity = try reservePatternTemp(self, span, context.output_scope);
                 const converted = try patternExpression(self, property, context, preparation);
                 try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, try patternTempRef(self, identity, context.use_scope, span, true), converted, span, 0), span);
                 break :key try patternTempRef(self, identity, context.use_scope, span, false);
             } else property;
-            return self.ast.addNode(.{ .tag = member.tag, .span = member.span, .data = .{ .extra = try self.ast.addExtras(&.{ @backingInt(try patternTempRef(self, base, context.use_scope, span, false)), @backingInt(selected_property), self.ast.readExtra(member.data.extra, 2) }) } });
+            return self.ast.addNode(.{ .tag = member.tag, .span = member.span, .data = .{ .extra = try self.ast.addExtras(&.{ @backingInt(selected_object), @backingInt(selected_property), self.ast.readExtra(member.data.extra, 2) }) } });
         }
 
         fn emitBindingPatternAt(self: *Transformer, binding: NodeIndex, rhs: NodeIndex, span: Span, context: BindingPatternContext, comptime preparation: PatternPreparation, out: *std.ArrayList(NodeIndex)) Transformer.Error!void {
             const node = self.ast.getNode(binding);
+            if (node.tag == .private_field_expression) {
+                if (try es2015_class.ES2015Class(Transformer).tryLowerPrivateFieldAssign(self, binding, rhs, span)) |write| {
+                    try appendPatternExpression(self, out, write, span);
+                    return;
+                }
+                // A retained native private target must stay a PutValue target,
+                // rather than being visited as a private-field GetValue.
+                try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, binding, rhs, span, 0), span);
+                return;
+            }
             if (node.tag == .assignment_target_identifier or node.tag == .identifier_reference) {
                 if (comptime @hasDecl(Transformer, "patternPutValue")) {
                     if (try self.patternPutValue(binding, rhs, context.use_scope)) |checked| {
@@ -942,6 +1175,10 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     try movePatternExpression(self, target, row.scope_id, context.use_scope);
                 }
                 try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, target, rhs, span, 0), span);
+                return;
+            }
+            if (try es2015_class.ES2015Class(Transformer).trySuperAssignTarget(self, binding, rhs, span)) |write| {
+                try appendPatternExpression(self, out, write, span);
                 return;
             }
             if (node.tag == .static_member_expression or node.tag == .computed_member_expression) {

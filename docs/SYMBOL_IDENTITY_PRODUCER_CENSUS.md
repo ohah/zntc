@@ -214,3 +214,32 @@ witness; FORMAT 52 is rejected, not reinterpreted. Native comparisons, hostile
 graph tuples, codec checks, and whole-suite results remain separate evidence.
 The new row does not claim complete TDZ/namespace migration or every expression
 consumer, and does not close #4819/#6193 by itself.
+
+## Reference-preserving iterator region delta (2026-11-09)
+
+Base `2db55b3888a9365357242072348c9df8d05a11e9` plus this feature adds
+one constructor row in
+`src/transformer/es2015_destructuring.zig::prepareReferenceRegion`:
+`makeSyntheticBinding` constructs the actual abrupt-completion catch binding.
+The bounded inventory is **142 expressions, 92 functions, 45 files**, with
+fingerprint `6191ff81358f3e74d6ab1fdbfe83d5446c6b7cb8c0288382d278dc9fcedd8194`.
+The previous 141/91 snapshot remains the prior feature's evidence; these counts
+are selected source definitions, not all callers or runtime invocations.
+
+The producer creates separate catch and catch-body scopes, consumes the temp
+allocator slot, registers the catch SID with `declareSyntheticInScope`, and
+attaches its rethrow reference through `addSyntheticRefInScope`. Codegen and
+minification consume that same SID. Iterator operations stay at the original
+call/callee/initializer expression slots; their query-local cleanup metadata
+contains typed temp identities and nesting order, never a runtime global stack.
+For conditions and updates retain the original source for owner/ScopeId; a typed
+publication validates its exact source history, label edge, generated parent
+blocks, and reset references before recording the scope reparent. The existing
+initializer publication remains a separate, unchanged producer.
+
+The WeakMap brand helper followup adds no binding-constructor row. Its fixed
+builtin role selects actual root SourceSIDs, and `Role.symbol`/`Role.weak_map`
+are append-only query roles rather than serialized Symbol fields. FORMAT 53 and
+its existing meaning are unchanged by this followup. Native value comparisons,
+existing modern dynamic-constructor admission diagnostics, helper tests,
+source audits, and eventual whole-suite gates remain separate evidence.

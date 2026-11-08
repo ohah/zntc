@@ -207,3 +207,7 @@ test {
 test {
     _ = @import("generator_class_coordinate_test.zig");
 }
+
+test {
+    _ = @import("destructuring_expression_reference_test.zig");
+}
