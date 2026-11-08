@@ -1760,7 +1760,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const static_private_descriptor_index = std.mem.indexOf(u8, combined.items, "var __classCheckPrivateStaticFieldDescriptor2 = function(descriptor, action)").?;
     const static_private_get_index = std.mem.indexOf(u8, combined.items, "var __classStaticPrivateFieldSpecGet2 = function(receiver, classConstructor, descriptor)").?;
     const static_private_set_index = std.mem.indexOf(u8, combined.items, "var __classStaticPrivateFieldSpecSet2 = function(receiver, classConstructor, descriptor, value)").?;
-    const private_field_set_index = std.mem.indexOf(u8, combined.items, "var __zntcClassPrivateFieldSet2 = function(wm, obj, value)").?;
+    const private_field_set_index = std.mem.indexOf(u8, combined.items, "var __zntcClassPrivateFieldSet2 = ") orelse return error.MissingSelectedPrivateFieldBinding;
+    try checkSelectedPrivateFieldHelper(combined.items, "__zntcClassPrivateFieldSet2");
     const class_call_check_index = std.mem.indexOf(u8, combined.items, "var __classCallCheck2 = function(instance, Constructor)").?;
     const call_super_index = std.mem.indexOf(u8, combined.items, "var __callSuper2 = function(Parent, args, NewTarget)").?;
     const super_get_index = std.mem.indexOf(u8, combined.items, "var __superGet2 = (function(O)").?;
@@ -2276,6 +2277,44 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected private me
     try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $pG=function(receiver,privateSet,fn)"));
 }
 
+fn checkSelectedPrivateFieldHelper(source: []const u8, selected: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(allocator, source);
+    var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+    const root = try parser.parse();
+    const tree = &parser.ast;
+    const program = tree.getNode(root);
+    var declarations: usize = 0;
+    for (0..program.data.list.len) |offset| {
+        const statement = tree.getNode(tree.readExtraNode(program.data.list.start, @intCast(offset)));
+        if (statement.tag != .variable_declaration) continue;
+        const start = tree.readExtra(statement.data.extra, 1);
+        const count = tree.readExtra(statement.data.extra, 2);
+        for (0..count) |entry| {
+            const declarator = tree.getNode(tree.readExtraNode(start, @intCast(entry)));
+            const binding = tree.getNode(tree.readExtraNode(declarator.data.extra, 0));
+            if (binding.tag != .binding_identifier) continue;
+            const name = tree.getText(binding.data.string_ref);
+            try std.testing.expect(!std.mem.eql(u8, name, "__zntcClassPrivateFieldSet") and !std.mem.eql(u8, name, "$pF"));
+            if (!std.mem.eql(u8, name, selected)) continue;
+            declarations += 1;
+            const initializer = tree.getNode(tree.readExtraNode(declarator.data.extra, 2));
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.call_expression, initializer.tag);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), declarations);
+    const probe = try std.fmt.allocPrint(allocator, "{s}\nconst state=new WeakMap(),owned={{}};state.set(owned,1);" ++
+        "const saved=WeakMap.prototype.has;try{{WeakMap.prototype.has=()=>false;" ++
+        "console.log(typeof {s},{s}(state,owned,42),state.get(owned));" ++
+        "try{{{s}(state,{{}},1)}}catch(error){{console.log(error.name)}}" ++
+        "}}finally{{WeakMap.prototype.has=saved}}", .{ source, selected, selected, selected });
+    const result = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", probe } });
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
+    try std.testing.expectEqualStrings("function 42 42\nTypeError\n", result.stdout);
+}
+
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected private field set local directly" {
     var plain: std.ArrayList(u8) = .empty;
     defer plain.deinit(std.testing.allocator);
@@ -2287,8 +2326,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected private fi
         false,
         .{ .class_private_field_set = "__zntcClassPrivateFieldSet2" },
     );
-    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __zntcClassPrivateFieldSet2 = function(wm, obj, value)"));
-    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __zntcClassPrivateFieldSet = function(wm, obj, value)"));
+    try checkSelectedPrivateFieldHelper(plain.items, "__zntcClassPrivateFieldSet2");
 
     var minified: std.ArrayList(u8) = .empty;
     defer minified.deinit(std.testing.allocator);
@@ -2300,8 +2338,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected private fi
         false,
         .{ .class_private_field_set = "$pF2" },
     );
-    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $pF2=function(wm,obj,value)"));
-    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $pF=function(wm,obj,value)"));
+    try checkSelectedPrivateFieldHelper(minified.items, "$pF2");
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected call super local directly" {
