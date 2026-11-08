@@ -3,12 +3,14 @@
 번들러 상세 설계 문서.
 
 ## 경쟁 환경
+
 - **Rolldown** (Rust, oxc 기반): Vite 생태계 백업, Rollup+esbuild 대체 목표. Rollup 플러그인 호환
 - **esbuild** (Go): 속도 기준점, 범용 번들러, 플러그인 제한적
 - **Bun** (Zig+C++): 런타임 내장 번들러, 속도 최우선
 - **Turbopack** (Rust, SWC 기반): Next.js 전용, 증분 컴파일 특화
 
 ## ZNTC 번들러 포지셔닝
+
 - **전략: 품질 먼저 → 속도 추가 (방법 B)** — Rollup→Rolldown 전략을 Zig로
   - 1단계: 정확한 파서/트랜스포머 (✅ 완료, Test262 100%)
   - 2단계: 정확한 tree-shaking/스코프 호이스팅 (Rollup 알고리즘 참고)
@@ -17,6 +19,7 @@
 - **트레이드오프**: 코드베이스 최소화보다 정확도+기능 우선. 기능이 늘면 코드는 커짐을 수용
 
 ## Phase별 기능 분류
+
 ```
 Phase B1: 기반 (✅ 완료)          Phase B2: 핵심 (✅ 대부분 완료) Phase B3: 고급
 ─────────────────                 ──────────────────          ──────────────
@@ -60,7 +63,50 @@ Phase B1: 기반 (✅ 완료)          Phase B2: 핵심 (✅ 대부분 완료) P
                                                                  └ CSS modules (후순위)
 ```
 
+## Native `await using` 모듈 경계
+
+네이티브 `await using`은 자원을 선언한 **모듈의 평가가 끝날 때** 해제하고,
+해제가 완료된 뒤 그 모듈을 import한 코드가 실행되어야 합니다. 이런 모듈을
+다른 모듈과 한 파일의 본문으로 합치거나 일반 factory의 변수 대입으로 바꾸면
+해제 순서와 비동기 작업 순서, export의 live binding 및 TDZ가 달라질 수 있습니다.
+
+모듈별 native ESM 출력은 명시적으로 선택합니다.
+
+```sh
+zntc --bundle src/main.mjs --format=esm --target=esnext \
+  --preserve-modules --preserve-modules-root=src --outdir dist \
+  --out-extension:.js=.mjs
+```
+
+API에서는 다음과 같습니다.
+
+```ts
+await build({
+  entryPoints: ['src/main.mjs'],
+  format: 'esm',
+  target: 'esnext',
+  preserveModules: true,
+  preserveModulesRoot: 'src',
+  outdir: 'dist',
+  outExtension: '.mjs',
+  write: true,
+});
+```
+
+이 모드는 `main.mjs` 하나뿐 아니라 각 의존 모듈 및 필요한 가상 helper 파일을
+`dist`에 출력하고 실제 상대 ESM import/export로 연결합니다. API의 `outputFiles`
+전체를 보존해야 하며, `outfile` 하나나 `inlineDynamicImports`로 보장하는 단일파일
+출력을 대신하는 자동 fallback이 아닙니다.
+
+선택된 출력에서 native 비동기 자원 모듈의 경계가 사라지는 조합은
+`top_level_await_target` / `ZNTC0001` 오류와 위 대안을 반환하고 해당 JS를 게시하지
+않습니다. native 선언을 그대로 보존할 수 있는 유일한 unwrapped ESM entry와
+함수 안의 `await using`, 일반 top-level `await`는 이 이유로 거부하지 않습니다.
+지원하지 않는 타깃으로 이미 낮춘 async 초기화는 기존 TLA readiness/진단 정책을
+따릅니다. 네이티브 선언이 남는 CJS 등의 출력은 native ESM 경계로 간주하지 않습니다.
+
 ## 모듈 설계 (책임 분리)
+
 ```
 src/bundler/
   │
@@ -122,6 +168,7 @@ src/bundler/
 ```
 
 설계 원칙:
+
 - **단방향 의존**: resolver → graph → linker → tree_shaker → chunk → emitter
 - **독립 테스트 가능**: 각 모듈이 입력/출력 명확, 다른 모듈의 내부를 모름
 - **기존 코드 재사용**: parser, semantic, codegen, transformer를 도구로 위임
@@ -146,7 +193,7 @@ url("./hero-a1b2c3d4.png")   ← span 구간만 치환, 나머지 바이트는 �
   되지만 `Module.dependencies` 에는 링크하지 않는다. 링크하면 asset 모듈(parseAssetModule 이
   module_type 을 `.js` 로 바꾼다)이 JS 청크 도달성 BFS 에 걸려 죽은 `__commonJS` 래퍼로 번들에
   실린다.
-- **span 치환**: record 의 span 은 `url(` 과 `)` *사이* 구간이라, 치환해도 `url(`/`)` 와 그 밖의
+- **span 치환**: record 의 span 은 `url(` 과 `)` _사이_ 구간이라, 치환해도 `url(`/`)` 와 그 밖의
   모든 바이트(공백·주석·선언 순서)가 원문 그대로 보존된다.
 - **재작성 결과**: `--public-path` 가 있으면 그 prefix + output_name, 없으면 **출력 CSS 파일
   위치 기준 상대경로**. 그래서 emitCssBundle 은 본문보다 출력 파일명을 **먼저** 정한다
@@ -158,7 +205,7 @@ url("./hero-a1b2c3d4.png")   ← span 구간만 치환, 나머지 바이트는 �
   `url(/abs.png)` (절대경로 = `public/` 디렉토리 규약), `url(https://…)` / `url(//cdn…)` /
   `url(data:…)` / `url(blob:…)` (external).
 - **해석 실패는 warning** (Vite parity): 빌드를 세우지 않고 `Cannot resolve CSS url() asset —
-  left unchanged` 경고 후 원문을 흘려보낸다. CSS 의 url 은 빌드 타임에 해석되지 않아도 런타임에
+left unchanged` 경고 후 원문을 흘려보낸다. CSS 의 url 은 빌드 타임에 해석되지 않아도 런타임에
   유효할 수 있고(서버가 따로 서빙 / 배포 스크립트가 나중에 복사), 여기서 실패시키면 지금까지
   멀쩡히 빌드되던 프로젝트가 업그레이드하자마자 깨진다.
 
@@ -311,7 +358,7 @@ asset Module (loader = .file, inline-limit 무시)
 
   ```js
   export default function WorkerWrapper(options) {
-    return new Worker(new URL("./x.worker.js", import.meta.url), options);
+    return new Worker(new URL('./x.worker.js', import.meta.url), options);
   }
   ```
 
@@ -322,6 +369,7 @@ asset Module (loader = .file, inline-limit 무시)
   `sharedworker`)만 해석하며, `?worker&inline` 처럼 조합되면 **worker 가 이긴다** (Vite 동일).
 
 ## ESM 실행 순서 보장
+
 - 스코프 호이스팅 시 원본 ESM의 top-level 코드 실행 순서가 바뀌면 안 됨
 - 예: `import './a'; import './b';` → a.js의 사이드이펙트가 b.js보다 먼저 실행 보장
 - 순환 참조 + 사이드이펙트 + 스코프 호이스팅이 충돌하는 복잡한 문제
@@ -330,6 +378,7 @@ asset Module (loader = .file, inline-limit 무시)
 - Rolldown 참고: `rolldown/crates/rolldown/src/chunk_graph/`
 
 ## 모듈 그래프 설계 (Rollup 코드 분석 기반)
+
 - Rollup의 `analyseModuleExecution`: DFS 후위 순서로 execIndex 부여
   - 정적 dependencies 재귀 방문
   - 순환 참조 → cyclePaths 기록 (에러 아닌 경고)
@@ -338,6 +387,7 @@ asset Module (loader = .file, inline-limit 무시)
 - Rollup 자체도 "현재 알고리즘이 불완전" 인정 (주석에 명시)
 
 **Module에 필요한 정보 (Rollup 분석 결과):**
+
 ```zig
 const Module = struct {
     path: []const u8,
@@ -355,6 +405,7 @@ const Module = struct {
 ```
 
 **병렬 파싱 + 순서 보장 전략 (Rolldown 방식):**
+
 1. 진입점 파싱 → import 발견 → 그래프에 슬롯 예약 (import 순서대로)
 2. 예약된 모듈을 병렬 파싱 (파일별 Arena, 멀티스레드)
 3. 파싱 완료 → 예약 슬롯에 AST 채움 → 새로운 import 발견 → 다시 슬롯 예약
@@ -362,6 +413,7 @@ const Module = struct {
 5. 슬롯 예약 순서가 import 순서를 보장 → exec_index가 ESM 실행 순서 보장
 
 ## Tree-shaking 전략
+
 - ✅ **1단계**: export 사용 추적 — 모듈 수준 tree-shaking (미사용 모듈 제거, fixpoint 분석)
 - ✅ **2단계**: `@__PURE__` / `@__NO_SIDE_EFFECTS__` 활용 — 렉서 감지 → semantic/cross-module 전파 → 순수 호출 판별
 - ✅ **2.1단계**: 사용자 pure hint — `--pure:callee` / `BuildOptions.pure`를 기존 pure flag로 반영
@@ -395,20 +447,22 @@ src/transpile.zig
 
 진입점부터 fixpoint 반복으로 도달 가능한 모듈/export 를 좁힌다 (`max_fixpoint_iterations = 100`, 실측 2-3회 수렴). 핵심 자료구조:
 
-| 필드 | 의미 |
-|---|---|
-| `used_exports: HashMap("module_idx:export_name" → bool)` | export 단위 사용 여부 (`ALL_EXPORTS_SENTINEL = "*"` 로 entry/dynamic-import 모듈 마킹) |
-| `has_direct_used_export: []bool` | 모듈 단위 used export 유무 — `hasAnyUsedExport` 가 O(1) (#917) |
-| `re_export_star_targets: ?DynamicBitSet` | `export * from` source 모듈 마스크 — fixpoint 안 `tryMarkReExportNsSubset` O(M·E) 스캔 회피 (#1928) |
-| `module_stmt_infos: []ModuleStmtInfos` | 모듈별 StmtInfo (fixpoint **이전** 에 일괄 구축, BFS 진입 시 O(1) 조회 #1558) |
+| 필드                                                     | 의미                                                                                                |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `used_exports: HashMap("module_idx:export_name" → bool)` | export 단위 사용 여부 (`ALL_EXPORTS_SENTINEL = "*"` 로 entry/dynamic-import 모듈 마킹)              |
+| `has_direct_used_export: []bool`                         | 모듈 단위 used export 유무 — `hasAnyUsedExport` 가 O(1) (#917)                                      |
+| `re_export_star_targets: ?DynamicBitSet`                 | `export * from` source 모듈 마스크 — fixpoint 안 `tryMarkReExportNsSubset` O(M·E) 스캔 회피 (#1928) |
+| `module_stmt_infos: []ModuleStmtInfos`                   | 모듈별 StmtInfo (fixpoint **이전** 에 일괄 구축, BFS 진입 시 O(1) 조회 #1558)                       |
 
 알고리즘:
+
 1. 진입점 + dynamic import target → `used_exports[*]` seed (#1260: dynamic import 는 정적 분석 밖이라 entry 취급)
 2. 포함 모듈의 import specifier 스캔 → `(source_module, imported_name)` 키로 마킹
 3. re-export chain 따라 cascade — `buildSymToIbMaps()` 가 fixpoint 각 iteration 마다 lazy 갱신해 같은 iteration 내 `followImport` 가 정상 동작
 4. 모듈 inclusion: `!has_used_export && !is_entry && !has_evaluation_side_effects` → 제거 (bitset)
 
 성능 기록:
+
 - fixpoint oscillation 수정 (#1558): 100회 → 2회 — 미사용 모듈 제거를 fixpoint **밖** 으로 분리
 - StmtInfo 사전 구축 (#1558 / #920): tree-shake 29.8 → 5.6ms (-81%), 전체 transpile 82.7 → 56.9ms (-31%)
 
@@ -438,6 +492,7 @@ pub const ModuleStmtInfos = struct {
 ```
 
 도달성 BFS (`computeReachable`):
+
 - **Seed**: side-effectful stmt + used export 의 선언 stmt + writer stmt
 - **전파**: `referenced_symbols` 재귀, `symbol_to_stmt`/`sym_to_writer_stmts` 로 의존 stmt enqueue
 - **출력**: stmt 도달성 bitset → emitter 가 skip_nodes 로 변환
@@ -459,6 +514,7 @@ esbuild / rolldown 과 동일 기준. 재귀 깊이 128 제한.
 - **`@__PURE__` 주석**: 렉서가 다음 call/new 노드의 `is_pure` 플래그 설정 → tree_shaker / statement_shaker 가 무시
 
 `sideEffects` 필드:
+
 - `false` → 모듈 전체 순수
 - `["*.css"]` → glob 매칭 (단조 적용, 예외 없음, INVARIANTS.md § sideEffects 참고)
 - 적용 범위: 모듈에서 **가장 가까운** package.json. node_modules 패키지뿐 아니라 프로젝트·워크스페이스 패키지 코드에도 적용된다 (esbuild/rolldown/webpack 동일, #5634)
@@ -469,12 +525,14 @@ esbuild / rolldown 과 동일 기준. 재귀 깊이 128 제한.
 두 진입점이 협력한다.
 
 **번들러 경로** (`binding_scanner.zig` + `transformer.zig`):
+
 1. `extractImportBindings`: `import_specifier.binary.flags & SPEC_FLAG_TYPE_ONLY != 0` 인 specifier 는 BindingRecord 미생성 — 런타임 바인딩 자체가 없으므로 자연 elide
 2. `shouldElideImportSpecifier` (transformer.zig:4833): `verbatim_module_syntax = false` 가드 + named specifier 한정. symbol table 의 `reference_count` 와 `isValueUse()` 로 "값 위치 참조 0" 인 named import 만 제거 (#1791 Phase D)
 
 default/namespace specifier 는 JSX pragma, CSS-in-JS implicit-use 위험으로 elision 미지원 (#1793 revert 사유).
 
 **트랜스파일 fast-path** (`transpile.zig` BindingLite):
+
 - 번들러가 아닌 단일 파일 트랜스파일 모드에서 full semantic 없이 named import 제거를 노리는 경량 스코프 분석
 - `collectBindingLite` 가 named import local 을 수집, `markBindingLiteValueUses` 가 program 트리를 한 번 훑어 value-use 마킹
 - value-use 가 0 인 local 은 transformer 의 `namedImportValueUse(local_name)` 조회로 제거됨
@@ -510,7 +568,9 @@ pub const CjsExportFact = struct {
 - **BindingLite shadow 한계**: 64 개 초과 named import 는 full semantic 으로 보수적 fallback (스택 버퍼 overflow — `transpile.zig` `hasNamedImportLocalBindingShadow`).
 
 ## 스코프 호이스팅 deconflict 개선 (TODO — 구조적 수정 필요)
+
 현재: well-known global 이름 목록(`isReservedName`)을 상수로 관리. 모듈의 top-level 변수가 글로벌을 shadowing하면 리네임.
+
 - **문제**: 목록이 환경마다 다르고 (브라우저 vs Node.js), 수동 관리 필요. 누락 시 TDZ 버그.
 - **목표**: Rolldown 방식 — `root_unresolved_references()` (실제 사용된 글로벌)를 자동 수집하여 예약. 상수 목록 불필요.
   - esbuild: `SymbolUnbound` (미해석 참조 = 글로벌)를 자동 예약 + 모듈 래핑으로 TDZ 방지
@@ -520,17 +580,18 @@ pub const CjsExportFact = struct {
 - **구현 시점**: semantic analyzer의 스코프/심볼 데이터가 이미 있으므로, 번들러 안정화 후 진행
 
 ## Code splitting 전략
+
 - 동적 import (`import('./page')`) 기준 청크 분할
 - 공통 모듈 추출: 여러 진입점이 공유하는 모듈 → 별도 청크
 - 작은 common 청크 자동 병합: `minChunkSize` (Rollup `experimentalMinChunkSize` 류).
   `src.bits ⊆ dst.bits`(over-fetch 없음)인 경우만 병합, entry/manual/dynamic 보존
 - CSS 청크: JS 청크별 CSS 분리, CSS→CSS `@import` 는 쓰는 청크마다 인라인,
   동적 청크는 런타임 `<link>` 자동 주입. **알려진 한계**: `cssNames` 가
-  *동일 entry 의 JS 와 다른 디렉터리* 를 강제하면(예: `entryNames: '[name]'`
-  + `cssNames: 'assets/[name]'`) 동적 청크의 런타임 `<link>` href 는
-  basename 만 사용해 경로가 어긋남. 새 default `[dir]/[name]` 는 entry-relative
-  dir 을 양쪽에 동일 적용해 자연 정합. 의도적인 dir 분리는 후속 과제 (publicPath
-  기반 절대 href 또는 cross-dir 상대 path 계산)
+  _동일 entry 의 JS 와 다른 디렉터리_ 를 강제하면(예: `entryNames: '[name]'`
+  - `cssNames: 'assets/[name]'`) 동적 청크의 런타임 `<link>` href 는
+    basename 만 사용해 경로가 어긋남. 새 default `[dir]/[name]` 는 entry-relative
+    dir 을 양쪽에 동일 적용해 자연 정합. 의도적인 dir 분리는 후속 과제 (publicPath
+    기반 절대 href 또는 cross-dir 상대 path 계산)
 
 ### Naming 옵션 default (esbuild parity)
 
@@ -538,13 +599,14 @@ pub const CjsExportFact = struct {
 semver-major). entry source path 의 `entry_dir` (모든 entry 의 longest
 common parent — esbuild `outbase` 동치) 기준 relative dir 이 path 에 prefix.
 
-| 패턴 토큰 | 의미 |
-|---|---|
-| `[name]`  | entry 모듈의 basename (확장자 제거) |
-| `[hash]`  | content hash (8자리 hex). 명시한 패턴에만 부여 |
+| 패턴 토큰 | 의미                                                                     |
+| --------- | ------------------------------------------------------------------------ |
+| `[name]`  | entry 모듈의 basename (확장자 제거)                                      |
+| `[hash]`  | content hash (8자리 hex). 명시한 패턴에만 부여                           |
 | `[dir]`   | entry-relative dir. 빈 dir 시 토큰 + 인접 `/` 함께 skip (esbuild parity) |
 
 옛 default `[name]` 평면 동작이 필요하면 명시적 opt-out:
+
 ```js
 // zntc.config.ts
 export default { entryNames: '[name]', cssNames: '[name]' };
@@ -554,6 +616,7 @@ export default { entryNames: '[name]', cssNames: '[name]' };
 없는 청크 (manualChunks / common / asset) 에 적용되어 미변경. manualChunks
 청크는 `chunk.kind == .entry_point` 가 아니므로 entry_names 가 적용되지
 않는다 (PR B-4b sub-3 fix).
+
 - 순환 참조: 같은 청크로 묶기
 - 런타임 로더: 청크를 동적 로드하는 코드 생성 (ESM 기반)
 
@@ -563,7 +626,7 @@ export default { entryNames: '[name]', cssNames: '[name]' };
 청크 경계로 인식·분할된다.
 
 **한계**: 변수 / 템플릿 리터럴 / 문자열 연결 등 **비-리터럴 specifier**
-(`import(name)`, `` import(`./m-${n}.js`) ``, `import("./a"+b)`) 는 정적 분석
+(`import(name)`, ``import(`./m-${n}.js`)``, `import("./a"+b)`) 는 정적 분석
 범위 밖이라 **코드 분할 대상이 아니다**. 해당 호출은 변형 없이 네이티브 런타임
 `import()` 로 그대로 남아 브라우저/런타임이 처리한다(번들에 미수집·미인라인,
 별도 진단 없음).
@@ -574,6 +637,7 @@ export default { entryNames: '[name]', cssNames: '[name]' };
 필요하면 `require.context`(Metro/webpack 호환, 인자 전부 리터럴)를 쓴다.
 
 ## 테스트 전략 (TDD)
+
 - **원칙**: 버그 하나 = 테스트 하나. 이슈 재현 테스트 먼저 → 수정 → 같은 버그 재발 방지
 - **모듈별 유닛 테스트**: 파일시스템 없이 가짜 데이터로 격리 테스트
   - resolver ~50개, graph ~40개, linker ~30개, tree_shaker ~30개, emitter ~50개
@@ -584,27 +648,31 @@ export default { entryNames: '[name]', cssNames: '[name]' };
 - **도입 순서**: B1에서 유닛+픽스처 → B2에서 실행 비교+호환 → ✅ 프로덕션 전 스모크
 
 ## 실전 검증 로드맵
+
 - **1단계 (지금 가능)**: 실제 .ts/.tsx 파일을 ZNTC로 변환, esbuild/SWC 출력과 비교
 - **2단계 (Arena 후)**: `hyperfine`으로 대형 파일 벤치마크 (ZNTC vs esbuild vs SWC)
 - **3단계 (N-API 후)**: `@zntc/vite-plugin`로 실제 React/Vue 프로젝트 개발 서버
 - ✅ **4단계 (번들러 MVP)**: 실제 프로젝트 빌드 스모크 테스트 — 111/111 통과, CI 통합 완료
 
 ## 성능 저하 위험 포인트
-| 기능 | 위험도 | 원인 | 대응 |
-|------|--------|------|------|
-| 모듈 해석 | **높음** | 파일시스템 I/O 폭발 (node_modules 탐색) | 해석 결과 캐시, 병렬 I/O |
-| Tree-shaking (깊은) | **높음** | 전체 AST 재순회 | 1단계는 export 추적만, 점진적 |
-| Code splitting | **높음** | 청크 분할이 NP-hard에 근접 | esbuild처럼 단순 자동 분리 먼저 |
-| 스코프 호이스팅 | 중간 | 변수 충돌 해결에 심볼 테이블 필요 | semantic analyzer 재활용 |
-| 모듈 그래프 | 중간 | 파싱 대기 | 파싱과 동시 구축 (esbuild 방식) |
+
+| 기능                | 위험도   | 원인                                    | 대응                            |
+| ------------------- | -------- | --------------------------------------- | ------------------------------- |
+| 모듈 해석           | **높음** | 파일시스템 I/O 폭발 (node_modules 탐색) | 해석 결과 캐시, 병렬 I/O        |
+| Tree-shaking (깊은) | **높음** | 전체 AST 재순회                         | 1단계는 export 추적만, 점진적   |
+| Code splitting      | **높음** | 청크 분할이 NP-hard에 근접              | esbuild처럼 단순 자동 분리 먼저 |
+| 스코프 호이스팅     | 중간     | 변수 충돌 해결에 심볼 테이블 필요       | semantic analyzer 재활용        |
+| 모듈 그래프         | 중간     | 파싱 대기                               | 파싱과 동시 구축 (esbuild 방식) |
 
 ## 멀티스레드 모델
+
 - **파일 파싱**: 파일별 독립 Arena → lock-free 병렬 파싱
 - **모듈 그래프**: 싱글 스레드 (의존성 순서가 중요)
 - **변환/코드젠**: 파일별 병렬
 - Zig의 `std.Thread.Pool` + 파일별 Arena 독립으로 Rust 대비 lock contention 최소화 가능
 
 ## 파일 변경 감지 전략
+
 - **현재**: OS 파일시스템 이벤트 (macOS kqueue, Linux inotify, Windows ReadDirectoryChangesW) — 구현 완료
 - **추가 예정**:
   - 폴링 폴백: Docker 볼륨/NFS 등 OS 이벤트가 불안정한 환경 대응 (mtime 비교)
@@ -613,6 +681,7 @@ export default { entryNames: '[name]', cssNames: '[name]' };
 - **증분 재빌드**: 파일 변경 → 모듈 그래프에서 영향받는 모듈만 재빌드 → HMR 전송
 
 ## React Native 지원 (Rolldown 방식 — Metro 레거시 불필요)
+
 - **방향**: 표준 ESM 번들러(Rolldown 계열) 위에 RN 특화 기능을 플러그인/코어 옵션으로 얹는 접근. Metro의 런타임 규약을 그대로 들고 가지 않음.
 - **불필요한 Metro 레거시** (구현하지 않음):
   - `__d` 래핑 — 표준 스코프 호이스팅으로 대체
@@ -631,6 +700,7 @@ export default { entryNames: '[name]', cssNames: '[name]' };
 - **Hermes 바이트코드**: `.hbc` 출력 — Hermes 컴파일러와 C ABI 연동
 
 ## 외부 통합 (플러그인/라이브러리)
+
 ```
 Zig 코어 (parser + transformer + codegen)
     │
@@ -645,6 +715,7 @@ Zig 코어 (parser + transformer + codegen)
             ├─ 브라우저 playground / 온라인 REPL
             └─ Deno/Bun/Cloudflare Workers 호환
 ```
+
 - **도입 시점**: Phase 6 초반에 C ABI 노출 → N-API 바인딩 → npm 패키지 → 플러그인 래퍼
 - **핵심**: N-API 바인딩 하나만 만들면 Vite/Webpack/Rollup 플러그인은 JS 래퍼 수십 줄
 - esbuild, SWC가 동일한 구조로 생태계 확장에 성공한 검증된 패턴
@@ -656,10 +727,10 @@ playground 가 trans pile-only 모드에선 작은 binary 만 다운로드, bund
 
 `zig build wasm wasm-bundler` (둘 다 `.optimize = .small`) 후 `bun scripts/measure-wasm-size.ts` 로 측정한 사이즈:
 
-| Target | Role | Raw | Gzip (-9) | Brotli (q=11) |
-|---|---|---:|---:|---:|
-| `zntc.wasm` | transpile-only | 908.5 KiB | 321.0 KiB | 250.0 KiB |
-| `zntc-bundler.wasm` | bundler | 1.57 MiB | 512.6 KiB | 393.7 KiB |
+| Target              | Role           |       Raw | Gzip (-9) | Brotli (q=11) |
+| ------------------- | -------------- | --------: | --------: | ------------: |
+| `zntc.wasm`         | transpile-only | 908.5 KiB | 321.0 KiB |     250.0 KiB |
+| `zntc-bundler.wasm` | bundler        |  1.57 MiB | 512.6 KiB |     393.7 KiB |
 
 - 분리 결정: 단일 binary (1.57 MiB) 면 transpile-only playground 도 풀 bundler 다운로드 강제 → 분리 우위. 후속 wasm-opt (binaryen) 적용 시 추가 10-30% 절감 가능 (별도 follow-up).
 - `playground/bundler` 페이지에서만 `initBundler()` 호출 → bundler binary 가 lazy 로드.

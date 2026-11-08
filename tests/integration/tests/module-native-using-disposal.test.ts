@@ -7,8 +7,9 @@ import { createFixture, ZNTC_BIN } from './helpers';
 
 // #4740: each dependency module owns its synchronous using lifetime. Compare
 // actual Node module evaluation, not just the bundle's eventual side effects.
-// Asynchronous disposal timing is tracked separately. The mixed await/sync
-// case below checks only its already-supported exported value, not timing.
+// Async timing has its own #6959 suite. This keeps 84 synchronous cases and
+// six mixed cases: the latter assert the flattened-layout diagnostic, then
+// check the original exported value in explicit native preserveModules output.
 // CLI-only is an explicit baseline cohort, never a skipped NAPI pass.
 const cliOnly = process.env.ZNTC_TEST_CLI_ONLY === '1';
 const surfaces: readonly ('cli' | 'napi')[] = cliOnly ? ['cli'] : ['cli', 'napi'];
@@ -18,6 +19,7 @@ type DisposalCase = {
   files: Record<string, string>;
   expected?: unknown;
   expectedText?: string;
+  preserveAsyncBoundary?: boolean;
 };
 
 const cases: DisposalCase[] = [
@@ -307,7 +309,8 @@ advance(); console.log(initial, value);
   {
     // Preserve the already-supported mixed-module exported value. This does
     // not assert that asynchronous disposal timing is fixed by #4740.
-    name: 'healthy-mixed-await-sync-export-value',
+    name: 'mixed-await-sync-export-value (diagnostic then native PM)',
+    preserveAsyncBoundary: true,
     files: {
       'lib.mjs': `using resource={label:"ok",[Symbol.dispose](){}}; await using other={async [Symbol.asyncDispose](){}}; export {resource};
 `,
@@ -346,7 +349,51 @@ describe('module native using disposal boundaries (#4740)', () => {
             if (item.expectedText !== undefined) expect(native.stdout).toBe(item.expectedText);
             else expect(JSON.parse(native.stdout)).toEqual(item.expected);
 
-            const outfile = join(fixture.dir, 'dist', 'entry.mjs');
+            if (item.preserveAsyncBoundary) {
+              const rejected = join(fixture.dir, 'rejected.mjs');
+              if (surface === 'cli') {
+                const result = spawnSync(
+                  process.env.ZNTC_BIN ?? ZNTC_BIN,
+                  [
+                    '--bundle',
+                    entry,
+                    '--format=esm',
+                    '--platform=node',
+                    '--target=esnext',
+                    '-o',
+                    rejected,
+                    ...(mode === 'full'
+                      ? ['--minify']
+                      : mode === 'identifiers'
+                        ? ['--minify-identifiers']
+                        : []),
+                  ],
+                  { cwd: fixture.dir, encoding: 'utf8', timeout: 30_000 },
+                );
+                expect(result.error).toBeUndefined();
+                expect(result.status).not.toBe(0);
+                expect(result.stderr).toContain('ZNTC0001');
+              } else {
+                const result = buildSync({
+                  entryPoints: [entry],
+                  outfile: rejected,
+                  format: 'esm',
+                  target: 'esnext',
+                  platform: 'node',
+                  write: true,
+                  minifyIdentifiers: mode !== 'plain',
+                  minifySyntax: mode === 'full',
+                  minifyWhitespace: mode === 'full',
+                });
+                expect(result.errors.some((error) => error.code === 'top_level_await_target')).toBe(
+                  true,
+                );
+                expect(result.outputFiles).toHaveLength(0);
+              }
+              expect(existsSync(rejected)).toBe(false);
+            }
+            const outdir = join(fixture.dir, 'dist');
+            const outfile = join(outdir, item.preserveAsyncBoundary ? 'main.mjs' : 'entry.mjs');
             if (surface === 'cli') {
               const flags =
                 mode === 'full'
@@ -363,8 +410,15 @@ describe('module native using disposal boundaries (#4740)', () => {
                   '--platform=node',
                   '--target=esnext',
                   '--keep-names',
-                  '-o',
-                  outfile,
+                  ...(item.preserveAsyncBoundary
+                    ? [
+                        '--preserve-modules',
+                        '--preserve-modules-root=' + fixture.dir,
+                        '--out-extension:.js=.mjs',
+                        '--outdir',
+                        outdir,
+                      ]
+                    : ['-o', outfile]),
                   ...flags,
                 ],
                 { cwd: fixture.dir, encoding: 'utf8', timeout: 30_000 },
@@ -375,7 +429,14 @@ describe('module native using disposal boundaries (#4740)', () => {
               const result = buildSync({
                 entryPoints: [entry],
                 rootDir: fixture.dir,
-                outfile,
+                ...(item.preserveAsyncBoundary
+                  ? {
+                      outdir,
+                      preserveModules: true,
+                      preserveModulesRoot: fixture.dir,
+                      outExtension: '.mjs',
+                    }
+                  : { outfile }),
                 target: 'esnext',
                 platform: 'node',
                 format: 'esm',
