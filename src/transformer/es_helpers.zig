@@ -52,6 +52,7 @@ pub fn isStandaloneLateOutputNameSymbol(symbol: symbol_mod.Symbol) bool {
         .tagged_template_function_binding,
         .standalone_temp_binding,
         .standalone_generated_binding,
+        .lexical_initialization_flag,
         => true,
 
         .implicit_arguments,

@@ -8,6 +8,21 @@
 const std = @import("std");
 const RuntimeHelpers = @import("../transformer/runtime_helper_bits.zig").RuntimeHelpers;
 
+/// Fixed global reads made by the raw TDZ preamble's constructor expressions.
+/// These are output protocol roles, not source-binding identity lookups.
+pub const LexicalTdzConstructor = enum {
+    reference_error,
+    type_error,
+
+    pub fn globalName(self: LexicalTdzConstructor) []const u8 {
+        return switch (self) {
+            .reference_error => "ReferenceError",
+            .type_error => "TypeError",
+        };
+    }
+};
+pub const lexical_tdz_constructors = [_]LexicalTdzConstructor{ .reference_error, .type_error };
+
 /// Final semantic local spellings for standalone inline helpers emitted from
 /// declaration templates. Null leaves the template's canonical local intact.
 pub const StandaloneRuntimeHelperLocalNames = struct {
@@ -735,14 +750,76 @@ pub const DERIVED_CONSTRUCTOR_RUNTIME_MIN =
     "var " ++ NAMES.ASSERT_THIS_UNINITIALIZED_MIN ++ "=function(self){if(self!==void 0)throw new ReferenceError(\"Super constructor may only be called once\")};" ++
     "var " ++ NAMES.POSSIBLE_CONSTRUCTOR_RETURN_MIN ++ "=function(call,self){if(call&&(typeof call===\"object\"||typeof call===\"function\"))return call;if(call!==void 0)throw new TypeError(\"Derived constructors may only return object or undefined\");return " ++ NAMES.ASSERT_THIS_INITIALIZED_MIN ++ "(self)};" ++ @import("native_constructor_frame_runtime.zig").minified(NAMES.NATIVE_CTOR_THIS_MIN);
 
-/// ES2015 TDZ read helper. Babel/OXC runtime의 tdz helper와 같은 역할이다.
+/// One argument preserves the unconditional TDZ throw ABI used by parameter
+/// defaults and class heritage. Lowered lexical cells may additionally use the
+/// compiler-owned function itself as their uninitialized marker: unlike
+/// `undefined`, that marker cannot be a normally initialized empty binding.
+/// A write check is performed by the caller after evaluating the RHS; compound
+/// operations must perform their read check before evaluating the RHS.
 pub const TDZ_RUNTIME =
-    \\var __tdz = function(name) {
-    \\  throw new ReferenceError(name + " is not defined - temporal dead zone");
-    \\};
+    \\var __tdz = (function() {
+    \\  var ObjectConstructor = ({}).constructor, create = ObjectConstructor.create, cells = create(null), domains = create(null), factoryDomains = create(null), URLConstructor = typeof URL === "function" && URL;
+    \\  var descriptor = URLConstructor && ObjectConstructor.getOwnPropertyDescriptor(URLConstructor.prototype, "href"), getHref = descriptor && descriptor.get;
+    \\  var call = (function() {}).call, invoke = call.bind(call);
+    \\  var slice = "".slice, split = "".split, join = [].join, encode = encodeURIComponent;
+    \\  function relativeFile(relative, base) {
+    \\    var slash = base.length - 1;
+    \\    while (slash >= 0 && base[slash] !== "/" && base[slash] !== "\\") slash--;
+    \\    if (!relative) return base;
+    \\    var parts = invoke(split, invoke(slice, base, 0, slash + 1) + relative, "/"), count = 0;
+    \\    for (var i = 0; i < parts.length; i++) {
+    \\      var part = parts[i];
+    \\      if (part === "..") { if (count > 1) count--; }
+    \\      else if (part !== ".") parts[count++] = part;
+    \\    }
+    \\    parts.length = count;
+    \\    return invoke(join, parts, "/");
+    \\  }
+    \\  function relativeURL(relative, base) {
+    \\    if (!relative) return base;
+    \\    var end = base.length;
+    \\    for (var j = 0; j < base.length; j++) if (base[j] === "?" || base[j] === "#") { end = j; break; }
+    \\    var slash = end - 1;
+    \\    while (slash >= 0 && base[slash] !== "/") slash--;
+    \\    var segments = invoke(split, relative, "/");
+    \\    for (var i = 0; i < segments.length; i++) if (segments[i] !== "." && segments[i] !== "..") segments[i] = encode(segments[i]);
+    \\    return relativeFile(invoke(join, segments, "/"), invoke(slice, base, 0, end));
+    \\  }
+    \\  return function(name, value, readonlyWrite, state, operation) {
+    \\    if (arguments.length === 5) {
+    \\      var base = name[2], relative = name[1], logical = name[0], file = name[3] === "cjs", factory = name[3] === "factory";
+    \\      if (factory ? typeof base !== "function" : typeof base !== "string" || !base) throw new TypeError("Missing lexical module identity");
+    \\      var cell;
+    \\      if (factory) {
+    \\        var head = factoryDomains[logical], entry = head;
+    \\        while (entry && entry.identity !== base) entry = entry.next;
+    \\        if (!entry) { entry = { identity: base, next: head, cell: { initialized: false } }; factoryDomains[logical] = entry; }
+    \\        cell = entry.cell;
+    \\      } else {
+    \\      var paths = domains[base] || (domains[base] = create(null));
+    \\      var keys = paths[relative] || (paths[relative] = create(null));
+    \\      cell = keys[logical];
+    \\      if (!cell) {
+    \\        var identity = file ? relativeFile(relative, base) : relative ? URLConstructor ? invoke(getHref, new URLConstructor(relative, base)) : relativeURL(relative, base) : base;
+    \\        var key = (file ? "cjs:" : "esm:") + identity.length + ":" + identity + ":" + logical;
+    \\        cell = cells[key] || (cells[key] = { initialized: false });
+    \\        keys[logical] = cell;
+    \\      }
+    \\      }
+    \\      if (operation === 0) return cell.initialized === true;
+    \\      if (operation === 1) { cell.initialized = value === true; return value; }
+    \\      throw new TypeError("Invalid lexical initialization operation");
+    \\    }
+    \\    if (arguments.length > 1 && (arguments.length > 3 ? state : value) !== __tdz) {
+    \\      if (readonlyWrite) throw new TypeError("Assignment to constant variable.");
+    \\      return value;
+    \\    }
+    \\    throw new ReferenceError(name + " is not defined - temporal dead zone");
+    \\  };
+    \\})();
     \\
 ;
-pub const TDZ_RUNTIME_MIN = "var " ++ NAMES.TDZ_MIN ++ "=function(name){throw new ReferenceError(name+\" is not defined - temporal dead zone\")};";
+pub const TDZ_RUNTIME_MIN = "var $td = (function() {var ObjectConstructor = ({}).constructor, create = ObjectConstructor.create, cells = create(null), domains = create(null), factoryDomains = create(null), URLConstructor = typeof URL === \"function\" && URL;var descriptor = URLConstructor && ObjectConstructor.getOwnPropertyDescriptor(URLConstructor.prototype, \"href\"), getHref = descriptor && descriptor.get;var call = (function() {}).call, invoke = call.bind(call);var slice = \"\".slice, split = \"\".split, join = [].join, encode = encodeURIComponent;function relativeFile(relative, base) {var slash = base.length - 1;while (slash >= 0 && base[slash] !== \"/\" && base[slash] !== \"\\\\\") slash--;if (!relative) return base;var parts = invoke(split, invoke(slice, base, 0, slash + 1) + relative, \"/\"), count = 0;for (var i = 0; i < parts.length; i++) {var part = parts[i];if (part === \"..\") { if (count > 1) count--; }else if (part !== \".\") parts[count++] = part;}parts.length = count;return invoke(join, parts, \"/\");}function relativeURL(relative, base) {if (!relative) return base;var end = base.length;for (var j = 0; j < base.length; j++) if (base[j] === \"?\" || base[j] === \"#\") { end = j; break; }var slash = end - 1;while (slash >= 0 && base[slash] !== \"/\") slash--;var segments = invoke(split, relative, \"/\");for (var i = 0; i < segments.length; i++) if (segments[i] !== \".\" && segments[i] !== \"..\") segments[i] = encode(segments[i]);return relativeFile(invoke(join, segments, \"/\"), invoke(slice, base, 0, end));}return function(name, value, readonlyWrite, state, operation) {if (arguments.length === 5) {var base = name[2], relative = name[1], logical = name[0], file = name[3] === \"cjs\", factory = name[3] === \"factory\";if (factory ? typeof base !== \"function\" : typeof base !== \"string\" || !base) throw new TypeError(\"Missing lexical module identity\");var cell;if (factory) {var head = factoryDomains[logical], entry = head;while (entry && entry.identity !== base) entry = entry.next;if (!entry) { entry = { identity: base, next: head, cell: { initialized: false } }; factoryDomains[logical] = entry; }cell = entry.cell;} else {var paths = domains[base] || (domains[base] = create(null));var keys = paths[relative] || (paths[relative] = create(null));cell = keys[logical];if (!cell) {var identity = file ? relativeFile(relative, base) : relative ? URLConstructor ? invoke(getHref, new URLConstructor(relative, base)) : relativeURL(relative, base) : base;var key = (file ? \"cjs:\" : \"esm:\") + identity.length + \":\" + identity + \":\" + logical;cell = cells[key] || (cells[key] = { initialized: false });keys[logical] = cell;}}if (operation === 0) return cell.initialized === true;if (operation === 1) { cell.initialized = value === true; return value; }throw new TypeError(\"Invalid lexical initialization operation\");}if (arguments.length > 1 && (arguments.length > 3 ? state : value) !== $td) {if (readonlyWrite) throw new TypeError(\"Assignment to constant variable.\");return value;}throw new ReferenceError(name + \" is not defined - temporal dead zone\");};})();";
 
 /// array destructuring의 iterable protocol read helper. TypeScript __read와 같은
 /// 구조로 limit 개수만 읽고 iterator.return()으로 close한다.
@@ -2493,7 +2570,7 @@ fn appendRuntimeHelpersInternal(
     }
     if (helpers.tdz) {
         const default_name = helperName("__tdz", minify);
-        try appendRuntimeTemplateWithLocalName(
+        try appendRuntimeTemplateWithLocalNameAndReferences(
             buf,
             allocator,
             if (minify) TDZ_RUNTIME_MIN else TDZ_RUNTIME,
@@ -3146,6 +3223,26 @@ pub fn appendHmrInternalNameReferences(
 ) !void {
     const replacements = hmrInternalReplacements(hmr_names);
     try appendRuntimeWithIdentifierReplacements(buf, allocator, source, &replacements);
+}
+
+test "lexical TDZ runtime selected owner renames marker and declaration together" {
+    const allocator = std.testing.allocator;
+    for ([_]bool{ false, true }) |minify| {
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(allocator);
+        const original = helperName("__tdz", minify);
+        try appendRuntimeTemplateWithLocalNameAndReferences(
+            &output,
+            allocator,
+            if (minify) TDZ_RUNTIME_MIN else TDZ_RUNTIME,
+            original,
+            "selectedTdzOwner",
+        );
+        try std.testing.expect(std.mem.startsWith(u8, output.items, "var selectedTdzOwner"));
+        try std.testing.expect(std.mem.indexOf(u8, output.items, original) == null);
+        try std.testing.expect(std.mem.indexOf(u8, output.items, "!==selectedTdzOwner") != null or
+            std.mem.indexOf(u8, output.items, "!== selectedTdzOwner") != null);
+    }
 }
 
 test "HMR helper aliasing preserves canonical global property keys" {

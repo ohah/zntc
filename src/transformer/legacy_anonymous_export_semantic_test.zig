@@ -63,7 +63,7 @@ fn expectBeforeFinish(source: []const u8, named_inner: bool) !void {
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = transformer.programScope();
-    const output = try transformer.visitExportDefaultDeclaration(transformer.ast.getNode(export_node));
+    const output = try transformer.visitExportDefaultDeclaration(export_node, transformer.ast.getNode(export_node));
     const binding_raw = transformer.lowered_anonymous_class_export_bindings.get(@backingInt(source_class)).?;
     const binding: ast.NodeIndex = @fromBackingInt(@intCast(binding_raw));
     const id = transformer.getSymbolIdAt(binding).?;

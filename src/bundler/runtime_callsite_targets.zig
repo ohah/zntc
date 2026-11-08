@@ -13,6 +13,29 @@ pub fn validateTargetRole(graph: anytype, target: anytype) !void {
             if (origin.catalog != .readiness_all or !@import("../runtime_helper_modules.zig").matchesConstructedSource(origin, graph.helper_plugin_opts, module.source)) return error.InvalidCallsiteTarget;
             break :blk SymbolID.make(helper.module_index, @backingInt(helper.symbol_id));
         },
+        .keep_names_helper => blk: {
+            const known = graph.legacy_name_builtin orelse return error.InvalidCallsiteTarget;
+            if (known.owner_token != target.owner) return error.InvalidCallsiteTarget;
+            break :blk try @import("lexical_initialization_builtin.zig").exactNames(graph);
+        },
+        .tdz_helper => blk: {
+            const known = graph.lexical_tdz_builtin orelse return error.InvalidCallsiteTarget;
+            if (known.owner_token != target.owner) return error.InvalidCallsiteTarget;
+            break :blk try @import("lexical_initialization_builtin.zig").exact(graph);
+        },
+        .lexical_initialization_flag => blk: {
+            const semantic = module.semantic orelse return error.InvalidCallsiteTarget;
+            if (semantic.owner_token == .unassigned or semantic.owner_token != target.owner) return error.InvalidCallsiteTarget;
+            const raw = @backingInt(target.symbol.inner);
+            if (raw >= semantic.symbols.items.len) return error.InvalidCallsiteTarget;
+            const flag = semantic.symbols.items[raw];
+            const owner = flag.synthetic_owner_id orelse return error.InvalidCallsiteTarget;
+            if (flag.synthetic_kind != .lexical_initialization_flag or
+                !@import("../semantic/lexical_initialization.zig").validatePair(semantic.symbols.items, semantic.scopes, @backingInt(owner)) or
+                semantic.symbols.items[@backingInt(owner)].lexical_initialization.flag != target.symbol.inner)
+                return error.InvalidCallsiteTarget;
+            break :blk target.symbol;
+        },
         .schedule => try @import("runtime_dynamic_import_ast.zig").exactBinding(graph),
         .entry_guard => try @import("runtime_entry_guard_ast.zig").exactBinding(graph),
         .to_esm => blk: {

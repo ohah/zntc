@@ -214,8 +214,8 @@ pub const BindingIdentifierWalker = struct {
                 .assignment_target_rest,
                 .spread_element,
                 => try self.push(node.data.unary.operand),
+                .assignment_target_property_identifier => try self.push(node.data.binary.left),
                 .binding_property,
-                .assignment_target_property_identifier,
                 .assignment_target_property_property,
                 => {
                     const value = node.data.binary.right;

@@ -5,6 +5,8 @@ pub const Error = error{
     InvalidNativeModuleUsingContext,
     InvalidNativeModuleImportProjection,
     InvalidNativeModuleStorageProjection,
+    InvalidDefaultNameProducer,
+    InvalidModuleRuntimeIdentity,
     MissingEnumIifeParameterSymbol,
     MissingNamespaceIifeParameterSymbol,
     MissingGeneratedIifeParameterFinalName,

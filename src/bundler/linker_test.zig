@@ -8459,6 +8459,15 @@ test "runtime helper CJS factory scope zero shadows rename the exact provider" {
         const local = binding.local_symbol.semanticIndex().?;
         const symbols_before = try std.testing.allocator.dupe(semantic_symbol.Symbol, entry.semantic.?.symbols.items);
         defer std.testing.allocator.free(symbols_before);
+        const roles_before: @import("module.zig").RuntimeIdentitySnapshot = if (entry.semantic.?.runtime_identities) |roles| roles.* else .{};
+        const ids_before = try std.testing.allocator.dupe(?u32, entry.semantic.?.symbol_ids);
+        defer std.testing.allocator.free(ids_before);
+        const refs_before = try std.testing.allocator.dupe(@TypeOf(entry.semantic.?.references[0]), entry.semantic.?.references);
+        defer std.testing.allocator.free(refs_before);
+        const scopes_before = try std.testing.allocator.dupe(@TypeOf(entry.semantic.?.scopes[0]), entry.semantic.?.scopes);
+        defer std.testing.allocator.free(scopes_before);
+        const nodes_before = entry.ast.?.nodes.items.len;
+        const extras_before = entry.ast.?.extra_data.items.len;
         // Shared nested-binding input remains scope 1+; the CJS source-zero
         // exception belongs only to this helper/factory consumer.
         try std.testing.expectEqual(index == 1, result.linker.hasNestedBinding(entry_index.toU32(), "__callSuper"));
@@ -8474,7 +8483,12 @@ test "runtime helper CJS factory scope zero shadows rename the exact provider" {
         } else {
             try std.testing.expectEqualStrings("__callSuper", selected);
         }
-        try std.testing.expectEqualDeep(symbols_before, entry.semantic.?.symbols.items);
+        try expectOnlyInteropRolePublication(symbols_before, roles_before, entry, &result.linker);
+        try std.testing.expectEqualDeep(ids_before, entry.semantic.?.symbol_ids);
+        try std.testing.expectEqualDeep(refs_before, entry.semantic.?.references);
+        try std.testing.expectEqualDeep(scopes_before, entry.semantic.?.scopes);
+        try std.testing.expectEqual(nodes_before, entry.ast.?.nodes.items.len);
+        try std.testing.expectEqual(extras_before, entry.ast.?.extra_data.items.len);
         // A separately emitted helper keeps its public export spelling. The
         // import writer selects a local alias; source zero must remain intact.
         result.graph.code_splitting = true;
@@ -8610,7 +8624,7 @@ test "runtime helper CJS factory scope zero shadows rename the exact provider" {
                 ));
             }
         }
-        try std.testing.expectEqualDeep(symbols_before, entry.semantic.?.symbols.items);
+        try expectOnlyInteropRolePublication(symbols_before, roles_before, entry, &result.linker);
     }
 }
 
@@ -12462,4 +12476,58 @@ test "canonical export COW publication preserves actual source receipts and reje
         try std.testing.expect((try receipt.localName(&r.linker)) != null);
         try std.testing.expect(r.linker.getCanonicalForExport(next.*, index.toU32()) != null);
     }
+}
+
+fn expectOnlyInteropRolePublication(
+    before: []const @import("../semantic/symbol.zig").Symbol,
+    roles_before: @import("module.zig").RuntimeIdentitySnapshot,
+    owner: *const @import("module.zig").Module,
+    linker: anytype,
+) !void {
+    const mod = @import("module.zig");
+    const names = @import("../runtime_helper_names.zig");
+    const sem = owner.semantic orelse return error.MissingInteropSemantic;
+    try std.testing.expect(sem.symbols.items.len >= before.len);
+    try std.testing.expectEqualDeep(before, sem.symbols.items[0..before.len]);
+    const roles = sem.runtime_identities orelse return error.MissingInteropRoles;
+    const helpers = roles.interop_helpers orelse return error.MissingInteropHelpers;
+    const internals = roles.interop_internal orelse return error.MissingInteropInternals;
+    try std.testing.expect(mod.validEsmInteropHelperIds(helpers, sem.symbols.items));
+    try std.testing.expect(mod.validEsmInteropInternalIds(internals, sem.symbols.items));
+    try std.testing.expectEqualDeep(helpers, owner.esm_interop_runtime_helper_symbols orelse return error.MissingInteropHelperMirror);
+    try std.testing.expectEqualDeep(internals, owner.esm_interop_runtime_internal_symbols orelse return error.MissingInteropInternalMirror);
+    const maximum = names.ESM_INTEROP_RUNTIME_HELPERS.len + mod.ESM_INTEROP_INTERNAL_ROWS.len;
+    const appended = sem.symbols.items.len - before.len;
+    try std.testing.expect(appended <= maximum);
+    var selected: [maximum]bool = @splat(false);
+    inline for (names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+        const sid = @field(helpers, @tagName(helper));
+        const actual = linker.esm_interop_runtime_symbol_ids[@backingInt(helper)] orelse return error.MissingLinkerInteropRole;
+        try std.testing.expectEqual(owner.index, actual.module);
+        try std.testing.expectEqual(sid, actual.inner);
+        if (roles_before.interop_helpers) |old| {
+            try std.testing.expectEqual(@field(old, @tagName(helper)), sid);
+            try std.testing.expect(@backingInt(sid) < before.len);
+        } else {
+            const raw = @backingInt(sid);
+            try std.testing.expect(raw >= before.len and raw < sem.symbols.items.len);
+            const offset = raw - before.len;
+            try std.testing.expect(!selected[offset]);
+            selected[offset] = true;
+        }
+    }
+    inline for (@typeInfo(mod.EsmInteropRuntimeInternalSymbolIds).@"struct".field_names) |field| {
+        const sid = @field(internals, field);
+        if (roles_before.interop_internal) |old| {
+            try std.testing.expectEqual(@field(old, field), sid);
+            try std.testing.expect(@backingInt(sid) < before.len);
+        } else {
+            const raw = @backingInt(sid);
+            try std.testing.expect(raw >= before.len and raw < sem.symbols.items.len);
+            const offset = raw - before.len;
+            try std.testing.expect(!selected[offset]);
+            selected[offset] = true;
+        }
+    }
+    for (selected[0..appended]) |present| try std.testing.expect(present);
 }

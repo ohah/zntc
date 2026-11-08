@@ -2862,21 +2862,97 @@ test "Re-export resolves to canonical local (not global-identifier reserved, #13
     defer std.testing.allocator.free(entry);
 
     const globals = [_][]const u8{"URLSearchParams"};
-    var b = Bundler.init(std.testing.allocator, .{
+    const options: @import("../bundler.zig").BundleOptions = .{
         .entry_points = &.{entry},
         .platform = .react_native,
         .global_identifiers = &globals,
-    });
+    };
+    var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var b = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
     defer b.deinit();
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
 
-    // URL.ts의 re-export getter가 canonical local name `URLSearchParams$1`을 반환해야 함.
-    // (bare `URLSearchParams` 참조는 `--global-identifier` 글로벌과 충돌)
-    // #4630: arrow 미지원 선언 시 __export getter 도 function expression.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "URLSearchParams: function() { return URLSearchParams$1; }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "URLSearchParams: () => URLSearchParams,") == null);
+    try test_helpers.expectOutputRuntime(result.output, "local\n");
+    const provider_path = try absPath(&tmp, "URLSearchParams.ts");
+    defer std.testing.allocator.free(provider_path);
+    const barrel_path = try absPath(&tmp, "URL.ts");
+    defer std.testing.allocator.free(barrel_path);
+    const provider = graph.getModule(graph.path_to_module.get(provider_path).?).?;
+    const barrel = graph.getModule(graph.path_to_module.get(barrel_path).?).?;
+    const exported = provider.findExportBinding("URLSearchParams").?;
+    const sid = provider.exportBindingSemanticIndex(exported.*).?;
+    try std.testing.expectEqual(sid, provider.semantic.?.symbol_ids[@backingInt(exported.local_symbol_node.?)]);
+    try std.testing.expect(provider.semantic.?.symbols.items[sid].decl_flags.is_class);
+    const forwarding = barrel.findExportBinding("URLSearchParams").?;
+    try std.testing.expectEqual(@TypeOf(forwarding.kind).re_export, forwarding.kind);
+    try std.testing.expectEqual(provider.index, barrel.import_records[forwarding.import_record_index.?].resolved);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, result.output);
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const walk = @import("../../parser/ast_walk.zig");
+    const reachable = try walk.collectReachableNodeIndicesFrom(allocator, &parser.ast, root);
+    const namespace_identity = try provider.esmNamespaceSymbol();
+    const initializer_identity = try provider.esmInitSymbol();
+    const namespace_name = try provider.esmWrapperName(namespace_identity, null);
+    const initializer_name = try provider.esmWrapperName(initializer_identity, null);
+    var getters: usize = 0;
+    for (reachable) |raw| {
+        const node = parser.ast.nodes.items[raw];
+        if (node.tag != .object_property or node.data.binary.right.isNone()) continue;
+        const key = (try parser.ast.staticKeyName(allocator, node.data.binary.left)) orelse continue;
+        if (!std.mem.eql(u8, key, "URLSearchParams")) continue;
+        const value = parser.ast.getNode(node.data.binary.right);
+        try std.testing.expectEqual(@TypeOf(value.tag).function_expression, value.tag);
+        const references = try @import("../../semantic/reference_walk.zig").collectIdentifierReferences(allocator, &parser.ast, node.data.binary.right);
+        var canonical_reads: usize = 0;
+        var namespace_reads: usize = 0;
+        for (references) |child| {
+            const reference = parser.ast.getNode(child);
+            const name = parser.ast.getText(reference.span);
+            try std.testing.expect(!@import("../../lexer/scanner.zig").Scanner.identifierValueEquals(name, "URLSearchParams"));
+            if (@import("../../lexer/scanner.zig").Scanner.identifierValueEquals(name, "URLSearchParams$1")) canonical_reads += 1;
+            if (@import("../../lexer/scanner.zig").Scanner.identifierValueEquals(name, namespace_name)) namespace_reads += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), canonical_reads + namespace_reads);
+        if (namespace_reads != 0) {
+            const body = try walk.collectReachableNodeIndicesFrom(allocator, &parser.ast, node.data.binary.right);
+            var members: usize = 0;
+            var initializers: usize = 0;
+            for (body) |child| {
+                const expression = parser.ast.nodes.items[child];
+                if (expression.tag == .static_member_expression) {
+                    const base = parser.ast.getNode(parser.ast.readExtraNode(expression.data.extra, 0));
+                    const property = (try parser.ast.staticKeyName(allocator, parser.ast.readExtraNode(expression.data.extra, 1))) orelse continue;
+                    if (base.tag == .identifier_reference and
+                        @import("../../lexer/scanner.zig").Scanner.identifierValueEquals(parser.ast.getText(base.span), namespace_name) and
+                        std.mem.eql(u8, property, exported.exported_name)) members += 1;
+                }
+                if (expression.tag == .call_expression) {
+                    const callee = parser.ast.getNode(parser.ast.readExtraNode(expression.data.extra, 0));
+                    if (callee.tag == .identifier_reference and
+                        @import("../../lexer/scanner.zig").Scanner.identifierValueEquals(parser.ast.getText(callee.span), initializer_name))
+                    {
+                        try std.testing.expectEqual(@as(u32, 0), parser.ast.readExtra(expression.data.extra, 2));
+                        initializers += 1;
+                    }
+                }
+            }
+            try std.testing.expectEqual(@as(usize, 1), members);
+            try std.testing.expectEqual(@as(usize, 1), initializers);
+        }
+        getters += 1;
+    }
+    try std.testing.expect(getters != 0);
 }
 
 // ============================================================

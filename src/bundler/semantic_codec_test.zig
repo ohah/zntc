@@ -94,6 +94,8 @@ test "semantic_codec: analyzer round-trip — relocatable 필드 보존" {
         try testing.expectEqualStrings(s1.output_name_hint, s2.output_name_hint);
         try testing.expectEqual(s1.requires_uppercase_first_char, s2.requires_uppercase_first_char);
         try testing.expectEqual(s1.synthetic_owner_id, s2.synthetic_owner_id);
+        try testing.expectEqualDeep(s1.lexical_initialization, s2.lexical_initialization);
+        try testing.expectEqual(s1.binding_instantiation.lexical_initialization, s2.binding_instantiation.lexical_initialization);
     }
 
     // scope_maps: 실 analyzer 출력 — 맵 개수 + 각 키→심볼인덱스 동일
@@ -464,6 +466,7 @@ test "semantic_codec: struct padding poison 이 직렬화에 새지 않는다 (#
             s.annex_b_alias = .{};
             s.parameter_copy = .{};
             s.binding_instantiation = .{};
+            s.lexical_initialization = .{};
             try symbols.append(a, s);
 
             const scopes = try a.alloc(Scope, 1);

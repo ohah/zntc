@@ -92,7 +92,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // module-level decl 이 hoist 되지 않고 소실됐다.
             const result = blk: {
                 if (self.options.unsupported.top_level_await and !self.options.tla_chunk_wrapped) {
-                    if (try es2022_tla.lowerProgram(Transformer, self, node)) |wrapped| break :blk wrapped;
+                    if (try es2022_tla.lowerProgram(Transformer, self, idx, node)) |wrapped| break :blk wrapped;
                 }
                 break :blk try self.visitListNode(idx);
             };
@@ -378,6 +378,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             return self.visitBinaryNode(idx);
         },
         .assignment_expression => {
+            if (try @import("../lexical_tdz.zig").assignment(self, idx)) |checked| return checked;
             // ES2015: super.x = v / super.x += v / super.x ||= v 는
             // Parent.prototype.x 직접 접근이 아니라 receiver(this)를 보존하는 get/set
             // 헬퍼로 먼저 lowering한다. 이후 generic logical/compound lowering으로 넘기면
@@ -515,9 +516,8 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         },
 
         // === unary/update expression: extra = [operand, operator_and_flags] ===
-        .unary_expression,
-        .update_expression,
-        => self.visitUnaryExtra(node),
+        .unary_expression => self.visitUnaryExtra(node),
+        .update_expression => if (try @import("../lexical_tdz.zig").update(self, idx)) |checked| checked else self.visitUnaryExtra(node),
 
         // === 삼항 노드: 자식 3개 재귀 방문 ===
         .if_statement => self.visitIfStatement(node),
@@ -804,7 +804,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         },
         .for_statement => self.visitForStatement(idx),
         .switch_statement => self.visitSwitchStatement(idx, node),
-        .switch_case => self.visitSwitchCase(node),
+        .switch_case => self.visitSwitchCase(idx, node),
         .call_expression => {
             // ES2022: this.#method(args) → _method_fn.call(this, args)
             if (self.current_private_methods.len > 0) {
@@ -869,9 +869,10 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             break :blk output;
         },
         .export_named_declaration => self.visitExportNamedDeclaration(node),
-        .export_default_declaration => self.visitExportDefaultDeclaration(node),
+        .export_default_declaration => self.visitExportDefaultDeclaration(idx, node),
         .export_all_declaration => self.visitExportAllDeclaration(node),
         .catch_clause => {
+            if (try @import("../lexical_tdz.zig").ordinaryCatch(self, idx, node)) |lowered| return lowered;
             if (self.options.unsupported.optional_catch_binding) {
                 return es2019.ES2019(Transformer).lowerOptionalCatchBinding(self, idx, node);
             }
@@ -1230,10 +1231,10 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             }
             if (try self.tryRenameIdentifierLike(idx, .identifier_reference)) |i| {
                 if (try self.namespaceExportAccess(i)) |access| return access;
-                return i;
+                return @import("../lexical_tdz.zig").read(self, idx, i);
             }
             if (try self.namespaceExportAccess(idx)) |access| return access;
-            return self.copyNodeDirect(idx);
+            return @import("../lexical_tdz.zig").read(self, idx, try self.copyNodeDirect(idx));
         },
         .binding_identifier => {
             if (try self.tryRenameIdentifierLike(idx, .binding_identifier)) |i| return i;

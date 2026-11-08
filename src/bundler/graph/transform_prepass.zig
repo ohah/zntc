@@ -156,6 +156,20 @@ pub fn shouldRun(
     }
 
     const ast = &module.ast.?;
+    // Lowered module lexicals publish initialization roles before linking,
+    // including plain builds whose syntax can otherwise be lowered at emit.
+    if (self.transform_options_base.unsupported.block_scoping) {
+        if (module.semantic) |semantic| {
+            for (semantic.symbols.items) |symbol| {
+                if ((symbol.kind == .variable_let or symbol.kind == .variable_const or
+                    (self.transform_options_base.unsupported.class and symbol.kind == .class_decl)) and
+                    symbol.isExported() and !symbol.scope_id.isNone() and
+                    symbol.scope_id.toIndex() < semantic.scopes.len and
+                    (semantic.scopes[symbol.scope_id.toIndex()].kind == .global or semantic.scopes[symbol.scope_id.toIndex()].kind == .module) and
+                    semantic.scopes[symbol.scope_id.toIndex()].parent.isNone()) return true;
+            }
+        }
+    }
     // This native syntax now creates typed helper imports and module cleanup
     // guards even when no downlevel/minifier transform was otherwise needed.
     if (!self.transform_options_base.unsupported.using and nativeModuleUsingDemand(ast)) return true;
@@ -19509,6 +19523,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
         allocator: std.mem.Allocator,
         preserve_modules: bool = false,
         code_splitting: bool = false,
+        dev_mode: bool = false,
         transform_options_base: TransformOptions = .{
             .strip_types = true,
             .jsx_runtime = .automatic,
@@ -20866,6 +20881,7 @@ test "generic prepass run publishes transformed output and preserves parser AST"
         allocator: std.mem.Allocator,
         preserve_modules: bool = false,
         code_splitting: bool = false,
+        dev_mode: bool = false,
         transform_options_base: TransformOptions = .{ .strip_types = true },
         helper_plugin_opts: @import("../../runtime_helper_modules.zig").SourceOptions = .{},
         plugins: []const plugin_mod.Plugin = &.{},
@@ -22387,6 +22403,7 @@ fn runCandidate(self: anytype, module: *Module, source_classes: @import("../../s
 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
     transformer.native_module_using_boundary = !opts.unsupported.using;
+    transformer.legacy_default_name_instantiation = opts.unsupported.block_scoping and !self.preserve_modules and !self.code_splitting and !self.dev_mode;
     if (can_keep_semantic_graph) {
         if (module.semantic) |*sem| {
             if (prepared_native_source) |value| {
@@ -22672,6 +22689,7 @@ fn runCandidate(self: anytype, module: *Module, source_classes: @import("../../s
     }
     if (semantic_edit) |edited| {
         module.semantic.?.applyEdit(edited);
+        transformer.symbol_ids = .fromOwnedSlice(edited.symbol_ids);
         // Class clone creators can grow and rehash this producer-owned map.
         // Publish its current backing before reading the semantic view again.
         module.semantic.?.class_self_symbol_map = transformer.class_self_symbol_map;
@@ -33667,6 +33685,152 @@ fn expectRegexTransformPreservesExactSemanticIds(
     const symbol_ids_after = if (edit) |result| result.symbol_ids else transformer.symbol_ids.items;
     const scope_maps_after = if (edit) |result| result.scope_maps else transformer.scope_maps;
     const scope_owners_after = if (edit) |result| result.scope_owner_map else transformer.scope_owner_map;
+    const helper_scope_after = if (edit) |result| result.helper_scope_map else transformer.helper_scope_map;
+
+    if (transformer.runtime_helper_symbol_ids.get("__tdz")) |helper_id| {
+        // Regex rewriting remains neutral. Authenticate the independent module
+        // InitializeBinding producer before admitting its exact extra rows.
+        var selected_source: ?u32 = null;
+        for (symbols_after[0..before_symbols.len], 0..) |symbol, id| {
+            if (symbol.lexical_initialization.state != .lowered_module) continue;
+            try std.testing.expect(selected_source == null);
+            selected_source = @intCast(id);
+        }
+        const source_id = selected_source orelse return error.MissingRegexLexicalSource;
+        const source = symbols_after[source_id];
+        const flag_id = @backingInt(source.lexical_initialization.flag);
+        const helper_raw = @backingInt(helper_id);
+        try std.testing.expect(flag_id >= before_symbols.len and helper_raw >= before_symbols.len and flag_id != helper_raw);
+        try std.testing.expectEqual(before_symbols.len + 2, symbols_after.len);
+        try std.testing.expect(@import("../../semantic/lexical_initialization.zig").validatePair(symbols_after, scopes_after, source_id));
+        var flag_binding: ast_mod.NodeIndex = .none;
+        for (references_after) |reference| {
+            if (@backingInt(reference.symbol_id) != flag_id or !reference.flags.declare) continue;
+            try std.testing.expect(flag_binding.isNone());
+            flag_binding = reference.declaration_node_index;
+        }
+        try std.testing.expect(!flag_binding.isNone());
+        try std.testing.expectEqual(@as(?u32, flag_id), symbol_ids_after[@backingInt(flag_binding)]);
+        const helper_binding: ast_mod.NodeIndex = @fromBackingInt(transformer.runtime_helper_import_bindings.get(helper_raw) orelse return error.MissingRegexTdzImportBinding);
+        try std.testing.expectEqual(@as(?u32, helper_raw), symbol_ids_after[@backingInt(helper_binding)]);
+        try std.testing.expectEqual(@as(?usize, helper_raw), helper_scope_after.get("__tdz"));
+        try std.testing.expectEqual(@import("../../semantic/symbol.zig").SymbolKind.import_binding, symbols_after[helper_raw].kind);
+        try std.testing.expectEqual(source.scope_id, symbols_after[helper_raw].scope_id);
+        try std.testing.expect(symbols_after[helper_raw].decl_flags.is_import);
+
+        const reachable = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(allocator, transformer.ast, root);
+        defer allocator.free(reachable);
+        var value_sequence: ?u32 = null;
+        for (reachable) |raw| {
+            const candidate = transformer.ast.nodes.items[raw];
+            if (candidate.tag != .sequence_expression or candidate.data.list.len != 3) continue;
+            const first = transformer.ast.getNode(transformer.ast.readExtraNode(candidate.data.list.start, 0));
+            const second = transformer.ast.getNode(transformer.ast.readExtraNode(candidate.data.list.start, 1));
+            const last = transformer.ast.readExtraNode(candidate.data.list.start, 2);
+            if (first.tag != .assignment_expression or second.tag != .assignment_expression) continue;
+            if (symbol_ids_after[@backingInt(first.data.binary.left)] != source_id or
+                symbol_ids_after[@backingInt(second.data.binary.left)] != flag_id or
+                symbol_ids_after[@backingInt(last)] != source_id) continue;
+            try std.testing.expect(value_sequence == null);
+            value_sequence = raw;
+        }
+        const sequence = transformer.ast.nodes.items[value_sequence orelse return error.MissingRegexInitializeBindingSequence];
+        try std.testing.expectEqual(ast_mod.Node.Tag.sequence_expression, sequence.tag);
+        try std.testing.expectEqual(@as(u32, 3), sequence.data.list.len);
+        const initialize = transformer.ast.getNode(transformer.ast.readExtraNode(sequence.data.list.start, 0));
+        const publish = transformer.ast.getNode(transformer.ast.readExtraNode(sequence.data.list.start, 1));
+        const value_read = transformer.ast.readExtraNode(sequence.data.list.start, 2);
+        try std.testing.expectEqual(ast_mod.Node.Tag.assignment_expression, initialize.tag);
+        try std.testing.expectEqual(ast_mod.Node.Tag.assignment_expression, publish.tag);
+        try std.testing.expectEqual(@as(?u32, source_id), symbol_ids_after[@backingInt(initialize.data.binary.left)]);
+        try std.testing.expectEqual(@as(?u32, source_id), symbol_ids_after[@backingInt(value_read)]);
+        try std.testing.expectEqual(@as(?u32, flag_id), symbol_ids_after[@backingInt(publish.data.binary.left)]);
+        try std.testing.expectEqual(ast_mod.Node.Tag.boolean_literal, transformer.ast.getNode(publish.data.binary.right).tag);
+        try std.testing.expect(transformer.ast.getNode(publish.data.binary.right).data.none == 1);
+        try std.testing.expectEqual(ast_mod.Node.Tag.regexp_literal, transformer.ast.getNode(initialize.data.binary.right).tag);
+
+        var marker_write: ast_mod.NodeIndex = .none;
+        var marker_read: ast_mod.NodeIndex = .none;
+
+        for (reachable) |raw| {
+            const candidate = transformer.ast.nodes.items[raw];
+            if (candidate.tag != .assignment_expression) continue;
+            const left = candidate.data.binary.left;
+            const right = candidate.data.binary.right;
+            if (symbol_ids_after[@backingInt(left)] != flag_id or symbol_ids_after[@backingInt(right)] != helper_raw) continue;
+            try std.testing.expect(marker_write.isNone());
+            marker_write = left;
+            marker_read = right;
+        }
+        try std.testing.expect(!marker_write.isNone() and !marker_read.isNone());
+        const expected_nodes = [_]ast_mod.NodeIndex{ flag_binding, initialize.data.binary.left, publish.data.binary.left, value_read, marker_write, helper_binding, marker_read };
+        const expected_ids = [_]u32{ flag_id, source_id, flag_id, source_id, flag_id, helper_raw, helper_raw };
+        const expected_flags = [_]@import("../../semantic/symbol.zig").ReferenceFlags{ .{ .declare = true }, .{ .write = true }, .{ .write = true }, .{ .read = true }, .{ .write = true }, .{ .declare = true }, .{ .read = true } };
+        try std.testing.expectEqual(before_references.len + expected_nodes.len, references_after.len);
+        for (before_references, references_after[0..before_references.len]) |before, after| try std.testing.expectEqualDeep(before, after);
+        var seen: [expected_nodes.len]bool = @splat(false);
+        for (references_after[before_references.len..]) |reference| {
+            var matched = false;
+            for (expected_nodes, expected_ids, expected_flags, 0..) |node, id, flags, index| {
+                const actual_node = if (flags.declare) reference.declaration_node_index else reference.node_index;
+                if (actual_node != node) continue;
+                try std.testing.expect(!seen[index]);
+                try std.testing.expectEqual(id, @backingInt(reference.symbol_id));
+                try std.testing.expectEqual(source.scope_id, reference.scope_id);
+                try std.testing.expectEqualDeep(flags, reference.flags);
+                seen[index] = true;
+                matched = true;
+                break;
+            }
+            try std.testing.expect(matched);
+        }
+        for (seen) |found| try std.testing.expect(found);
+        for (before_symbols, 0..) |before, id| {
+            var expected = before;
+            if (id == source_id) {
+                expected.lexical_initialization = source.lexical_initialization;
+                expected.binding_instantiation.lexical_initialization = true;
+                expected.const_kind = .none;
+                expected.reference_count += 2;
+                expected.write_count += 1;
+            }
+            try std.testing.expectEqualDeep(expected, symbols_after[id]);
+        }
+        try std.testing.expectEqual(before_scopes.len, scopes_after.len);
+        for (before_scopes, scopes_after, 0..) |before, after, index| {
+            var expected = before;
+            if (index == source.scope_id.toIndex()) expected.symbol_count += 2;
+            try std.testing.expectEqualDeep(expected, after);
+        }
+        try std.testing.expectEqualSlices(?u32, before_symbol_ids, symbol_ids_after[0..before_symbol_ids.len]);
+        for (symbol_ids_after[before_symbol_ids.len..]) |id| if (id) |actual| try std.testing.expect(actual == source_id or actual == flag_id or actual == helper_raw);
+        try std.testing.expectEqual(f.semantic.scope_maps.len, scope_maps_after.len);
+        for (f.semantic.scope_maps, scope_maps_after, 0..) |before_map, after_map, index| {
+            const extra: usize = if (index == source.scope_id.toIndex()) 2 else 0;
+            try std.testing.expectEqual(before_map.count() + extra, after_map.count());
+            var entries = before_map.iterator();
+            while (entries.next()) |entry| try std.testing.expectEqual(entry.value_ptr.*, after_map.get(entry.key_ptr.*) orelse return error.MissingRegexSourceScopeBinding);
+            if (extra != 0) {
+                const flag_name = transformer.ast.getText(transformer.ast.getNode(flag_binding).data.string_ref);
+                try std.testing.expectEqual(@as(?usize, flag_id), after_map.get(flag_name));
+                const helper_name = transformer.ast.getText(transformer.ast.getNode(helper_binding).data.string_ref);
+                try std.testing.expectEqual(@as(?usize, helper_raw), after_map.get(helper_name));
+            }
+        }
+        const source_root: u32 = @intCast(f.ast.nodes.items.len - 1);
+        try std.testing.expectEqual(ast_mod.Node.Tag.program, f.ast.nodes.items[source_root].tag);
+        try std.testing.expectEqual(@as(?u32, source.scope_id.toIndex()), f.semantic.scope_owner_map.get(source_root));
+        try std.testing.expect(root != @as(ast_mod.NodeIndex, @fromBackingInt(source_root)));
+        try std.testing.expectEqual(ast_mod.Node.Tag.program, transformer.ast.getNode(root).tag);
+        try std.testing.expectEqual(@as(?u32, source.scope_id.toIndex()), scope_owners_after.get(@backingInt(root)));
+        try std.testing.expect(scopes_after[source.scope_id.toIndex()].parent.isNone());
+        try std.testing.expectEqual(f.semantic.scope_owner_map.count() + 1, scope_owners_after.count());
+        var owners = f.semantic.scope_owner_map.iterator();
+        while (owners.next()) |entry| try std.testing.expectEqual(@as(?u32, entry.value_ptr.*), scope_owners_after.get(entry.key_ptr.*));
+        try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(helper_binding)) != null);
+        try std.testing.expect(std.meta.eql(@import("../../transformer/mod.zig").RuntimeHelpers{ .tdz = true }, transformer.runtime_helpers));
+        return;
+    }
 
     try std.testing.expectEqualDeep(before_symbols, symbols_after);
     try std.testing.expectEqualDeep(before_scopes, scopes_after);

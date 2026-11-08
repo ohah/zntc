@@ -1432,6 +1432,46 @@ pub const TreeShaker = struct {
     /// Follow the compiler-created provider edge by its captured SymbolId.
     /// The imported name is checked as a witness, never used to recover target
     /// identity. Invalid or unavailable proof falls back to ordinary analysis.
+    fn seedExactLexicalInitialization(
+        self: *TreeShaker,
+        importer_idx: u32,
+        ib_idx: usize,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        module_stmt_infos: []?StmtInfos,
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!bool {
+        const importer = self.graph.getModule(ModuleIndex.fromUsize(importer_idx)) orelse return false;
+        if (ib_idx >= importer.import_bindings.len) return false;
+        const binding = importer.import_bindings[ib_idx];
+        const target = binding.callsite_target orelse return false;
+        if (target.role != .lexical_initialization_flag and target.role != .tdz_helper and target.role != .keep_names_helper) return false;
+        @import("runtime_callsite_targets.zig").validateTargetRole(self.graph, target) catch return false;
+        const provider = self.graph.getModule(target.symbol.module) orelse return false;
+        const semantic = provider.semantic orelse return false;
+        if (semantic.owner_token != target.owner or binding.import_record_index >= importer.import_records.len or
+            importer.import_records[binding.import_record_index].resolved != target.symbol.module or
+            !binding.symbol.eql(target.symbol.toRef())) return false;
+        const provider_idx = target.symbol.module.toU32();
+        if (provider_idx >= module_stmt_infos.len or module_stmt_infos[provider_idx] == null) {
+            try self.markAndSeedAllStmts(provider_idx, queue, module_stmt_infos, reachable_stmts);
+            return true;
+        }
+        const infos = module_stmt_infos[provider_idx].?;
+        if (infos.declaredStmtBySymbol(@backingInt(target.symbol.inner)) == null) {
+            try self.markAndSeedAllStmts(provider_idx, queue, module_stmt_infos, reachable_stmts);
+            return true;
+        }
+        if (target.role == .tdz_helper or target.role == .keep_names_helper) {
+            const builtin = (if (target.role == .tdz_helper) self.graph.lexical_tdz_builtin else self.graph.legacy_name_builtin) orelse return false;
+            if (builtin.export_index >= provider.export_bindings.len) return false;
+            try self.markExportUsed(provider_idx, provider.export_bindings[builtin.export_index].exported_name);
+        }
+        self.included.set(provider_idx);
+        try self.seedSideEffectStmts(provider_idx, infos, queue, reachable_stmts);
+        try self.enqueueSymbolLiveStatements(provider_idx, infos, @backingInt(target.symbol.inner), reachable_stmts, queue);
+        return true;
+    }
+
     fn seedExactNamespaceExportValue(
         self: *TreeShaker,
         importer_idx: u32,
@@ -1499,6 +1539,7 @@ pub const TreeShaker = struct {
         const target = @backingInt(rec.resolved);
         const target_module_for_import = self.graph.getModule(rec.resolved) orelse return;
 
+        if (try self.seedExactLexicalInitialization(mod_idx, @intCast(ib_idx), queue, module_stmt_infos, reachable_stmts)) return;
         if (try self.seedExactNamespaceExportValue(mod_idx, @intCast(ib_idx), queue, module_stmt_infos, reachable_stmts)) return;
 
         if (ib.kind == .namespace) {
@@ -2053,6 +2094,7 @@ pub const TreeShaker = struct {
             const target = @backingInt(rec.resolved);
             const target_module = self.graph.getModule(rec.resolved) orelse continue;
 
+            if (try self.seedExactLexicalInitialization(mod_idx, ib_idx, queue, module_stmt_infos, reachable_stmts)) continue;
             if (try self.seedExactNamespaceExportValue(mod_idx, ib_idx, queue, module_stmt_infos, reachable_stmts)) continue;
 
             if (target_module.wrap_kind == .cjs) {

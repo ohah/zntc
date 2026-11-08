@@ -692,15 +692,46 @@ test "Mixed: destructuring in import and export" {
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
 
-    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .react_native });
+    const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native };
+    var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var b = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
     defer b.deinit();
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
+    try test_helpers.expectOutputRuntime(result.output, "10 20\n");
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var {x:x,y:y}=point;") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var point, x, y;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "({ x:x, y:y } = point);") != null);
+    const provider_path = try absPath(&tmp, "point.ts");
+    defer std.testing.allocator.free(provider_path);
+    const provider = graph.getModule(graph.path_to_module.get(provider_path).?).?;
+    const semantic = provider.semantic.?;
+    const tree = &provider.ast.?;
+    const reachable = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(provider.parse_arena.?.allocator(), tree, tree.transformed_root.?);
+    for ([_][]const u8{ "x", "y" }) |key| {
+        const exported = provider.findExportBinding(key).?;
+        const sid = provider.exportBindingSemanticIndex(exported.*).?;
+        try std.testing.expectEqual(@TypeOf(semantic.symbols.items[sid].lexical_initialization.state).lowered_module, semantic.symbols.items[sid].lexical_initialization.state);
+        try std.testing.expect(@import("../../semantic/lexical_initialization.zig").validatePair(semantic.symbols.items, semantic.scopes, sid));
+        var declarations: usize = 0;
+        for (reachable) |raw| {
+            const statement = tree.nodes.items[raw];
+            if (statement.tag != .variable_declaration or tree.readExtra(statement.data.extra, 0) != 0) continue;
+            const start = tree.readExtra(statement.data.extra, 1);
+            const length = tree.readExtra(statement.data.extra, 2);
+            for (0..length) |offset| {
+                const declarator = tree.getNode(tree.readExtraNode(start, @intCast(offset)));
+                const binding = tree.readExtraNode(declarator.data.extra, 0);
+                if (tree.getNode(binding).tag != .binding_identifier or semantic.symbol_ids[@backingInt(binding)] != @as(?u32, sid)) continue;
+                try std.testing.expect(tree.readExtraNode(declarator.data.extra, 2).isNone());
+                declarations += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), declarations);
+    }
 }
 
 test "Mixed: array destructuring export emits each bound name" {
@@ -1247,3 +1278,31 @@ test "Scope hoisting: imported value in ternary" {
 }
 
 // ============================================================
+
+test "lexical TDZ module pattern publishes completed leaves before abrupt close" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs",
+        \\globalThis.events=[];
+        \\import('./provider.mjs').catch(error=>console.log(JSON.stringify([globalThis.saved(),globalThis.events,error.message])));
+    );
+    try writeFile(tmp.dir, "provider.mjs",
+        \\export const [x,y=fail()] = {[Symbol.iterator](){let i=0;return{next(){return{value:i++===0?41:void 0,done:false}},return(){globalThis.events.push('close');return{done:true}}}}};
+        \\function fail(){globalThis.saved=()=>{let state;try{y;state='initialized'}catch(error){state=error.name}return[x,state]};throw Error('stop')}
+    );
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    const expected = "[[41,\"ReferenceError\"],[\"close\"],\"stop\"]\n";
+    const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", entry } });
+    defer std.testing.allocator.free(native.stdout);
+    defer std.testing.allocator.free(native.stderr);
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("", native.stderr);
+    try std.testing.expectEqualStrings(expected, native.stdout);
+    var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .cjs, .platform = .node, .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5) });
+    defer bundler.deinit();
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    try test_helpers.expectOutputRuntime(result.output, expected);
+}

@@ -243,3 +243,37 @@ are append-only query roles rather than serialized Symbol fields. FORMAT 53 and
 its existing meaning are unchanged by this followup. Native value comparisons,
 existing modern dynamic-constructor admission diagnostics, helper tests,
 source audits, and eventual whole-suite gates remain separate evidence.
+
+## Legacy lexical TDZ delta (2026-11-09)
+
+`2db55b3888a9365357242072348c9df8d05a11e9` 기반 TDZ 변경의 bounded
+constructor 색인은 **144 expressions, 94 functions, 47 files**다.
+기존 141개를 그대로 보존하고 `makeExactSyntheticBindingFromSpan` 3개를
+추가했다. fingerprint는
+`daf4581048d3cb010fab662bf0fe01413df4f45cf2dd94d529782573ad7a9c59`다.
+이는 source call expression 수이며 runtime 호출 횟수나 전체 이슈 완료 수가 아니다.
+
+- `lexical_tdz_catch.zig::lower`: 원 catch owner에서 compiler catch-value binding을
+  만들고 즉시 `declareSyntheticInScope`로 fresh SID를 게시한다. 실제 read는 그
+  binding의 SID를 소비한다. 사용자 catch leaf는 원 SID를 유지해 각 fresh 환경으로 옮긴다.
+- `module_lexical_initialization.zig::prepare`: 실제 exported lexical SourceSID에
+  대응하는 private flag binding을 만든다. fresh flag SID와 원 source SID의 reciprocal
+  owner 역할을 함께 검증하며 최종 이름은 linker의 동일 canonical record를 소비한다.
+- `module_lexical_initialization.zig::facadeValue`: initial export-default 노드가 가진
+  source facade SID를 기존 `materializeDefaultExportFacade`로 물리 binding에 게시한다.
+  새 SourceSID를 이름으로 선택하거나 생성하지 않는다. 단일 operand 평가 뒤 초기화가
+  완료되고, 출력은 실제 binding의 명시적 default alias를 사용한다.
+
+공통 generated-branch retirement와 FORMAT53 proof는 보존한다. TDZ source/flag 역할은
+FORMAT54에 대칭 encode/decode하며 이전 형식으로 해석하지 않는다. 이름 복원, namespace,
+iterator, cache, Native 및 module runtime의 실제 분모는 각각의 검증 증거로 따로 기록한다.
+
+## Integrated legacy TDZ inventory (2026-11-09)
+
+최종 main `3099bd3c24ff51d7abc84ef085bd83b224a938c3`의 reference-region
+constructor 한 행과 TDZ의 세 행을 모두 보존한 합집합은 **145 expressions,
+95 functions, 47 files**다. fingerprint는
+`cb8d54a87f3196be5b996e1103c349aeb529dad252ac118b1bc58a0114a0d552`다.
+위 142/144 자료는 각 과거 소스 분모로 유지하며 통합 결과로 소급하지 않는다.
+이 constructor 색인은 직접 SemanticEditor.declare를 사용하는 module identity
+storage 전체를 열거하는 검사가 아니며 그 실제 owner/SID/receipt 검사는 별도다.

@@ -441,6 +441,7 @@ pub const Transformer = struct {
     /// Reference 를 돌며 **value-use 가 하나라도 있는지** 로 판단한다. 비어있으면
     /// elision 비활성 (보수적 보존). caller 가 symbols 와 함께 설정.
     references: []const @import("../semantic/symbol.zig").Reference = &.{},
+    lexical_tdz_plan: ?*@import("lexical_tdz.zig").Plan = null,
     /// 분석기 스코프·스코프별 이름 표·선언 없는 전역 — 심볼 기준 블록 스코핑 표(#4760 4단계)용.
     scopes: []const @import("../semantic/scope.zig").Scope = &.{},
     scope_maps: []const std.StringHashMapUnmanaged(usize) = &.{},
@@ -508,6 +509,8 @@ pub const Transformer = struct {
     semantic_edit_enabled: bool = false,
     /// Query-local bundler capability; never part of parser cache options.
     native_module_using_boundary: bool = false,
+    /// Graph-owned startup phase; excluded from standalone/file-boundary output.
+    legacy_default_name_instantiation: bool = false,
     /// Exact constructor-owned declaration payloads whose lexical storage survives copies.
     native_module_using_declaration_extras: std.AutoHashMapUnmanaged(u32, ast_mod.VariableDeclarationKind) = .empty,
     /// An AST plugin supplied trailing code that could not be copied with
@@ -619,6 +622,8 @@ pub const Transformer = struct {
     /// can be attached with their final output ScopeIds.
     stage3_metadata_binding_ids: std.AutoHashMapUnmanaged(u32, @import("../semantic/symbol.zig").SymbolId) = .empty,
     generator_state_bindings: std.ArrayListUnmanaged(GeneratedTempBinding) = .empty,
+    /// Actual retained native-region visitor; nested state machines have a different depth.
+    generator_native_region_state_depth: ?u32 = null,
     loop_declaration_births: @import("loop_declaration_handoff.zig").Registry = .empty,
     generator_collected_function_roots: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty,
     generator_collected_function_declarations: std.AutoHashMapUnmanaged(u32, u32) = .empty,
@@ -1290,6 +1295,13 @@ pub const Transformer = struct {
     pub const makeUserRefNamedAtScope = node_helpers.makeUserRefNamedAtScope;
     pub const makeUserBinding = node_helpers.makeUserBinding;
     pub const makeIdentifierRefWithSymbolAt = node_helpers.makeIdentifierRefWithSymbolAt;
+    pub const patternPutValue = @import("lexical_tdz.zig").patternPutValue;
+    pub const moduleBindingInitialized = @import("module_lexical_initialization.zig").initializedValue;
+    pub const patternInitializer = @import("lexical_tdz.zig").headerInitializerForBinding;
+    pub const recordIterationDeclaration = @import("lexical_tdz.zig").recordIterationDeclaration;
+    pub const iterationDeclarationNeedsInitialization = @import("lexical_tdz.zig").iterationDeclarationNeedsInitialization;
+    pub const iterationSourceNeedsInitialization = @import("lexical_tdz.zig").iterationSourceNeedsInitialization;
+    pub const iterationInitialization = @import("lexical_tdz.zig").iterationInitialization;
     pub const makeRootScopeRef = node_helpers.makeRootScopeRef;
     pub const makeLexicalScopeRef = node_helpers.makeLexicalScopeRef;
     pub const makeLexicalScopeRefAtScope = node_helpers.makeLexicalScopeRefAtScope;
@@ -1354,6 +1366,7 @@ pub const Transformer = struct {
     pub const relocateRuntimeHelperRef = @import("transformer/semantic_edit.zig").relocateRuntimeHelperRef;
     pub const trackRuntimeHelperRefWithId = @import("transformer/semantic_edit.zig").trackRuntimeHelperRefWithId;
     pub const declareSyntheticInScope = @import("transformer/semantic_edit.zig").declareSyntheticInScope;
+    pub const prepareLexicalTDZStorage = @import("transformer/semantic_edit.zig").prepareLexicalTDZStorage;
     pub const bindSyntheticVarRedeclaration = @import("transformer/semantic_edit.zig").bindSyntheticVarRedeclaration;
     pub const declareSyntheticTempInScope = @import("transformer/semantic_edit.zig").declareSyntheticTempInScope;
     pub const reserveSyntheticTempSymbolInScope = @import("transformer/semantic_edit.zig").reserveSyntheticTempSymbolInScope;
@@ -1415,6 +1428,7 @@ pub const Transformer = struct {
     pub const relocateOutputSymbolAs = @import("transformer/semantic_edit.zig").relocateOutputSymbolAs;
     pub const ensureAnnexBVariableStorage = @import("transformer/semantic_edit.zig").ensureAnnexBVariableStorage;
     pub const rebindOutputReference = @import("transformer/semantic_edit.zig").rebindOutputReference;
+    pub const sourceWriteUseScope = @import("transformer/semantic_edit.zig").sourceWriteUseScope;
     pub const relocateNodeScopeProvenance = @import("transformer/semantic_edit.zig").relocateNodeScopeProvenance;
     pub const reparentGeneratedBodyScopes = @import("transformer/semantic_edit.zig").reparentGeneratedBodyScopes;
     pub const ensureSymbolDeclaration = @import("transformer/semantic_edit.zig").ensureSymbolDeclaration;

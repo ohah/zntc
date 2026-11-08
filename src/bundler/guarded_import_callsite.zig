@@ -76,7 +76,7 @@ test "guarded statement projection preserves native arguments identity and actua
 
 const Initializers = struct { direct: SymbolID, value: SymbolID };
 const Call = struct { node: NodeIndex, callee: NodeIndex, symbol: SymbolId, scope: ScopeId, direct_call: bool, shorthand_property: ?NodeIndex };
-const Plan = struct { binding: usize, calls: []const Call, targets: Initializers };
+const Plan = struct { binding: usize, calls: []const Call, targets: Initializers, classic: bool = false };
 
 fn hasLiveLocalExport(module: *const Module, sid: u32) bool {
     const ast = &module.ast.?;
@@ -231,6 +231,31 @@ fn validateReExportSource(ast: *const ast_mod.Ast, root: NodeIndex, source: Node
 /// Own supported eager work in original record order. A mixed record keeps
 /// original value bindings alive: evaluation and lazy reads have separate
 /// per-binding ownership, while bare/re-export records have no local values.
+/// This exact constructor already executes synchronously. It has no wrapped
+/// initializer to schedule and must not veto another record's owned work.
+fn synchronousTdzHelperRecord(graph: anytype, module: *const Module, target: *const Module, record_index: usize) !bool {
+    const known = graph.lexical_tdz_builtin orelse return false;
+    if (target.index != known.module_index or target.wrap_kind != .none) return false;
+    const actual = try @import("lexical_initialization_builtin.zig").exact(graph);
+    if (graph.getModule(known.module_index) != target or actual.module != known.module_index or actual.inner != known.symbol_id)
+        return error.InvalidGuardedImportBinding;
+    if (record_index >= module.import_records.len or module.import_records[record_index].kind != .static_import)
+        return false;
+    const exported = target.export_bindings[known.export_index];
+    var count: usize = 0;
+    for (module.import_bindings) |binding| {
+        if (binding.import_record_index != record_index) continue;
+        if (!binding.is_helper or binding.callsite_target != null or binding.kind != .named or
+            binding.importsDefault() or binding.source_type_only == true) return false;
+        const local = module.checkedImportBindingIdentity(binding) catch return error.InvalidGuardedImportBinding;
+        if (local.symbol.moduleIndex() != module.index or local.symbol.semanticIndex() == null or
+            !binding.symbol.eql(actual.toRef()) or !std.mem.eql(u8, binding.imported_name, exported.exported_name))
+            return error.InvalidGuardedImportBinding;
+        count += 1;
+    }
+    return count != 0;
+}
+
 fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, root: NodeIndex, a: std.mem.Allocator) ![]const EagerHelper {
     var result: std.ArrayList(EagerHelper) = .empty;
     for (module.import_records, 0..) |record, record_index| {
@@ -238,6 +263,7 @@ fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, root: No
         if (record.resolved.isNone()) return &.{};
         const target = graph.getModule(record.resolved) orelse return error.InvalidGuardedImportBinding;
         if (linker.tree_shaker_active and !target.is_included) continue;
+        if (try synchronousTdzHelperRecord(graph, module, target, record_index)) continue;
         if (target.wrap_kind == .none and !(graph.preserve_modules and (linker.format == .esm or linker.format == .cjs) and module.wrap_kind == .esm and record.kind == .static_import)) continue;
         if (record.kind == .re_export) {
             if (module.wrap_kind != .esm or target.wrap_kind != .esm or !target.shouldGuard(true) or target.in_async_cone) return &.{};
@@ -412,10 +438,33 @@ fn initializationCall(builder: *Builder, guard: ?SymbolId, target: SymbolId, sco
     return call;
 }
 
+/// Prepare the existing typed guard only for a checked classic Source read.
+pub fn prepareClassicProvider(graph: anytype, linker: anytype, io: std.Io) !void {
+    if (!linker.inline_requires or !linker.entry_error_guard or graph.entry_guard_ast_provider != null) return;
+    if (graph.preserve_modules and !graph.dev_mode and (linker.format == .esm or linker.format == .cjs)) return;
+    for (0..graph.moduleCount()) |raw| {
+        const module = graph.getModule(ModuleIndex.fromUsize(raw)) orelse continue;
+        if (module.wrap_kind != .esm) continue;
+        for (module.legacy_lexical_reads) |receipt| {
+            if (receipt.guarded_projection != null) continue;
+            for (module.import_bindings, 0..) |binding, index| {
+                const identity = module.checkedImportBindingIdentity(binding) catch continue;
+                const sid = identity.symbol.semanticIndex() orelse continue;
+                if (sid != @backingInt(receipt.source_local)) continue;
+                if (try @import("linker/metadata.zig").checkedClassicLazyTargets(linker, module, index, sid, hasLiveLocalExport(module, sid)) == null) continue;
+                try @import("runtime_entry_guard_calls.zig").prepareProvider(graph, io);
+                if (graph.entry_guard_ast_provider == null) return error.InvalidGuardedImportBinding;
+                return;
+            }
+        }
+    }
+}
+
 pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.zig").Linker, shaker: ?*@import("tree_shaker.zig").TreeShaker) !void {
     if (!linker.inline_requires) return;
     const guarded = linker.entry_error_guard;
-    if (!guarded and (!graph.preserve_modules or graph.dev_mode or (linker.format != .esm and linker.format != .cjs))) return;
+    const classic_output = !graph.preserve_modules or graph.dev_mode or (linker.format != .esm and linker.format != .cjs);
+    const classic = !guarded and classic_output;
     if (guarded and graph.entry_guard_ast_provider == null) return;
     const guard: ?SymbolID = if (guarded) try @import("runtime_entry_guard_ast.zig").exactBinding(graph) else null;
     const count = graph.moduleCount();
@@ -423,7 +472,8 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
     for (0..count) |raw| {
         const module = graph.moduleAtMut(ModuleIndex.fromUsize(raw)) orelse continue;
         if (module.wrap_kind != .esm and module.wrap_kind != .none) continue;
-        if (!guarded and module.in_async_cone) continue;
+        if (!guarded and !classic and module.in_async_cone) continue;
+        if (classic and (module.wrap_kind != .esm or module.legacy_lexical_reads.len == 0)) continue;
         if (shaker) |s| if (!s.isIncluded(@intCast(raw))) continue;
         const ast = if (module.ast) |*value| value else continue;
         const sem = if (module.semantic) |*value| value else continue;
@@ -451,11 +501,30 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
             for (module.import_bindings, 0..) |binding, index| {
                 const local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = module.index, .ast = ast, .symbol_ids = sem.symbol_ids, .symbols = sem.symbols.items });
                 const sid = local.semanticIndex() orelse continue;
-                const targets = try targetsFor(graph, linker, module, binding, sid) orelse continue;
+                var checked = false;
+                for (module.legacy_lexical_reads) |receipt| {
+                    if (@backingInt(receipt.source_local) == sid and receipt.guarded_projection == null) checked = true;
+                }
+                if (classic and !checked) continue;
+                const selected_classic = if (classic_output and checked)
+                    try @import("linker/metadata.zig").checkedClassicLazyTargets(linker, module, index, sid, hasLiveLocalExport(module, sid))
+                else
+                    null;
+                const checked_classic = selected_classic != null;
+                const targets: Initializers = if (selected_classic) |actual|
+                    .{ .direct = actual.direct, .value = actual.value }
+                else if (classic) continue else try targetsFor(graph, linker, module, binding, sid) orelse continue;
                 var calls: std.ArrayList(Call) = .empty;
                 var supported = true;
                 for (sem.references) |reference| {
                     if (@backingInt(reference.symbol_id) != sid or !reference.isValueUse() or !live_set.contains(reference.node_index)) continue;
+                    if (checked_classic) {
+                        var exact_read = false;
+                        for (module.legacy_lexical_reads) |receipt| {
+                            if (@backingInt(receipt.source_local) == sid and receipt.value == reference.node_index and receipt.guarded_projection == null) exact_read = true;
+                        }
+                        if (!exact_read) continue;
+                    }
                     if (ast.getNode(reference.node_index).tag != .identifier_reference) {
                         supported = false;
                         break;
@@ -467,17 +536,17 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
                     }
                     try calls.append(a, .{ .node = call orelse reference.node_index, .callee = reference.node_index, .symbol = reference.symbol_id, .scope = reference.scope_id, .direct_call = call != null, .shorthand_property = shorthand_by_value.get(reference.node_index) });
                 }
-                if (supported and calls.items.len != 0) try plans.append(a, .{ .binding = index, .calls = calls.items, .targets = targets });
+                if (supported and calls.items.len != 0) try plans.append(a, .{ .binding = index, .calls = calls.items, .targets = targets, .classic = checked_classic });
             }
         }
-        const eager = try eagerHelpers(graph, linker, module, root, a);
+        const eager: []const EagerHelper = if (classic) &.{} else try eagerHelpers(graph, linker, module, root, a);
         // An alias read is admitted only if the read-only eager planner really
         // owns its provider. Another unsupported record may veto that plan.
         var plan_index = plans.items.len;
         while (plan_index != 0) {
             plan_index -= 1;
             const plan = plans.items[plan_index];
-            if (module.import_bindings[plan.binding].symbol != .alias) continue;
+            if (plan.classic or module.import_bindings[plan.binding].symbol != .alias) continue;
             var provider_owned = false;
             for (eager) |owned| if (owned.target.eql(plan.targets.direct)) {
                 provider_owned = true;
@@ -485,6 +554,7 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
             if (!provider_owned) _ = plans.orderedRemove(plan_index);
         }
         if (plans.items.len == 0 and eager.len == 0) continue;
+        const lexical_receipts = try a.dupe(@import("graph/legacy_lexical_reads.zig").Receipt, module.legacy_lexical_reads);
         var editor = try sem.beginEdit(a, ast);
         defer editor.deinit();
         var builder: Builder = .{ .allocator = a, .module = module, .graph = graph, .ast = ast, .editor = &editor };
@@ -522,7 +592,18 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
                         ast.nodes.items[@backingInt(property_node)] = property;
                     }
                 }
+                // A checked lexical read must initialize before its flag test,
+                // not merely inside the successful value arm of that test.
+                var lexical_read: ?*@import("graph/legacy_lexical_reads.zig").Receipt = null;
+                if (!call.direct_call) for (lexical_receipts) |*receipt| {
+                    if (receipt.value != call.node) continue;
+                    if (lexical_read != null or receipt.guarded_projection != null or
+                        receipt.source_local != call.symbol or receipt.scope != call.scope)
+                        return error.InvalidGuardedImportReference;
+                    lexical_read = receipt;
+                };
                 var sequence: std.ArrayList(NodeIndex) = .empty;
+                var initializations: std.ArrayList(@import("graph/legacy_lexical_reads.zig").GuardedInitializer) = .empty;
                 const targets = [_]SymbolID{ plan.targets.direct, plan.targets.value };
                 for (targets, 0..) |target, i| {
                     if (i == 1 and target.eql(targets[0])) continue;
@@ -533,17 +614,31 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
                     };
                     const initialization = try initializationCall(&builder, guard_local, local, call.scope, reference);
                     try sequence.append(a, initialization);
+                    if (lexical_read != null) try initializations.append(a, .{ .call = initialization, .target = target, .local = local });
                 }
                 try editor.recordNodeScopeProvenance(clone, call.scope);
-                try sequence.append(a, clone);
+                const replacement = if (lexical_read) |receipt| receipt.guard else call.node;
+                const last = if (lexical_read) |receipt| checked: {
+                    var guard_node = ast.getNode(receipt.guard);
+                    if (guard_node.tag != .conditional_expression or guard_node.data.ternary.b != call.node)
+                        return error.InvalidGuardedImportReference;
+                    guard_node.data.ternary.b = clone;
+                    const next_guard = try ast.addNode(guard_node);
+                    try editor.recordNodeScopeProvenance(next_guard, call.scope);
+                    receipt.guarded_projection = .{ .expression = replacement, .source_value = call.node, .guard_local = guard_local, .initializers = try initializations.toOwnedSlice(a) };
+                    receipt.guard = next_guard;
+                    receipt.value = clone;
+                    break :checked next_guard;
+                } else clone;
+                try sequence.append(a, last);
                 const list = try ast.addNodeList(sequence.items);
-                ast.nodes.items[@backingInt(call.node)] = .{ .tag = .sequence_expression, .span = original.span, .data = .{ .list = list } };
-                try editor.recordNodeScopeProvenance(call.node, call.scope);
+                ast.nodes.items[@backingInt(replacement)] = .{ .tag = .sequence_expression, .span = original.span, .data = .{ .list = list } };
+                try editor.recordNodeScopeProvenance(replacement, call.scope);
             }
             module.import_bindings[plan.binding].guarded_lazy_calls_lowered = true;
             // Its provider evaluation is separately represented by the actual
             // eager plan, while canonical CJS value proxies refresh at the read.
-            if (module.import_bindings[plan.binding].symbol == .alias)
+            if (!plan.classic and module.import_bindings[plan.binding].symbol == .alias)
                 module.import_bindings[plan.binding].guarded_eager_init_lowered = true;
         }
         var statements: std.ArrayList(NodeIndex) = .empty;
@@ -565,6 +660,7 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
         try projectStatementOwners(&editor, replacement, &sem.class_self_symbol_map, a);
         try builder.validate();
         sem.applyEdit(try editor.finish());
+        module.legacy_lexical_reads = lexical_receipts;
         var added: std.ArrayList(NodeIndex) = .empty;
         try added.appendSlice(a, prologue.items);
         try added.appendSlice(a, builder.declarations.items);
@@ -655,8 +751,13 @@ fn expectSourceCallScope(guarded: bool) !void {
         var generated_reads: usize = 0;
         for (module.import_bindings) |binding| {
             const target = binding.callsite_target orelse continue;
-            if (!guarded) try std.testing.expectEqual(@import("binding_scanner.zig").CallsiteRole.esm_init, target.role);
             try @import("runtime_callsite_targets.zig").validateTargetRole(&graph, target);
+            switch (target.role) {
+                .esm_init => {},
+                .entry_guard => if (!guarded) return error.UnexpectedSourceCallGuard,
+                .tdz_helper, .keep_names_helper, .lexical_initialization_flag => continue,
+                else => return error.UnexpectedSourceCallRole,
+            }
             for (sem.references) |reference| {
                 if (!reference.isValueUse() or binding.local_symbol.semanticIndex() != @backingInt(reference.symbol_id)) continue;
                 if (reference.scope_id == use_scope) {
@@ -837,6 +938,8 @@ test "guarded imported value reads keep exact local identity scope and receivers
         const execution = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", script }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
         defer std.testing.allocator.free(execution.stdout);
         defer std.testing.allocator.free(execution.stderr);
+        try std.testing.expectEqualStrings("", execution.stderr);
+        try std.testing.expect(execution.term == .exited and execution.term.exited == 0);
         try std.testing.expectEqualStrings(case.expected, execution.stdout);
     }
 }
@@ -940,17 +1043,42 @@ test "guarded reexport callers retain explicit producer ownership" {
         try std.testing.expect(!output.hasErrors());
         const module = graph.getModule(graph.path_to_module.get(entry).?).?;
         try std.testing.expectEqual(@TypeOf(module.wrap_kind).esm, module.wrap_kind);
-        try std.testing.expectEqual(@import("types.zig").ImportKind.re_export, module.import_records[1].kind);
-        try std.testing.expect(module.import_records[1].callsite_lowered);
+        var selected_export: ?@import("binding_scanner.zig").ExportBinding = null;
+        for (module.export_bindings) |binding| {
+            if (binding.kind != .re_export) continue;
+            try std.testing.expect(selected_export == null);
+            selected_export = binding;
+        }
+        const original_export = selected_export orelse return error.MissingSourceReExport;
+        try std.testing.expectEqualStrings("default", original_export.exported_name);
+        const reexport_record = original_export.import_record_index orelse return error.MissingSourceReExportRecord;
+        try std.testing.expect(reexport_record < module.import_records.len);
+        try std.testing.expectEqual(@import("types.zig").ImportKind.re_export, module.import_records[reexport_record].kind);
+        try std.testing.expect(module.import_records[reexport_record].callsite_lowered);
         const source_ast = &module.ast.?;
         const current_root = source_ast.transformed_root.?;
-        try validateReExportSource(source_ast, current_root, module.import_records[1].source_node);
+        var selected_source_import: ?@import("binding_scanner.zig").ImportBinding = null;
+        for (module.import_bindings) |binding| {
+            const source_local = binding.source_local_symbol_node orelse continue;
+            try std.testing.expect(@backingInt(source_local) < source_ast.nodes.items.len);
+            const source_span = source_ast.getNode(source_local).span;
+            if (source_span.start & @import("../parser/ast.zig").Ast.STRING_TABLE_BIT != 0 or
+                source_span.end <= source_span.start or source_span.end > source_ast.source.len) continue;
+            try std.testing.expect(module.importBindingOwnsSource(binding, source_ast));
+            try std.testing.expect(selected_source_import == null);
+            selected_source_import = binding;
+        }
+        const original_binding = selected_source_import orelse return error.MissingOriginalSourceImport;
+        try std.testing.expect(!original_binding.is_helper and original_binding.callsite_target == null);
+        _ = try module.checkedImportBindingIdentity(original_binding);
+        const source_import_record = original_binding.import_record_index;
+        try std.testing.expect(source_import_record < module.import_records.len and source_import_record != reexport_record);
+        try validateReExportSource(source_ast, current_root, module.import_records[reexport_record].source_node);
         try std.testing.expectError(error.InvalidGuardedReExport, validateReExportSource(source_ast, current_root, .none));
         try std.testing.expectError(error.InvalidGuardedReExport, validateReExportSource(source_ast, current_root, @fromBackingInt(@as(u32, @intCast(source_ast.nodes.items.len)))));
         // The other real import's literal is valid syntax, but not the exact
         // owner of this re-export record.
-        try std.testing.expectError(error.InvalidGuardedReExport, validateReExportSource(source_ast, current_root, module.import_records[0].source_node));
-        const original_binding = module.import_bindings[0];
+        try std.testing.expectError(error.InvalidGuardedReExport, validateReExportSource(source_ast, current_root, module.import_records[source_import_record].source_node));
         const original_node = original_binding.local_symbol_node.?;
         const original_sid = original_binding.local_symbol.semanticIndex().?;
         const semantic = module.semantic.?;
@@ -958,9 +1086,9 @@ test "guarded reexport callers retain explicit producer ownership" {
         try std.testing.expectEqual(@TypeOf(semantic.symbols.items[original_sid].kind).import_binding, semantic.symbols.items[original_sid].kind);
         // Planning is read-only even on malformed anchors or allocation failure.
         var probe = module.*;
-        var record_copy = [_]@import("types.zig").ImportRecord{module.import_records[1]};
+        var record_copy = [_]@import("types.zig").ImportRecord{module.import_records[reexport_record]};
         record_copy[0].callsite_lowered = false;
-        var export_copy = [_]@import("binding_scanner.zig").ExportBinding{module.export_bindings[0]};
+        var export_copy = [_]@import("binding_scanner.zig").ExportBinding{original_export};
         export_copy[0].import_record_index = 0;
         probe.import_records = &record_copy;
         probe.export_bindings = &export_copy;
@@ -973,16 +1101,16 @@ test "guarded reexport callers retain explicit producer ownership" {
         try std.testing.expectEqual(@as(usize, 1), valid_plan.len);
         try std.testing.expect(valid_plan[0].owns_record);
         try std.testing.expect(!record_copy[0].callsite_lowered);
-        for ([_]NodeIndex{ .none, original_node, module.import_records[0].source_node }) |poisoned| {
+        for ([_]NodeIndex{ .none, original_node, module.import_records[source_import_record].source_node }) |poisoned| {
             record_copy[0].source_node = poisoned;
             try std.testing.expectError(error.InvalidGuardedReExport, eagerHelpers(&graph, &probe_linker, &probe, current_root, scratch.allocator()));
             try std.testing.expect(!record_copy[0].callsite_lowered);
         }
-        record_copy[0].source_node = module.import_records[1].source_node;
+        record_copy[0].source_node = module.import_records[reexport_record].source_node;
         var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
         try std.testing.expectError(error.OutOfMemory, eagerHelpers(&graph, &probe_linker, &probe, current_root, failing.allocator()));
         try std.testing.expect(!record_copy[0].callsite_lowered);
-        try std.testing.expect(module.import_records[1].callsite_lowered);
+        try std.testing.expect(module.import_records[reexport_record].callsite_lowered);
         probe.wrap_kind = .none;
         try std.testing.expectEqual(@as(usize, 0), (try eagerHelpers(&graph, &probe_linker, &probe, current_root, scratch.allocator())).len);
         probe.wrap_kind = .esm;
@@ -994,7 +1122,7 @@ test "guarded reexport callers retain explicit producer ownership" {
             try std.testing.expectEqual(@as(usize, 0), (try eagerHelpers(&graph, &probe_linker, &probe, current_root, scratch.allocator())).len);
         }
         try std.testing.expect(!record_copy[0].callsite_lowered);
-        const target = module.import_records[1].resolved;
+        const target = module.import_records[reexport_record].resolved;
         var init_reads: usize = 0;
         for (module.import_bindings) |binding| {
             const foreign = binding.callsite_target orelse continue;

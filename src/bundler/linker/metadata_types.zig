@@ -12,6 +12,8 @@ pub const LinkingMetadata = struct {
     skip_nodes: std.DynamicBitSet,
     /// symbol_id → 새 이름. codegen이 식별자 출력 시 symbol_ids[node_idx]로 조회.
     renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
+    compiler_module_meta_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    compiler_module_meta_cjs: bool = false,
     /// dev 모드(`buildDevMetadata`) 가 채우는 모듈 단위 `exports.x = x;` 문자열.
     /// scope-hoisted 번들(`buildMetadataForAst`/`buildMetadata`) 은 `final_export_entries`
     /// 를 채우고 이 필드는 null.
@@ -32,6 +34,14 @@ pub const LinkingMetadata = struct {
     /// codegen 분기(var 선언+할당 vs 기존 binding 할당) 선택용 — 과거엔 이름이 "_default" 로
     /// 시작하는지로 재추론했으나 mangler/linker 가 그 이름을 쓰면 오판하므로 의도를 flag 로 명시.
     default_export_is_synthetic: bool = false,
+    /// PM ESM can retain the engine's anonymous default-function binding when
+    /// this exact source facade has no file-local value reads. The native
+    /// declaration owns both early instantiation and NamedEvaluation.
+    native_default_function: ?struct {
+        source: @import("../../parser/ast.zig").NodeIndex,
+        function: @import("../../parser/ast.zig").NodeIndex,
+        symbol: u32,
+    } = null,
     /// Output spelling of the `__toESM` helper (borrowed from the linker): a
     /// user binding of that name moves the helper to `__toESM$1` (#5664).
     to_esm_name: ?[]const u8 = null,
@@ -134,6 +144,7 @@ pub const LinkingMetadata = struct {
         for (self.owned_rename_values.items) |v| self.allocator.free(v);
         self.owned_rename_values.deinit(self.allocator);
         self.renames.deinit(self.allocator);
+        self.compiler_module_meta_nodes.deinit(self.allocator);
         if (self.final_exports) |fe| self.allocator.free(fe);
         if (self.final_export_entries) |entries| self.allocator.free(entries);
         if (self.cjs_import_preamble) |p| self.allocator.free(p);

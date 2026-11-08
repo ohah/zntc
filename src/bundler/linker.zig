@@ -1680,6 +1680,13 @@ pub const Linker = struct {
                             !std.mem.eql(u8, symbol.synthetic_name, symbol.output_name_hint))
                             return error.InvalidRuntimeHelperImportOutputBinding;
                     },
+                    .lexical_initialization_flag => {
+                        const source = symbol.synthetic_owner_id orelse return error.InvalidLexicalInitializationOutputBinding;
+                        if (!@import("../semantic/lexical_initialization.zig").validatePair(semantic.symbols.items, semantic.scopes, @backingInt(source)) or
+                            semantic.symbols.items[@backingInt(source)].lexical_initialization.flag != @as(semantic_symbol.SymbolId, @fromBackingInt(@as(u32, @intCast(raw_symbol_id)))) or
+                            !std.mem.eql(u8, symbol.output_name_hint, "__initialized"))
+                            return error.InvalidLexicalInitializationOutputBinding;
+                    },
                     .worklet_factory_local => {
                         if (symbol.output_name_hint.len == 0 or symbol.scope_id.isNone())
                             return error.InvalidWorkletFactoryLocal;
@@ -4393,7 +4400,12 @@ pub const Linker = struct {
         // The source anchor may stand in for a missing cache, but not a stale one.
         if (binding.local_symbol.isValid() and !local.eql(binding.local_symbol)) return error.InvalidCallsiteBinding;
         const local_sid = local.semanticIndex() orelse return error.InvalidCallsiteBinding;
-        const name = try self.callsiteTargetName(target);
+        const name = if ((target.role == .tdz_helper or target.role == .keep_names_helper) and self.isCrossChunkConsumer(module.index.toU32(), target.symbol.module.toU32())) selected_helper: {
+            try @import("runtime_callsite_targets.zig").validateTargetRole(self.graph, target);
+            const published = self.getConsumerImportTarget(target.symbol.module.toU32(), binding.imported_name) orelse return error.MissingCallsiteImportDeclaration;
+            if (published.role != .binding) return error.InvalidCallsiteImportDeclaration;
+            break :selected_helper published.text;
+        } else try self.callsiteTargetName(target);
         if (sem.scopes.len == 0 or sem.scopes[0].blocksMangling()) return;
         for (sem.references) |reference| {
             if (@backingInt(reference.symbol_id) != local_sid or !reference.isValueUse()) continue;
@@ -4887,7 +4899,7 @@ pub const Linker = struct {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
                             .implicit_arguments => continue,
-                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .worklet_factory_local, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .esm_runtime_internal_local, .esm_interop_runtime_internal_local, .hmr_runtime_internal_local, .bundler_runtime_helper, .require_shim_local, .optional_catch_binding, .stage3_metadata_binding, .stage3_class_this_binding, .stage3_class_decorator_binding, .stage3_member_decorator_binding, .generator_state_parameter, .class_super_parameter, .new_target_capture_binding, .this_capture_binding, .arguments_capture_binding, .class_self_write_binding, .class_self_alias_binding, .anonymous_class_export_binding, .anonymous_class_expression_binding, .block_scoping_loop_binding, .for_of_step_binding, .object_super_home_binding, .block_scoping_loop_ret_binding, .tagged_template_function_binding, .standalone_temp_binding, .standalone_generated_binding => {},
+                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .worklet_factory_local, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .esm_runtime_internal_local, .esm_interop_runtime_internal_local, .hmr_runtime_internal_local, .bundler_runtime_helper, .require_shim_local, .optional_catch_binding, .stage3_metadata_binding, .stage3_class_this_binding, .stage3_class_decorator_binding, .stage3_member_decorator_binding, .generator_state_parameter, .class_super_parameter, .new_target_capture_binding, .this_capture_binding, .arguments_capture_binding, .class_self_write_binding, .class_self_alias_binding, .anonymous_class_export_binding, .anonymous_class_expression_binding, .block_scoping_loop_binding, .for_of_step_binding, .object_super_home_binding, .block_scoping_loop_ret_binding, .tagged_template_function_binding, .standalone_temp_binding, .standalone_generated_binding, .lexical_initialization_flag => {},
                         }
                         // Tagged-template caches are ordinary program-scope
                         // function declarations and were already collected from
@@ -6608,7 +6620,9 @@ pub const Linker = struct {
                 // imports. Only a match in this graph can supply a current ref.
                 ib.symbol = bundler_symbol.SymbolRef.invalid;
                 if (ib.callsite_target) |target| {
-                    _ = self.callsiteTargetName(target) catch continue;
+                    // Identity publication precedes output-name selection.
+                    // Validate the exact producer, not a not-yet-selected name.
+                    @import("runtime_callsite_targets.zig").validateTargetRole(self.graph, target) catch continue;
                     ib.symbol = target.symbol.toRef();
                     continue;
                 }
@@ -7279,12 +7293,27 @@ pub const Linker = struct {
         return .{ .module_index = target, .export_name = ib.imported_name };
     }
 
+    /// A classic checked read may install the existing typed guard provider.
+    /// Its exact final binding also owns every raw bootstrap call in this output.
+    pub fn classicEntryGuardRuntimeName(self: *const Linker) error{InvalidEntryGuardProvider}!?[]const u8 {
+        if (!self.inline_requires or self.code_splitting or self.graph.preserve_modules) return null;
+        const provider = self.graph.entry_guard_ast_provider orelse return null;
+        if (!provider.active) return null;
+        const target = try @import("runtime_entry_guard_ast.zig").exactBinding(self.graph);
+        const module = self.graph.getModule(target.module) orelse return error.InvalidEntryGuardProvider;
+        if (!module.is_included or module.semantic.?.owner_token != provider.owner) return error.InvalidEntryGuardProvider;
+        return self.getCrossChunkGlobalName(target.module.toU32(), module.export_bindings[0].exported_name) orelse
+            self.rename_table.get(target) orelse module.symbolName(target.inner) orelse error.InvalidEntryGuardProvider;
+    }
+
     pub fn callsiteTargetName(self: *const Linker, target: anytype) ![]const u8 {
         const module = self.graph.getModule(target.symbol.module) orelse return error.InvalidCallsiteTarget;
         const sem = module.semantic orelse return error.InvalidCallsiteTarget;
         const raw = @backingInt(target.symbol.inner);
         if (target.owner == .unassigned or target.owner != sem.owner_token or raw >= sem.symbols.items.len) return error.InvalidCallsiteTarget;
         try @import("runtime_callsite_targets.zig").validateTargetRole(self.graph, target);
+        if (target.role == .lexical_initialization_flag)
+            return self.rename_table.get(target.symbol) orelse error.MissingLexicalInitializationOutputName;
         if (target.role == .entry_guard) {
             if (self.getCrossChunkGlobalName(target.symbol.module.toU32(), module.export_bindings[0].exported_name)) |name| return name;
         }

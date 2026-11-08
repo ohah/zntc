@@ -360,6 +360,49 @@ fn namespaceHasCjsStar(self: *const Linker, mod_idx: u32) bool {
     return false;
 }
 
+fn canonicalNamespaceValue(self: *const Linker, provider: *const Module, export_name: []const u8) bool {
+    const local = self.getExportLocalName(provider.index.toU32(), export_name) orelse export_name;
+    for (provider.import_bindings) |binding| {
+        if (binding.kind == .namespace and std.mem.eql(u8, binding.local_name, local)) return true;
+    }
+    return false;
+}
+
+// Both metadata's classic leaf rendering and the checked-read projection use
+// this policy. These inputs are selected module/binding facts, not names used
+// to recover a missing Source identity.
+fn classicLazyEligible(self: *const Linker, consumer: *const Module, binding: ImportBinding, record: types.ImportRecord, direct: *const Module, value: *const Module, namespace_value: bool, synthetic: bool, exported_local: bool) bool {
+    return self.inline_requires and consumer.wrap_kind == .esm and direct.wrap_kind == .esm and
+        record.kind == .static_import and !linker_mod.isMetroNonInlinedRequireSpecifier(record.specifier) and
+        direct.index != consumer.index and !binding.is_helper and binding.callsite_target == null and
+        !binding.guarded_eager_init_lowered and binding.kind == .named and !binding.importsDefault() and
+        !namespace_value and !direct.uses_top_level_await and !value.uses_top_level_await and
+        !direct.isUserDeclaredSideEffectful() and !value.isUserDeclaredSideEffectful() and !exported_local and !synthetic;
+}
+
+pub const ClassicLazyTargets = struct { direct: bundler_symbol.SymbolID, value: bundler_symbol.SymbolID };
+
+/// Only callers already holding an exact checked Source read use this query.
+/// The ordinary metadata compatibility path need not invent a Source SID.
+pub fn checkedClassicLazyTargets(self: *const Linker, consumer: *const Module, binding_index: usize, sid: u32, exported_local: bool) !?ClassicLazyTargets {
+    if (binding_index >= consumer.import_bindings.len) return error.InvalidImportLocalSymbol;
+    const binding = consumer.import_bindings[binding_index];
+    if (binding.kind != .named or binding.importsDefault() or binding.is_helper or binding.callsite_target != null or binding.source_type_only == true or binding.guarded_lazy_calls_lowered) return null;
+    const identity = try consumer.checkedImportBindingIdentity(binding);
+    if (identity.symbol.semanticIndex() != @as(?u32, sid)) return error.InvalidImportLocalSymbol;
+    if (binding.import_record_index >= consumer.import_records.len) return error.InvalidImportLocalSymbol;
+    const record = consumer.import_records[binding.import_record_index];
+    if (record.resolved.isNone() or record.is_external) return null;
+    const direct = self.graph.getModule(record.resolved) orelse return error.InvalidImportLocalSymbol;
+    if (direct.wrap_kind != .esm or (self.tree_shaker_active and !direct.is_included)) return null;
+    const resolved = self.getResolvedBinding(consumer.index.toU32(), binding.local_span) orelse return error.InvalidImportLocalSymbol;
+    const canonical = self.graph.getModule(resolved.canonical.module_index) orelse return error.InvalidImportLocalSymbol;
+    const value = if (canonical.index != direct.index and canonical.wrap_kind == .esm) canonical else direct;
+    if (self.tree_shaker_active and !value.is_included) return null;
+    if (!classicLazyEligible(self, consumer, binding, record, direct, value, canonicalNamespaceValue(self, canonical, resolved.canonical.export_name), resolved.canonical.synthetic_member != null, exported_local)) return null;
+    return .{ .direct = try direct.esmInitSymbol(), .value = try value.esmInitSymbol() };
+}
+
 fn allocLazyEsmImportExpr(self: *const Linker, import_mod: *const Module, value_mod: *const Module, target_name: []const u8) ![]const u8 {
     const sep = if (self.minify_whitespace) "," else ", ";
     const import_init = try allocEsmInitExpr(self, import_mod);
@@ -930,7 +973,21 @@ pub fn buildMetadataForAstWithHolderReservations(
             if (ib.callsite_target) |target| {
                 const local = @import("../binding_scanner.zig").resolveImportLocalSymbol(ib, .{ .module_index = m.index, .ast = ast, .symbol_ids = sem.symbol_ids, .symbols = sem.symbols.items });
                 const raw = local.semanticIndex() orelse return error.InvalidCallsiteBinding;
-                const name = if (target.role == .readiness_all and self.graph.preserve_modules and
+                var owned_dev_init: ?[]const u8 = null;
+                defer if (owned_dev_init) |text| self.allocator.free(text);
+                const name = if ((target.role == .tdz_helper or target.role == .keep_names_helper) and self.isCrossChunkConsumer(module_index, target.symbol.module.toU32())) selected_helper: {
+                    try @import("../runtime_callsite_targets.zig").validateTargetRole(self.graph, target);
+                    if (!ib.symbol.eql(target.symbol.toRef()) or ib.local_role != .import_binding or !m.importBindingOwnsSource(ib, ast) or
+                        (ib.local_symbol.isValid() and !ib.local_symbol.eql(local))) return error.InvalidCallsiteBinding;
+                    const provider = self.graph.getModule(target.symbol.module) orelse return error.InvalidCallsiteTarget;
+                    const known = if (target.role == .tdz_helper) self.graph.lexical_tdz_builtin else self.graph.legacy_name_builtin;
+                    const helper = known orelse return error.InvalidCallsiteTarget;
+                    if (helper.owner_token != target.owner or helper.module_index != target.symbol.module or helper.symbol_id != target.symbol.inner or helper.export_index >= provider.export_bindings.len or
+                        !std.mem.eql(u8, ib.imported_name, provider.export_bindings[helper.export_index].exported_name)) return error.InvalidCallsiteBinding;
+                    const published = self.getConsumerImportTarget(target.symbol.module.toU32(), ib.imported_name) orelse return error.MissingCallsiteImportDeclaration;
+                    if (published.role != .binding) return error.InvalidCallsiteImportDeclaration;
+                    break :selected_helper published.text;
+                } else if (target.role == .readiness_all and self.graph.preserve_modules and
                     self.isCrossChunkConsumer(module_index, target.symbol.module.toU32()))
                 selected_import: {
                     // The cross-chunk writer already published the actual local
@@ -951,6 +1008,17 @@ pub fn buildMetadataForAstWithHolderReservations(
                     const published = self.getConsumerImportTarget(helper.module_index.toU32(), public_binding.exported_name) orelse return error.MissingCallsiteImportDeclaration;
                     if (published.role != .binding) return error.InvalidCallsiteImportDeclaration;
                     break :selected_import published.text;
+                } else if (target.role == .esm_init and self.useDevModuleRegistry()) dev_initializer: {
+                    // This is an execution handle, not a snapshot of the
+                    // initializer function: HMR can replace registry[id].fn.
+                    const canonical = try self.callsiteTargetName(target);
+                    const provider = self.graph.getModule(target.symbol.module) orelse return error.InvalidCallsiteTarget;
+                    if (provider.wrap_kind != .esm) break :dev_initializer canonical;
+                    if (provider.dev_id.len == 0 or !ib.symbol.eql(target.symbol.toRef()) or
+                        ib.local_role != .import_binding or !m.importBindingOwnsSource(ib, ast) or
+                        (ib.local_symbol.isValid() and !ib.local_symbol.eql(local))) return error.InvalidCallsiteBinding;
+                    owned_dev_init = try types.fmtDevRequireRefNamed(self.allocator, provider.dev_id, self.currentHmrRuntimeInternalNames().modules);
+                    break :dev_initializer owned_dev_init.?;
                 } else try self.callsiteTargetName(target);
                 try putOwnedRename(self, &renames, &owned_nested_renames, raw, name);
                 if (target.declaration.isNone() or @backingInt(target.declaration) >= ast.nodes.items.len) return error.InvalidCallsiteBinding;
@@ -1293,13 +1361,7 @@ pub fn buildMetadataForAstWithHolderReservations(
                             value_init_mod = rb_mod;
                             value_init_mod_idx = @intCast(rb_idx);
                         }
-                        const export_local = self.getExportLocalName(@intCast(rb_idx), rb.canonical.export_name) orelse rb.canonical.export_name;
-                        for (rb_mod.import_bindings) |cib| {
-                            if (cib.kind == .namespace and std.mem.eql(u8, cib.local_name, export_local)) {
-                                import_is_namespace_export = true;
-                                break;
-                            }
-                        }
+                        import_is_namespace_export = canonicalNamespaceValue(self, rb_mod, rb.canonical.export_name);
                     }
                 }
                 if (self.tree_shaker_active and !value_init_mod.is_included) continue;
@@ -1316,22 +1378,7 @@ pub fn buildMetadataForAstWithHolderReservations(
                     (m.checkedImportBindingIdentity(ib) catch return error.InvalidImportLocalSymbol).name
                 else
                     ib.local_name;
-                lazy_esm_import = self.inline_requires and
-                    m.wrap_kind == .esm and
-                    rec.kind == .static_import and
-                    !isMetroNonInlinedRequireSpecifier(rec.specifier) and
-                    canonical_mod != module_index and
-                    !is_helper_binding and
-                    !ib.guarded_eager_init_lowered and
-                    ib.kind == .named and
-                    !ib.importsDefault() and
-                    !import_is_namespace_export and
-                    !target_mod.uses_top_level_await and
-                    !value_init_mod.uses_top_level_await and
-                    !target_mod.isUserDeclaredSideEffectful() and
-                    !value_init_mod.isUserDeclaredSideEffectful() and
-                    !exported_locals.contains(import_local_name) and
-                    !is_synthetic_binding;
+                lazy_esm_import = classicLazyEligible(self, &m, ib, rec, target_mod, value_init_mod, import_is_namespace_export, is_synthetic_binding, exported_locals.contains(import_local_name));
                 if (lazy_esm_import) {
                     lazy_esm_import_mod = value_init_mod;
                 }
@@ -2021,16 +2068,68 @@ pub fn buildMetadataForAstWithHolderReservations(
         }
     }
 
+    var compiler_module_meta_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    errdefer compiler_module_meta_nodes.deinit(self.allocator);
+    try @import("../graph/legacy_initialization_registry.zig").collectMetaNodes(self.graph, m_opt.?, self.allocator, &compiler_module_meta_nodes);
+
+    if (m.legacy_default_names.len != 0) {
+        try @import("../graph/legacy_default_names.zig").validate(self.graph, m_opt.?);
+        for (m.legacy_default_names) |receipt| skip_nodes.set(@backingInt(receipt.statement));
+    }
+
+    var native_default_function: @TypeOf(@as(LinkingMetadata, undefined).native_default_function) = null;
+    if (self.graph.preserve_modules and !self.graph.dev_mode and format == .esm and m.wrap_kind == .none and is_entry) native_default: {
+        for (m.export_bindings) |binding| {
+            if (binding.kind != .local or !binding.has_default_export_facade) continue;
+            const source = binding.default_export_node orelse continue;
+            if (@backingInt(source) >= ast.nodes.items.len or @backingInt(source) >= sem.symbol_ids.len) return error.InvalidDefaultNameProducer;
+            const wrapper = ast.getNode(source);
+            if (wrapper.tag != .export_default_declaration) continue;
+            const function = wrapper.data.unary.operand;
+            if (function.isNone() or @backingInt(function) >= ast.nodes.items.len) return error.InvalidDefaultNameProducer;
+            const declaration = ast.getNode(function);
+            if (declaration.tag != .function_declaration or !ast.hasExtra(declaration.data.extra, @import("../../parser/ast.zig").FunctionExtra.flags) or
+                !ast.readExtraNode(declaration.data.extra, @import("../../parser/ast.zig").FunctionExtra.name).isNone()) continue;
+            const sid = m.exportBindingSemanticIndex(binding) orelse return error.InvalidDefaultNameProducer;
+            if (sem.symbol_ids[@backingInt(source)] != sid or sid >= sem.symbols.items.len) return error.InvalidDefaultNameProducer;
+            const symbol = sem.symbols.items[sid];
+            if (symbol.kind != .variable_const or !symbol.decl_flags.is_default_export or !symbol.decl_flags.is_exported or
+                symbol.lexical_initialization.state != .native or !symbol.lexical_initialization.flag.isNone()) return error.InvalidDefaultNameProducer;
+            // An implicit native default binding has no emitted local spelling.
+            // Preserve the ordinary producer if a real file-local use needs one.
+            for (sem.references) |reference| if (@backingInt(reference.symbol_id) == sid and reference.isValueUse()) break :native_default;
+            for (m.import_bindings) |imported| {
+                const resolved = self.getResolvedBinding(module_index, imported.local_span) orelse continue;
+                if (resolved.canonical.module_index == m.index and resolved.canonical.synthetic_member == null and std.mem.eql(u8, resolved.canonical.export_name, binding.exported_name)) break :native_default;
+            }
+            native_default_function = .{ .source = source, .function = function, .symbol = sid };
+            break;
+        }
+    }
+
     // 3. 엔트리 포인트 final exports
     const final_export_entries = blk: {
         var fe_scope = profile.begin(.metadata_final_exports);
         defer fe_scope.end();
-        break :blk try self.buildFinalExports(
-            is_entry,
-            module_index,
-            m.export_bindings,
-            &owned_nested_renames,
-        );
+        const entries = try self.buildFinalExports(is_entry, module_index, m.export_bindings, &owned_nested_renames);
+        if (native_default_function != null) {
+            const all = entries orelse return error.InvalidDefaultNameProducer;
+            var count: usize = 0;
+            for (all) |entry| if (std.mem.eql(u8, entry.exported, "default")) {
+                count += 1;
+            };
+            if (count != 1) return error.InvalidDefaultNameProducer;
+            const remaining = try self.allocator.alloc(LinkingMetadata.FinalExportEntry, all.len - 1);
+            var next: usize = 0;
+            for (all) |entry| {
+                if (std.mem.eql(u8, entry.exported, "default")) continue;
+                remaining[next] = entry;
+                next += 1;
+            }
+            self.allocator.free(all);
+            break :blk remaining;
+        }
+        break :blk entries;
     };
 
     // 크로스-모듈 상수 인라인: import binding의 canonical export가 상수이면 매핑
@@ -2083,6 +2182,9 @@ pub fn buildMetadataForAstWithHolderReservations(
         .require_rewrites = require_rewrites,
         .default_export_name = default_export_name,
         .default_export_is_synthetic = default_export_is_synthetic,
+        .native_default_function = native_default_function,
+        .compiler_module_meta_nodes = compiler_module_meta_nodes,
+        .compiler_module_meta_cjs = self.graph.preserve_modules and format == .cjs,
         .to_esm_name = (try self.currentEsmInteropRuntimeNames()).get(.to_esm),
         .ns_member_rewrites = ns_rewrites,
         .ns_inline_objects = ns_inlines,
@@ -2452,7 +2554,7 @@ pub fn buildCrossModuleConstValuesProfiled(
         const canon = blk: {
             var scope = profile.beginMaybe(profile_cats.resolve);
             defer scope.end();
-            break :blk self.resolveExportChain(rec.resolved, ib.imported_name, 0) orelse continue;
+            break :blk self.resolveExportChainUncached(rec.resolved, ib.imported_name) orelse continue;
         };
         // #3664 P2: synthetic 바인딩(`{target}.{member}`)은 cross-module const 인라인 대상이 아니다.
         // canon 은 target export(예 scalar default 42)를 가리키지만 실제 값은 그 member 라, 인라인하면

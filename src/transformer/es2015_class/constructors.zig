@@ -40,6 +40,27 @@ pub fn Constructors(comptime Transformer: type) type {
             return func_idx;
         }
 
+        /// Field initializers are visited before the constructor body. Hoist
+        /// exactly their allocation range into that constructor, then consume
+        /// those slots so the enclosing program cannot hoist them again.
+        pub fn hoistInstanceFieldTemps(self: *Transformer, func_idx: NodeIndex, before_fields: u32, after_fields: u32, span: Span) Transformer.Error!void {
+            if (before_fields == after_fields) return;
+            std.debug.assert(self.temp_var_counter >= after_fields and after_fields > before_fields);
+            const later_counter = self.temp_var_counter;
+            self.temp_var_counter = after_fields;
+            errdefer self.temp_var_counter = later_counter;
+            const extra = self.ast.getNode(func_idx).data.extra;
+            const body = self.ast.readExtraNode(extra, ast_mod.FunctionExtra.body);
+            const hoisted = try self.hoistTempVarsInOriginalFunction(body, before_fields, span);
+            self.ast.extra_data.items[extra + ast_mod.FunctionExtra.body] = @backingInt(hoisted);
+            for (before_fields..after_fields) |index| {
+                const counter: u32 = @intCast(index);
+                _ = self.temp_span_by_counter.remove(counter);
+                _ = self.temp_producer_id_by_counter.remove(counter);
+            }
+            self.temp_var_counter = if (later_counter > after_fields) later_counter else before_fields;
+        }
+
         /// constructor method_definition에서 function_declaration 생성.
         pub fn buildFunctionFromConstructor(self: *Transformer, ctor_idx: NodeIndex, name: NodeIndex, instance_fields: []const NodeIndex, is_derived: bool, field_needs_this: bool, span: Span) Transformer.Error!NodeIndex {
             const saved_extracted_body = self.in_extracted_fn_body;

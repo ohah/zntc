@@ -2855,6 +2855,54 @@ test "#4819 function and top-level nullish temps keep separate SymbolIds through
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 
+fn expectTrackedTempIdentity(transformer: *Transformer, id: u32) !void {
+    var found: usize = 0;
+    var values = transformer.synthetic_temp_symbol_ids.valueIterator();
+    while (values.next()) |value| if (value.* == id) {
+        found += 1;
+    };
+    if (found == 0) {
+        // ES2020 optional-chain captures are owned by their stable producer
+        // IDs; counter slots can be reused by a later function's hoist.
+        var producers = transformer.temp_symbols_by_producer_id.valueIterator();
+        while (producers.next()) |value| if (value.* == id) {
+            found += 1;
+        };
+    }
+    try std.testing.expectEqual(@as(usize, 1), found);
+}
+
+fn expectExactTdzPreamble(transformer: *Transformer, edited: anytype, original: usize) !u32 {
+    const identity = transformer.runtime_helper_symbol_ids.get("__tdz") orelse return error.MissingExactTdzPreamble;
+    const id = @backingInt(identity);
+    try std.testing.expect(id >= original and id < edited.symbols.items.len);
+    const symbol = edited.symbols.items[id];
+    try std.testing.expectEqual(.import_binding, symbol.kind);
+    try std.testing.expectEqual(@as(?SyntheticKind, .runtime_helper_preamble), symbol.synthetic_kind);
+    try std.testing.expectEqualStrings("__tdz", symbol.synthetic_name);
+    try std.testing.expectEqual(transformer.programScope(), symbol.scope_id);
+    try std.testing.expectEqual(@as(?usize, id), edited.helper_scope_map.get(symbol.synthetic_name));
+    var reads: usize = 0;
+    for (edited.symbol_ids, 0..) |maybe, node_index| {
+        if (maybe != id) continue;
+        const node: AstNodeIndex = @fromBackingInt(@intCast(node_index));
+        try std.testing.expectEqual(.identifier_reference, transformer.ast.getNode(node).tag);
+        var rows: usize = 0;
+        for (edited.references) |reference| {
+            if (reference.node_index != node) continue;
+            try std.testing.expectEqual(identity, reference.symbol_id);
+            try std.testing.expect(reference.flags.read and !reference.flags.write and !reference.flags.declare);
+            rows += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), rows);
+        reads += 1;
+    }
+    try std.testing.expect(reads > 0);
+    try std.testing.expectEqual(@as(usize, symbol.reference_count), reads);
+    try std.testing.expectEqual(@as(u32, 0), symbol.write_count);
+    return id;
+}
+
 test "#4819 optional call captures bind their writes and reads across scopes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -2882,10 +2930,14 @@ test "#4819 optional call captures bind their writes and reads across scopes" {
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
+    const tdz_id = try expectExactTdzPreamble(&transformer, edited, original_symbols);
+    try std.testing.expectEqual(@as(u32, @intCast(original_symbols)), tdz_id);
+    const temp_start = original_symbols + 1;
     try std.testing.expect(edited.symbols.items.len >= original_symbols + 4);
     var top_level_count: usize = 0;
     var function_count: usize = 0;
-    for (edited.symbols.items[original_symbols..]) |generated| {
+    for (edited.symbols.items[temp_start..], temp_start..) |generated, generated_id| {
+        try expectTrackedTempIdentity(&transformer, @intCast(generated_id));
         try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, generated.kind);
         try std.testing.expect(generated.reference_count >= 2);
         try std.testing.expectEqual(@as(u32, 1), generated.write_count);
@@ -2923,13 +2975,17 @@ test "#4819 spread-new callee captures keep distinct function and module symbols
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
-    try std.testing.expectEqual(original_symbols + 2, edited.symbols.items.len);
-    const local = edited.symbols.items[original_symbols];
-    const module = edited.symbols.items[original_symbols + 1];
+    const tdz_id = try expectExactTdzPreamble(&transformer, edited, original_symbols);
+    try std.testing.expectEqual(@as(u32, @intCast(original_symbols)), tdz_id);
+    const temp_start = original_symbols + 1;
+    try std.testing.expectEqual(temp_start + 2, edited.symbols.items.len);
+    const local = edited.symbols.items[temp_start];
+    const module = edited.symbols.items[temp_start + 1];
     try std.testing.expectEqualStrings("_b", transformer.ast.getText(local.name));
     try std.testing.expectEqualStrings("_b", transformer.ast.getText(module.name));
     try std.testing.expect(local.scope_id != module.scope_id);
-    for (edited.symbols.items[original_symbols..]) |generated| {
+    for (edited.symbols.items[temp_start..], temp_start..) |generated, generated_id| {
+        try expectTrackedTempIdentity(&transformer, @intCast(generated_id));
         try std.testing.expectEqual(@as(u32, 2), generated.reference_count);
         try std.testing.expectEqual(@as(u32, 1), generated.write_count);
     }
@@ -2964,9 +3020,13 @@ test "#4819 nullish assignment value captures keep distinct symbols" {
     _ = try transformer.transform();
     try std.testing.expectEqual(@as(usize, 6), transformer.synthetic_temp_symbol_ids.count());
     const edited = (try transformer.finishSemanticEdit()).?;
-    try std.testing.expectEqual(original_symbols + 6, edited.symbols.items.len);
+    const tdz_id = try expectExactTdzPreamble(&transformer, edited, original_symbols);
+    try std.testing.expectEqual(@as(u32, @intCast(original_symbols)), tdz_id);
+    const temp_start = original_symbols + 1;
+    try std.testing.expectEqual(temp_start + 6, edited.symbols.items.len);
     var name_counts = [_]usize{ 0, 0, 0 };
-    for (edited.symbols.items[original_symbols..]) |generated| {
+    for (edited.symbols.items[temp_start..], temp_start..) |generated, generated_id| {
+        try expectTrackedTempIdentity(&transformer, @intCast(generated_id));
         const name = transformer.ast.getText(generated.name);
         const name_index: usize = if (std.mem.eql(u8, name, "_b"))
             0
@@ -3043,11 +3103,15 @@ test "#4819 assignment target temps exclude unused candidate references" {
     try std.testing.expectEqual(@as(usize, 8), transformer.synthetic_temp_symbol_ids.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     const edited = (try transformer.finishSemanticEdit()).?;
-    try std.testing.expectEqual(original_symbols + 8, edited.symbols.items.len);
+    const tdz_id = try expectExactTdzPreamble(&transformer, edited, original_symbols);
+    try std.testing.expectEqual(@as(u32, @intCast(original_symbols)), tdz_id);
+    const temp_start = original_symbols + 1;
+    try std.testing.expectEqual(temp_start + 8, edited.symbols.items.len);
     var observed_scopes = [_]u32{ std.math.maxInt(u32), std.math.maxInt(u32) };
     var symbols_per_scope = [_]usize{ 0, 0 };
     var names_per_scope: [2][4][]const u8 = undefined;
-    for (edited.symbols.items[original_symbols..], original_symbols..) |generated, symbol_index| {
+    for (edited.symbols.items[temp_start..], temp_start..) |generated, symbol_index| {
+        try expectTrackedTempIdentity(&transformer, @intCast(symbol_index));
         try std.testing.expectEqual(@as(u32, 2), generated.reference_count);
         try std.testing.expectEqual(@as(u32, 1), generated.write_count);
         var bindings: usize = 0;
@@ -4673,15 +4737,23 @@ test "#4819 generated loop binding and call share one appended SymbolId" {
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
-    // The output keeps a callback-local `index` identity and splits the
-    // emitted `var index` storage into the enclosing function scope.
-    try std.testing.expectEqual(original_symbols + 2, edited.symbols.items.len);
-    const generated_id: u32 = @intCast(original_symbols);
+    const tdz_id = try expectExactTdzPreamble(&transformer, edited, original_symbols);
+    var generated_loop_id: ?u32 = null;
+    for (transformer.ast.nodes.items) |node| {
+        if (node.tag != .variable_declarator) continue;
+        const binding = transformer.ast.readExtraNode(node.data.extra, 0);
+        const value = transformer.ast.readExtraNode(node.data.extra, 2);
+        if (value.isNone() or transformer.ast.getNode(value).tag != .function_expression) continue;
+        const id = edited.symbol_ids[@backingInt(binding)] orelse continue;
+        if (id < original_symbols) continue;
+        try std.testing.expect(generated_loop_id == null);
+        generated_loop_id = id;
+    }
+    const generated_id = generated_loop_id orelse return error.MissingExactLoopDeclaration;
     try std.testing.expectEqualStrings("_loop2", transformer.ast.getText(edited.symbols.items[generated_id].name));
-    const loop_storage_id = generated_id + 1;
-    try std.testing.expectEqualStrings("index", transformer.ast.getText(edited.symbols.items[loop_storage_id].name));
-    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, edited.symbols.items[loop_storage_id].kind);
-    try std.testing.expectEqual(@as(u32, 3), edited.symbols.items[loop_storage_id].reference_count);
+    try std.testing.expectEqual(@as(usize, 2), transformer.synthetic_temp_symbol_ids.count());
+    // Every extra row is the exact helper, tracked checked-update temp, loop
+    // declaration, or the actual call argument's split header storage below.
     var bindings: usize = 0;
     var calls: usize = 0;
     for (edited.symbol_ids, 0..) |maybe_id, i| {
@@ -4708,12 +4780,32 @@ test "#4819 generated loop binding and call share one appended SymbolId" {
         const e = node.data.extra;
         const callee: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(extra[e]));
         if (transformer.ast.getNode(callee).tag != .identifier_reference) continue;
-        if (!std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(callee).data.string_ref), "_loop2")) continue;
+        if (edited.symbol_ids[@backingInt(callee)] != generated_id) continue;
         if (extra[e + 2] != 1) continue;
         loop_arg = @fromBackingInt(@intCast(extra[extra[e + 1]]));
     }
     const argument = loop_arg orelse return error.TestUnexpectedResult;
-    const emitted_header_id = loop_storage_id;
+    const emitted_header_id = edited.symbol_ids[@backingInt(argument)] orelse return error.MissingSplitHeaderIdentity;
+    const storage = edited.symbols.items[emitted_header_id];
+    try std.testing.expectEqual(.variable_var, storage.kind);
+    try std.testing.expectEqualStrings("index", transformer.ast.getText(storage.name));
+    try std.testing.expectEqual(edited.symbols.items[generated_id].scope_id, storage.scope_id);
+    var extras: usize = 0;
+    for (edited.symbols.items[original_symbols..], original_symbols..) |_, id| {
+        if (id != tdz_id and id != generated_id and id != emitted_header_id)
+            try expectTrackedTempIdentity(&transformer, @intCast(id));
+        extras += 1;
+    }
+    try std.testing.expectEqual(@as(usize, transformer.synthetic_temp_symbol_ids.count() + 3), extras);
+    var storage_reads: u32 = 0;
+    var storage_writes: u32 = 0;
+    for (edited.references) |reference| {
+        if (@backingInt(reference.symbol_id) != emitted_header_id or reference.flags.declare) continue;
+        storage_reads += 1;
+        if (reference.flags.write) storage_writes += 1;
+    }
+    try std.testing.expectEqual(storage.reference_count, storage_reads);
+    try std.testing.expectEqual(storage.write_count, storage_writes);
     try std.testing.expect(emitted_header_id != header_id);
     try std.testing.expectEqual(@as(?u32, emitted_header_id), edited.symbol_ids[@backingInt(argument)]);
     try std.testing.expectEqual(@as(?u32, null), transformer.reference_origin_map.get(@backingInt(argument)));
@@ -4846,7 +4938,7 @@ fn expectGeneratedLoopExactIdentity(source: []const u8) !void {
             }
         } else if (id == outer_id and reference.flags.read) {
             if (transformer.ast.getNode(reference.node_index).tag != .identifier_reference) continue;
-            if (!std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(reference.node_index).data.string_ref), "_loop")) continue;
+            try std.testing.expectEqual(@as(?u32, outer_id), edited.symbol_ids[@backingInt(reference.node_index)]);
             outer_reads += 1;
         }
     }

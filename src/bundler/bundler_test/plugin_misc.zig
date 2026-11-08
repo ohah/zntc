@@ -10,33 +10,141 @@ const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
 const compat = @import("../../transformer/transformer.zig").TransformOptions.compat;
 
-/// `react_native inlineRequires:` 테스트들이 잠그는 lazy ESM import emit 패턴 —
-/// `(__zntc_guarded(function(){return __zntc_modules["<path>"].fn()}), <binding>).<member>`
-/// 형태. caller 는 free 책임 (returned slice 는 allocator 소유).
-///
-/// - `assign_to == ""` — bare lazy expression marker (`"...modules[...]..fn()}}), TOKENS).primary"`).
-///   raw bare `TOKENS.primary` 가 어디에도 없는지 확인할 때 contains 매칭용.
-/// - `assign_to != ""` — assignment form (`"name=(__zntc_guarded(...)).primary"`).
-///   class lowering 으로 default 가 풀려나가는 케이스에는 부적합 — bare form 사용.
-fn formatLazyMarker(
-    allocator: std.mem.Allocator,
-    assign_to: []const u8,
-    module_path: []const u8,
-    binding: []const u8,
-    member: []const u8,
-) ![]const u8 {
-    if (assign_to.len == 0) {
-        return std.fmt.allocPrint(
-            allocator,
-            "{s}__zntc_modules[\"{s}\"].fn()}}), {s}).{s}",
-            .{ rt.GUARD_LAMBDA_OPEN, module_path, binding, member },
-        );
+// Observe the exact Source import and its production-owned lazy projection.
+fn expectSourceLazyRead(graph: *const ModuleGraph, consumer_path: []const u8, provider_path: []const u8, public_import: []const u8, guarded: bool, nested: bool) !void {
+    const consumer = graph.getModule(graph.path_to_module.get(consumer_path).?).?;
+    const tree = &consumer.ast.?;
+    const semantic = &consumer.semantic.?;
+    const a = consumer.parse_arena.?.allocator();
+    const reachable = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, tree, tree.transformed_root.?);
+    var selected: ?@import("../binding_scanner.zig").ImportBinding = null;
+    for (reachable) |raw| {
+        const specifier = tree.nodes.items[raw];
+        if (specifier.tag != .import_specifier or specifier.span.start & @import("../../parser/ast.zig").Ast.STRING_TABLE_BIT != 0 or
+            specifier.span.end <= specifier.span.start or specifier.span.end > tree.source.len) continue;
+        const key = (try tree.staticKeyName(a, specifier.data.binary.left)) orelse continue;
+        if (!std.mem.eql(u8, key, public_import)) continue;
+        for (consumer.import_bindings) |binding| {
+            if (binding.source_local_symbol_node != specifier.data.binary.right) continue;
+            try std.testing.expect(selected == null);
+            const local = try consumer.checkedSourceImportLocalSymbol(binding);
+            const checked = try consumer.checkedImportBindingIdentity(binding);
+            try std.testing.expect(local.eql(checked.symbol));
+            try std.testing.expectEqual(local.semanticIndex(), semantic.symbol_ids[@backingInt(specifier.data.binary.right)]);
+            try std.testing.expectEqual(graph.path_to_module.get(provider_path).?, consumer.import_records[binding.import_record_index].resolved);
+            try std.testing.expect(!binding.is_helper and binding.callsite_target == null);
+            try std.testing.expect(binding.guarded_lazy_calls_lowered);
+            try std.testing.expect(!binding.guarded_eager_init_lowered);
+            selected = binding;
+        }
     }
-    return std.fmt.allocPrint(
-        allocator,
-        "{s}=({s}__zntc_modules[\"{s}\"].fn()}}), {s}).{s}",
-        .{ assign_to, rt.GUARD_LAMBDA_OPEN, module_path, binding, member },
-    );
+    const binding = selected orelse return error.MissingNestedSourceImport;
+    const sid = binding.local_symbol.semanticIndex().?;
+    try @import("../graph/legacy_lexical_reads.zig").validate(graph, consumer);
+    var receipts: usize = 0;
+    for (consumer.legacy_lexical_reads) |receipt| {
+        if (@backingInt(receipt.source_local) != sid) continue;
+        const projection = receipt.guarded_projection orelse return error.MissingSourceLazyProjection;
+        try std.testing.expectEqual(guarded, projection.guard_local != null);
+        try std.testing.expect(projection.initializers.len != 0);
+        var scope = receipt.scope;
+        var function_scope = false;
+        for (0..semantic.scopes.len) |_| {
+            if (scope.isNone() or scope.toIndex() >= semantic.scopes.len) return error.InvalidSourceLazyScope;
+            const actual = semantic.scopes[scope.toIndex()];
+            if (actual.kind == .function) {
+                function_scope = true;
+                break;
+            }
+            if (actual.parent.isNone()) {
+                try std.testing.expect(actual.kind == .module or actual.kind == .global);
+                break;
+            }
+            scope = actual.parent;
+        }
+        try std.testing.expectEqual(nested, function_scope);
+        for (projection.initializers) |initializer| {
+            var handles: usize = 0;
+            for (consumer.import_bindings) |candidate| {
+                if (candidate.local_symbol.semanticIndex() != @as(?u32, @backingInt(initializer.local))) continue;
+                const target = candidate.callsite_target orelse return error.MissingLazyInitializerTarget;
+                try std.testing.expectEqual(@import("../binding_scanner.zig").CallsiteRole.esm_init, target.role);
+                try std.testing.expect(target.symbol.eql(initializer.target));
+                try @import("../runtime_callsite_targets.zig").validateTargetRole(graph, target);
+                handles += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), handles);
+            // Value-only reads of this init function are not execution. Only
+            // direct calls or its use as a typed entry-guard argument count.
+            for (reachable) |raw| {
+                const call = tree.nodes.items[raw];
+                if (call.tag != .call_expression) continue;
+                const callee = tree.readExtraNode(call.data.extra, 0);
+                const callee_sid = semantic.symbol_ids[@backingInt(callee)] orelse continue;
+                var invokes = callee_sid == @backingInt(initializer.local);
+                if (!invokes and tree.readExtra(call.data.extra, 2) == 1) {
+                    const argument = tree.readExtraNode(tree.readExtra(call.data.extra, 1), 0);
+                    if (semantic.symbol_ids[@backingInt(argument)] == @as(?u32, @backingInt(initializer.local))) {
+                        for (consumer.import_bindings) |candidate| {
+                            if (candidate.local_symbol.semanticIndex() != @as(?u32, callee_sid)) continue;
+                            const target = candidate.callsite_target orelse continue;
+                            if (target.role != .entry_guard) continue;
+                            try @import("../runtime_callsite_targets.zig").validateTargetRole(graph, target);
+                            invokes = true;
+                        }
+                    }
+                }
+                if (!invokes) continue;
+                var rows: usize = 0;
+                for (semantic.references) |reference| {
+                    if (reference.node_index != callee) continue;
+                    try std.testing.expect(reference.flags.read and !reference.flags.write and !reference.flags.declare);
+                    var call_scope = reference.scope_id;
+                    var enclosed = false;
+                    for (0..semantic.scopes.len) |_| {
+                        if (call_scope.isNone() or call_scope.toIndex() >= semantic.scopes.len) return error.InvalidSourceLazyCallScope;
+                        const actual = semantic.scopes[call_scope.toIndex()];
+                        if (actual.kind == .function) {
+                            enclosed = true;
+                            break;
+                        }
+                        if (actual.parent.isNone()) {
+                            try std.testing.expect(actual.kind == .module or actual.kind == .global);
+                            break;
+                        }
+                        call_scope = actual.parent;
+                    }
+                    try std.testing.expectEqual(nested, enclosed);
+                    rows += 1;
+                }
+                try std.testing.expectEqual(@as(usize, 1), rows);
+            }
+        }
+        receipts += 1;
+    }
+    try std.testing.expect(receipts != 0);
+}
+
+fn expectRnObservedValue(output: []const u8, observe: []const u8, expected_json: []const u8) !void {
+    const script = try std.fmt.allocPrint(std.testing.allocator, "{s}\nconsole.log(JSON.stringify({s}));", .{ output, observe });
+    defer std.testing.allocator.free(script);
+    // Virtual wrapper IDs may contain NUL, which cannot be transported in argv.
+    // Execute the unchanged emitted bytes as a file instead of truncating -e.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "observed.cjs", script);
+    const path = try absPath(&tmp, "observed.cjs");
+    defer std.testing.allocator.free(path);
+    const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", path }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+    defer std.testing.allocator.free(actual.stdout);
+    defer std.testing.allocator.free(actual.stderr);
+    std.debug.print("RN_NODE observe={s} term={any} expected={s} stdout={s} stderr={s}\n", .{ observe, actual.term, expected_json, actual.stdout, actual.stderr });
+    if (actual.term != .exited or actual.term.exited != 0) std.debug.print("RN lazy actual stderr={s}\n", .{actual.stderr});
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    try std.testing.expectEqualStrings("", actual.stderr);
+    const expected = try std.fmt.allocPrint(std.testing.allocator, "{s}\n", .{expected_json});
+    defer std.testing.allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, actual.stdout);
 }
 
 fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
@@ -1270,24 +1378,62 @@ test "ESM live binding: function hoisted outside __esm references canonical var"
     const entry = try absPath(&tmp, "entry.js");
     defer std.testing.allocator.free(entry);
 
-    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry} };
+    var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var b = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
     defer b.deinit();
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // function이 __esm 밖에 호이스팅
-    const esm_start = std.mem.indexOf(u8, result.output, "__esm({") orelse unreachable;
-    const fn_pos = std.mem.indexOf(u8, result.output, "function getColor()") orelse unreachable;
-    try std.testing.expect(fn_pos < esm_start);
-    // live binding: component.js의 __esm init에 import 스냅샷 할당이 없어야 함.
-    // init에는 init_xxx() 호출만 있고 __toCommonJS 패턴이 없어야 함.
-    const component_init = std.mem.indexOf(u8, result.output, "\"component.js\"()") orelse unreachable;
-    // init body는 다음 }); 까지
-    const init_end = std.mem.indexOf(u8, result.output[component_init..], "\n\t}\n});") orelse
-        std.mem.indexOf(u8, result.output[component_init..], "}});") orelse unreachable;
-    const init_body = result.output[component_init .. component_init + init_end];
-    try std.testing.expect(std.mem.indexOf(u8, init_body, "__toCommonJS") == null);
+    try test_helpers.expectOutputRuntime(result.output, "red\n");
+    const component_path = try absPath(&tmp, "component.js");
+    defer std.testing.allocator.free(component_path);
+    const component = graph.getModule(graph.path_to_module.get(component_path).?).?;
+    const exported = component.findExportBinding("getColor").?;
+    const source_sid = component.exportBindingSemanticIndex(exported.*).?;
+    try std.testing.expect(component.semantic.?.symbols.items[source_sid].decl_flags.is_function);
+    const init_name = try component.esmWrapperName(try component.esmInitSymbol(), null);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, result.output);
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const walk = @import("../../parser/ast_walk.zig");
+    const reachable = try walk.collectReachableNodeIndicesFrom(allocator, &parser.ast, root);
+    var function_position: ?u32 = null;
+    var initializer_position: ?u32 = null;
+    for (reachable) |raw| {
+        const statement = parser.ast.nodes.items[raw];
+        if (statement.tag == .function_declaration) {
+            const name = parser.ast.getNode(parser.ast.readExtraNode(statement.data.extra, 0));
+            if (!@import("../../lexer/scanner.zig").Scanner.identifierValueEquals(parser.ast.getText(name.span), exported.exported_name)) continue;
+            try std.testing.expect(function_position == null);
+            function_position = statement.span.start;
+        }
+        if (statement.tag == .variable_declarator) {
+            const name = parser.ast.getNode(parser.ast.readExtraNode(statement.data.extra, 0));
+            if (name.tag != .binding_identifier or
+                !@import("../../lexer/scanner.zig").Scanner.identifierValueEquals(parser.ast.getText(name.span), init_name)) continue;
+            try std.testing.expect(initializer_position == null);
+            initializer_position = statement.span.start;
+            const value = parser.ast.readExtraNode(statement.data.extra, 2);
+            try std.testing.expectEqual(@TypeOf(statement.tag).call_expression, parser.ast.getNode(value).tag);
+            const references = try @import("../../semantic/reference_walk.zig").collectIdentifierReferences(allocator, &parser.ast, value);
+            for (references) |reference| {
+                const actual = parser.ast.getNode(reference);
+                try std.testing.expect(!@import("../../lexer/scanner.zig").Scanner.identifierValueEquals(parser.ast.getText(actual.span), "__toCommonJS"));
+            }
+        }
+    }
+    try std.testing.expect(function_position != null and initializer_position != null);
+    try std.testing.expect(function_position.? < initializer_position.?);
 }
 
 test "ESM live binding: init only contains dependency init calls" {
@@ -3297,6 +3443,7 @@ test "entry_error_guard #3: helper 정의 1번만 emit (중복 방지)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
+    try expectGuardObservation(result.output, "{\"values\":[[\"sum\",3]],\"events\":[],\"errors\":[]}\n");
     const helper_count = std.mem.count(u8, result.output, "function __zntc_guarded");
     try std.testing.expectEqual(@as(usize, 1), helper_count);
 }
@@ -3433,6 +3580,7 @@ test "entry_error_guard #5c: runBeforeMain 은 dependency closure 정의 뒤 ent
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
+    try expectGuardObservation(result.output, "{\"values\":[],\"events\":[[\"setup\",1],[\"entry\",true,1]],\"errors\":[]}\n");
     const setup_call_idx = std.mem.indexOf(u8, result.output, "__zntc_guarded(init_setup);") orelse return error.SetupCallMissing;
     const facade_region_idx = std.mem.indexOf(u8, result.output, "//#region facade.js") orelse return error.FacadeModuleMissing;
     const entry_body_idx = std.mem.indexOf(u8, result.output, "entryRan") orelse return error.EntryBodyMissing;
@@ -3776,22 +3924,68 @@ test "entry_error_guard #16: GUARD_LAMBDA 매크로 형식 — esm_wrap / metada
     const entry = try absPath(&tmp, "entry.js");
     defer std.testing.allocator.free(entry);
 
-    var b = try buildRnGuarded(std.testing.allocator, entry);
+    const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .iife, .entry_error_guard = true };
+    var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var b = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
     defer b.deinit();
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // 모든 wrap 호출은 정확히 `__zntc_guarded(function(){return ` 으로 시작한다.
-    // statement guard 는 `;});`, expression guard 는 `}),` 로 닫힌다.
-    // expression guard 에 statement terminator 가 섞이면 `(...;});, value)` 문법 오류가 된다.
-    const open_count = std.mem.count(u8, result.output, "__zntc_guarded(function(){return ");
-    const statement_close_count = std.mem.count(u8, result.output, ";});");
-    const expression_close_count = std.mem.count(u8, result.output, "}),");
-    try std.testing.expect(open_count >= 2);
-    // close 는 wrap 외 다른 곳 (ESM closure 등) 에서도 나올 수 있어 >= 만 검증.
-    try std.testing.expect(statement_close_count + expression_close_count >= open_count);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, ".fn();});\n,") == null);
+    try expectGuardObservation(result.output, "{\"values\":[[\"r\",1]],\"events\":[],\"errors\":[]}\n");
+    const guard = try @import("../runtime_entry_guard_ast.zig").exactBinding(&graph);
+    const provider = graph.getModule(guard.module).?;
+    const guard_name = provider.symbolName(guard.inner).?;
+    for (0..graph.moduleCount()) |index| {
+        const module = graph.getModule(types.ModuleIndex.fromUsize(index)).?;
+        try @import("../graph/legacy_lexical_reads.zig").validate(&graph, module);
+        for (module.import_bindings) |binding| if (binding.callsite_target) |target| {
+            try @import("../runtime_callsite_targets.zig").validateTargetRole(&graph, target);
+        };
+    }
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, result.output);
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".cjs");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const nodes = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(allocator, &parser.ast, root);
+    var calls: usize = 0;
+    for (nodes) |raw| {
+        const call = parser.ast.nodes.items[raw];
+        if (call.tag != .call_expression) continue;
+        const callee = parser.ast.getNode(parser.ast.readExtraNode(call.data.extra, 0));
+        if (callee.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.getText(callee.data.string_ref), guard_name)) continue;
+        try std.testing.expectEqual(@as(u32, 1), parser.ast.readExtra(call.data.extra, 2));
+        var argument = parser.ast.readExtraNode(parser.ast.readExtra(call.data.extra, 1), 0);
+        if (parser.ast.getNode(argument).tag == .function_expression) {
+            const body = parser.ast.getNode(parser.ast.readExtraNode(parser.ast.getNode(argument).data.extra, 2));
+            try std.testing.expectEqual(@as(u32, 1), body.data.list.len);
+            const returned = parser.ast.getNode(parser.ast.readExtraNode(body.data.list.start, 0));
+            try std.testing.expectEqual(@TypeOf(returned.tag).return_statement, returned.tag);
+            const invocation = parser.ast.getNode(returned.data.unary.operand);
+            try std.testing.expectEqual(@TypeOf(invocation.tag).call_expression, invocation.tag);
+            try std.testing.expectEqual(@as(u32, 0), parser.ast.readExtra(invocation.data.extra, 2));
+            argument = parser.ast.readExtraNode(invocation.data.extra, 0);
+        }
+        const actual = parser.ast.getNode(argument);
+        try std.testing.expectEqual(@TypeOf(actual.tag).identifier_reference, actual.tag);
+        var targets: usize = 0;
+        for (0..graph.moduleCount()) |index| {
+            const module = graph.getModule(types.ModuleIndex.fromUsize(index)).?;
+            if (module.wrap_kind != .esm) continue;
+            const name = try module.esmWrapperName(try module.esmInitSymbol(), null);
+            if (std.mem.eql(u8, parser.ast.getText(actual.data.string_ref), name)) targets += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), targets);
+        calls += 1;
+    }
+    try std.testing.expect(calls >= 2);
 }
 
 test "entry_error_guard #17: silent_console_error_patterns 주입 시 setter intercept emit" {
@@ -3879,27 +4073,126 @@ test "entry_error_guard #19: dev_mode + entry import chain — __zntc_modules[\"
     const entry = try absPath(&tmp, "entry.js");
     defer std.testing.allocator.free(entry);
 
-    var b = Bundler.init(std.testing.allocator, .{
-        .entry_points = &.{entry},
-        .platform = .react_native,
-        .format = .iife,
-        .entry_error_guard = true,
-        .dev_mode = true,
-    });
+    const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .iife, .entry_error_guard = true, .dev_mode = true };
+    var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var b = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
     defer b.deinit();
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // dev_mode 형식 + nested wrap 둘 다 존재.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_modules[") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_guarded(function(){return __zntc_modules[") != null);
-    const marker = "//#endregion\n";
-    const top_start = (std.mem.lastIndexOf(u8, result.output, marker) orelse 0) + marker.len;
-    const top_level = result.output[top_start..];
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, top_level, "__zntc_guarded("));
-    try std.testing.expect(std.mem.indexOf(u8, top_level, "dep.js") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, ".fn();});\n,") == null);
+    try expectGuardObservation(result.output, "{\"values\":[[\"r\",1]],\"events\":[],\"errors\":[]}\n");
+    const dep_path = try absPath(&tmp, "dep.js");
+    defer std.testing.allocator.free(dep_path);
+    const provider = graph.getModule(graph.path_to_module.get(dep_path).?).?;
+    try std.testing.expect(provider.wrap_kind == .esm and provider.dev_id.len > 0);
+    const probe = try std.fmt.allocPrint(std.testing.allocator,
+        \\var replacements=0, reported=[];
+        \\globalThis.ErrorUtils={{reportFatalError:function(e){{reported.push(String(e));}}}};
+        \\globalThis.__zntc_modules=new Proxy(Object.create(null),{{set:function(t,k,v){{
+        \\  if(k==="{s}"){{var original=v.fn;if(typeof original!=="function")throw Error("missing actual provider fn");v.fn=function(){{replacements++;v.fn=original;return original.apply(this,arguments);}};}}
+        \\  t[k]=v;return true;
+        \\}}}});
+        \\{s}
+        \\console.log(JSON.stringify([replacements,globalThis.__zntcGuardDevValue,reported]));
+    , .{ provider.dev_id, result.output });
+    defer std.testing.allocator.free(probe);
+    try test_helpers.expectOutputRuntime(probe, "[1,1,[]]\n");
+
+    const guard = try @import("../runtime_entry_guard_ast.zig").exactBinding(&graph);
+    const guard_name = graph.getModule(guard.module).?.symbolName(guard.inner).?;
+    const entry_module = graph.getModule(graph.path_to_module.get(entry).?).?;
+    var registry_owners: usize = 0;
+    for (0..graph.moduleCount()) |index| {
+        const module = graph.getModule(types.ModuleIndex.fromUsize(index)).?;
+        try @import("../graph/legacy_lexical_reads.zig").validate(&graph, module);
+        for (module.import_bindings) |binding| if (binding.callsite_target) |target| {
+            try @import("../runtime_callsite_targets.zig").validateTargetRole(&graph, target);
+        };
+        if (module.hmr_runtime_internal_symbols) |ids| {
+            registry_owners += 1;
+            try std.testing.expect(@import("../module.zig").validHmrRuntimeIds(ids, module.semantic.?.symbols.items));
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), registry_owners);
+    // Runtime identity labels are not emitted names. Reuse the official
+    // graph-wide selector over these already-owned IDs and original options.
+    var names = @import("../linker.zig").Linker.init(std.testing.allocator, &graph, options.format);
+    defer names.deinit();
+    names.dev_mode = options.dev_mode;
+    try names.prepareHmrRuntimeInternalNames();
+    const registry_name = names.currentHmrRuntimeInternalNames().modules;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, result.output);
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".cjs");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const Work = struct { node: @import("../../parser/ast.zig").NodeIndex, depth: usize };
+    var pending: std.ArrayList(Work) = .empty;
+    try pending.append(allocator, .{ .node = root, .depth = 0 });
+    var provider_calls: usize = 0;
+    var entry_calls: usize = 0;
+    var entry_depth: ?usize = null;
+    var provider_depth: usize = std.math.maxInt(usize);
+    while (pending.pop()) |work| {
+        if (work.node.isNone()) continue;
+        const node = parser.ast.getNode(work.node);
+        if (node.tag == .call_expression) inspect_call: {
+            const callee = parser.ast.getNode(parser.ast.readExtraNode(node.data.extra, 0));
+            if (callee.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.getText(callee.data.string_ref), guard_name)) break :inspect_call;
+            try std.testing.expectEqual(@as(u32, 1), parser.ast.readExtra(node.data.extra, 2));
+            var argument = parser.ast.readExtraNode(parser.ast.readExtra(node.data.extra, 1), 0);
+            if (parser.ast.getNode(argument).tag == .function_expression) {
+                const body = parser.ast.getNode(parser.ast.readExtraNode(parser.ast.getNode(argument).data.extra, 2));
+                try std.testing.expectEqual(@as(u32, 1), body.data.list.len);
+                const returned = parser.ast.getNode(parser.ast.readExtraNode(body.data.list.start, 0));
+                try std.testing.expectEqual(@TypeOf(returned.tag).return_statement, returned.tag);
+                const call = parser.ast.getNode(returned.data.unary.operand);
+                try std.testing.expectEqual(@TypeOf(call.tag).call_expression, call.tag);
+                try std.testing.expectEqual(@as(u32, 0), parser.ast.readExtra(call.data.extra, 2));
+                argument = parser.ast.readExtraNode(call.data.extra, 0);
+            }
+            const member = parser.ast.getNode(argument);
+            if (member.tag == .identifier_reference) {
+                // The initial entry trigger is an exact output initializer;
+                // provider dependencies must retain the live registry lookup.
+                const entry_init = try entry_module.esmInitSymbol();
+                try std.testing.expectEqualStrings(entry_module.symbolName(entry_init.inner).?, parser.ast.getText(member.data.string_ref));
+                entry_depth = work.depth;
+                entry_calls += 1;
+                break :inspect_call;
+            }
+            try std.testing.expectEqual(@TypeOf(member.tag).static_member_expression, member.tag);
+            const key = parser.ast.readExtraNode(member.data.extra, 1);
+            try std.testing.expectEqualStrings("fn", (try parser.ast.staticKeyName(allocator, key)).?);
+            const lookup = parser.ast.getNode(parser.ast.readExtraNode(member.data.extra, 0));
+            try std.testing.expectEqual(@TypeOf(lookup.tag).computed_member_expression, lookup.tag);
+            const registry = parser.ast.getNode(parser.ast.readExtraNode(lookup.data.extra, 0));
+            try std.testing.expectEqual(@TypeOf(registry.tag).identifier_reference, registry.tag);
+            try std.testing.expectEqualStrings(registry_name, parser.ast.getText(registry.data.string_ref));
+            const module_key = (try parser.ast.staticKeyName(allocator, parser.ast.readExtraNode(lookup.data.extra, 1))).?;
+            if (std.mem.eql(u8, module_key, provider.dev_id)) {
+                provider_depth = @min(provider_depth, work.depth);
+                provider_calls += 1;
+            } else {
+                try std.testing.expectEqualStrings(entry_module.dev_id, module_key);
+                entry_depth = work.depth;
+                entry_calls += 1;
+            }
+        }
+        const child_depth = work.depth + @as(usize, if (node.tag == .function_expression or node.tag == .function_declaration or node.tag == .function or node.tag == .method_definition or node.tag == .arrow_function_expression) 1 else 0);
+        var children = @import("../../parser/ast_walk.zig").children(&parser.ast, node);
+        while (children.next()) |child| try pending.append(allocator, .{ .node = child, .depth = child_depth });
+    }
+    try std.testing.expect(provider_calls > 0);
+    try std.testing.expectEqual(@as(usize, 1), entry_calls);
+    try std.testing.expect(provider_depth > entry_depth.?);
 }
 
 test "entry_error_guard #20: silent_console_error_patterns 정확도 — 실제 expo 메시지 형식과 매치" {
@@ -4078,29 +4371,46 @@ test "react_native inlineRequires: defer function-only ESM imports across select
     const entry = try absPath(&tmp, "entry.js");
     defer std.testing.allocator.free(entry);
 
-    var b = Bundler.init(std.testing.allocator, .{
+    const lazy_consumer = try absPath(&tmp, "sellerSelectors/seller.js");
+    defer std.testing.allocator.free(lazy_consumer);
+    const lazy_provider = try absPath(&tmp, "sellerModule/index.js");
+    defer std.testing.allocator.free(lazy_provider);
+    const options_b: @import("../bundler.zig").BundleOptions = .{
         .entry_points = &.{entry},
         .platform = .react_native,
         .format = .iife,
         .tree_shaking = false,
-    });
+    };
+    var cache_b = Bundler.initResolveCacheFromOptions(std.testing.allocator, options_b);
+    defer cache_b.deinit();
+    var graph_b = ModuleGraph.init(std.testing.allocator, &cache_b);
+    defer graph_b.deinit();
+    var b = Bundler.initWithGraph(std.testing.allocator, options_b, &cache_b, &graph_b);
     defer b.deinit();
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "sellerInitialState.ready") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "sellerInitialState).ready") != null);
+    // This unguarded classic read now owns its plain checked-read projection;
+    // the guarded dev policy below still owns its actual entry-guard target.
+    try expectRnObservedValue(result.output, "globalThis.__zntcInlineRequiresResult", "[true,\"READY_MARKER\"]");
+    try expectSourceLazyRead(&graph_b, lazy_consumer, lazy_provider, "sellerInitialState", false, true);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "READY_MARKER") != null);
 
-    var dev_b = Bundler.init(std.testing.allocator, .{
+    const options_dev_b: @import("../bundler.zig").BundleOptions = .{
         .entry_points = &.{entry},
         .platform = .react_native,
         .format = .iife,
         .tree_shaking = false,
         .dev_mode = true,
         .entry_error_guard = true,
-    });
+    };
+    var cache_dev_b = Bundler.initResolveCacheFromOptions(std.testing.allocator, options_dev_b);
+    defer cache_dev_b.deinit();
+    var graph_dev_b = ModuleGraph.init(std.testing.allocator, &cache_dev_b);
+    defer graph_dev_b.deinit();
+    var dev_b = Bundler.initWithGraph(std.testing.allocator, options_dev_b, &cache_dev_b, &graph_dev_b);
     defer dev_b.deinit();
     const dev_result = try dev_b.bundle(std.testing.io);
     defer dev_result.deinit(std.testing.allocator);
@@ -4108,7 +4418,8 @@ test "react_native inlineRequires: defer function-only ESM imports across select
     try std.testing.expect(!dev_result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, dev_result.output, "__zntc_modules[") != null);
     try std.testing.expect(std.mem.indexOf(u8, dev_result.output, "sellerInitialState.ready") == null);
-    try std.testing.expect(std.mem.indexOf(u8, dev_result.output, "sellerInitialState).ready") != null);
+    try expectRnObservedValue(dev_result.output, "globalThis.__zntcInlineRequiresResult", "[true,\"READY_MARKER\"]");
+    try expectSourceLazyRead(&graph_dev_b, lazy_consumer, lazy_provider, "sellerInitialState", true, true);
 }
 
 test "react_native inlineRequires: defer top-level ESM value imports to use site" {
@@ -4151,36 +4462,29 @@ test "react_native inlineRequires: defer top-level ESM value imports to use site
     const remote = try absPath(&tmp, "remote.js");
     defer std.testing.allocator.free(remote);
 
-    var b = Bundler.init(std.testing.allocator, .{
+    const options: @import("../bundler.zig").BundleOptions = .{
         .entry_points = &.{entry},
         .platform = .react_native,
         .format = .iife,
         .tree_shaking = false,
         .dev_mode = true,
         .entry_error_guard = true,
-    });
+    };
+    var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var b = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
     defer b.deinit();
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
+    try expectGuardObservation(result.output, "{\"values\":[],\"events\":[],\"errors\":[],\"topLevel\":\"local\"}\n");
 
-    const eager_remote_init = try std.fmt.allocPrint(
-        std.testing.allocator,
-        "__zntc_guarded(function(){{return __zntc_modules[\"{s}\"].fn();}});",
-        .{remote},
-    );
-    defer std.testing.allocator.free(eager_remote_init);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, eager_remote_init) == null);
-
-    const lazy_remote_value = try std.fmt.allocPrint(
-        std.testing.allocator,
-        "(__zntc_guarded(function(){{return __zntc_modules[\"{s}\"].fn()}}),",
-        .{remote},
-    );
-    defer std.testing.allocator.free(lazy_remote_value);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_remote_value) != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, ".fn();});\n,") == null);
+    const local = try absPath(&tmp, "local.js");
+    defer std.testing.allocator.free(local);
+    try expectSourceLazyRead(&graph, local, remote, "getRemoteValue", true, false);
 }
 
 test "react_native inlineRequires: package sideEffects pattern keeps static ESM init eager" {
@@ -4814,17 +5118,24 @@ test "react_native inlineRequires: object parameter default visits ESM value imp
 
     const entry = try absPath(&tmp, "entry.js");
     defer std.testing.allocator.free(entry);
-    const tokens = try absPath(&tmp, "tokens.js");
-    defer std.testing.allocator.free(tokens);
 
-    var b = Bundler.init(std.testing.allocator, .{
+    const lazy_consumer = try absPath(&tmp, "template.js");
+    defer std.testing.allocator.free(lazy_consumer);
+    const lazy_provider = try absPath(&tmp, "tokens.js");
+    defer std.testing.allocator.free(lazy_provider);
+    const options_b: @import("../bundler.zig").BundleOptions = .{
         .entry_points = &.{entry},
         .platform = .react_native,
         .format = .iife,
         .tree_shaking = false,
         .dev_mode = true,
         .entry_error_guard = true,
-    });
+    };
+    var cache_b = Bundler.initResolveCacheFromOptions(std.testing.allocator, options_b);
+    defer cache_b.deinit();
+    var graph_b = ModuleGraph.init(std.testing.allocator, &cache_b);
+    defer graph_b.deinit();
+    var b = Bundler.initWithGraph(std.testing.allocator, options_b, &cache_b, &graph_b);
     defer b.deinit();
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
@@ -4832,9 +5143,8 @@ test "react_native inlineRequires: object parameter default visits ESM value imp
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "backgroundColor=COLOR_TOKENS.bgPrimary") == null);
 
-    const lazy_tokens_value = try formatLazyMarker(std.testing.allocator, "backgroundColor", tokens, "COLOR_TOKENS", "bgPrimary");
-    defer std.testing.allocator.free(lazy_tokens_value);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_tokens_value) != null);
+    try expectSourceLazyRead(&graph_b, lazy_consumer, lazy_provider, "COLOR_TOKENS", true, true);
+    try expectRnObservedValue(result.output, "globalThis.__zntcParamDefaultResult", "\"primary-bg\"");
 }
 
 test "react_native inlineRequires: simple parameter default visits ESM value import" {
@@ -4856,17 +5166,24 @@ test "react_native inlineRequires: simple parameter default visits ESM value imp
 
     const entry = try absPath(&tmp, "entry.js");
     defer std.testing.allocator.free(entry);
-    const tokens = try absPath(&tmp, "tokens.js");
-    defer std.testing.allocator.free(tokens);
 
-    var b = Bundler.init(std.testing.allocator, .{
+    const lazy_consumer = try absPath(&tmp, "fmt.js");
+    defer std.testing.allocator.free(lazy_consumer);
+    const lazy_provider = try absPath(&tmp, "tokens.js");
+    defer std.testing.allocator.free(lazy_provider);
+    const options_b: @import("../bundler.zig").BundleOptions = .{
         .entry_points = &.{entry},
         .platform = .react_native,
         .format = .iife,
         .tree_shaking = false,
         .dev_mode = true,
         .entry_error_guard = true,
-    });
+    };
+    var cache_b = Bundler.initResolveCacheFromOptions(std.testing.allocator, options_b);
+    defer cache_b.deinit();
+    var graph_b = ModuleGraph.init(std.testing.allocator, &cache_b);
+    defer graph_b.deinit();
+    var b = Bundler.initWithGraph(std.testing.allocator, options_b, &cache_b, &graph_b);
     defer b.deinit();
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
@@ -4874,9 +5191,8 @@ test "react_native inlineRequires: simple parameter default visits ESM value imp
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "color=TOKENS.primary") == null);
 
-    const lazy = try formatLazyMarker(std.testing.allocator, "color", tokens, "TOKENS", "primary");
-    defer std.testing.allocator.free(lazy);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy) != null);
+    try expectSourceLazyRead(&graph_b, lazy_consumer, lazy_provider, "TOKENS", true, true);
+    try expectRnObservedValue(result.output, "globalThis.__zntcParamDefaultResult", "\"primary-default\"");
 }
 
 test "react_native inlineRequires: minified bare parameter default visits ESM value import" {
@@ -4939,17 +5255,24 @@ test "react_native inlineRequires: array pattern default visits ESM value import
 
     const entry = try absPath(&tmp, "entry.js");
     defer std.testing.allocator.free(entry);
-    const tokens = try absPath(&tmp, "tokens.js");
-    defer std.testing.allocator.free(tokens);
 
-    var b = Bundler.init(std.testing.allocator, .{
+    const lazy_consumer = try absPath(&tmp, "pick.js");
+    defer std.testing.allocator.free(lazy_consumer);
+    const lazy_provider = try absPath(&tmp, "tokens.js");
+    defer std.testing.allocator.free(lazy_provider);
+    const options_b: @import("../bundler.zig").BundleOptions = .{
         .entry_points = &.{entry},
         .platform = .react_native,
         .format = .iife,
         .tree_shaking = false,
         .dev_mode = true,
         .entry_error_guard = true,
-    });
+    };
+    var cache_b = Bundler.initResolveCacheFromOptions(std.testing.allocator, options_b);
+    defer cache_b.deinit();
+    var graph_b = ModuleGraph.init(std.testing.allocator, &cache_b);
+    defer graph_b.deinit();
+    var b = Bundler.initWithGraph(std.testing.allocator, options_b, &cache_b, &graph_b);
     defer b.deinit();
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
@@ -4959,9 +5282,8 @@ test "react_native inlineRequires: array pattern default visits ESM value import
     try std.testing.expect(std.mem.indexOf(u8, result.output, "=TOKENS.primary") == null);
 
     // lazy expression 일부가 등장해야 한다 — array element default 위치.
-    const lazy_marker = try formatLazyMarker(std.testing.allocator, "", tokens, "TOKENS", "primary");
-    defer std.testing.allocator.free(lazy_marker);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_marker) != null);
+    try expectSourceLazyRead(&graph_b, lazy_consumer, lazy_provider, "TOKENS", true, true);
+    try expectRnObservedValue(result.output, "globalThis.__zntcParamDefaultResult", "\"arr-default\"");
 }
 
 test "react_native inlineRequires: nested destructuring default visits ESM value import" {
@@ -4983,17 +5305,24 @@ test "react_native inlineRequires: nested destructuring default visits ESM value
 
     const entry = try absPath(&tmp, "entry.js");
     defer std.testing.allocator.free(entry);
-    const tokens = try absPath(&tmp, "tokens.js");
-    defer std.testing.allocator.free(tokens);
 
-    var b = Bundler.init(std.testing.allocator, .{
+    const lazy_consumer = try absPath(&tmp, "render.js");
+    defer std.testing.allocator.free(lazy_consumer);
+    const lazy_provider = try absPath(&tmp, "tokens.js");
+    defer std.testing.allocator.free(lazy_provider);
+    const options_b: @import("../bundler.zig").BundleOptions = .{
         .entry_points = &.{entry},
         .platform = .react_native,
         .format = .iife,
         .tree_shaking = false,
         .dev_mode = true,
         .entry_error_guard = true,
-    });
+    };
+    var cache_b = Bundler.initResolveCacheFromOptions(std.testing.allocator, options_b);
+    defer cache_b.deinit();
+    var graph_b = ModuleGraph.init(std.testing.allocator, &cache_b);
+    defer graph_b.deinit();
+    var b = Bundler.initWithGraph(std.testing.allocator, options_b, &cache_b, &graph_b);
     defer b.deinit();
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
@@ -5001,9 +5330,8 @@ test "react_native inlineRequires: nested destructuring default visits ESM value
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "color=TOKENS.primary") == null);
 
-    const lazy = try formatLazyMarker(std.testing.allocator, "color", tokens, "TOKENS", "primary");
-    defer std.testing.allocator.free(lazy);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy) != null);
+    try expectSourceLazyRead(&graph_b, lazy_consumer, lazy_provider, "TOKENS", true, true);
+    try expectRnObservedValue(result.output, "globalThis.__zntcParamDefaultResult", "\"nested-default\"");
 }
 
 test "react_native inlineRequires: TS parameter property default visits ESM value import" {
@@ -5029,17 +5357,24 @@ test "react_native inlineRequires: TS parameter property default visits ESM valu
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
-    const tokens = try absPath(&tmp, "tokens.ts");
-    defer std.testing.allocator.free(tokens);
 
-    var b = Bundler.init(std.testing.allocator, .{
+    const lazy_consumer = try absPath(&tmp, "theme.ts");
+    defer std.testing.allocator.free(lazy_consumer);
+    const lazy_provider = try absPath(&tmp, "tokens.ts");
+    defer std.testing.allocator.free(lazy_provider);
+    const options_b: @import("../bundler.zig").BundleOptions = .{
         .entry_points = &.{entry},
         .platform = .react_native,
         .format = .iife,
         .tree_shaking = false,
         .dev_mode = true,
         .entry_error_guard = true,
-    });
+    };
+    var cache_b = Bundler.initResolveCacheFromOptions(std.testing.allocator, options_b);
+    defer cache_b.deinit();
+    var graph_b = ModuleGraph.init(std.testing.allocator, &cache_b);
+    defer graph_b.deinit();
+    var b = Bundler.initWithGraph(std.testing.allocator, options_b, &cache_b, &graph_b);
     defer b.deinit();
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
@@ -5050,9 +5385,8 @@ test "react_native inlineRequires: TS parameter property default visits ESM valu
     // 는 어디에도 남지 않아야 한다 — class lowering 으로 default 가
     // `if (color === void 0)` 형태로 풀릴 수 있어 prefix 는 다양하니
     // raw bare 부재 한 가지로 잠근다.
-    const lazy_marker = try formatLazyMarker(std.testing.allocator, "", tokens, "TOKENS", "primary");
-    defer std.testing.allocator.free(lazy_marker);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_marker) != null);
+    try expectSourceLazyRead(&graph_b, lazy_consumer, lazy_provider, "TOKENS", true, true);
+    try expectRnObservedValue(result.output, "globalThis.__zntcParamDefaultResult.color", "\"ts-param-prop-default\"");
 
     // raw `TOKENS.primary` 가 lazy_marker 외부에 남지 않았는지 — marker 안의
     // `TOKENS).primary` 는 닫는 `)` 가 끼어 있어 substring 매칭 안 됨.
@@ -5085,17 +5419,24 @@ test "react_native inlineRequires: for-of binding default visits ESM value impor
 
     const entry = try absPath(&tmp, "entry.js");
     defer std.testing.allocator.free(entry);
-    const tokens = try absPath(&tmp, "tokens.js");
-    defer std.testing.allocator.free(tokens);
 
-    var b = Bundler.init(std.testing.allocator, .{
+    const lazy_consumer = try absPath(&tmp, "run.js");
+    defer std.testing.allocator.free(lazy_consumer);
+    const lazy_provider = try absPath(&tmp, "tokens.js");
+    defer std.testing.allocator.free(lazy_provider);
+    const options_b: @import("../bundler.zig").BundleOptions = .{
         .entry_points = &.{entry},
         .platform = .react_native,
         .format = .iife,
         .tree_shaking = false,
         .dev_mode = true,
         .entry_error_guard = true,
-    });
+    };
+    var cache_b = Bundler.initResolveCacheFromOptions(std.testing.allocator, options_b);
+    defer cache_b.deinit();
+    var graph_b = ModuleGraph.init(std.testing.allocator, &cache_b);
+    defer graph_b.deinit();
+    var b = Bundler.initWithGraph(std.testing.allocator, options_b, &cache_b, &graph_b);
     defer b.deinit();
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
@@ -5103,9 +5444,8 @@ test "react_native inlineRequires: for-of binding default visits ESM value impor
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "color=TOKENS.primary") == null);
 
-    const lazy_marker = try formatLazyMarker(std.testing.allocator, "", tokens, "TOKENS", "primary");
-    defer std.testing.allocator.free(lazy_marker);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_marker) != null);
+    try expectSourceLazyRead(&graph_b, lazy_consumer, lazy_provider, "TOKENS", true, true);
+    try expectRnObservedValue(result.output, "globalThis.__zntcParamDefaultResult", "[\"for-of-default\",\"for-of-default\"]");
 }
 
 // ---- #4483 code-review max 지적 반영분 ----
@@ -5330,4 +5670,18 @@ test "#4483 Worker: external worker 는 UMD/AMD 의존성 배열에 들어가지
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "define([\"worker.ts\"]") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"worker.ts\"") != null); // URL 은 원문 유지
+}
+
+fn expectGuardObservation(output: []const u8, expected: []const u8) !void {
+    const prelude =
+        \\var records=[],events=[],errors=[],stored;
+        \\var define=Object.defineProperty;
+        \\Object.defineProperty=function(object,key,descriptor){if((key==='sum'||key==='r')&&descriptor.get)records.push([key,()=>descriptor.get.call(object)]);return define(object,key,descriptor)};
+        \\define(globalThis,'setupValue',{configurable:true,get(){return stored},set(value){stored=value;events.push(['setup',value])}});
+        \\define(globalThis,'entryRan',{configurable:true,set(value){events.push(['entry',value,stored])}});
+        \\globalThis.ErrorUtils={reportFatalError(error){errors.push(error.message)}};
+    ;
+    const script = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\nObject.defineProperty=define;console.log(JSON.stringify({{values:records.map(item=>[item[0],item[1]()]),events,errors,topLevel:globalThis.__zntcTopLevelInlineRequiresResult}}));", .{ prelude, output });
+    defer std.testing.allocator.free(script);
+    try test_helpers.expectOutputRuntime(script, expected);
 }

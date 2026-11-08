@@ -719,6 +719,45 @@ fn keepTlaReadinessAllSynchronous(self: *ModuleGraph) !void {
     module.wrap_kind = .none;
 }
 
+fn keepLexicalTdzSynchronous(self: *ModuleGraph) !void {
+    var i: usize = 0;
+    while (i < self.modules.count()) : (i += 1) {
+        const index: ModuleIndex = @fromBackingInt(@as(u32, @intCast(i)));
+        const provider = self.moduleAtMut(index) orelse return error.InvalidLexicalInitializationBuiltin;
+        const origin = provider.runtime_helper_source orelse continue;
+        if (origin.catalog != .tdz) continue;
+        if (provider.index != index or provider.codegen_output_owner == .unassigned or
+            !@import("../../runtime_helper_modules.zig").matchesConstructedSource(origin, self.helper_plugin_opts, provider.source) or
+            provider.dependencies.items.len != 0 or provider.self_uses_top_level_await or provider.uses_top_level_await or provider.tla_iife_stmt != null)
+            return error.InvalidLexicalInitializationBuiltin;
+        const semantic = if (provider.semantic) |*value| value else return error.InvalidLexicalInitializationBuiltin;
+        if (semantic.captureOwnerToken() == .unassigned) return error.InvalidLexicalInitializationBuiltin;
+        // Only this exact dependency-free constructor executes before source
+        // initializers. No ordinary module or unknown helper is promoted.
+        provider.wrap_kind = .none;
+    }
+}
+
+fn keepLegacyNameSynchronous(self: *ModuleGraph) !void {
+    if (!@import("legacy_default_names.zig").graphDemand(self)) return;
+    var i: usize = 0;
+    while (i < self.modules.count()) : (i += 1) {
+        const index: ModuleIndex = @fromBackingInt(@as(u32, @intCast(i)));
+        const provider = self.moduleAtMut(index) orelse return error.InvalidDefaultNameBuiltin;
+        const origin = provider.runtime_helper_source orelse continue;
+        if (origin.catalog != .keep_names) continue;
+        if (provider.index != index or provider.codegen_output_owner == .unassigned or
+            !@import("../../runtime_helper_modules.zig").matchesConstructedSource(origin, self.helper_plugin_opts, provider.source) or
+            provider.dependencies.items.len != 0 or provider.self_uses_top_level_await or provider.uses_top_level_await or provider.tla_iife_stmt != null)
+            return error.InvalidDefaultNameBuiltin;
+        const semantic = if (provider.semantic) |*value| value else return error.InvalidDefaultNameBuiltin;
+        if (semantic.captureOwnerToken() == .unassigned) return error.InvalidDefaultNameBuiltin;
+        // Only this exact dependency-free constructor executes before source
+        // initializers. No ordinary module or unknown helper is promoted.
+        provider.wrap_kind = .none;
+    }
+}
+
 fn captureTlaReadinessAll(self: *ModuleGraph) !void {
     if (!(self.code_splitting or self.preserve_modules) or !self.transform_options_base.tla_entry_exports_awaited) return;
     const index = self.path_to_module.get(tla_readiness_all_id) orelse return;
@@ -830,6 +869,24 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
 
     var entry_indices: std.ArrayList(ModuleIndex) = .empty;
     defer entry_indices.deinit(self.allocator);
+    // These exact dependency-free constructors create their helper functions
+    // and capture constructor-owned intrinsics before any source initializer.
+    // SCC readers and hoisted-name restoration must observe ready helpers.
+    var tdz_seen = false;
+    var name_seen = false;
+    const name_demand = @import("legacy_default_names.zig").graphDemand(self);
+    for (0..self.modules.count()) |slot| {
+        const candidate = self.modules.at(slot);
+        const origin = candidate.runtime_helper_source orelse continue;
+        if (origin.catalog != .tdz and (origin.catalog != .keep_names or !name_demand)) continue;
+        const index = ModuleIndex.fromUsize(slot);
+        if ((if (origin.catalog == .tdz) tdz_seen else name_seen) or candidate.index != index or candidate.codegen_output_owner == .unassigned or
+            !@import("../../runtime_helper_modules.zig").matchesConstructedSource(origin, self.helper_plugin_opts, candidate.source) or
+            candidate.dependencies.items.len != 0 or candidate.self_uses_top_level_await or candidate.uses_top_level_await)
+            return error.InvalidLexicalInitializationBuiltin;
+        try graph_cycles.dfs(self, index, &visited, &in_stack);
+        if (origin.catalog == .tdz) tdz_seen = true else name_seen = true;
+    }
     for (entry_points) |entry_path| {
         if (self.path_to_module.get(entry_path)) |idx| {
             const ei = @backingInt(idx);
@@ -911,9 +968,13 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
     try @import("../native_async_module_plan.zig").promote(self);
     try keepTlaReadinessAllSynchronous(self);
     try keepNativeAsyncModuleFactorySynchronous(self);
+    try keepLexicalTdzSynchronous(self);
+    try keepLegacyNameSynchronous(self);
     try graph_finalize.registerWrapperSymbols(self);
     try captureTlaReadinessAll(self);
     try captureNativeAsyncModuleFactory(self);
+    self.lexical_tdz_builtin = try @import("../lexical_initialization_builtin.zig").capture(self);
+    self.legacy_name_builtin = try @import("../lexical_initialization_builtin.zig").captureNames(self);
     checkSelfReExport(self);
 }
 

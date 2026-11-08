@@ -929,6 +929,13 @@ pub fn emitEsmWrappedModule(
                                     break :blk override;
                             }
                             if (linker) |l| {
+                                if (try @import("legacy_lexical_getter.zig").expression(allocator, l, module, eb, metadata)) |checked| {
+                                    star_owned.append(allocator, checked) catch |err| {
+                                        allocator.free(checked);
+                                        return err;
+                                    };
+                                    break :blk checked;
+                                }
                                 const mi: u32 = module.index.toU32();
                                 break :blk l.getCanonicalForExport(eb, mi) orelse return error.InvalidCrossChunkExport;
                             }
@@ -1528,7 +1535,10 @@ fn appendWrappedInitCall(
     switch (src_mod.wrap_kind) {
         .esm => {
             if (is_tla) try buf.appendSlice(allocator, "await ");
-            if (guard) try buf.appendSlice(allocator, rt.guardLambdaOpen(options.minify_whitespace, options.code_splitting));
+            if (guard) {
+                try buf.appendSlice(allocator, options.guardFunctionName());
+                try buf.appendSlice(allocator, "(function(){return ");
+            }
             // 비-dev_split(RN/단일번들 dev) 분기는 원래 코드 구조를 그대로 유지 → byte-identical
             // 출력(append 횟수는 결과 바이트와 무관·소스맵에도 영향 없음 — 버퍼는 raw 바이트, 소스맵
             // 매핑은 codegen body 와 줄 수만 반영). .esm init 은 기존에 단일번들 dev 도 registry 였으므로
@@ -1547,7 +1557,10 @@ fn appendWrappedInitCall(
             try buf.appendSlice(allocator, if (guard) rt.GUARD_LAMBDA_CLOSE else rt.INIT_CALL_END);
         },
         .cjs => {
-            if (guard) try buf.appendSlice(allocator, rt.guardLambdaOpen(options.minify_whitespace, options.code_splitting));
+            if (guard) {
+                try buf.appendSlice(allocator, options.guardFunctionName());
+                try buf.appendSlice(allocator, "(function(){return ");
+            }
             // .cjs init 은 기존에 단일번들 dev 도 lexical → dev_split 만 registry(isDevSplit).
             if (options.isDevSplit()) {
                 try buf.appendSlice(allocator, hmr_names.modules);
@@ -1719,7 +1732,7 @@ fn makeLazyEsmGetterValue(
     defer allocator.free(init_call);
 
     const init_expr = if (src_mod.shouldGuard(options.entry_error_guard)) blk: {
-        const guard_name = rt.guardFunctionName(options.minify_whitespace, options.code_splitting);
+        const guard_name = options.guardFunctionName();
         break :blk try std.fmt.allocPrint(allocator, "{s}(function(){{return {s}}})", .{ guard_name, init_call });
     } else try allocator.dupe(u8, init_call);
     defer allocator.free(init_expr);

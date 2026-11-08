@@ -603,6 +603,11 @@ pub const Module = struct {
     source: []const u8,
     /// Borrowed from this module's actual winning builtin load constructor.
     runtime_helper_source: ?@import("../runtime_helper_source_origin.zig").Origin = null,
+    /// Actual legacy imported-read guards, owned by this module's arena.
+    legacy_lexical_reads: []const @import("graph/legacy_lexical_reads.zig").Receipt = &.{},
+    legacy_module_identity: ?@import("graph/legacy_module_identity.zig").Identity = null,
+    legacy_lexical_writes: []const @import("graph/legacy_initialization_registry.zig").Receipt = &.{},
+    legacy_default_names: []const @import("graph/legacy_default_names.zig").Receipt = &.{},
     runtime_helper_cache_source: ?RuntimeHelperCacheSource = null,
     /// Arena-owned proof from this Module's actual decoded source installation.
     /// Never serialized or transferred to another Module owner.
@@ -1557,17 +1562,26 @@ pub const Module = struct {
     /// must still carry the already selected export SymbolRef in this AST.
     pub const OrdinaryQuotedExport = struct { literal_syntax: []const u8, binding_value: []const u8 };
 
+    /// Ordinary direct-storage policy remains stricter than key provenance.
     pub fn ordinaryQuotedExportLiteral(self: *const Module, eb: ExportBinding) error{InvalidQuotedExportOrigin}!?OrdinaryQuotedExport {
+        const origin = try self.quotedExportOrigin(eb) orelse return null;
+        if (self.wrap_kind != .none) return null;
+        const sid = self.exportBindingSemanticIndex(eb) orelse return error.InvalidQuotedExportOrigin;
+        if (self.semantic.?.symbols.items[sid].write_count != 0) return null;
+        return origin;
+    }
+
+    /// Authenticate Source public literal and local SID independently of storage.
+    pub fn quotedExportOrigin(self: *const Module, eb: ExportBinding) error{InvalidQuotedExportOrigin}!?OrdinaryQuotedExport {
         if (!eb.has_public_key_literal) {
             if (eb.public_key_literal != null or eb.public_key_origin != null or eb.public_key_binding_value != null) return error.InvalidQuotedExportOrigin;
             return null;
         }
-        if (self.wrap_kind != .none or eb.kind != .local or
+        if (eb.kind != .local or
             std.mem.eql(u8, eb.exported_name, "default") or eb.hasSyntheticDefault(self.semanticSymbols())) return null;
         const sid = self.exportBindingSemanticIndex(eb) orelse return error.InvalidQuotedExportOrigin;
         const sem = self.semantic orelse return error.InvalidQuotedExportOrigin;
         const symbol = sem.symbols.items[sid];
-        if (symbol.write_count != 0) return null;
         if (symbol.synthetic_kind != null or symbol.synthetic_name.len != 0) return error.InvalidQuotedExportOrigin;
         const origin = eb.public_key_origin orelse return error.InvalidQuotedExportOrigin;
         const ast = if (self.ast) |*actual| actual else return error.InvalidQuotedExportOrigin;

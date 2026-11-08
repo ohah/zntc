@@ -4787,3 +4787,39 @@ test "initial await using disposal marks only the containing module asynchronous
         try std.testing.expectEqual(fixture.await_top, analyzer.has_top_level_await);
     }
 }
+
+test "lexical TDZ iteration pattern default closures retain later head binding identity" {
+    for ([_][]const u8{
+        "for(let[read=()=>later,later=42]of[[]]){read()}",
+        "for(let{read=()=>later,later=42}of[{}]){read()}",
+        "for(let[read=()=>later,later=42]in{'':1}){read()}",
+    }) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        _ = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        try analyzer.analyze();
+        var binding: ?u32 = null;
+        var owner: ?u32 = null;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag == .for_in_statement or node.tag == .for_of_statement)
+                owner = analyzer.scope_owner_map.get(@intCast(raw));
+            if (node.tag == .binding_identifier and std.mem.eql(u8, parser.ast.getText(node.span), "later"))
+                binding = analyzer.symbol_ids.items[raw];
+        }
+        try std.testing.expect(binding != null and owner != null);
+        try std.testing.expectEqual(owner.?, analyzer.symbols.items[binding.?].scope_id.toIndex());
+        var reads: usize = 0;
+        for (analyzer.references.items) |reference| {
+            if (reference.node_index.isNone() or reference.flags.declare or !reference.flags.read) continue;
+            const node = parser.ast.getNode(reference.node_index);
+            if (!std.mem.eql(u8, parser.ast.getText(node.span), "later")) continue;
+            try std.testing.expectEqual(binding.?, @backingInt(reference.symbol_id));
+            reads += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), reads);
+    }
+}

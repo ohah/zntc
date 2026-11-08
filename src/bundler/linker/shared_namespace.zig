@@ -1409,7 +1409,12 @@ pub fn writeEsmInitExprBody(
     target_mod: *const Module,
     guard: bool,
 ) !void {
-    if (guard) try writer.write(rt.guardLambdaOpen(self.minify_whitespace, self.code_splitting));
+    if (guard) {
+        if (self.classicEntryGuardRuntimeName() catch |err| return outputError(err)) |name| {
+            try writer.write(name);
+            try writer.write("(function(){return ");
+        } else try writer.write(rt.guardLambdaOpen(self.minify_whitespace, self.code_splitting));
+    }
     if (self.dev_mode) {
         try writer.write(self.currentHmrRuntimeInternalNames().modules);
         try writer.write("[\"");

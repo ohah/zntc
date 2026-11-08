@@ -133,6 +133,33 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
             while (bindings.next()) |sid| try runtime_global_renames.put(self.allocator, sid.*, {});
         }
     }
+    if (self.lexical_tdz_plan) |plan| if (plan.hasDemand()) {
+        const globals = @import("../runtime_builtin_global_roles.zig");
+        try globals.collectRootSourceBindings(self, &.{ .reference_error, .type_error }, &runtime_global_renames);
+    };
+    if (!self.options.emit_runtime_helper_imports and self.options.unsupported.destructuring and self.options.unsupported.block_scoping) {
+        const globals = @import("../runtime_builtin_global_roles.zig");
+        var symbol_candidates: @import("../block_rename_table.zig").Table = .empty;
+        defer symbol_candidates.deinit(self.allocator);
+        try globals.collectRootSourceBindings(self, &.{.symbol}, &symbol_candidates);
+        if (symbol_candidates.count() != 0) {
+            const ast_walk = @import("../../parser/ast_walk.zig");
+            var pending: std.ArrayList(NodeIndex) = .empty;
+            defer pending.deinit(self.allocator);
+            try pending.append(self.allocator, @fromBackingInt(self.parser_node_count - 1));
+            while (pending.pop()) |node| {
+                if (node.isNone()) continue;
+                const source = self.ast.getNode(node);
+                if (source.tag == .array_pattern) {
+                    var selected = symbol_candidates.keyIterator();
+                    while (selected.next()) |sid| try runtime_global_renames.put(self.allocator, sid.*, {});
+                    break;
+                }
+                var children = ast_walk.children(self.ast, source);
+                while (children.next()) |child| try pending.append(self.allocator, child);
+            }
+        }
+    }
     // Constructor bindings that hide a name a lowered field initializer reads
     // are renamed like a split parameter environment (#5668).
     var field_capture_renames = try @import("../parameter_environment.zig").collectFieldCaptureRenames(self);

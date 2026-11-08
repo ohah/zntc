@@ -585,6 +585,7 @@ fn catalogFor(m: *const HelperModule) ?source_origin.Catalog {
         .{ .short = "readiness-all", .catalog = .readiness_all },
         .{ .short = "suspension-invoke", .catalog = .suspension_invoke },
         .{ .short = "native-async-module", .catalog = .native_async_module },
+        .{ .short = "tdz", .catalog = .tdz },
     };
     for (known) |entry| if (m == findModule(entry.short).?) return entry.catalog;
     return null;
@@ -600,7 +601,14 @@ fn moduleForCatalog(catalog: source_origin.Catalog) *const HelperModule {
         .readiness_all => "readiness-all",
         .suspension_invoke => "suspension-invoke",
         .native_async_module => "native-async-module",
+        .tdz => "tdz",
     }).?;
+}
+
+/// Immutable export protocol for a constructor-owned catalog role. Callers
+/// validate the actual winning Origin before using an indexed export row.
+pub fn catalogExports(catalog: source_origin.Catalog) []const []const u8 {
+    return moduleForCatalog(catalog).helpers;
 }
 
 /// The actual winning constructor, selected variant and exact result contents

@@ -645,7 +645,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 self.ast.nodes.items[@backingInt(index)] = .{ .tag = .sequence_expression, .span = node.span, .data = .{ .list = try self.ast.addNodeList(values.items) } };
             }
             const result: ?es_helpers.TempIdentityCapture = if (source_for.isNone()) try reservePatternTemp(self, span, context.output_scope) else null;
-            self.ast.nodes.items[@backingInt(body.node)].data.list = try self.ast.addNodeList(&.{if (result) |identity|
+            // Finish node-producing work before taking the nodes.items slot.
+            // TDZ and other producers can grow that buffer while building RHS.
+            const body_statement = if (result) |identity|
                 try es_helpers.makeExprStmt(self, try es_helpers.makeAssignExpr(self, try patternTempRef(self, identity, body.scope, span, true), try iteratorValueBoundary(self, expression, span), span, 0), span)
             else if (source_label.isNone())
                 output_for
@@ -655,7 +657,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     std.debug.panic("iterator Reference label lost its exact source loop", .{});
                 labeled.data.binary.right = output_for;
                 break :label try self.ast.addNode(labeled);
-            }});
+            };
+            const body_statements = try self.ast.addNodeList(&.{body_statement});
+            self.ast.nodes.items[@backingInt(body.node)].data.list = body_statements;
             const thrown = try reservePatternTemp(self, span, context.output_scope);
             const caught_name = try es_helpers.makeTempVarSpan(self);
             const caught = try es_helpers.makeSyntheticBinding(self, caught_name);
@@ -1187,6 +1191,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 return;
             }
             if (node.tag == .binding_identifier) {
+                const initialized_rhs = if (comptime @hasDecl(Transformer, "moduleBindingInitialized")) try self.moduleBindingInitialized(binding, rhs) else rhs;
                 const target = try makeTrackedBindingWriteRefAt(self, binding, node.data.string_ref, span);
                 if (self.semantic_edit_enabled) {
                     const editor = &self.semantic_editor.?;
@@ -1196,7 +1201,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     }) orelse std.debug.panic("iterator binding write has no exact reference row", .{});
                     try movePatternExpression(self, target, row.scope_id, context.use_scope);
                 }
-                try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, target, rhs, span, 0), span);
+                try appendPatternExpression(self, out, try es_helpers.makeAssignExpr(self, target, initialized_rhs, span, 0), span);
                 return;
             }
             return emitBindingPatternStatements(self, node, rhs, span, context, preparation, out);
@@ -1813,6 +1818,11 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// object_pattern의 각 property를 declarator로 변환.
         /// { a, b: c, d = 1 } → var a = _ref.a, c = _ref.b, d = _ref.d === void 0 ? 1 : _ref.d
         /// { a, ...rest } → var a = _ref.a, rest = __rest(_ref, ["a"])
+        fn moduleBindingInitializer(self: *Transformer, binding: NodeIndex, value: NodeIndex) Transformer.Error!NodeIndex {
+            if (comptime @hasDecl(Transformer, "moduleBindingInitialized")) return self.moduleBindingInitialized(binding, value);
+            return value;
+        }
+
         fn emitObjectPatternDeclarators(self: *Transformer, pattern: Node, ref_span: Span, span: Span, decl_kind: ast_mod.VariableDeclarationKind, root_identity: es_helpers.TempIdentityCapture) Transformer.Error!void {
             const opd_start = pattern.data.list.start;
             const split = self.ast.nodeListSplitRest(pattern.data.list);
@@ -1862,7 +1872,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         }
                     }
                     const binding = try self.makeUserBinding(binding_name, key_idx);
-                    const decl = try es_helpers.makeDeclarator(self, binding, member_access, span);
+                    const decl = try es_helpers.makeDeclarator(self, binding, try moduleBindingInitializer(self, binding, member_access), span);
                     try self.scratch.append(self.allocator, decl);
                 } else {
                     const value_node = self.ast.getNode(value_idx);
@@ -1920,7 +1930,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                                 span,
                                 decl_kind,
                             );
-                            const decl = try es_helpers.makeDeclarator(self, binding, defaulted, span);
+                            const decl = try es_helpers.makeDeclarator(self, binding, try moduleBindingInitializer(self, binding, defaulted), span);
                             try self.scratch.append(self.allocator, decl);
                         }
                     } else if (value_node.tag == .object_pattern or value_node.tag == .array_pattern) {
@@ -1938,7 +1948,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     } else {
                         // long-form: { a: b } → var b = _ref.a
                         const binding = try self.visitNode(value_idx);
-                        const decl = try es_helpers.makeDeclarator(self, binding, member_access, span);
+                        const decl = try es_helpers.makeDeclarator(self, binding, try moduleBindingInitializer(self, binding, member_access), span);
                         try self.scratch.append(self.allocator, decl);
                     }
                 }
@@ -2017,7 +2027,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             .span = span,
                             .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = elem_access2 } },
                         });
-                        const decl = try es_helpers.makeDeclarator(self, binding, conditional, span);
+                        const decl = try es_helpers.makeDeclarator(self, binding, try moduleBindingInitializer(self, binding, conditional), span);
                         try self.scratch.append(self.allocator, decl);
                     }
                 } else if (elem.tag == .object_pattern or elem.tag == .array_pattern) {
@@ -2035,7 +2045,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 } else {
                     // 단순: [x] → var x = _ref[0]
                     const binding = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
-                    const decl = try es_helpers.makeDeclarator(self, binding, elem_access, span);
+                    const decl = try es_helpers.makeDeclarator(self, binding, try moduleBindingInitializer(self, binding, elem_access), span);
                     try self.scratch.append(self.allocator, decl);
                 }
             }
@@ -2055,7 +2065,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     return;
                 }
                 const rest_binding = try self.visitNode(rest_inner);
-                const rest_decl = try es_helpers.makeDeclarator(self, rest_binding, rest_init, span);
+                const rest_decl = try es_helpers.makeDeclarator(self, rest_binding, try moduleBindingInitializer(self, rest_binding, rest_init), span);
                 try self.scratch.append(self.allocator, rest_decl);
             }
         }
@@ -2361,7 +2371,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             identity: es_helpers.TempIdentityCapture,
         ) Transformer.Error!NodeIndex {
             const parts = try buildRestCall(self, rest_idx, ref_span, exclude_keys, span, identity);
-            return es_helpers.makeDeclarator(self, parts.binding, parts.call, span);
+            return es_helpers.makeDeclarator(self, parts.binding, try moduleBindingInitializer(self, parts.binding, parts.call), span);
         }
 
         /// rest = __rest(_ref, [...]) assignment (assignment-target 컨텍스트).
@@ -2530,7 +2540,8 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             defer self.current_scope = loop_scope;
             const new_body = try self.visitNode(body);
 
-            if (self.options.unsupported.destructuring and self.options.unsupported.block_scoping and binding_node.tag == .array_pattern) {
+            const initialization_demand = if (comptime @hasDecl(Transformer, "iterationSourceNeedsInitialization")) self.iterationSourceNeedsInitialization(source) else false;
+            if (self.options.unsupported.block_scoping and ((self.options.unsupported.destructuring and binding_node.tag == .array_pattern) or initialization_demand)) {
                 // The physical declarations remain directly in the actual
                 // iteration body. Only iterator evaluation owns the nested
                 // ready region; do not drain its declarations outside the loop.

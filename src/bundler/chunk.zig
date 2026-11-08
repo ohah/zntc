@@ -2160,15 +2160,18 @@ pub fn computeCrossChunkLinks(
             // 심볼 수준 크로스 청크 바인딩 추적 (linker가 있을 때만)
             if (linker) |lnk| {
                 for (m.import_bindings) |ib| {
-                    if (ib.callsite_target) |target| if (target.role == .entry_guard or target.role == .readiness_all) {
+                    if (ib.callsite_target) |target| if (target.role == .entry_guard or target.role == .readiness_all or target.role == .tdz_helper or target.role == .keep_names_helper) {
                         try @import("runtime_callsite_targets.zig").validateTargetRole(graph, target);
                         const source_chunk = chunk_graph.getModuleChunk(target.symbol.module);
                         if (!source_chunk.isNone() and source_chunk != chunk.index) {
                             const provider = graph.getModule(target.symbol.module) orelse return error.InvalidCallsiteTarget;
-                            const export_index = if (target.role == .readiness_all)
-                                (graph.tla_readiness_all orelse return error.InvalidCallsiteTarget).export_index
-                            else
-                                0;
+                            const export_index = switch (target.role) {
+                                .readiness_all => (graph.tla_readiness_all orelse return error.InvalidCallsiteTarget).export_index,
+                                .tdz_helper => (graph.lexical_tdz_builtin orelse return error.InvalidCallsiteTarget).export_index,
+                                .keep_names_helper => (graph.legacy_name_builtin orelse return error.InvalidCallsiteTarget).export_index,
+                                .entry_guard => 0,
+                                else => return error.InvalidCallsiteTarget,
+                            };
                             if (export_index >= provider.export_bindings.len or
                                 provider.exportBindingSemanticIndex(provider.export_bindings[export_index]) != @as(?u32, @backingInt(target.symbol.inner))) return error.InvalidCallsiteTarget;
                             try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, &seen_static, source_chunk, provider.export_bindings[export_index].exported_name, target.symbol.module.toU32(), .ordinary_export);

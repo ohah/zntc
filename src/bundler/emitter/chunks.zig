@@ -131,6 +131,53 @@ fn readinessHelperExpression(
     return try std.fmt.allocPrint(allocator, "{s}({s})[{s}]", .{ if (registry) "__zntc_require" else "require", quoted_path, quoted_key });
 }
 
+/// The key's path slot is compiler-owned AST. Resolve it from the same
+/// physical chunk paths used by native import emission, after chunk naming.
+/// Source identifiers, export keys, and graph-local indexes are never URLs.
+fn appendLexicalRegistryModulePath(
+    allocator: std.mem.Allocator,
+    graph: *const ModuleGraph,
+    chunk_graph: *const ChunkGraph,
+    chunk: *const Chunk,
+    options: *const EmitOptions,
+    consumer: *const Module,
+    provider: *const Module,
+    key: @import("../graph/legacy_initialization_registry.zig").Key,
+    literals: *std.AutoHashMapUnmanaged(u32, []const u8),
+) !void {
+    if (key.factory != null) {
+        if (options.preserve_modules or !graph.code_splitting or provider.wrap_kind != .esm or
+            graph.getModule(consumer.index) != consumer or graph.getModule(provider.index) != provider or
+            chunk_graph.getModuleChunk(consumer.index) != chunk.index)
+            return error.InvalidLexicalInitializationRegistry;
+        return;
+    }
+    if (!options.preserve_modules or chunk.modules.items.len != 1 or chunk.modules.items[0] != consumer.index or
+        graph.getModule(consumer.index) != consumer or graph.getModule(provider.index) != provider or
+        consumer.codegen_output_owner == .unassigned or provider.codegen_output_owner == .unassigned or
+        chunk_graph.getModuleChunk(consumer.index) != chunk.index) return error.InvalidLexicalInitializationRegistry;
+    const target_index = chunk_graph.getModuleChunk(provider.index);
+    if (target_index.isNone()) return error.InvalidLexicalInitializationRegistry;
+    const target = chunk_graph.getChunk(target_index);
+    if (target.modules.items.len != 1 or target.modules.items[0] != provider.index) return error.InvalidLexicalInitializationRegistry;
+    const quoted = if (target_index == chunk.index)
+        try allocator.dupe(u8, "\"\"")
+    else relative_path: {
+        var source_path: std.ArrayListUnmanaged(u8) = .empty;
+        defer source_path.deinit(allocator);
+        var target_path: std.ArrayListUnmanaged(u8) = .empty;
+        defer target_path.deinit(allocator);
+        try appendChunkOutputPath(chunk, &source_path, allocator, options);
+        try appendChunkOutputPath(target, &target_path, allocator, options);
+        const relative = try computeRelativePath(allocator, std.fs.path.dirname(source_path.items) orelse "", target_path.items, "");
+        defer allocator.free(relative);
+        break :relative_path try quoteChunkPath(allocator, relative);
+    };
+    try putCompilerLiteral(literals, allocator, @backingInt(key.path), quoted);
+    const mode = try std.json.Stringify.valueAlloc(allocator, if (options.format == .cjs) "cjs" else "esm", .{});
+    try putCompilerLiteral(literals, allocator, @backingInt(key.mode), mode);
+}
+
 fn quoteChunkPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -269,24 +316,21 @@ fn crossChunkBindingName(linker: ?*Linker, sym: chunk_mod.CrossChunkSym) ![]cons
         const provider = try checkedEdgeProvider(l, sym);
         if (try provider.namespaceOutputRef(l)) |reference|
             return l.sharedNamespaceEmittedName(reference) orelse error.SharedNamespaceOwnerMissing;
-        // #4101 전역 일관 네이밍: cross-chunk 심볼은 provider/consumer 가 같은 전역 이름을
-        // 써야 한다. 전역 맵에 있으면 그걸 우선(같은 이름 다른 모듈 `v`/`v$1` 구분).
-        if (l.getCrossChunkGlobalName(sym.canonical_module, sym.name)) |g| return g;
-        // Only an existing ordinary provider SymbolId authorizes this local.
-        // A public string-literal key is never a lexical binding spelling.
+        // The actual Source export edge owns its public key and binding SID.
+        // TDZ storage/wrapping does not turn that key into a lexical spelling.
         if (l.getModule(sym.canonical_module)) |module| {
-            if (!module.wrap_kind.isWrapped()) {
-                if (module.findExportBinding(sym.name)) |export_binding| {
-                    if (try module.ordinaryQuotedExportLiteral(export_binding.*)) |verified| {
-                        const local = l.getCanonicalByRef(export_binding.symbol) orelse verified.binding_value;
-                        if (std.mem.indexOfScalar(u8, local, '\\') != null or
-                            !@import("../linker/identifier_name.zig").isIdentifierName(local) or Linker.isReservedName(local))
-                            return error.InvalidQuotedExportCanonical;
-                        return local;
-                    }
+            if (module.findExportBinding(sym.name)) |export_binding| {
+                if (try module.quotedExportOrigin(export_binding.*)) |verified| {
+                    const local = l.getCrossChunkGlobalName(sym.canonical_module, sym.name) orelse
+                        l.getCanonicalByRef(export_binding.symbol) orelse verified.binding_value;
+                    if (std.mem.indexOfScalar(u8, local, '\\') != null or
+                        !@import("../linker/identifier_name.zig").isIdentifierName(local) or Linker.isReservedName(local))
+                        return error.InvalidQuotedExportCanonical;
+                    return local;
                 }
             }
         }
+        if (l.getCrossChunkGlobalName(sym.canonical_module, sym.name)) |g| return g;
         if (Linker.isReservedName(sym.name)) {
             return l.resolveToLocalName(.{
                 .module_index = @fromBackingInt(@intCast(sym.canonical_module)),
@@ -364,6 +408,29 @@ fn snapshotConsumerLocals(allocator: std.mem.Allocator, used_locals: *const std.
 /// 로 청크 사이 wipe돼 body path 가 provider mangle 을 못 봄). read(metadata.zig)와 같은 preserve_modules
 /// 게이트라 splitting 은 write 도 생략(낭비 방지·gate 를 write 와 co-locate).
 /// symbol-level import 블록과 #4580 default 전체바인딩 두 site 공용.
+fn exactInitializationHelperCrossExport(linker: *const Linker, sym: chunk_mod.CrossChunkSym) !bool {
+    const known_helpers = [_]@TypeOf(linker.graph.lexical_tdz_builtin){ linker.graph.lexical_tdz_builtin, linker.graph.legacy_name_builtin };
+    for (known_helpers, 0..) |candidate, index| {
+        const known = candidate orelse continue;
+        if (known.module_index.toU32() != sym.canonical_module) continue;
+        const provider = linker.graph.getModule(known.module_index) orelse return error.InvalidCallsiteTarget;
+        if (known.export_index >= provider.export_bindings.len) return error.InvalidCallsiteTarget;
+        const binding = provider.export_bindings[known.export_index];
+        // The catalog's actual export row selects this edge. Text is only
+        // the existing CrossChunkSym export-key contract, never a SID lookup.
+        if (!std.mem.eql(u8, binding.exported_name, sym.name)) continue;
+        const actual = if (index == 0)
+            try @import("../lexical_initialization_builtin.zig").exact(linker.graph)
+        else
+            try @import("../lexical_initialization_builtin.zig").exactNames(linker.graph);
+        if (actual.module != known.module_index or actual.inner != known.symbol_id or
+            provider.exportBindingLocalNodeSemanticIndex(binding) != @as(?u32, @backingInt(actual.inner)))
+            return error.InvalidCallsiteTarget;
+        return true;
+    }
+    return false;
+}
+
 fn deconflictedConsumerLocal(
     linker: ?*Linker,
     sym: chunk_mod.CrossChunkSym,
@@ -416,7 +483,7 @@ fn deconflictedConsumerLocal(
     // lexical set before the import phase ends.
     try used_locals.put(allocator, local, {});
     if (linker) |l| {
-        if (l.graph.preserve_modules and helper_local == null)
+        if (helper_local == null and (l.graph.preserve_modules or try exactInitializationHelperCrossExport(l, sym)))
             try l.putConsumerImportLocal(sym.canonical_module, sym.name, local);
     }
     return local;
@@ -459,7 +526,7 @@ fn ordinaryConsumerPropertyKey(
     if (!std.mem.eql(u8, spelling, sym.name)) return error.InvalidQuotedConsumerKey;
     if (linker) |l| if (l.getModule(sym.canonical_module)) |module| {
         if (module.findExportBinding(sym.name)) |binding| {
-            if (try module.ordinaryQuotedExportLiteral(binding.*)) |verified|
+            if (try module.quotedExportOrigin(binding.*)) |verified|
                 return keys.fromLiteralSyntax(allocator, verified.literal_syntax);
         }
     };
@@ -2712,6 +2779,18 @@ fn emitChunksWithoutFacades(
         }
         for (chunk.modules.items) |index| {
             const owner = graph.getModule(index) orelse return error.InvalidPmNamespaceCallsite;
+            const registry = @import("../graph/legacy_initialization_registry.zig");
+            if (owner.legacy_lexical_writes.len != 0) {
+                try registry.validate(graph, owner);
+                for (owner.legacy_lexical_writes) |receipt|
+                    try appendLexicalRegistryModulePath(allocator, graph, chunk_graph, chunk, options, owner, owner, receipt.key, &compiler_literals);
+            }
+            if (owner.legacy_lexical_reads.len != 0) {
+                try @import("../graph/legacy_lexical_reads.zig").validate(graph, owner);
+                for (owner.legacy_lexical_reads) |receipt| if (receipt.registry_key) |key| {
+                    try appendLexicalRegistryModulePath(allocator, graph, chunk_graph, chunk, options, owner, receipt.plan.module, key, &compiler_literals);
+                };
+            }
             for (owner.import_records) |record| {
                 const proof = record.pm_namespace_projection orelse continue;
                 if (!options.preserve_modules or options.format != .cjs or chunk.modules.items.len != 1) return error.InvalidPmNamespaceCallsite;

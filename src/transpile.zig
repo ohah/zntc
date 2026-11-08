@@ -3996,6 +3996,52 @@ fn reserveStandaloneOutputName(
     if (decoded.ptr != name.ptr) try reserved.put(allocator, decoded, {});
 }
 
+/// Inline helper globals are outside the source program's identity space.
+/// Reserve their fixed output roles in the mangler; in nonmangled output give
+/// only a proven root source binding a collision-free SID-keyed output name.
+/// Match the existing explicit-global policy at dynamic-scope boundaries.
+fn reserveStandaloneTdzConstructorShadows(
+    allocator: std.mem.Allocator,
+    transformer: *const Transformer,
+    output_names: *std.AutoHashMapUnmanaged(u32, []const u8),
+) !void {
+    if (!transformer.runtime_helpers.tdz or transformer.scopes.len == 0 or
+        transformer.scopes[0].blocksMangling()) return;
+    var reservations = try es_helpers.PrivateNameAllocator.init(allocator, transformer.ast);
+    defer reservations.deinit();
+    var existing_names = output_names.valueIterator();
+    while (existing_names.next()) |name| {
+        const decoded = try Scanner.decodeIdentifierEscapesAlloc(allocator, name.*);
+        if (!reservations.reserved.contains(decoded))
+            try reservations.reserved.put(allocator, try allocator.dupe(u8, decoded), {});
+    }
+    for (transformer.symbols, 0..) |symbol, sid| {
+        if (symbol.synthetic_kind != null or symbol.scope_id.isNone()) continue;
+        const owner = symbol.scope_id.toIndex();
+        if (owner >= transformer.scopes.len or owner >= transformer.scope_maps.len) return error.TransformError;
+        const scope = transformer.scopes[owner];
+        if (!scope.parent.isNone() or (scope.kind != .global and scope.kind != .module)) continue;
+        const source_name = transformer.ast.getText(symbol.name);
+        for (rt.lexical_tdz_constructors) |constructor| {
+            const global = constructor.globalName();
+            if (!Scanner.identifierValueEquals(source_name, global)) continue;
+            // Selection comes from the actual Symbol record above. This map
+            // check proves that its source scope still publishes that SID.
+            var found = false;
+            var bindings = transformer.scope_maps[owner].iterator();
+            while (bindings.next()) |binding| {
+                if (binding.value_ptr.* != sid) continue;
+                if (!Scanner.identifierValueEquals(binding.key_ptr.*, global)) return error.TransformError;
+                found = true;
+            }
+            if (!found) return error.TransformError;
+            const selected = output_names.get(@intCast(sid)) orelse source_name;
+            if (!Scanner.identifierValueEquals(selected, global)) continue;
+            try output_names.put(allocator, @intCast(sid), try reservations.makeUniqueName(global));
+        }
+    }
+}
+
 /// Runtime helper preambles are emitted as text, so the mangler cannot see the
 /// locals declared inside a helper body. A helper referenced from a helper body
 /// (another helper, or itself) could otherwise receive a short name that one
@@ -5561,6 +5607,11 @@ fn transpileWithCallbackInternal(
                 for ([_][]const u8{ "Object", "Reflect" }) |global|
                     try reserved.put(arena_alloc, global, {});
             }
+            if (transformer.runtime_helpers.read) try reserved.put(arena_alloc, "Symbol", {});
+            if (transformer.runtime_helpers.tdz) {
+                for (rt.lexical_tdz_constructors) |constructor|
+                    try reserved.put(arena_alloc, constructor.globalName(), {});
+            }
             if (options.keep_names) {
                 const staging_name = try standaloneRuntimeHelperSymbolName(&transformer, "__name", options.minify_whitespace);
                 try reserved.put(arena_alloc, staging_name, {});
@@ -5788,6 +5839,8 @@ fn transpileWithCallbackInternal(
         }
     }
     if (analyzer_storage != null) {
+        if (mangle_metadata == null)
+            try reserveStandaloneTdzConstructorShadows(arena_alloc, &transformer, &codegen_symbol_name_overrides_storage);
         reserveStandaloneExplicitGlobalShadows(
             arena_alloc,
             &transformer,
@@ -13505,8 +13558,32 @@ test "#4760 es5 루프 캡처 `_loop` 의 매개변수·인자·끌어올린 var
         .unsupported = @import("transformer/compat.zig").fromESTarget(.es5),
     });
     defer r.deinit(std.testing.allocator);
-    try std.testing.expect(std.mem.indexOf(u8, r.code, "index") == null);
-    try std.testing.expect(std.mem.indexOf(u8, r.code, "latest") == null);
+    // TDZ diagnostics retain source names as strings. Verify the actual
+    // emitted binding/reference names, independently of diagnostic text.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, r.code);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    for (parser.ast.nodes.items) |node| {
+        switch (node.tag) {
+            .binding_identifier, .identifier_reference, .assignment_target_identifier => {},
+            else => continue,
+        }
+        const name = try Scanner.decodeIdentifierEscapesAlloc(allocator, parser.ast.getText(node.data.string_ref));
+        try std.testing.expect(!std.mem.eql(u8, name, "index"));
+        try std.testing.expect(!std.mem.eql(u8, name, "latest"));
+    }
+    const actual = try std.process.run(allocator, std.testing.io, .{ .argv = &.{
+        "node",                                                                                                                                      "--input-type=module", "-e",
+        "const m=await import('data:text/javascript,'+encodeURIComponent(process.argv[1]));console.log(JSON.stringify(m.collect(3).map(fn=>fn())))", r.code,
+    } });
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    try std.testing.expectEqualStrings("[4,5,6]\n", actual.stdout);
+    try std.testing.expectEqualStrings("", actual.stderr);
 }
 
 test "#4819 extracted loop names are finalized from their exact SymbolIds" {

@@ -362,7 +362,7 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
         },
         .tagged_template_expression => try function_class_emit.emitTaggedTemplate(self, node, flags),
         .import_expression => try call_emit.emitImportExpr(self, node, level, flags),
-        .meta_property => try call_emit.emitMetaProperty(self, node),
+        .meta_property => try call_emit.emitMetaProperty(self, idx, node),
         // chain_expression: optional-chain wrapper — operand 가 자기 매핑 발행.
         // (TS·Flow type-cast 는 위 transparent-wrapper 분기에서 처리됨.) level/flags 투과.
         .chain_expression => try self.emitExpr(node.data.unary.operand, level, flags),
@@ -401,7 +401,7 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
             try self.writeNodeSpan(node);
         },
         .export_named_declaration => try module_emit.emitExportNamed(self, node),
-        .export_default_declaration => try module_emit.emitExportDefault(self, node),
+        .export_default_declaration => try module_emit.emitExportDefault(self, idx, node),
         .export_all_declaration => try module_emit.emitExportAll(self, node),
         .export_specifier => try module_emit.emitExportSpecifier(self, node),
 

@@ -22,7 +22,7 @@ pub fn visitListNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     const node = self.ast.getNode(idx);
     // ES2015 block scoping 격리: block_statement 진입 시 리네이밍 처리
     if (self.options.unsupported.block_scoping and node.tag == .block_statement) {
-        return visitBlockWithScoping(self, node);
+        return visitBlockWithScoping(self, idx, node);
     }
     if (node.tag == .program and self.native_module_using_boundary and !self.options.unsupported.using) {
         const Using = es2025_using.ES2025Using(Transformer);
@@ -39,11 +39,12 @@ pub fn visitListNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             return self.ast.addNode(.{
                 .tag = node.tag,
                 .span = node.span,
-                .data = .{ .list = new_list },
+                .data = .{ .list = if (node.tag == .program) try @import("../lexical_tdz.zig").prepend(self, idx, new_list) else new_list },
             });
         }
     }
-    const new_list = try visitExtraListWithCssHoist(self, node.data.list, node.tag == .program);
+    const visited_list = try visitExtraListWithCssHoist(self, node.data.list, node.tag == .program);
+    const new_list = if (node.tag == .program) try @import("../lexical_tdz.zig").prepend(self, idx, visited_list) else visited_list;
     // visitExtraList 가 identity (원본 list 그대로) 반환 → 부모도 identity.
     if (new_list.start == node.data.list.start and new_list.len == node.data.list.len) {
         return idx;
@@ -57,7 +58,7 @@ pub fn visitListNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 
 /// es5 블록 방문. 블록 안 let/const 의 새 이름은 심볼 표(`block_rename_map`)로 이미 정해져
 /// 식별자 방문이 적용한다 (#4760).
-fn visitBlockWithScoping(self: *Transformer, node: Node) Error!NodeIndex {
+fn visitBlockWithScoping(self: *Transformer, source: NodeIndex, node: Node) Error!NodeIndex {
     const list_start = node.data.list.start;
     const list_len = node.data.list.len;
 
@@ -72,7 +73,7 @@ fn visitBlockWithScoping(self: *Transformer, node: Node) Error!NodeIndex {
     return self.ast.addNode(.{
         .tag = .block_statement,
         .span = node.span,
-        .data = .{ .list = new_list },
+        .data = .{ .list = try @import("../lexical_tdz.zig").prepend(self, source, new_list) },
     });
 }
 
@@ -121,7 +122,9 @@ fn visitExtraListWithCssHoist(self: *Transformer, list: NodeList, program: bool)
                 self.iterationDeclarationNeedsInitialization(source_child)
             else
                 false;
-            break :demand iteration_initialization or (self.options.unsupported.destructuring and try Destructuring.declarationNeedsIteratorStatements(self, source_node));
+            break :demand iteration_initialization or
+                try @import("../module_lexical_initialization.zig").declarationNeedsPatternInitialization(self, source_child) or
+                (self.options.unsupported.destructuring and try Destructuring.declarationNeedsIteratorStatements(self, source_node));
         } else false;
         const new_child = if (iterator_statement)
             try Destructuring.lowerDestructuringDeclarationStatementAt(self, source_child)

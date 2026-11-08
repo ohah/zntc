@@ -98,6 +98,15 @@ pub fn promoteExportsKinds(self: *ModuleGraph) void {
             var it = self.modules.iterator(0);
             while (it.next()) |m| {
                 if (m.wrap_kind == .none) continue;
+                // A factory must evaluate its eager ESM dependencies before
+                // its source body. Leaving one dependency scope-hoisted can
+                // run the factory before that later top-level body, especially
+                // when a require edge enters an ESM cycle.
+                for (m.import_records, 0..) |record, record_index| {
+                    if (!record.kind.isEagerEvalDependency() or record.callsite_lowered) continue;
+                    const target = resolveImportTarget(self, m, record_index) orelse continue;
+                    if (promoteToEsmWrap(target)) changed = true;
+                }
                 for (m.export_bindings) |eb| {
                     if (!eb.kind.isAnyReExport()) continue;
                     const rec_idx = eb.import_record_index orelse continue;
