@@ -5817,6 +5817,7 @@ fn transpileWithCallbackInternal(
             local_names.class_call_check = try helper_name_resolver.resolve("__classCallCheck", options.minify_whitespace);
         if (transformer.spread_props_used) {
             local_names.spread_props = try helper_name_resolver.resolve("__spreadProps", options.minify_whitespace);
+            local_names.spread_intrinsics_isolated = transformer.spread_intrinsics_isolated;
             local_names.spread_values = try helper_name_resolver.resolve("__spreadValues", options.minify_whitespace);
         }
         if (transformer.suspension_invoke_used)
