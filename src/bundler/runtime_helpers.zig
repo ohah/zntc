@@ -1468,15 +1468,19 @@ pub const STATIC_PRIVATE_FIELD_RUNTIME_MIN =
 /// __classPrivateFieldSet: instance private field 쓰기 + 값 반환.
 /// `wm.set(obj, value)` 는 WeakMap을 반환하므로 expression 값이 값 자체가 되도록 helper 사용.
 /// 통합 spec: `this.#x = v` expression value === v, `this.#x += 5` === new value.
-pub const PRIVATE_FIELD_SET_RUNTIME =
-    \\var __zntcClassPrivateFieldSet = function(wm, obj, value) {
-    \\  if (!wm.has(obj)) (void 0)();
-    \\  wm.set(obj, value);
-    \\  return value;
-    \\};
-    \\
+const PRIVATE_FIELD_SET_FACTORY =
+    \\(function() {
+    \\  var call=(function(){}).call, invoke=call.bind((function(){}).apply), has;
+    \\  try { if(typeof WeakMap==="function")has=WeakMap.prototype.has; } catch(captureError) {}
+    \\  return function(wm,obj,value) {
+    \\    if(!invoke(has||wm.has,wm,[obj]))(void 0)();
+    \\    wm.set(obj,value);
+    \\    return value;
+    \\  };
+    \\})()
 ;
-pub const PRIVATE_FIELD_SET_RUNTIME_MIN = "var " ++ NAMES.PRIVATE_FIELD_SET_MIN ++ "=function(wm,obj,value){if(!wm.has(obj))(void 0)();wm.set(obj,value);return value};";
+pub const PRIVATE_FIELD_SET_RUNTIME = "var __zntcClassPrivateFieldSet = " ++ PRIVATE_FIELD_SET_FACTORY ++ ";\n";
+pub const PRIVATE_FIELD_SET_RUNTIME_MIN = "var " ++ NAMES.PRIVATE_FIELD_SET_MIN ++ "=" ++ PRIVATE_FIELD_SET_FACTORY ++ ";";
 
 // ============================================================
 // HMR (Dev Server)

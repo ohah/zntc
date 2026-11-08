@@ -9,6 +9,8 @@ pub const Role = enum {
     type_error,
     object,
     reflect,
+    symbol,
+    weak_map,
 
     pub fn globalName(role: Role) []const u8 {
         return switch (role) {
@@ -16,6 +18,8 @@ pub const Role = enum {
             .type_error => "TypeError",
             .object => "Object",
             .reflect => "Reflect",
+            .symbol => "Symbol",
+            .weak_map => "WeakMap",
         };
     }
 };
@@ -54,4 +58,57 @@ pub fn inspectRootSourceBindings(self: anytype, roles: []const Role, selected: *
             try selected.put(self.allocator, @intCast(sid), {});
         }
     }
+}
+
+/// Only actual private PutValue syntax demands the field-set helper's captured
+/// WeakMap role. Private reads and ordinary source spellings do not activate it.
+pub fn hasPrivateWrite(self: anytype, root: @import("../parser/ast.zig").NodeIndex) !bool {
+    const std = @import("std");
+    const ast = @import("../parser/ast.zig");
+    const Pending = struct { node: ast.NodeIndex, write: bool };
+    var pending: std.ArrayList(Pending) = .empty;
+    defer pending.deinit(self.allocator);
+    var seen: std.AutoHashMapUnmanaged(ast.NodeIndex, u8) = .empty;
+    defer seen.deinit(self.allocator);
+    try pending.append(self.allocator, .{ .node = root, .write = false });
+    while (pending.pop()) |item| {
+        if (item.node.isNone()) continue;
+        const bit: u8 = if (item.write) 2 else 1;
+        const slot = try seen.getOrPut(self.allocator, item.node);
+        if (!slot.found_existing) slot.value_ptr.* = 0;
+        if (slot.value_ptr.* & bit != 0) continue;
+        slot.value_ptr.* |= bit;
+        const node = self.ast.getNode(item.node);
+        if (item.write and node.tag == .private_field_expression) return true;
+        switch (node.tag) {
+            .assignment_expression => {
+                try pending.append(self.allocator, .{ .node = node.data.binary.left, .write = true });
+                try pending.append(self.allocator, .{ .node = node.data.binary.right, .write = false });
+            },
+            .assignment_pattern, .assignment_target_with_default => {
+                try pending.append(self.allocator, .{ .node = node.data.binary.left, .write = item.write });
+                try pending.append(self.allocator, .{ .node = node.data.binary.right, .write = false });
+            },
+            .assignment_target_property_property => {
+                try pending.append(self.allocator, .{ .node = node.data.binary.left, .write = false });
+                try pending.append(self.allocator, .{ .node = node.data.binary.right, .write = item.write });
+            },
+            .array_assignment_target, .object_assignment_target => {
+                var children = @import("../parser/ast_walk.zig").children(self.ast, node);
+                while (children.next()) |child| try pending.append(self.allocator, .{ .node = child, .write = item.write });
+            },
+            .assignment_target_rest, .parenthesized_expression => try pending.append(self.allocator, .{ .node = node.data.unary.operand, .write = item.write }),
+            .update_expression => try pending.append(self.allocator, .{ .node = self.ast.readExtraNode(node.data.extra, 0), .write = true }),
+            .for_of_statement, .for_in_statement => {
+                try pending.append(self.allocator, .{ .node = self.ast.readExtraNode(node.data.extra, 0), .write = true });
+                try pending.append(self.allocator, .{ .node = self.ast.readExtraNode(node.data.extra, 1), .write = false });
+                try pending.append(self.allocator, .{ .node = self.ast.readExtraNode(node.data.extra, 2), .write = false });
+            },
+            else => {
+                var children = @import("../parser/ast_walk.zig").children(self.ast, node);
+                while (children.next()) |child| try pending.append(self.allocator, .{ .node = child, .write = false });
+            },
+        }
+    }
+    return false;
 }

@@ -123,6 +123,16 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
             }
         }
     }
+    if (self.effectivePrivateLoweringPlan().fields and !self.options.emit_runtime_helper_imports) {
+        const roles = @import("../runtime_builtin_global_roles.zig");
+        var weak_map_renames: @import("../block_rename_table.zig").Table = .empty;
+        defer weak_map_renames.deinit(self.allocator);
+        try roles.collectRootSourceBindings(self, &.{.weak_map}, &weak_map_renames);
+        if (weak_map_renames.count() != 0 and try roles.hasPrivateWrite(self, @fromBackingInt(@as(u32, @intCast(self.parser_node_count - 1))))) {
+            var bindings = weak_map_renames.keyIterator();
+            while (bindings.next()) |sid| try runtime_global_renames.put(self.allocator, sid.*, {});
+        }
+    }
     // Constructor bindings that hide a name a lowered field initializer reads
     // are renamed like a split parameter environment (#5668).
     var field_capture_renames = try @import("../parameter_environment.zig").collectFieldCaptureRenames(self);

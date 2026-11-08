@@ -211,3 +211,7 @@ test {
 test {
     _ = @import("destructuring_expression_reference_test.zig");
 }
+
+test {
+    _ = @import("private_field_primordial_test.zig");
+}
