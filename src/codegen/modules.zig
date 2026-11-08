@@ -755,3 +755,98 @@ pub fn emitExportAll(self: anytype, node: Node) !void {
     }
     try self.writeByte(';');
 }
+
+/// The implicit default facade is a real source semantic identity even though
+/// anonymous declarations have no binding_identifier node. Never select it by
+/// its synthetic spelling.
+fn nativeDefaultFacade(self: anytype, index: NodeIndex) ![]const u8 {
+    const context = self.options.native_module_using orelse return error.InvalidNativeModuleDefault;
+    if (context.domain != self.ast or index.isNone() or @backingInt(index) >= self.ast.nodes.items.len)
+        return error.InvalidNativeModuleDefault;
+    const node = self.ast.getNode(index);
+    if (node.tag != .export_default_declaration) return error.InvalidNativeModuleDefault;
+    const sid = self.sourceSymbolId(index) orelse return error.InvalidNativeModuleDefault;
+    const view = context.analysis;
+    if (@backingInt(index) >= view.symbol_ids.len or view.symbol_ids[@backingInt(index)] != sid or sid >= view.symbols.len)
+        return error.InvalidNativeModuleDefault;
+    const symbol = view.symbols[sid];
+    const scope = view.scope_owner_map.get(@backingInt(context.root)) orelse return error.InvalidNativeModuleDefault;
+    var anchors: usize = 0;
+    for (view.references) |reference| {
+        if (@backingInt(reference.symbol_id) == sid and @backingInt(reference.scope_id) == scope and
+            reference.flags.declare and reference.node_index.isNone() and reference.declaration_node_index.isNone()) anchors += 1;
+    }
+    if (anchors != 1 or symbol.kind != .variable_const or !symbol.decl_flags.is_const or
+        !symbol.decl_flags.is_default_export or !symbol.decl_flags.is_exported or
+        @backingInt(symbol.scope_id) != scope or symbol.origin_scope != symbol.scope_id or
+        !std.meta.eql(symbol.declaration_span, node.span)) return error.InvalidNativeModuleDefault;
+    return self.finalSymbolName(sid) orelse return error.InvalidNativeModuleDefault;
+}
+
+fn nativeAnonymousDefaultFunction(self: anytype, index: NodeIndex) bool {
+    const node = self.ast.getNode(index);
+    if (node.tag != .export_default_declaration) return false;
+    const inner = node.data.unary.operand;
+    if (inner.isNone()) return false;
+    const value = self.ast.getNode(inner);
+    return value.tag == .function_declaration and self.ast.readExtraNode(value.data.extra, ast_mod.FunctionExtra.name).isNone();
+}
+
+fn emitNativeDefaultValue(self: anytype, inner: NodeIndex) !void {
+    // Computed property NamedEvaluation gives anonymous definitions their native
+    // default name without introducing a function-local name binding or reading
+    // a mutable global Object helper. Parenthesized expressions remain in place.
+    if (self.ast.isAnonymousFunctionDefinition(inner)) {
+        try self.write("({[\"default\"]:");
+        try self.emitExpr(inner, .comma, .{});
+        try self.write("})[\"default\"]");
+    } else try self.emitExpr(inner, .comma, .{});
+}
+
+pub fn emitNativeModuleInstantiationPrologue(self: anytype, root: NodeIndex, indices: []const u32) !void {
+    const context = self.options.native_module_using orelse return error.InvalidNativeModuleDefault;
+    if (!self.options.module_await_as_yield or self.options.native_module_instantiation_prologue_emitted or
+        context.domain != self.ast or context.root != root or root.isNone() or self.ast.getNode(root).tag != .program)
+        return error.InvalidNativeModuleDefault;
+    const program = self.ast.getNode(root);
+    const actual = self.ast.extra_data.items[program.data.list.start..][0..program.data.list.len];
+    if (!std.mem.eql(u32, actual, indices)) return error.InvalidNativeModuleDefault;
+    for (indices) |raw| {
+        const index: NodeIndex = @fromBackingInt(raw);
+        if (!nativeAnonymousDefaultFunction(self, index)) continue;
+        const name = try nativeDefaultFacade(self, index);
+        try self.write("const ");
+        try self.write(name);
+        try self.writeByte('=');
+        try emitNativeDefaultValue(self, self.ast.getNode(index).data.unary.operand);
+        try self.write(";\n");
+    }
+    _ = try @import("statements.zig").emitHoistedFunctionNames(self, indices, false);
+    self.options.native_module_instantiation_prologue_emitted = true;
+}
+
+/// Called only for the actual root statement list after its prologue. Nested
+/// source function statement lists retain their ordinary declaration handling.
+pub fn emitNativeModuleDefault(self: anytype, index: NodeIndex) !void {
+    const node = self.ast.getNode(index);
+    if (nativeAnonymousDefaultFunction(self, index)) {
+        _ = try nativeDefaultFacade(self, index);
+        return;
+    }
+    const inner = node.data.unary.operand;
+    if (inner.isNone()) return error.InvalidNativeModuleDefault;
+    const value = self.ast.getNode(inner);
+    if (node.data.unary.flags & module_parser.EXPORT_DEFAULT_NAMED_DECLARATION != 0 and value.tag == .identifier_reference) return;
+    if ((value.tag == .function_declaration or value.tag == .class_declaration) and
+        !self.ast.readExtraNode(value.data.extra, 0).isNone())
+    {
+        try self.emitNode(inner);
+        return;
+    }
+    const name = try nativeDefaultFacade(self, index);
+    try self.write("const ");
+    try self.write(name);
+    try self.writeByte('=');
+    try emitNativeDefaultValue(self, inner);
+    try self.writeByte(';');
+}

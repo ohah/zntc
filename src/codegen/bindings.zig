@@ -23,7 +23,8 @@ pub fn emitAssignmentPattern(self: anytype, node: Node) !void {
     // default value level = .comma: 최상위 sequence(`[x=(a,b)]`)가 콤마 구분자와 섞이지
     // 않게 괄호로 감싼다 (esbuild binding default = LComma).
     const hint = keep_names.hintFor(self, node.data.binary.left, node.data.binary.right);
-    try keep_names.emitNamedValue(self, node.data.binary.right, hint, .comma, .{});
+    if (!try @import("native_module_import_projection.zig").emitNamedValue(self, node.data.binary.left, node.data.binary.right, .comma, .{}))
+        try keep_names.emitNamedValue(self, node.data.binary.right, hint, .comma, .{});
 }
 
 pub fn emitBindingProperty(self: anytype, node: Node) !void {
@@ -83,7 +84,8 @@ pub fn emitBindingProperty(self: anytype, node: Node) !void {
             // default value level = .comma: 최상위 sequence(`({x=(a,b)}=o)`)가 괄호로 감싸진다
             // (default 는 AssignmentExpression 이라 `x=a,b` 는 다른 의미 — silent miscompile).
             const hint = keep_names.hintFor(self, node.data.binary.left, node.data.binary.right);
-            try keep_names.emitNamedValue(self, node.data.binary.right, hint, .comma, .{});
+            if (!try @import("native_module_import_projection.zig").emitNamedValue(self, node.data.binary.left, node.data.binary.right, .comma, .{}))
+                try keep_names.emitNamedValue(self, node.data.binary.right, hint, .comma, .{});
         } else {
             try self.writeByte(':');
             try self.emitNode(node.data.binary.right);
@@ -104,6 +106,10 @@ pub fn emitRest(self: anytype, node: Node) !void {
 /// 선언 종류 키워드. 선언을 여러 조각으로 나눠 내는 경로(pm CJS storage·namespace export)도
 /// 같은 규칙을 써야 해서 한 곳에 둔다.
 pub fn declarationKeyword(self: anytype, kind: ast_mod.VariableDeclarationKind, declaration_idx: NodeIndex) []const u8 {
+    if (self.options.native_module_using != null) {
+        if (kind == .@"const") return "const ";
+        if (kind == .let) return "let ";
+    }
     // #2198: cycle 모듈의 top-level let/const 는 var 로 강등 — 정의 전 참조 시
     // TDZ throw 대신 var 호이스팅 의미 (`undefined`) 로 fallback. for-init / nested
     // scope 는 영향 없음 (이 패스가 indent_level==0 의 ESM-flat 출력에서만 작용).

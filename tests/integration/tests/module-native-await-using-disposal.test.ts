@@ -2,11 +2,12 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { build, buildSync, close, init, type BuildOptions } from '../../../packages/core/index.ts';
 import { createFixture, ZNTC_BIN } from './helpers';
 
-// #6959: actual native module files are supported. Flattening a dependency's
-// async resource scope is a diagnostic, not a successful single-file build.
+// #6959: native ESM module files and supported single-file ESM retain async
+// resource boundaries. Single-file CJS remains an explicit diagnostic boundary.
 // These exact ten sources also drive the Native Bundler regression.
 const surfaces =
   process.env.ZNTC_TEST_CLI_ONLY === '1' ? (['cli'] as const) : (['cli', 'sync', 'async'] as const);
@@ -81,6 +82,19 @@ const node = process.env.ZNTC_NODE_BIN ?? 'node';
 const sentinel = 'keep prior output\n';
 function execute(path: string, cwd: string) {
   return spawnSync(node, [path], { cwd, encoding: 'utf8', timeout: 15_000 });
+}
+// Node's worker_threads runs the actual emitted worker Module Record. This
+// adapter supplies the browser-shaped constructor only; it does not emulate
+// worker evaluation or resource cleanup (and claims no browser/JSI coverage).
+function executeModuleWorker(path: string, cwd: string) {
+  const harness = join(cwd, 'worker-runtime-harness.mjs');
+  writeFileSync(
+    harness,
+    "import{Worker as NativeWorker}from'node:worker_threads';" +
+      "globalThis.Worker=class extends NativeWorker{constructor(url,options){super(url,options);this.on('error',error=>{console.error(error);process.exitCode=1})}};" +
+      `await import(${JSON.stringify(pathToFileURL(path).href)});`,
+  );
+  return execute(harness, cwd);
 }
 async function compile(
   surface: Surface,
@@ -199,19 +213,19 @@ describe('native async module boundaries (#6959)', () => {
       for (const index of [0, 5, 8])
         for (const existing of [false, true]) {
           const input = inputs[index];
-          test(`${surface} lost boundary ${input.name} minify=${minify} existing=${existing}`, async () => {
+          test(`${surface} unsupported CJS single ${input.name} minify=${minify} existing=${existing}`, async () => {
             const fixture = await createFixture({
               'log.mjs': 'export const events=[];',
               'entry.mjs': input.entry,
               'lib.mjs': input.lib,
             });
             try {
-              const outfile = join(fixture.dir, 'dist', 'entry.mjs');
+              const outfile = join(fixture.dir, 'dist', 'entry.cjs');
               if (existing) {
                 mkdirSync(join(fixture.dir, 'dist'));
                 writeFileSync(outfile, sentinel);
               }
-              const result = await compile(surface, fixture.dir, minify, false);
+              const result = await compile(surface, fixture.dir, minify, false, 'cjs');
               expectBoundaryDiagnostic(result);
               expect(existsSync(outfile)).toBe(existing);
               if (existing) expect(readFileSync(outfile, 'utf8')).toBe(sentinel);
@@ -260,7 +274,7 @@ describe('native async module boundaries (#6959)', () => {
           }
         });
       for (const moduleWorker of [false, true])
-        test(`${surface} worker owned diagnostic module=${moduleWorker} minify=${minify}`, async () => {
+        test(`${surface} worker ${moduleWorker ? 'native boundary completion' : 'owned diagnostic'} module=${moduleWorker} minify=${minify}`, async () => {
           const fixture = await createFixture({
             'entry.mjs': `new Worker(new URL('./worker.mjs',import.meta.url)${moduleWorker ? ",{type:'module'}" : ''});`,
             'worker.mjs': "import{answer}from './resource.mjs';console.log(answer);",
@@ -272,6 +286,46 @@ describe('native async module boundaries (#6959)', () => {
             mkdirSync(join(fixture.dir, 'dist'));
             writeFileSync(outfile, sentinel);
             const result = await compile(surface, fixture.dir, minify, false);
+            if (moduleWorker) {
+              expectSuccess(result);
+              const native = executeModuleWorker(join(fixture.dir, 'entry.mjs'), fixture.dir);
+              const actual = executeModuleWorker(outfile, fixture.dir);
+              expect(native.error).toBeUndefined();
+              expect(native.status, native.stderr).toBe(0);
+              expect(native.stdout).toBe('42\n');
+              expect(actual.error).toBeUndefined();
+              expect(actual.status, actual.stderr).toBe(0);
+              expect(actual.stdout).toBe(native.stdout);
+              expect(actual.stderr).toBe(native.stderr);
+              // Keep the original worker/resource bytes above. This separate
+              // witness observes that importer execution waits for disposal.
+              const cleanup = await createFixture({
+                'entry.mjs': "new Worker(new URL('./worker.mjs',import.meta.url),{type:'module'});",
+                'worker.mjs':
+                  "import{answer}from './resource.mjs';import{events}from './log.mjs';events.push('worker');console.log(JSON.stringify([answer,events]));",
+                'resource.mjs':
+                  "import{events}from './log.mjs';await using resource={async[Symbol.asyncDispose](){events.push('dispose-start');await 0;events.push('dispose-end')}};events.push('body');export const answer=42;",
+                'log.mjs': 'export const events=[];',
+              });
+              try {
+                const original = executeModuleWorker(join(cleanup.dir, 'entry.mjs'), cleanup.dir);
+                expect(original.status, original.stderr).toBe(0);
+                expect(original.stdout).toBe(
+                  '[42,["body","dispose-start","dispose-end","worker"]]\n',
+                );
+                expectSuccess(await compile(surface, cleanup.dir, minify, false));
+                const completed = executeModuleWorker(
+                  join(cleanup.dir, 'dist', 'entry.mjs'),
+                  cleanup.dir,
+                );
+                expect(completed.status, completed.stderr).toBe(0);
+                expect(completed.stdout).toBe(original.stdout);
+                expect(completed.stderr).toBe(original.stderr);
+              } finally {
+                await cleanup.cleanup();
+              }
+              return;
+            }
             expectBoundaryDiagnostic(result, false);
             expect(readFileSync(outfile, 'utf8')).toBe(sentinel);
             if (result.api) {

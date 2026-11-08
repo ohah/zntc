@@ -73,8 +73,17 @@ pub const default_cjs_exports_name = "exports";
 pub const default_cjs_module_name = "module";
 
 pub const CodegenOptions = struct {
+    compiler_statement_insertions: ?*const @import("compiler_statement_insertions.zig").Set = null,
     compiler_literal_overrides: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null,
     module_format: ModuleFormat = .esm,
+    /// Emit source-module execution awaits inside the native generator shell.
+    /// Source function execution boundaries suspend this projection locally.
+    module_await_as_yield: bool = false,
+    /// Set only after the native module root instantiation prologue was emitted.
+    native_module_instantiation_prologue_emitted: bool = false,
+    native_module_using: ?*const @import("native_module_using.zig").Context = null,
+    native_module_import_projection: ?*const @import("native_module_import_projection.zig").Context = null,
+    native_module_storage_projection: ?*const @import("native_module_storage_projection.zig").Context = null,
     /// Standalone runtime helpers, emitted after the program's hashbang and
     /// directive prologue. Writing them through codegen also advances mappings.
     program_preamble: []const u8 = "",
@@ -152,6 +161,9 @@ pub const CodegenOptions = struct {
     cjs_module_name: []const u8 = default_cjs_module_name,
     /// 번들 모드에서 ESM이 아닐 때 import.meta -> {} 치환 (esbuild 호환)
     replace_import_meta: bool = false,
+    /// Native module bodies use CJS declaration stripping inside an ESM output.
+    /// Keep metadata lexical to that output Module Record, including source functions.
+    native_module_import_meta: bool = false,
     /// 타겟 플랫폼. import.meta polyfill 방식을 결정한다.
     /// - node: import.meta.url -> require("url").pathToFileURL(__filename).href,
     ///         import.meta.dirname -> __dirname, import.meta.filename -> __filename
@@ -220,3 +232,23 @@ pub const CodegenOptions = struct {
     /// raw private AST가 codegen까지 도달하면 사용자 입력 에러가 아니라 transformer 버그다.
     assert_no_raw_private_syntax: bool = false,
 };
+
+test {
+    _ = @import("module_await_projection_test.zig");
+}
+
+test {
+    _ = @import("native_module_using_test.zig");
+}
+
+test {
+    _ = @import("native_module_import_meta_test.zig");
+}
+
+test {
+    _ = @import("native_module_import_projection_test.zig");
+}
+
+test {
+    _ = @import("native_module_default_test.zig");
+}

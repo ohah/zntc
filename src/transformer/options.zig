@@ -97,6 +97,10 @@ pub const TransformOptions = struct {
     /// wait, exports keep their place after the wrapper so importers that run
     /// right away still see a value.
     tla_module_awaited: bool = false,
+    /// The selected native ESM single-output layout can publish source-owned
+    /// module environments through the async evaluation protocol. This is a
+    /// layout capability; a retained resource declaration still selects demand.
+    native_async_module_boundaries: bool = false,
     /// The bundle's non-ESM output entry publishes its exports only after the
     /// registered initialization promise resolves. The graph applies this
     /// capability to actual entry files (including preserve-modules files),

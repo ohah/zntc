@@ -19,7 +19,16 @@ describe('#4334 resolveOutputPath — outfile .map 충돌 방지', () => {
     // 과거 endsWith('.map') 는 이걸 outfile.map 으로 보내 메인 map 을 덮어썼다.
     const got = resolveOutputPath('dynamic-abc123.js.map', { outfileResolved });
     expect(got).not.toBe(`${outfileResolved}.map`);
-    expect(got).toBe(resolve('dynamic-abc123.js.map'));
+    expect(got).toBe(resolve('/out', 'dynamic-abc123.js.map'));
+  });
+
+  test('outfile의 worker와 중첩 asset은 entry 옆에 기록', () => {
+    expect(resolveOutputPath('worker-abc123.js', { outfileResolved })).toBe(
+      resolve('/out/worker-abc123.js'),
+    );
+    expect(resolveOutputPath('assets/image.png', { outfileResolved })).toBe(
+      resolve('/out/assets/image.png'),
+    );
   });
 
   test('outdir 모드: 비-메인 파일은 outdir 아래 자기 경로', () => {
