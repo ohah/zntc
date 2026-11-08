@@ -91,7 +91,7 @@ async function compile(
   target: BuildOptions['target'] = 'esnext',
 ) {
   const outdir = join(dir, 'dist');
-  const outfile = join(outdir, 'entry.mjs');
+  const outfile = join(outdir, format === 'cjs' ? 'entry.cjs' : 'entry.mjs');
   const options: BuildOptions = {
     entryPoints: [join(dir, 'entry.mjs')],
     rootDir: dir,
@@ -318,7 +318,7 @@ describe('native async module boundaries (#6959)', () => {
           expect(native.status, native.stderr).toBe(0);
           const result = await compile(surface, fixture.dir, minify, false, 'cjs', 'es5');
           expectSuccess(result);
-          const actual = execute(join(fixture.dir, 'dist', 'entry.mjs'), fixture.dir);
+          const actual = execute(join(fixture.dir, 'dist', 'entry.cjs'), fixture.dir);
           expect(actual.error).toBeUndefined();
           expect(actual.status, actual.stderr).toBe(native.status);
           expect(actual.stdout).toBe(native.stdout);
