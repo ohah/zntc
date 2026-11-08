@@ -183,3 +183,34 @@ not itself an async-disposal request. The native helper captures disposal/call
 intrinsics at its own initialization; this does not certify host-mutated or
 late-loaded helper primordial environments. The two new constructor rows do not
 expand the separate output-program/Worklet domains or claim whole-epic closure.
+
+## Lazy destructuring iterator delta (2026-11-09)
+
+On base `2fbca3945043eb6f1e218a3711435e8cc9863497`, the common lazy
+iterator lowering adds one binding constructor expression:
+`src/transformer/es2015_destructuring.zig::emitIteratorBindingStatements`
+calling `makeSyntheticBinding` for its generated catch binding. The bounded
+inventory is **141 expressions, 91 functions, 45 files**: 140 reachable
+expressions plus the same historical unreachable helper expression. This is a
+source index, not a count of runtime invocations or an expanded caller matrix.
+Its fingerprint is
+`73c6d199becee42d4e78f8bfabde48e13433917155f67bed61f0397e6b2b2644`.
+The script revision is a base-plus-feature label, not a merged-main claim.
+
+The actual catch clause owns a fresh `catch_clause` scope; its body owns a
+separate block scope. `declareSyntheticInScope` selects the catch SymbolId and
+`addSyntheticRefInScope` attaches the rethrow read to that exact ID and body
+scope. The allocator slot is consumed instead of becoming a hoisted var.
+Output codegen and minification consume those attached identities, not a lookup
+by the generated spelling. The source binding declarations retain their existing
+SourceSIDs and original statement-list storage owners.
+
+If the real syntax-minifier `foldIf` producer removes this generated region,
+its discarded-edge receipt proves literal selection, exact generated owner
+birth/history, unreachable membership, and the catch declaration/SID pair.
+Only that validated receipt retires the stable catch row and its owners.
+Semantic cache FORMAT 53 serializes the new `generated_branch` reason and
+witness; FORMAT 52 is rejected, not reinterpreted. Native comparisons, hostile
+graph tuples, codec checks, and whole-suite results remain separate evidence.
+The new row does not claim complete TDZ/namespace migration or every expression
+consumer, and does not close #4819/#6193 by itself.

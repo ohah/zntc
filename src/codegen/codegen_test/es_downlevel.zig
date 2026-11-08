@@ -2180,11 +2180,8 @@ fn expectNoVarPattern(output: []const u8) !void {
 test "ES2015: for-of array destructuring body lowered" {
     var r = try e2eTarget(std.testing.allocator, "for(const [a,b] of arr){use(a,b);}", .es5);
     defer r.deinit();
-    try expectNoVarPattern(r.output);
-    // _t = _e.value, a = _t[0], b = _t[1]
-    try std.testing.expect(std.mem.indexOf(u8, r.output, ".value") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "[0]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "[1]") != null);
+    try expectPreparedPatternShape(r.output, &.{}, true);
+    try expectPreparedOutputRuntimeWithPrelude(r.output, "for(const [a,b] of arr){use(a,b);}", "var arr=[[1,2],[3,4]];var out=[];function use(){out.push(Array.from(arguments))}", "console.log(JSON.stringify(out));");
 }
 
 test "ES2015: for-of object destructuring body lowered" {
@@ -2198,17 +2195,15 @@ test "ES2015: for-of object destructuring body lowered" {
 test "ES2015: for-of nested destructuring body lowered" {
     var r = try e2eTarget(std.testing.allocator, "for(const [i,{x,y}] of pts){use(i,x,y);}", .es5);
     defer r.deinit();
-    try expectNoVarPattern(r.output);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "[0]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "[1]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, ".x") != null);
+    try expectPreparedPatternShape(r.output, &.{}, true);
+    try expectPreparedOutputRuntimeWithPrelude(r.output, "for(const [i,{x,y}] of pts){use(i,x,y);}", "var pts=[[1,{x:2,y:3}],[4,{x:5,y:6}]];var out=[];function use(){out.push(Array.from(arguments))}", "console.log(JSON.stringify(out));");
 }
 
 test "ES2015: for-of rest destructuring body lowered" {
     var r = try e2eTarget(std.testing.allocator, "for(const [a,...rest] of arr){use(a,rest);}", .es5);
     defer r.deinit();
-    try expectNoVarPattern(r.output);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, ".slice(1)") != null);
+    try expectPreparedPatternShape(r.output, &.{}, true);
+    try expectPreparedOutputRuntimeWithPrelude(r.output, "for(const [a,...rest] of arr){use(a,rest);}", "var arr=[[1,2,3],[4,5]];var out=[];function use(){out.push(Array.from(arguments))}", "console.log(JSON.stringify(out));");
 }
 
 test "ES2015: for-of default destructuring body lowered" {
@@ -2261,13 +2256,15 @@ test "ES2015: object destructuring" {
 test "ES2015: array destructuring" {
     var r = try e2eTarget(std.testing.allocator, "var [x,y]=arr;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a=__read(arr,2),x=_a[0],y=_a[1];", r.output);
+    try expectPreparedPatternShape(r.output, &.{}, true);
+    try expectPreparedOutputRuntimeWithPrelude(r.output, "var [x,y]=arr;", "var arr=[20,22];", "console.log(JSON.stringify([x,y]));");
 }
 
 test "ES2015: array destructuring iterable read helper" {
     var r = try e2eTarget(std.testing.allocator, "var [x]=iter;", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__read(iter,1)") != null);
+    try expectPreparedPatternShape(r.output, &.{}, true);
+    try expectPreparedOutputRuntimeWithPrelude(r.output, "var [x]=iter;", "var iter=new Set([42]);", "console.log(JSON.stringify(x));");
 }
 
 test "ES2015: destructuring rename" {
@@ -2279,7 +2276,9 @@ test "ES2015: destructuring rename" {
 test "ES2015: destructuring default" {
     var r = try e2eTarget(std.testing.allocator, "var {a=1}=obj;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a=obj,a=_a.a===void 0?1:_a.a;", r.output);
+    try expectPreparedPatternShape(r.output, &.{"a"}, false);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, r.output, ".a"));
+    try expectPreparedOutputRuntimeWithPrelude(r.output, "var {a=1}=obj;", "var hits=0;var obj={get a(){hits++;return void 0}};", "console.log(JSON.stringify([a,hits]));");
 }
 
 test "ES2015: destructuring default self TDZ 보존" {
@@ -2292,7 +2291,8 @@ test "ES2015: destructuring default later binding TDZ 보존" {
     var r = try e2eTarget(std.testing.allocator, "var {a=b,b=1}=obj;", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__tdz(\"b\")") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "b=_a.b===void 0?1:_a.b") != null);
+    // GetV is captured once before selecting the default.
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, r.output, ".b"));
 }
 
 test "ES2015: destructuring no transform on esnext" {
@@ -2312,24 +2312,23 @@ test "ES2015: assignment object destructuring" {
 test "ES2015: assignment array destructuring" {
     var r = try e2eTarget(std.testing.allocator, "([x,y]=arr);", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=__read(arr,2)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "x=_a[0]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "y=_a[1]") != null);
+    try expectPreparedPatternShape(r.output, &.{}, true);
+    try expectPreparedOutputRuntimeWithPrelude(r.output, "([x,y]=arr);", "var x,y;var arr=[20,22];", "console.log(JSON.stringify([x,y]));");
 }
 
 // #4789: 대입의 나머지 요소를 버리던 결함 — 선언처럼 `_ref.slice(N)` 을 대입해야 한다.
 test "ES2015: assignment array destructuring rest" {
     var r = try e2eTarget(std.testing.allocator, "[x,...y]=arr;", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=__read(arr)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "y=_a.slice(1)") != null);
+    try expectPreparedPatternShape(r.output, &.{}, true);
+    try expectPreparedOutputRuntimeWithPrelude(r.output, "[x,...y]=arr;", "var x,y;var arr=[1,2,3];", "console.log(JSON.stringify([x,y]));");
 }
 
 test "ES2015: assignment array destructuring nested rest pattern" {
     var r = try e2eTarget(std.testing.allocator, "[x,...[y,z]]=arr;", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_b=__read(_a.slice(1),2)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "z=_b[1]") != null);
+    try expectPreparedPatternShape(r.output, &.{}, true);
+    try expectPreparedOutputRuntimeWithPrelude(r.output, "[x,...[y,z]]=arr;", "var x,y,z;var arr=[1,2,3];", "console.log(JSON.stringify([x,y,z]));");
 }
 
 // #4789: 대입 rest 자리의 private 필드·중첩 객체 rest 도 구조 분해를 지원하는 타깃에서 낮춘다.
@@ -3170,7 +3169,8 @@ test "ES5: object rest declaration still lowers to var" {
 test "ES2015: destructuring array rest" {
     var r = try e2eTarget(std.testing.allocator, "var [a,...r]=arr;", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, ".slice(1)") != null);
+    try expectPreparedPatternShape(r.output, &.{}, true);
+    try expectPreparedOutputRuntimeWithPrelude(r.output, "var [a,...r]=arr;", "var arr=[1,2,3];", "console.log(JSON.stringify([a,r]));");
 }
 
 // --- generator labeled break/continue ---
@@ -3294,8 +3294,8 @@ test "ES2015: nested object destructuring" {
 test "ES2015: array in object destructuring" {
     var r = try e2eTarget(std.testing.allocator, "var {a:[x,y]}=obj;", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, ".a") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "[0]") != null);
+    try expectPreparedPatternShape(r.output, &.{}, true);
+    try expectPreparedOutputRuntimeWithPrelude(r.output, "var {a:[x,y]}=obj;", "var obj={a:new Set([20,22])};", "console.log(JSON.stringify([x,y]));");
 }
 
 test "ES2015: destructuring function parameter" {
@@ -4733,7 +4733,10 @@ test "ES5: 리네임된 구조분해 기본값의 멤버 접근은 원래 속성
     // `{ a = 1 }` 의 기본값 분기가 키를 방문해 블록 리네임을 받아 `_a.a$1` 을 읽었다.
     var r = try e2eTarget(std.testing.allocator, "function f(o){ let a = 0; { let { a = 1 } = o; g(a); } }", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "a$1=_a.a===void 0?1:_a.a;") != null);
+    try expectPreparedPatternShape(r.output, &.{"a"}, false);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "a$1=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".a$1") == null);
+    try expectPreparedOutputRuntimeWithPrelude(r.output, "function f(o){ let a = 0; { let { a = 1 } = o; g(a); } }", "var out=[];function g(value){out.push(value)}", "var hits=0;f({get a(){hits++;return 42}});f({});console.log(JSON.stringify([out,hits]));");
 }
 
 test "상태 기계: 구조분해가 native 인 타겟에서도 구조분해 대입은 단순 대입으로 낮춘다 (#4712)" {
@@ -4905,11 +4908,12 @@ test "ES5 상태 기계: 배열 구멍은 끌어올린 변수 목록에 안 들�
 test "ES5: 배열 선언 rest 안 중첩 패턴을 푼다 (#4791)" {
     var r = try e2eTarget(std.testing.allocator, "var [x,...[y,z]]=arr;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a=__read(arr),x=_a[0],_b=_a.slice(1),y=_b[0],z=_b[1];", r.output);
-
+    try expectPreparedPatternShape(r.output, &.{}, true);
+    try expectPreparedOutputRuntimeWithPrelude(r.output, "var [x,...[y,z]]=arr;", "var arr=new Set([1,2,3]);", "console.log(JSON.stringify([x,y,z]));");
     var ro = try e2eTarget(std.testing.allocator, "var [...{length}]=arr;", .es5);
     defer ro.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, ro.output, "_b=_a.slice(0),length=_b.length") != null);
+    try expectPreparedPatternShape(ro.output, &.{"length"}, true);
+    try expectPreparedOutputRuntimeWithPrelude(ro.output, "var [...{length}]=arr;", "var arr=new Set([1,2,3]);", "console.log(JSON.stringify(length));");
 }
 
 test "ES5: for-of 풀이의 step 변수는 모듈 전체에서 고유한 이름이다 (#4746)" {
@@ -5053,12 +5057,16 @@ fn expectPreparedPatternShape(output: []const u8, keys: []const []const u8, need
 // Execute the exact semantic-less e2e output with the official helpers too;
 // public-transpile runtime checks below exercise a separate caller contract.
 fn expectPreparedOutputRuntime(output: []const u8, source: []const u8, driver: []const u8) !void {
+    return expectPreparedOutputRuntimeWithPrelude(output, source, "", driver);
+}
+
+fn expectPreparedOutputRuntimeWithPrelude(output: []const u8, source: []const u8, prelude: []const u8, driver: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const rt = @import("../../bundler/runtime_helpers.zig");
-    const native_source = try std.fmt.allocPrint(a, "{s}\n{s}", .{ source, driver });
-    const lowered_source = try std.fmt.allocPrint(a, "{s}\n{s}\n{s}", .{ rt.ASYNC_RUNTIME_ES5 ++ rt.GENERATOR_RUNTIME ++ rt.READ_RUNTIME, output, driver });
+    const native_source = try std.fmt.allocPrint(a, "{s}\n{s}\n{s}", .{ prelude, source, driver });
+    const lowered_source = try std.fmt.allocPrint(a, "{s}\n{s}\n{s}\n{s}", .{ rt.ASYNC_RUNTIME_ES5 ++ rt.GENERATOR_RUNTIME ++ rt.READ_RUNTIME ++ rt.VALUES_RUNTIME, prelude, output, driver });
     const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", native_source } });
     try std.testing.expect(native.term == .exited and native.term.exited == 0);
     const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", lowered_source } });

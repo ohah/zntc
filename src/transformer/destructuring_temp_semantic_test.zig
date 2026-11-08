@@ -460,7 +460,7 @@ test "#4819 assignment computed-key temp carries its producer SymbolId" {
     transformer.semantic_edit_enabled = true;
 
     _ = try transformer.transform();
-    try std.testing.expectEqual(@as(usize, 2), transformer.temp_symbol_ids_by_counter.count());
+    try std.testing.expectEqual(@as(usize, 3), transformer.temp_symbol_ids_by_counter.count());
     const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
     var verified_producers: usize = 0;
     var producer_ids = transformer.temp_symbol_ids_by_counter.iterator();
@@ -489,7 +489,7 @@ test "#4819 assignment computed-key temp carries its producer SymbolId" {
         try std.testing.expectEqual(@as(usize, 1), producer_writes);
         verified_producers += 1;
     }
-    try std.testing.expectEqual(@as(usize, 2), verified_producers);
+    try std.testing.expectEqual(@as(usize, 3), verified_producers);
 
     _ = try transformer.finishSemanticEdit();
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
@@ -529,32 +529,46 @@ fn checkAssignmentComputedKeyProducerIdentity(allocator: std.mem.Allocator, sour
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
-    _ = try transformer.transform();
+    const output = try transformer.transform();
     try std.testing.expect(transformer.temp_symbol_ids_by_counter.count() > 0);
-    const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+    const expected_storage_scope = transformer.nearestVarScope(exact_reference_scope);
+    const edited = (try transformer.finishSemanticEdit()) orelse return error.MissingSemanticEditor;
+    const scope_utils = @import("output_scope_test_utils.zig");
+    const parents = try scope_utils.buildParentMap(allocator, transformer.ast, output);
     var producer_ids = transformer.temp_symbol_ids_by_counter.iterator();
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, output);
     while (producer_ids.next()) |entry| {
         const producer_id: u32 = entry.value_ptr.*;
         const producer_span = transformer.temp_span_by_counter.get(entry.key_ptr.*) orelse
             return error.MissingComputedKeyProducerSpan;
         var reads: usize = 0;
         var writes: usize = 0;
-        for (transformer.ast.nodes.items, 0..) |node, raw| {
+        for (reachable) |raw| {
+            const node = transformer.ast.nodes.items[raw];
             if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
             if (node.data.string_ref.start != producer_span.start or node.data.string_ref.end != producer_span.end) continue;
             const node_idx: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(raw));
-            try std.testing.expectEqual(@as(?u32, producer_id), transformer.getSymbolIdAt(node_idx));
-            const reference = (try editor.referenceForNode(node_idx)) orelse return error.MissingComputedKeyReference;
+            try std.testing.expectEqual(@as(?u32, producer_id), edited.symbol_ids[raw]);
+            const reference = reference: {
+                var selected: ?@import("../semantic/symbol.zig").Reference = null;
+                for (edited.references) |row| {
+                    if (row.node_index != node_idx or row.flags.declare) continue;
+                    try std.testing.expect(selected == null);
+                    selected = row;
+                }
+                break :reference selected orelse return error.MissingComputedKeyReference;
+            };
             try std.testing.expectEqual(producer_id, @backingInt(reference.symbol_id));
-            try std.testing.expectEqual(exact_reference_scope, reference.scope_id);
-            try std.testing.expectEqual(transformer.nearestVarScope(reference.scope_id), editor.symbols.items[producer_id].scope_id);
+            const actual_scope = scope_utils.expectedScope(transformer.ast, output, &parents, &edited.scope_owner_map, @backingInt(node_idx)) orelse return error.MissingActualComputedKeyScope;
+            try std.testing.expectEqual(actual_scope, reference.scope_id);
+            try std.testing.expect(symbolVisibleFrom(edited.scopes, exact_reference_scope, reference.scope_id));
+            try std.testing.expectEqual(expected_storage_scope, edited.symbols.items[producer_id].scope_id);
             if (reference.flags.read) reads += 1;
             if (reference.flags.write) writes += 1;
         }
         try std.testing.expect(reads > 0 and writes > 0);
     }
 
-    _ = try transformer.finishSemanticEdit();
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
 }
@@ -721,8 +735,9 @@ test "#4819 computed-key default destructuring temp retains its SymbolId" {
         try std.testing.expectEqual(symbol.name.start, ref_node.data.string_ref.start);
         references += 1;
     }
-    try std.testing.expectEqual(@as(usize, 2), references);
-    try std.testing.expectEqual(@as(u32, 2), symbol.reference_count);
+    // The key is consumed by one GetV capture, not by both default arms.
+    try std.testing.expectEqual(@as(usize, 1), references);
+    try std.testing.expectEqual(@as(u32, 1), symbol.reference_count);
 }
 
 test "#4819 assignment destructuring temps have exact hoisted IDs and nested read scopes" {
@@ -820,13 +835,15 @@ test "#4819 assignment destructuring temps have exact hoisted IDs and nested rea
         transformer.node_scope_provenance = analyzer.node_scope_provenance;
         transformer.unresolved_references = &analyzer.unresolved_references;
         transformer.semantic_edit_enabled = true;
-        _ = try transformer.transform();
+        const output = try transformer.transform();
         // Every function-owned assignment temp in these fixtures has a known
         // producer scope, so no identity handoff may remain name/span-pending.
         try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
         const edited = (try transformer.finishSemanticEdit()).?;
         try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
         const reachable = try ast_walk.collectReachableNodeIndices(alloc, transformer.ast);
+        const scope_utils = @import("output_scope_test_utils.zig");
+        const parents = try scope_utils.buildParentMap(alloc, transformer.ast, output);
 
         // Assignment root and nested temps reserve their producer SymbolIds
         // before their first writes. The counter map is the later hoist
@@ -850,21 +867,33 @@ test "#4819 assignment destructuring temps have exact hoisted IDs and nested rea
             try std.testing.expect(!std.mem.eql(u8, symbol.synthetic_name, "_a"));
             try std.testing.expectEqual(@as(?usize, si), edited.scope_maps[expected_function_scope].get(symbol.synthetic_name));
             var binding_count: usize = 0;
+            var initializer_count: usize = 0;
             var reads: u32 = 0;
             var writes: u32 = 0;
             for (reachable) |raw| {
                 if (transformer.ast.nodes.items[raw].tag == .binding_identifier and raw < edited.symbol_ids.len and edited.symbol_ids[raw] == @as(u32, @intCast(si))) binding_count += 1;
+                const declarator = transformer.ast.nodes.items[raw];
+                if (declarator.tag == .variable_declarator) {
+                    const binding = transformer.ast.readExtraNode(declarator.data.extra, 0);
+                    const initializer = transformer.ast.readExtraNode(declarator.data.extra, 2);
+                    if (!binding.isNone() and @backingInt(binding) < edited.symbol_ids.len and edited.symbol_ids[@backingInt(binding)] == @as(u32, @intCast(si)) and !initializer.isNone()) initializer_count += 1;
+                }
             }
             for (edited.references) |ref| {
                 if (@backingInt(ref.symbol_id) != si or ref.flags.declare) continue;
                 try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(ref.node_index)) != null);
-                try std.testing.expectEqual(expected_ref_scope, @backingInt(ref.scope_id));
+                const actual_scope = scope_utils.expectedScope(transformer.ast, output, &parents, &edited.scope_owner_map, @backingInt(ref.node_index)) orelse return error.MissingActualPatternScope;
+                try std.testing.expectEqual(actual_scope, ref.scope_id);
+                try std.testing.expect(symbolVisibleFrom(edited.scopes, @fromBackingInt(expected_ref_scope), ref.scope_id));
                 try std.testing.expectEqual(@as(?u32, @intCast(si)), edited.symbol_ids[@backingInt(ref.node_index)]);
                 if (ref.flags.read) reads += 1;
                 if (ref.flags.write) writes += 1;
             }
             try std.testing.expectEqual(@as(usize, 1), binding_count);
-            try std.testing.expect(reads > 0 and writes > 0);
+            try std.testing.expect(reads > 0);
+            // A physical GetV capture initializes its one declaration; it is
+            // not a user PutValue reference. Assignment temps retain writes.
+            if (writes == 0) try std.testing.expectEqual(@as(usize, 1), initializer_count);
             try std.testing.expectEqual(reads + writes, symbol.reference_count);
             try std.testing.expectEqual(writes, symbol.write_count);
             temp_count += 1;
