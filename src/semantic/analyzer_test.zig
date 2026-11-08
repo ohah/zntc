@@ -4763,3 +4763,27 @@ test "namespace member actual destructuring producer key has a teardown owner" {
     try std.testing.expectEqual(@as(usize, 0), ledger.invalid_free + ledger.duplicate_free + ledger.invalid_resize);
     try std.testing.expect(!ledger.overflow);
 }
+
+test "initial await using disposal marks only the containing module asynchronous" {
+    const cases = [_]struct { source: []const u8, await_top: bool }{
+        .{ .source = "await using resource=null;export const answer=42;", .await_top = true },
+        .{ .source = "{await using resource=null;}export const answer=42;", .await_top = true },
+        .{ .source = "async function local(){await using resource=null;}export{local};", .await_top = false },
+        .{ .source = "using resource=null;export const answer=42;", .await_top = false },
+    };
+    for (cases) |fixture| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+        var scanner = try Scanner.init(alloc, fixture.source);
+        var parser = Parser.init(alloc, &scanner);
+        parser.configureFromExtension(".mjs");
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = SemanticAnalyzer.init(alloc, &parser.ast);
+        analyzer.is_module = parser.is_module;
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        try analyzer.analyze();
+        try std.testing.expectEqual(fixture.await_top, analyzer.has_top_level_await);
+    }
+}

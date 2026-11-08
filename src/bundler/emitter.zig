@@ -2586,7 +2586,11 @@ pub fn emitModuleWithHolderReservations(
     // module 이 IIFE / __commonJS / __esm 로 감싸져 top-level 이 function scope 가 되므로
     // block-scope 의미 변경 위험 없음. dev 빌드에선 원본 kind 유지 (DX) — esbuild/rolldown
     // 동일 관습. mergeDecls 직전에 호출해 var 끼리 연쇄 merge 극대화.
-    if (linker != null and options.minify_syntax) {
+    // A preserved native ESM file still owns a real module environment.
+    // Its lexical declarations must not inherit scope-hoisted bundle storage.
+    const native_esm_module = options.preserve_modules and options.format == .esm and module.wrap_kind == .none and
+        !options.unsupported.using and !options.unsupported.top_level_await;
+    if (linker != null and options.minify_syntax and !native_esm_module) {
         @import("../transformer/minify.zig").downgradeToVar(transformer.ast);
     }
 
@@ -2854,7 +2858,7 @@ pub fn emitModuleWithHolderReservations(
         // wrap_kind != .none (`__esm`/`__commonJS` wrap) 인 cycle 모듈은 이미 별도
         // 변환 path (`esm_var_assign_only`, `use_var_for_imports`) 가 동일 효과를
         // 만들어주므로 이중 처리 → 호이스팅 충돌 회피하기 위해 .none 만 대상.
-        .force_var_for_cycle = module.cycle_group != 0 and module.wrap_kind == .none,
+        .force_var_for_cycle = module.cycle_group != 0 and module.wrap_kind == .none and !native_esm_module,
         // (#4587 target a) preserve-modules + CJS unwrapped: 재할당 export 선언을 `exports.X = init;`
         // 저장소로 낮춘다(bindings.zig). renames 는 metadata 가 pm-cjs 게이트로만 등록하므로 여기
         // 게이트와 정확히 일치해야 storage rename 이 선언 변환과 짝을 이룬다. output_exports 가
