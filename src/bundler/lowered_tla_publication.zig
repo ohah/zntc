@@ -19,7 +19,7 @@ pub fn diagnose(graph: *ModuleGraph, options: *const EmitOptions, shaker: ?*cons
     while (modules.next()) |module| {
         if (shaker) |s| if (!s.isIncluded(module.index.toU32())) continue;
         if (module.is_external or module.is_disabled or !module.module_type.isJavaScriptLike()) continue;
-        const span = try activeInitializer(graph.allocator, module, shaker) orelse continue;
+        const span = try activeInitializer(graph.allocator, module, shaker, false) orelse continue;
         try graph.addOwnedDiagnostic(.{
             .code = .top_level_await_target,
             .severity = .@"error",
@@ -34,7 +34,13 @@ pub fn diagnose(graph: *ModuleGraph, options: *const EmitOptions, shaker: ?*cons
     return blocked;
 }
 
-fn activeInitializer(a: std.mem.Allocator, module: *const Module, shaker: ?*const TreeShaker) !?@import("../lexer/token.zig").Span {
+/// The exact lowering-owned initializer may retain native resource syntax even
+/// though its implicit Await is no longer at module scope in the current AST.
+pub fn activeNativeResourceInitializer(a: std.mem.Allocator, module: *const Module, shaker: ?*const TreeShaker) !?@import("../lexer/token.zig").Span {
+    return activeInitializer(a, module, shaker, true);
+}
+
+fn activeInitializer(a: std.mem.Allocator, module: *const Module, shaker: ?*const TreeShaker, native_resources_only: bool) !?@import("../lexer/token.zig").Span {
     const raw = module.tla_iife_stmt orelse return null;
     const promise = module.tla_promise_reference orelse return error.MissingTlaPromiseIdentity;
     const tree = &(module.ast orelse return error.MissingTlaPromiseIdentity);
@@ -69,11 +75,11 @@ fn activeInitializer(a: std.mem.Allocator, module: *const Module, shaker: ?*cons
     // variable_declarator = [binding, type_annotation, initializer].
     const init = tree.readExtraNode(decl.data.extra, 2);
     if (init.isNone()) return error.MissingTlaPromiseIdentity;
-    if (!try hasSuspension(a, tree, semantic, init)) return null;
+    if (!try hasSuspension(a, tree, semantic, init, native_resources_only)) return null;
     return statement.span;
 }
 
-fn hasSuspension(a: std.mem.Allocator, tree: *const ast_mod.Ast, semantic: *const @import("module.zig").ModuleSemanticData, init: NodeIndex) !bool {
+fn hasSuspension(a: std.mem.Allocator, tree: *const ast_mod.Ast, semantic: *const @import("module.zig").ModuleSemanticData, init: NodeIndex, native_resources_only: bool) !bool {
     const Work = struct { node: NodeIndex, state: ?u32 = null, native_generator: bool = false, state_switch: bool = false };
     var stack: std.ArrayList(Work) = .empty;
     defer stack.deinit(a);
@@ -105,12 +111,14 @@ fn hasSuspension(a: std.mem.Allocator, tree: *const ast_mod.Ast, semantic: *cons
                 state = generatedStateParameter(tree, semantic, node, @fromBackingInt(scope_raw));
                 state_switch = false;
             },
-            .await_expression, .for_await_of_statement => return true,
-            .yield_expression => if (native_generator) return true,
+            .await_expression, .for_await_of_statement => if (!native_resources_only) return true,
+            .variable_declaration => if (tree.hasExtra(node.data.extra, 2) and
+                tree.variableDeclarationKind(node) == .await_using) return true,
+            .yield_expression => if (!native_resources_only and native_generator) return true,
             .switch_statement => if (state) |sid| {
                 if (stateSwitch(tree, semantic, node, sid)) state_switch = true;
             },
-            .return_statement => if (state_switch and suspensionReturn(tree, node)) return true,
+            .return_statement => if (!native_resources_only and state_switch and suspensionReturn(tree, node)) return true,
             else => {},
         }
         var children = ast_walk.children(tree, node);
