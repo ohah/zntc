@@ -5020,7 +5020,13 @@ pub const Linker = struct {
                             if (provider.wrap_kind == .esm) {
                                 const init_ref = try provider.esmInitSymbol();
                                 try appendSem(self.allocator, &ir_buf, self.graph, init_ref.toRef());
-                                if (ib.kind == .namespace)
+                                // Native environments project source named/default
+                                // reads through this exact provider namespace too.
+                                // Reserve its SID in consumer nested scopes before
+                                // selecting their final names, just like import *.
+                                if (ib.kind == .namespace or (ib.callsite_target == null and
+                                    @import("native_async_module_plan.zig").contains(self.graph, m) and
+                                    @import("native_async_module_plan.zig").contains(self.graph, provider)))
                                     try appendSem(self.allocator, &ir_buf, self.graph, (try provider.esmNamespaceSymbol()).toRef());
                             }
                         };

@@ -449,8 +449,12 @@ fn identifierRenameContainsCall(self: anytype, idx: NodeIndex) bool {
 /// - CJS/replace_import_meta + node: `require("url").pathToFileURL(__filename).href`
 /// - CJS/replace_import_meta + browser/neutral: `""`
 /// emitMember 의 import.meta.url 분기 + emitNew 의 worker URL 두 번째 인자가 공유.
+pub fn shouldReplaceImportMeta(self: anytype) bool {
+    return !self.options.native_module_import_meta and (self.options.module_format == .cjs or self.options.replace_import_meta);
+}
+
 pub fn writeImportMetaUrl(self: anytype) !void {
-    if (self.options.module_format == .cjs or self.options.replace_import_meta) {
+    if (shouldReplaceImportMeta(self)) {
         if (self.options.platform == .node) {
             try self.write(IMPORT_META_URL_NODE);
             return;
@@ -564,7 +568,7 @@ pub fn emitMetaProperty(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
     const text = self.ast.getText(node.span);
     if (std.mem.eql(u8, text, "import.meta")) {
-        if (self.options.module_format == .cjs or self.options.replace_import_meta) {
+        if (shouldReplaceImportMeta(self)) {
             if (self.options.platform == .node) {
                 try self.write(IMPORT_META_NODE_OBJECT);
             } else {

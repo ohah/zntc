@@ -13,7 +13,7 @@ const Module = @import("module.zig").Module;
 pub const validateTargetRole = @import("runtime_callsite_targets.zig").validateTargetRole;
 const Builder = @import("runtime_callsite_builder.zig").Builder;
 
-const CallbackProof = struct { node: NodeIndex, scope: ScopeId, parent: ScopeId, call_node: NodeIndex, callee: NodeIndex };
+const CallbackProof = struct { node: NodeIndex, scope: ScopeId, parent: ScopeId, call_node: NodeIndex, callee: NodeIndex, awaited_init: ?NodeIndex = null, init_call: ?NodeIndex = null };
 
 fn validateAll(builder: *Builder, callbacks: []const CallbackProof) !void {
     try builder.validate();
@@ -26,6 +26,14 @@ fn validateAll(builder: *Builder, callbacks: []const CallbackProof) !void {
         if (editor.scope_owner_map.get(@backingInt(expected.node)) != @as(?u32, @backingInt(expected.scope))) return error.InvalidCallsiteScope;
         const scope = editor.scopes.items[expected.scope.toIndex()];
         if (scope.kind != .function or scope.parent != expected.parent) return error.InvalidCallsiteScope;
+        if (expected.awaited_init) |awaited| {
+            const call = expected.init_call orelse return error.InvalidCallsiteReference;
+            const node = ast.getNode(awaited);
+            const function = ast.getNode(expected.node);
+            if (node.tag != .await_expression or node.data.unary.operand != call or
+                (ast.readExtra(function.data.extra, ast_mod.FunctionExtra.flags) & ast_mod.FunctionFlags.is_async) == 0)
+                return error.InvalidCallsiteReference;
+        }
         const actual = ast.getNode(expected.call_node);
         if (actual.tag != .call_expression or ast.readExtraNode(actual.data.extra, 0) != expected.callee) return error.InvalidCallsiteReference;
     }
@@ -98,9 +106,14 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
             const body = try ast.addNode(.{ .tag = .block_statement, .span = original.span, .data = .{ .list = try ast.addNodeList(&.{}) } });
             const params = try ast.addFormalParameters(try ast.addNodeList(&.{}), original.span);
             const none = @backingInt(NodeIndex.none);
-            const function_extra = try ast.addExtras(&.{ none, @backingInt(params), @backingInt(body), 0, none });
+            const awaits_native_evaluation = target.wrap_kind == .esm and target.in_async_cone and
+                @import("native_async_module_plan.zig").contains(graph, target);
+            const callback_flags: u32 = if (awaits_native_evaluation) ast_mod.FunctionFlags.is_async else 0;
+            const function_extra = try ast.addExtras(&.{ none, @backingInt(params), @backingInt(body), callback_flags, none });
             const callback = try ast.addNode(.{ .tag = .function_expression, .span = original.span, .data = .{ .extra = function_extra } });
             const callback_scope = try editor.addScope(provenance.scope, callback, .function, false);
+            var awaited_init: ?NodeIndex = null;
+            var init_call: ?NodeIndex = null;
             const value = if (target.wrap_kind == .cjs) cjs: {
                 const require_sid = target.require_symbol orelse return error.InvalidCallsiteTarget;
                 const require_call = try builder.call(try builder.use(SymbolID.make(target.index, @backingInt(require_sid)), callback_scope, .require), &.{});
@@ -114,8 +127,14 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
                 break :cjs try builder.call(to_esm, &.{require_call});
             } else esm: {
                 const init = try builder.call(try builder.use(try target.esmInitSymbol(), callback_scope, .esm_init), &.{});
+                const ready = if (awaits_native_evaluation) ready: {
+                    const awaited = try ast.addNode(.{ .tag = .await_expression, .span = original.span, .data = .{ .unary = .{ .operand = init, .flags = 0 } } });
+                    awaited_init = awaited;
+                    init_call = init;
+                    break :ready awaited;
+                } else init;
                 const exports = try builder.use(try target.esmNamespaceSymbol(), callback_scope, .esm_namespace);
-                break :esm try ast.addNode(.{ .tag = .sequence_expression, .span = original.span, .data = .{ .list = try ast.addNodeList(&.{ init, exports }) } });
+                break :esm try ast.addNode(.{ .tag = .sequence_expression, .span = original.span, .data = .{ .list = try ast.addNodeList(&.{ ready, exports }) } });
             };
             const ret = try ast.addNode(.{ .tag = .return_statement, .span = original.span, .data = .{ .unary = .{ .operand = value, .flags = 0 } } });
             if (editor.scopes.items[callback_scope.toIndex()].is_strict) {
@@ -125,7 +144,7 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
             } else ast.nodes.items[@backingInt(body)].data.list = try ast.addNodeList(&.{ret});
             const schedule_ref = try builder.use(schedule, provenance.scope, .schedule);
             const replacement = try builder.call(schedule_ref, &.{callback});
-            try callbacks.append(a, .{ .node = callback, .scope = callback_scope, .parent = provenance.scope, .call_node = call_node, .callee = schedule_ref });
+            try callbacks.append(a, .{ .node = callback, .scope = callback_scope, .parent = provenance.scope, .call_node = call_node, .callee = schedule_ref, .awaited_init = awaited_init, .init_call = init_call });
             ast.nodes.items[raw] = ast.getNode(replacement);
             module.import_records[record_index].callsite_lowered = true;
             lowered = true;

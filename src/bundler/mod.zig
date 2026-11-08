@@ -99,6 +99,7 @@ pub const chunk_emit_cache = @import("chunk_emit_cache.zig");
 pub const ChunkEmitCache = chunk_emit_cache.ChunkEmitCache;
 
 test {
+    _ = @import("native_module_namespace_runtime.zig");
     _ = json_to_esm;
     _ = types;
     _ = import_scanner;

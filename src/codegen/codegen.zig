@@ -256,9 +256,17 @@ pub const Codegen = struct {
         if (self.pending_fn_name) |s| self.allocator.free(s);
     }
 
+    pub fn emitNativeModuleInstantiationPrologue(self: *Codegen, root: NodeIndex, indices: []const u32) !void {
+        try @import("modules.zig").emitNativeModuleInstantiationPrologue(self, root, indices);
+    }
+
     /// 특정 statement 노드 목록만 코드로 생성한다 (__esm var 호이스팅용).
     /// root는 collectTopLevelDeclNames에만 사용. 실제 출력은 stmt_indices에서.
     pub fn generateStatements(self: *Codegen, root: NodeIndex, stmt_indices: []const u32) ![]const u8 {
+        if (self.options.native_module_instantiation_prologue_emitted) {
+            const context = self.options.native_module_using orelse return error.InvalidNativeModuleDefault;
+            if (context.domain != self.ast or context.root != root) return error.InvalidNativeModuleDefault;
+        }
         if (self.options.assert_no_raw_private_syntax) {
             for (stmt_indices) |raw_idx| {
                 std.debug.assert(!hasRawPrivateSyntax(self.ast, @fromBackingInt(@intCast(raw_idx))));
@@ -267,7 +275,7 @@ pub const Codegen = struct {
         try self.buf.ensureTotalCapacity(self.allocator, self.ast.source.len / 2);
         self.collectTopLevelDeclNames(root);
         var emitted = false;
-        var names_emitted = !self.options.keep_names;
+        var names_emitted = !self.options.keep_names or self.options.native_module_instantiation_prologue_emitted;
         for (stmt_indices) |raw_idx| {
             const node_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
             if (node_idx.isNone()) continue;
@@ -278,7 +286,11 @@ pub const Codegen = struct {
                 names_emitted = true;
             }
             if (emitted) try self.writeNewline();
-            try self.emitNode(node_idx);
+            if (self.options.native_module_instantiation_prologue_emitted and tag == .export_default_declaration) {
+                try @import("modules.zig").emitNativeModuleDefault(self, node_idx);
+            } else {
+                try self.emitNode(node_idx);
+            }
             if (tag == .hashbang and self.options.minify_whitespace)
                 try self.write(self.options.newline);
             emitted = true;

@@ -22226,6 +22226,30 @@ fn runCandidate(self: anytype, module: *Module, source_classes: @import("../../s
     {
         opts.tla_module_awaited = true;
     }
+    // Retain the checked native resource's source declaration until selected
+    // publication admission. Wrapping it now would strand its export reference
+    // outside its lexical owner before the linker can even select modules.
+    // This is not an output capability: the existing post-shake disposal
+    // diagnostic must reject every retained resource in this unsupported layout.
+    // Ordinary TLA, sync-only using and downlevel resource transforms keep their
+    // existing paths. No pre-shake error is emitted for a removable module.
+    if (module.self_uses_top_level_await and opts.tla_entry_exports_awaited and
+        !opts.native_async_module_boundaries and opts.unsupported.top_level_await and
+        !opts.unsupported.async_await and !opts.unsupported.using and
+        !self.preserve_modules and !self.code_splitting)
+    {
+        const native_resource = @import("../native_async_disposal_publication.zig").retainedDeclaration(arena_alloc, module, null) catch |err| {
+            candidate_diagnosed.* = true;
+            self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, switch (err) {
+                error.OutOfMemory => "Native resource admission preparation allocation failed",
+                error.InvalidNativeAsyncDisposalOwner => "Native resource admission source ownership validation failed",
+            }, @errorName(err));
+            // The existing prepared transaction discards this incomplete
+            // candidate. Neither failure grants preservation or publication.
+            return;
+        };
+        if (native_resource != null) opts.tla_export_decl_deferrable = true;
+    }
     const computed_accessor_super_requires_exact = if (opts.unsupported.object_extensions)
         hasComputedObjectAccessorSuper(arena_alloc, ast_ptr) catch true
     else

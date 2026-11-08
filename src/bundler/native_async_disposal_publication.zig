@@ -53,6 +53,13 @@ pub fn diagnose(graph: *ModuleGraph, options: *const EmitOptions, shaker: ?*cons
 }
 
 fn preservesBoundary(graph: *const ModuleGraph, module: *const Module, options: *const EmitOptions, chunks: ?*const ChunkGraph, shaker: ?*const TreeShaker, entry_count: usize) bool {
+    if (chunks == null and options.format == .esm and !options.dev_mode and !options.preserve_modules and
+        !options.code_splitting and options.transform_options_base.native_async_module_boundaries and
+        graph.native_async_module_entry_namespace_blocked) return false;
+    if (chunks == null and options.format == .esm and !options.dev_mode and !options.preserve_modules and
+        !options.code_splitting and !options.unsupported.using and !options.unsupported.top_level_await and
+        options.transform_options_base.native_async_module_boundaries and
+        @import("native_async_module_plan.zig").contains(graph, module)) return true;
     if (options.format != .esm or options.dev_mode or options.unsupported.using or
         options.unsupported.top_level_await or module.wrap_kind != .none) return false;
     if (chunks) |plan| {
@@ -74,19 +81,33 @@ fn preservesBoundary(graph: *const ModuleGraph, module: *const Module, options: 
     return true;
 }
 
-fn retainedDeclaration(a: std.mem.Allocator, module: *const Module, shaker: ?*const TreeShaker) !?Span {
+pub fn retainedDeclaration(a: std.mem.Allocator, module: *const Module, shaker: ?*const TreeShaker) !?Span {
     const tree = &(module.ast orelse return null);
     if (tree.nodes.items.len == 0) return null;
     const root = tree.transformed_root orelse @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(tree.nodes.items.len - 1))));
     if (root.isNone() or @backingInt(root) >= tree.nodes.items.len or tree.getNode(root).tag != .program) return error.InvalidNativeAsyncDisposalOwner;
     const semantic = &(module.semantic orelse return error.InvalidNativeAsyncDisposalOwner);
-    var stack: std.ArrayList(NodeIndex) = .empty;
+    const Work = struct { node: NodeIndex, statement: NodeIndex };
+    var stack: std.ArrayList(Work) = .empty;
     defer stack.deinit(a);
+    // StmtInfo owns current-output coordinates. Source Reference.stmt_idx is
+    // from another statement domain and cannot index this array after edits.
+    if (shaker) |selected| if (selected.graph.getModule(module.index) != module) return error.InvalidNativeAsyncDisposalOwner;
+    const selected_infos = if (shaker) |selected| selected.getModuleStmtInfos(module.index.toU32()) else null;
+    var selected_by_node: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer selected_by_node.deinit(a);
+    if (selected_infos) |infos| for (infos.stmts, 0..) |statement, i| {
+        if (statement.node_idx >= tree.nodes.items.len) return error.InvalidNativeAsyncDisposalOwner;
+        const slot = try selected_by_node.getOrPut(a, statement.node_idx);
+        if (slot.found_existing) return error.InvalidNativeAsyncDisposalOwner;
+        slot.value_ptr.* = @intCast(i);
+    };
     var visited: std.AutoHashMapUnmanaged(NodeIndex, void) = .empty;
     defer visited.deinit(a);
     var statements = tree.iterateExtraList(tree.getNode(root).data.list);
-    while (statements.next()) |statement| try stack.append(a, statement);
-    while (stack.pop()) |index| {
+    while (statements.next()) |statement| try stack.append(a, .{ .node = statement, .statement = statement });
+    while (stack.pop()) |work| {
+        const index = work.node;
         if (index.isNone()) continue;
         const raw = @backingInt(index);
         if (raw >= tree.nodes.items.len) return error.InvalidNativeAsyncDisposalOwner;
@@ -117,34 +138,32 @@ fn retainedDeclaration(a: std.mem.Allocator, module: *const Module, shaker: ?*co
                     }
                 }.isFunction)) return error.InvalidNativeAsyncDisposalOwner;
                 var declarations: usize = 0;
-                var source_statement: u32 = Reference.NO_STMT;
                 for (semantic.references) |reference| {
                     if (reference.declaration_node_index == binding and reference.node_index.isNone() and
                         @backingInt(reference.symbol_id) == sid and reference.scope_id == owner and
                         reference.flags.declare and !reference.flags.read and !reference.flags.write)
                     {
                         declarations += 1;
-                        source_statement = reference.stmt_idx;
                     }
                 }
                 if (declarations != 1 or node.span.start & ast_mod.Ast.STRING_TABLE_BIT != 0 or
                     node.span.end < node.span.start or node.span.end > module.source.len) return error.InvalidNativeAsyncDisposalOwner;
-                // The current program can contain inserted/copied statements.
-                // Only the exact declaration reference owns a source statement
-                // coordinate; verify that source row declares this same SID.
-                if (shaker) |selected| {
-                    if (selected.getModuleStmtInfos(module.index.toU32())) |infos| {
-                        if (source_statement == Reference.NO_STMT or source_statement >= infos.stmts.len or
-                            std.mem.indexOfScalar(u32, infos.stmts[source_statement].declared_symbols, sid) == null) return error.InvalidNativeAsyncDisposalOwner;
-                        if (!selected.isStmtReachable(module.index.toU32(), source_statement)) continue;
-                    }
-                }
+                // The actual root-statement edge encloses this already
+                // validated declaration/binding/SID. Match that same physical
+                // node in selected metadata, then validate its declared SID;
+                // neither a source coordinate nor spelling selects this row.
+                if (shaker) |selected| if (selected_infos) |infos| {
+                    const current_statement = selected_by_node.get(@backingInt(work.statement)) orelse return error.InvalidNativeAsyncDisposalOwner;
+                    if (current_statement >= infos.stmts.len or infos.stmts[current_statement].node_idx != @backingInt(work.statement) or
+                        std.mem.indexOfScalar(u32, infos.stmts[current_statement].declared_symbols, sid) == null) return error.InvalidNativeAsyncDisposalOwner;
+                    if (!selected.isStmtReachable(module.index.toU32(), current_statement)) continue;
+                };
                 return node.span;
             },
             else => {},
         }
         var children = ast_walk.children(tree, node);
-        while (children.next()) |child| try stack.append(a, child);
+        while (children.next()) |child| try stack.append(a, .{ .node = child, .statement = work.statement });
     }
     return null;
 }

@@ -2954,6 +2954,8 @@ export function resolveOutputPath(
   if (outfileResolved && filePath === 'bundle.js') return outfileResolved;
   if (outfileResolved && filePath === 'bundle.js.map') return `${outfileResolved}.map`;
   if (outdir) return join(resolve(outdir), filePath);
+  // Worker URLs and other sibling assets are relative to the emitted entry.
+  if (outfileResolved) return resolve(dirname(outfileResolved), filePath);
   return resolve(filePath);
 }
 

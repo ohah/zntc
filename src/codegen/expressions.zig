@@ -342,6 +342,7 @@ pub fn emitAssignment(self: anytype, node: Node, level: Level, flags: ExprFlags)
         .amp2_eq, .pipe2_eq, .question2_eq => true,
         else => false,
     };
+    if (names_value and try @import("native_module_import_projection.zig").emitNamedValue(self, node.data.binary.left, right, right_level, child_flags)) return;
     const saved_hint = self.keep_name_hint;
     self.keep_name_hint = if (names_value) keep_names.hintFor(self, node.data.binary.left, right) else null;
     defer self.keep_name_hint = saved_hint;
@@ -470,8 +471,13 @@ pub fn emitSpread(self: anytype, node: Node, level: Level, flags: ExprFlags) !vo
 }
 
 pub fn emitAwait(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
-    _ = level; // PR6: wrap = level.gte(.prefix)
-    _ = flags;
+    if (self.options.module_await_as_yield) {
+        return emitYield(self, .{
+            .tag = .yield_expression,
+            .span = node.span,
+            .data = .{ .unary = .{ .operand = node.data.unary.operand, .flags = 0 } },
+        }, level, flags);
+    }
     try self.addSourceMapping(node.span);
     try self.write("await ");
     // value level = .prefix.lower() (esbuild EAwait value = LPrefix-1)
@@ -632,6 +638,7 @@ pub const ShorthandSlot = enum {
 /// 돌려준다 — 그 자리에선 emitNode 를 태우면 안 되고 원본 토큰을 그대로 써야 하기 때문이다.
 /// 호출자는 false 를 "원본 span 출력" 으로 해석한다.
 pub fn identifierEmitsSubstituted(self: anytype, idx: NodeIndex, slot: ShorthandSlot) bool {
+    if (@import("native_module_import_projection.zig").has(self, idx)) return true;
     if (idx.isNone()) return false;
     const n = self.ast.getNode(idx);
 
@@ -689,6 +696,7 @@ pub fn identifierEmitsSubstituted(self: anytype, idx: NodeIndex, slot: Shorthand
 /// false 면 값 전용 치환(peephole / 상수 인라인)이 발동해 대입 대상 자리에 `void 0` 이나
 /// 리터럴이 앉아 invalid JS 가 된다 → 호출자는 원본 span 을 그대로 써야 한다.
 pub fn targetIdentSafeToEmit(self: anytype, idx: NodeIndex) bool {
+    if (@import("native_module_import_projection.zig").has(self, idx)) return true;
     if (idx.isNone()) return false;
     const n = self.ast.getNode(idx);
     if (n.tag != .identifier_reference) return true; // binding_identifier 등은 값 전용 치환 대상이 아님
@@ -788,7 +796,7 @@ pub fn emitStaticMember(self: anytype, node: Node, level: Level, flags: ExprFlag
         }
     }
 
-    if (self.options.dev_module_id != null or self.options.module_format == .cjs or self.options.replace_import_meta) {
+    if (self.options.dev_module_id != null or calls.shouldReplaceImportMeta(self)) {
         if (self.resolveImportMetaProp(object, property)) |prop_text| {
             if (self.options.dev_module_id) |dev_id| {
                 if (std.mem.eql(u8, prop_text, "hot")) {
@@ -799,7 +807,7 @@ pub fn emitStaticMember(self: anytype, node: Node, level: Level, flags: ExprFlag
                     return;
                 }
             }
-            if (self.options.module_format == .cjs or self.options.replace_import_meta) {
+            if (calls.shouldReplaceImportMeta(self)) {
                 if (std.mem.eql(u8, prop_text, "url")) {
                     try self.writeImportMetaUrl();
                     return;

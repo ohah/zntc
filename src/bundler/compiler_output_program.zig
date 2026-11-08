@@ -35,6 +35,14 @@ pub const Program = struct {
     literal_roles: []Literal,
 
     pub fn create(allocator: std.mem.Allocator, source: []const u8) !*Program {
+        return createWithMode(allocator, source, false);
+    }
+
+    pub fn createModule(allocator: std.mem.Allocator, source: []const u8) !*Program {
+        return createWithMode(allocator, source, true);
+    }
+
+    fn createWithMode(allocator: std.mem.Allocator, source: []const u8, is_module: bool) !*Program {
         const self = try allocator.create(Program);
         errdefer allocator.destroy(self);
         self.* = .{ .allocator = allocator, .arena = .init(allocator), .owner = Owner.newOwner(), .ast = undefined, .root = .none, .analysis = undefined, .locals = &.{}, .functions = &.{}, .names = .empty, .literals = .empty, .literal_roles = &.{} };
@@ -44,10 +52,13 @@ pub const Program = struct {
         const bytes = try a.dupe(u8, source);
         var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, bytes);
         var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+        parser.is_module = is_module;
+        scanner.is_module = is_module;
         self.root = try parser.parse();
         if (parser.errors.items.len != 0) return error.InvalidCompilerOutputProgram;
         self.ast = parser.ast;
         self.analysis = Analyzer.init(a, &self.ast);
+        self.analysis.is_module = is_module;
         self.analysis.enable_exact_declaration_anchors = true;
         self.analysis.collect_unresolved_reference_nodes = true;
         self.analysis.enable_source_external_origins = true;

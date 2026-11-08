@@ -45,6 +45,17 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
     if (statement_emit.isSkipped(self, idx)) return;
 
     const node = self.ast.getNode(idx);
+    if ((node.tag == .identifier_reference or node.tag == .assignment_target_identifier) and try @import("native_module_import_projection.zig").emit(self, idx)) return;
+    if ((node.tag == .identifier_reference or node.tag == .assignment_target_identifier) and try @import("native_module_storage_projection.zig").emit(self, idx)) return;
+    if (node.tag == .variable_declaration and try @import("native_module_using.zig").emit(self, idx)) return;
+
+    if (self.options.compiler_statement_insertions) |insertions| {
+        if (try insertions.get(self.ast, idx)) |bytes| {
+            try insertions.recordEmission(self.ast, idx, self.buf.items.len, self.gen_line, self.gen_col);
+            try self.write(bytes);
+            return;
+        }
+    }
 
     // 이 노드 이전에 위치한 주석들을 출력.
     // STRING_TABLE_BIT가 설정된 span은 합성 노드(string_table 참조)이므로
@@ -484,7 +495,8 @@ fn keepNameWrap(self: anytype, node: ast_mod.Node, hint: ?[]const u8) ?[]const u
 
 pub fn exprNeedsParens(self: anytype, node: ast_mod.Node, level: Level, flags: ExprFlags) bool {
     return switch (node.tag) {
-        .unary_expression, .await_expression => level.gte(.prefix),
+        .unary_expression => level.gte(.prefix),
+        .await_expression => level.gte(if (self.options.module_await_as_yield) Level.assign else Level.prefix),
         // 출력이 **prefix 단항으로 시작하는 리터럴** — precedence 상 unary 와 동급으로
         // 다뤄야 한다 (#4482). minify 가 `-a` 를 numeric_literal("-2") 로 접고
         // `true` 를 `!0` 으로 바꾸면서 태그가 바뀌어, 위 `.unary_expression` 매칭을
