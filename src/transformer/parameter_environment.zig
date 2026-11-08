@@ -1367,7 +1367,6 @@ pub fn takeClassNameStatement(self: anytype, source: ast_mod.NodeIndex, binding:
 pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.Allocator.Error!void {
     const renames = if (self.block_rename_map) |*map| map else return;
     if (renames.count() == 0) return;
-    const symbols = symbolsOf(self);
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, root);
     defer self.allocator.free(reachable);
     var by_scope: std.AutoHashMapUnmanaged(u32, std.ArrayList(ast_mod.NodeIndex)) = .empty;
@@ -1437,15 +1436,20 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
         const binding = self.ast.readExtraNode(declaration.data.extra, 0);
         const id = self.getSymbolIdAt(binding) orelse continue;
         const alias = renames.get(id) orelse continue;
+        // Name-helper publication can grow the editor symbol storage. Copy
+        // this selected record before creating any references or helpers.
+        const symbols = symbolsOf(self);
         if (id >= symbols.len or !symbols[id].kind.isFunctionLike()) continue;
+        const symbol = symbols[id];
         self.ast.extra_data.items[declaration.data.extra + ast_mod.FunctionExtra.flags] |= ast_mod.FunctionFlags.name_preserved;
         if (named.contains(id)) continue;
         try named.put(self.allocator, id, {});
-        const scope = symbols[id].scope_id;
+        const scope = symbol.scope_id;
         const saved_scope = self.current_scope;
         self.current_scope = scope;
         defer self.current_scope = saved_scope;
-        const span: @import("../lexer/token.zig").Span = .{ .start = declaration.span.start, .end = declaration.span.start };
+        const anchor = if (scope == self.programScope()) self.ast.getNode(root).span.start else declaration.span.start;
+        const span: @import("../lexer/token.zig").Span = .{ .start = anchor, .end = anchor };
         if (block_container) |container| {
             var targets: std.ArrayList(u32) = .empty;
             defer targets.deinit(self.allocator);
@@ -1455,14 +1459,14 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
                 try targets.appendSlice(self.allocator, self.ast.extra_data.items[start .. start + self.ast.extra_data.items[extra + 2]]);
             } else try targets.append(self.allocator, container);
             for (targets.items) |target| {
-                const call = try nameValue(self, try self.makeUserRefNamed(alias, binding), symbols[id].name, span);
+                const call = try nameValue(self, try self.makeUserRefNamed(alias, binding), symbol.name, span);
                 const entry = try by_container.getOrPut(self.allocator, target);
                 if (!entry.found_existing) entry.value_ptr.* = .empty;
                 try entry.value_ptr.append(self.allocator, try es_helpers.makeExprStmt(self, call, span));
             }
             continue;
         }
-        const call = try nameValue(self, try self.makeUserRefNamed(alias, binding), symbols[id].name, span);
+        const call = try nameValue(self, try self.makeUserRefNamed(alias, binding), symbol.name, span);
         const entry = try by_scope.getOrPut(self.allocator, @backingInt(scope));
         if (!entry.found_existing) entry.value_ptr.* = .empty;
         try entry.value_ptr.append(self.allocator, try es_helpers.makeExprStmt(self, call, span));
@@ -1493,6 +1497,8 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
             else => unreachable,
         }
     }
+    if (by_scope.get(@backingInt(self.programScope()))) |statements|
+        try prependNameStatements(self, root, statements.items);
     for (reachable) |raw| {
         const function = self.ast.getNode(@fromBackingInt(@intCast(raw)));
         const scope = self.outputOwnedScope(@fromBackingInt(@intCast(raw))) orelse continue;
@@ -1500,10 +1506,29 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
         const body = self.ast.functionBodyBlock(function) orelse continue;
         const body_node = self.ast.getNode(body);
         if (body_node.tag != .block_statement and body_node.tag != .function_body) continue;
-        const named_body = try self.prependStatementsToBody(body, statements.items);
-        const body_slot: u32 = if (function.tag == .arrow_function_expression) 1 else 2;
-        self.ast.extra_data.items[function.data.extra + body_slot] = @backingInt(named_body);
+        try prependNameStatements(self, body, statements.items);
     }
+}
+
+/// Hoisted declaration names exist on entry, including program declarations.
+/// Keep the actual list owner and directive prologue when adding restoration
+/// calls; a replacement function body must not lose strictness or its scope.
+fn prependNameStatements(self: anytype, container: ast_mod.NodeIndex, statements: []const ast_mod.NodeIndex) !void {
+    const node = self.ast.getNode(container);
+    const old = node.data.list;
+    var output: std.ArrayList(ast_mod.NodeIndex) = .empty;
+    defer output.deinit(self.allocator);
+    var prologue: u32 = 0;
+    while (prologue < old.len) : (prologue += 1) {
+        const statement = self.ast.readExtraNode(old.start, prologue);
+        const tag = self.ast.getNode(statement).tag;
+        if (tag != .directive and tag != .hashbang) break;
+        try output.append(self.allocator, statement);
+    }
+    try output.appendSlice(self.allocator, statements);
+    for (prologue..old.len) |offset|
+        try output.append(self.allocator, self.ast.readExtraNode(old.start, @intCast(offset)));
+    self.ast.nodes.items[@backingInt(container)].data.list = try self.ast.addNodeList(output.items);
 }
 
 fn isAncestor(scopes: []const @import("../semantic/scope.zig").Scope, target: ScopeId, start: ScopeId) bool {

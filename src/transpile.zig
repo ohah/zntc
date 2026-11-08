@@ -5540,6 +5540,10 @@ fn transpileWithCallbackInternal(
                 reserveCommonJsCodegenNames(arena_alloc, &reserved) catch return error.OutOfMemory;
             }
             reserveFlowEnumCodegenNames(arena_alloc, transformer.ast, &reserved) catch return error.OutOfMemory;
+            if (transformer.spread_props_used) {
+                for ([_][]const u8{ "Object", "Reflect" }) |global|
+                    try reserved.put(arena_alloc, global, {});
+            }
             if (options.keep_names) {
                 const staging_name = try standaloneRuntimeHelperSymbolName(&transformer, "__name", options.minify_whitespace);
                 try reserved.put(arena_alloc, staging_name, {});
