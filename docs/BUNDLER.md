@@ -81,12 +81,16 @@ zntc --bundle src/main.mjs --format=esm --target=esnext \
 API에서는 다음과 같습니다.
 
 ```ts
+import { resolve } from 'node:path';
+import { build } from '@zntc/core';
+
+const sourceRoot = resolve('src');
 await build({
-  entryPoints: ['src/main.mjs'],
+  entryPoints: [resolve(sourceRoot, 'main.mjs')],
   format: 'esm',
   target: 'esnext',
   preserveModules: true,
-  preserveModulesRoot: 'src',
+  preserveModulesRoot: sourceRoot,
   outdir: 'dist',
   outExtension: '.mjs',
   write: true,
