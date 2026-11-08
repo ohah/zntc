@@ -79,7 +79,14 @@ pub fn ES2018(comptime Transformer: type) type {
                     try self.scratch.append(self.allocator, new_spread);
                 } else {
                     // non-spread: 자식을 방문하고 추가
+                    const source_member: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+                    const is_accessor = child.tag == .method_definition and
+                        self.ast.readExtra(child.data.extra, ast_mod.MethodExtra.flags) &
+                            (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter) != 0;
                     const new_child = try @import("es2015_object_methods.zig").ES2015ObjectMethods(Transformer).lowerObjectMember(self, @fromBackingInt(@intCast(raw_idx)));
+                    if (origins) |*batch| {
+                        if (is_accessor and !new_child.isNone()) batch.record(self, source_member, new_child) catch |err| return builtin.productionFailure(err);
+                    }
                     if (!new_child.isNone()) {
                         try self.scratch.append(self.allocator, new_child);
                     }
