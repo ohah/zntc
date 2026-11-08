@@ -43,6 +43,10 @@ const ALLOWLIST = {
     class: 'iterative_safe',
     note: 'explicit node stack and reachable set prove memo membership in the actual completed IIFE body',
   },
+  'src/bundler/native_async_disposal_publication.zig::retainedDeclaration': {
+    class: 'iterative_safe',
+    note: 'explicit node stack and visited set scan selected module statements; function bodies are pruned and exact declaration SID/scope anchors authenticate the retained native resource',
+  },
   'src/bundler/lowered_tla_publication.zig::hasSuspension': {
     class: 'iterative_safe',
     note: 'explicit work stack and visited set over the selected owned initializer; source function boundaries are skipped',
