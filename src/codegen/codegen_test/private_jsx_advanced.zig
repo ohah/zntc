@@ -847,12 +847,13 @@ test "JSX automatic + ES5: spread with children → __spreadValues" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...rest") == null);
 }
 
-test "JSX automatic + ES5: multiple spreads → Object.assign" {
+test "JSX automatic + ES5: multiple spread operands preserve property definitions" {
     var r = try e2eJSXAutomaticTarget(std.testing.allocator,
         \\const x = <div {...a} {...b} id="c" />;
     , .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") != null);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, r.output, "__spreadValues("));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, r.output, "__spreadProps("));
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...") == null);
 }
 
