@@ -260,7 +260,9 @@ test "native await using worker layout forwards owned source diagnostics and no 
             if (diagnostic.code != .top_level_await_target or diagnostic.severity != .@"error") continue;
             try std.testing.expect(std.mem.endsWith(u8, diagnostic.file_path, "resource.mjs"));
             try std.testing.expectEqual(@as(?u32, 2), diagnostic.line);
-            try std.testing.expectEqual(@as(?u32, 0), diagnostic.column);
+            // The parser consumes `await` before the declaration span starts
+            // at `using`, six bytes into the second source line.
+            try std.testing.expectEqual(@as(?u32, 6), diagnostic.column);
             const span = diagnostic.span orelse return error.TestUnexpectedResult;
             try std.testing.expect(span.end > span.start);
             found = true;

@@ -2106,7 +2106,10 @@ pub const Bundler = struct {
 
         // Only the post-shake selected, retained initializer can require a
         // waiter. Preserve the normal diagnostic result and emit no partial JS.
-        const tla_publication_options = self.makeEmitOptions(self.options.format);
+        var tla_publication_options = self.makeEmitOptions(self.options.format);
+        // makeEmitOptions leaves PM selection to the physical chunk caller.
+        // Publication must use that same selected layout before emission too.
+        tla_publication_options.preserve_modules = self.options.preserve_modules;
         const lowered_tla_publication_blocked = try @import("lowered_tla_publication.zig").diagnose(graph, &tla_publication_options, if (shaker) |*value| value else null);
         var native_disposal_publication_blocked = try @import("native_async_disposal_publication.zig").diagnose(graph, &tla_publication_options, if (shaker) |*value| value else null, null);
         if (!native_disposal_publication_blocked and self.options.output.len > 1) {
