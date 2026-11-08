@@ -236,6 +236,7 @@ pub const EmitOptions = struct {
     compiler_literal_overrides: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null,
     defer_async_entry_exports: ?*DeferredAsyncEntryExports = null,
     deferred_module_exports: ?[]DeferredAsyncEntryExports = null,
+    native_module_publication: ?*const @import("native_module_publication.zig").Plan = null,
     /// Existing namespace storage initialized by this output instance before CJS requires.
     preinitialized_esm_namespace: ?@import("symbol.zig").SymbolID = null,
 
@@ -652,6 +653,21 @@ pub fn emitWithTreeShaking(
     }
 
     std.mem.sort(*const Module, sorted.items, {}, Module.bundleOrderLessThan);
+    // Source environments call the installed native evaluator while their
+    // factories are defined. Unlike classic lazy __esm bodies, those calls
+    // cannot precede this exact provider's unwrapped variable initializer.
+    if (graph.native_async_module_members.count() != 0) {
+        const l = linker orelse return error.MissingNativeAsyncModuleFactory;
+        const factory = try checkedNativeAsyncModuleFactory(graph, l);
+        var position: ?usize = null;
+        for (sorted.items, 0..) |candidate, i| if (candidate == factory.module) {
+            if (position != null) return error.InvalidNativeAsyncModuleFactory;
+            position = i;
+        };
+        const at = position orelse return error.MissingNativeAsyncModuleFactory;
+        std.mem.copyBackwards(*const Module, sorted.items[1 .. at + 1], sorted.items[0..at]);
+        sorted.items[0] = factory.module;
+    }
     var run_before_main_closure: ?std.DynamicBitSet = null;
     defer if (run_before_main_closure) |*closure| closure.deinit();
     if (options.run_before_main.len > 0) {
@@ -921,7 +937,22 @@ pub fn emitWithTreeShaking(
         .assign_cjs = options.format == .cjs,
     };
     defer if (single_deferred_exports.value) |value| allocator.free(value);
+    var native_publication: ?*@import("native_module_publication.zig").Plan = null;
+    defer if (native_publication) |plan| plan.destroy();
+    if (graph.native_async_module_members.count() != 0 and options.format == .esm) {
+        const l = linker orelse return error.MissingNativeAsyncModuleFactory;
+        const index = entry_idx orelse return error.InvalidNativeModulePublicationPlan;
+        const entry = graph.getModule(@fromBackingInt(index)) orelse return error.InvalidNativeModulePublicationPlan;
+        if (entry.export_bindings.len != 0) {
+            const plan = try @import("native_module_publication.zig").Plan.create(allocator, l, entry);
+            native_publication = plan;
+            const header = try plan.artifact.emitHeader(allocator, options.minify_whitespace);
+            defer allocator.free(header);
+            try output.appendSlice(allocator, header);
+        }
+    }
     var single_module_options = options.*;
+    single_module_options.native_module_publication = native_publication;
     if (options.defer_async_entry_exports == null and options.format != .esm) {
         for (sorted.items) |m| {
             if (!m.is_entry_point or m.export_bindings.len == 0) continue;
@@ -988,7 +1019,8 @@ pub fn emitWithTreeShaking(
         if (linker) |l| try holder_reservations.seed(l);
         const base_hash = cache_mod.computeOptionsHash(options);
         const seed_hash = holder_reservations.initialFingerprint();
-        const inputs = [_]u64{ base_hash, seed_hash };
+        const publication_hash: u64 = if (native_publication) |plan| plan.fingerprint() else 0;
+        const inputs = [_]u64{ base_hash, seed_hash, @intFromBool(graph.native_async_module_members.count() != 0), publication_hash };
         break :blk std.hash.Wyhash.hash(0x4e53434143484531, std.mem.asBytes(&inputs));
     } else 0;
 
@@ -1488,6 +1520,12 @@ pub fn emitWithTreeShaking(
         }
     }
 
+    if (native_publication) |plan| {
+        const publication = try plan.emitPublish(allocator);
+        defer allocator.free(publication);
+        try output.appendSlice(allocator, publication);
+    }
+
     // 포맷별 epilogue
     if (options.outro_js) |outro| {
         try output.appendSlice(allocator, outro);
@@ -1847,22 +1885,27 @@ pub const NativeAsyncModuleFactoryProvider = struct {
 
 /// Resolve only the exact runtime export installed by the graph's demand
 /// producer. A source spelling or a second module cannot replace this owner.
-pub fn checkedNativeAsyncModuleFactory(graph: *const ModuleGraph, linker: *Linker) !NativeAsyncModuleFactoryProvider {
+pub fn checkedNativeAsyncModuleFactory(graph: *const ModuleGraph, linker: *const Linker) !NativeAsyncModuleFactoryProvider {
     const known = graph.native_async_module_factory orelse return error.MissingNativeAsyncModuleFactory;
     return checkedNativeAsyncModuleExport(graph, linker, known, "__nativeAsyncModule");
 }
 
-pub fn checkedNativeAsyncModuleAcquire(graph: *const ModuleGraph, linker: *Linker) !NativeAsyncModuleFactoryProvider {
+pub fn checkedNativeAsyncModuleAcquire(graph: *const ModuleGraph, linker: *const Linker) !NativeAsyncModuleFactoryProvider {
     const known = graph.native_async_module_acquire orelse return error.MissingNativeAsyncModuleFactory;
     return checkedNativeAsyncModuleExport(graph, linker, known, "__nativeAcquire");
 }
 
-pub fn checkedNativeAsyncModuleDispose(graph: *const ModuleGraph, linker: *Linker) !NativeAsyncModuleFactoryProvider {
+pub fn checkedNativeAsyncModuleDispose(graph: *const ModuleGraph, linker: *const Linker) !NativeAsyncModuleFactoryProvider {
     const known = graph.native_async_module_dispose orelse return error.MissingNativeAsyncModuleFactory;
     return checkedNativeAsyncModuleExport(graph, linker, known, "__nativeDispose");
 }
 
-fn checkedNativeAsyncModuleExport(graph: *const ModuleGraph, linker: *Linker, known: @import("graph.zig").TlaReadinessAll, expected_name: []const u8) !NativeAsyncModuleFactoryProvider {
+pub fn checkedNativeAsyncModuleNamespace(graph: *const ModuleGraph, linker: *const Linker) !NativeAsyncModuleFactoryProvider {
+    const known = graph.native_async_module_namespace orelse return error.MissingNativeAsyncModuleFactory;
+    return checkedNativeAsyncModuleExport(graph, linker, known, "__nativeNamespace");
+}
+
+fn checkedNativeAsyncModuleExport(graph: *const ModuleGraph, linker: *const Linker, known: @import("graph.zig").TlaReadinessAll, expected_name: []const u8) !NativeAsyncModuleFactoryProvider {
     const module = graph.getModule(known.module_index) orelse return error.InvalidNativeAsyncModuleFactory;
     const semantic = module.semantic orelse return error.InvalidNativeAsyncModuleFactory;
     const origin = module.runtime_helper_source orelse return error.InvalidNativeAsyncModuleFactory;
@@ -2282,9 +2325,18 @@ pub fn emitModuleWithHolderReservations(
         if (cache.symbol_ids.len > 0) {
             transformer.symbol_ids.appendSlice(arena_alloc, cache.symbol_ids) catch return error.OutOfMemory;
         }
-        if (module.semantic) |sem| {
+        if (module.semantic) |*sem| {
             transformer.symbols = sem.symbols.items;
             transformer.references = sem.references;
+            // A cached AST still belongs to its actual semantic scope domain.
+            // Emit-time editors must inherit that domain before their first
+            // mutation, just as the uncached hydration path does below.
+            transformer.scopes = sem.scopes;
+            transformer.scope_maps = sem.scope_maps;
+            transformer.scope_owner_map = sem.scope_owner_map;
+            transformer.node_scope_provenance = sem.node_scope_provenance;
+            transformer.class_self_symbol_map = sem.class_self_symbol_map;
+            transformer.unresolved_references = &sem.unresolved_references;
         }
     } else if (module.semantic) |*sem| {
         // legacy 경로: graph pre-pass 미실행 (asset/disabled/JSON 등). semantic 만 hydrate.
@@ -2629,9 +2681,10 @@ pub fn emitModuleWithHolderReservations(
     // 동일 관습. mergeDecls 직전에 호출해 var 끼리 연쇄 merge 극대화.
     // A preserved native ESM file still owns a real module environment.
     // Its lexical declarations must not inherit scope-hoisted bundle storage.
+    const native_module_environment = if (linker) |l| @import("native_async_module_plan.zig").contains(l.graph, module) else false;
     const native_esm_module = options.preserve_modules and options.format == .esm and module.wrap_kind == .none and
         !options.unsupported.using and !options.unsupported.top_level_await;
-    if (linker != null and options.minify_syntax and !native_esm_module) {
+    if (linker != null and options.minify_syntax and !native_esm_module and !native_module_environment) {
         @import("../transformer/minify.zig").downgradeToVar(transformer.ast);
     }
 
@@ -2639,7 +2692,7 @@ pub fn emitModuleWithHolderReservations(
     // *섞인 const/let 시퀀스* 도 mergeDecls 가 *let 단일 kind* 로 합칠 수 있게 한다.
     // 재할당 의미 변경 (TypeError → silent) 은 minify-only 모드라 정상 — terser/esbuild/
     // rolldown/rspack 동일.
-    if (options.minify_syntax) {
+    if (options.minify_syntax and !native_module_environment) {
         try @import("../transformer/minify.zig").convertConstToLetPreservingFromRoot(
             transformer.ast,
             root,
@@ -2671,7 +2724,43 @@ pub fn emitModuleWithHolderReservations(
 
     // __esm 모듈: AST 수준 var/function 호이스팅 (esbuild/rolldown 방식)
     if (module.wrap_kind == .esm) {
-        const esm_result = try emitEsmWrappedModule(
+        const esm_result = if (native_module_environment) native: {
+            const l = linker orelse return error.MissingNativeAsyncModuleFactory;
+            // Copy-edge owners belong to this Transformer output. Uncached
+            // source emission can retain its first-analysis map while the
+            // actual program has a new NodeIndex after list traversal.
+            var output_scope_owners = try (if (transformer.semantic_editor) |*editor| editor.scope_owner_map else transformer.scope_owner_map).clone(arena_alloc);
+            var output_owners = transformer.transformed_scope_owner_map.iterator();
+            while (output_owners.next()) |owner| {
+                if (output_scope_owners.get(owner.key_ptr.*)) |existing| {
+                    if (existing != owner.value_ptr.*) return error.InvalidNativeAsyncModuleOwner;
+                }
+                try output_scope_owners.put(arena_alloc, owner.key_ptr.*, owner.value_ptr.*);
+            }
+            var removed_owners = transformer.scope_owner_removed.keyIterator();
+            while (removed_owners.next()) |owner| _ = output_scope_owners.remove(owner.*);
+            const view: @import("../codegen/native_module_using.zig").SourceView = .{
+                .domain = transformer.ast,
+                .symbol_ids = transformer.symbol_ids.items,
+                .symbols = if (transformer.semantic_editor) |*editor| editor.symbols.items else transformer.symbols,
+                .scopes = if (transformer.semantic_editor) |*editor| editor.scopes.items else transformer.scopes,
+                .scope_owner_map = &output_scope_owners,
+                .references = if (transformer.semantic_editor) |*editor| editor.references.items else transformer.references,
+            };
+            break :native try @import("emitter/native_async_module.zig").emit(
+                allocator,
+                arena_alloc,
+                transformer.ast,
+                root,
+                module,
+                view,
+                if (transformer.block_rename_map) |*aliases| aliases else null,
+                if (metadata) |*m| m else null,
+                l,
+                options,
+                used_export_names,
+            );
+        } else try emitEsmWrappedModule(
             allocator,
             arena_alloc,
             transformer.ast,
@@ -2695,7 +2784,7 @@ pub fn emitModuleWithHolderReservations(
             if (esm_result.entry_chain) |chain| allocator.free(chain);
         }
         // Each preserve-modules file also owns its public ESM export surface.
-        if (is_entry and options.format == .esm) {
+        if (is_entry and options.format == .esm and !native_module_environment) {
             if (metadata) |md| if (md.final_export_entries) |entries| {
                 if (try entry_exports.appendWrappedEsmEntryExports(allocator, wrapped_code, entries, options.minify_whitespace)) |combined| {
                     allocator.free(wrapped_code);

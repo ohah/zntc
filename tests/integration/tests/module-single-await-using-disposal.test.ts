@@ -6,12 +6,35 @@ import { build, buildSync, close, init, type BuildOptions } from '../../../packa
 import { createFixture, ZNTC_BIN } from './helpers';
 
 // #6959: the original native-module cases must also work in one output file.
-// Preserve the same source, options and Native expectations as the PM suite.
+// Preserve the same source and options as the PM suite. The mixed exported
+// resource has an explicit Node 26.9 observation distinct from DisposeResources.
 const surfaces =
   process.env.ZNTC_TEST_CLI_ONLY === '1' ? (['cli'] as const) : (['cli', 'sync', 'async'] as const);
 type Surface = 'cli' | 'sync' | 'async';
-type Input = { name: string; lib: string; entry: string; peer?: string; consumer?: string };
+type Input = {
+  name: string;
+  lib: string;
+  entry: string;
+  peer?: string;
+  consumer?: string;
+  specStdout?: string;
+  node269ObservedStdout?: string;
+};
 const inputs: Input[] = [
+  {
+    name: 'public var initialized inside a source block',
+    lib: 'await using resource=null;{var value=1}export{value};export function advance(){value++}',
+    entry: "export{value,advance}from './lib.mjs';",
+    consumer:
+      "import*as ns from './ENTRY';const initial=ns.value;ns.advance();console.log(JSON.stringify([initial,ns.value]));",
+  },
+  {
+    name: 'public export aliases and native write targets',
+    lib: "await using resource=null;var value=1;var value;export{value,value as alias};export let named;export function advance(){const before=value++;const after=++value;value+=2;value*=2;value&&=12;({value}={value:13});[value]=[14];try{value=(()=>{throw Error('stop')})()}catch{}({named=class{static label=this.name}}={});return [before,after,value,named.name,named.label]}",
+    entry: "export{value,alias,named,advance}from './lib.mjs';",
+    consumer:
+      "import*as ns from './ENTRY';const initial=[ns.value,ns.alias];const result=ns.advance();console.log(JSON.stringify([initial,result,ns.value,ns.alias,ns.named.name,ns.named.label]));",
+  },
   {
     name: 'original static dependency',
     lib: "import{events}from './log.mjs';await using r={async[Symbol.asyncDispose](){events.push('dispose-start');await Promise.resolve();events.push('dispose-end')}};events.push('body');export const answer=42;",
@@ -44,6 +67,10 @@ const inputs: Input[] = [
   },
   {
     name: 'mixed exported resource',
+    // ECMA-262 DisposeResources has no exemption for exported sync resources.
+    // Exact source also yields specStdout in Bun; Node 26.9 omits only 'sync'.
+    specStdout: '["ok",["async-start","async-end","sync","entry"]]\n',
+    node269ObservedStdout: '["ok",["async-start","async-end","entry"]]\n',
     lib: "import{events}from './log.mjs';using resource={label:'ok',[Symbol.dispose](){events.push('sync')}};await using other={async[Symbol.asyncDispose](){events.push('async-start');await 0;events.push('async-end')}};export{resource};",
     entry:
       "import{events}from './log.mjs';const{resource}=await import('./lib.mjs');events.push('entry');console.log(JSON.stringify([resource.label,events]));",
@@ -77,6 +104,7 @@ const inputs: Input[] = [
 ];
 const modes = [false, true] as const;
 const node = process.env.ZNTC_NODE_BIN ?? 'node';
+const nodeVersion = spawnSync(node, ['--version'], { encoding: 'utf8' }).stdout.trim();
 function execute(path: string, cwd: string) {
   return spawnSync(node, [path], { cwd, encoding: 'utf8', timeout: 15_000 });
 }
@@ -167,6 +195,13 @@ describe('single-file async module boundaries (#6959)', () => {
             expect(native.error).toBeUndefined();
             expect(native.status, native.stderr).toBe(0);
             expect(native.stdout.length).toBeGreaterThan(0);
+            if (input.specStdout) {
+              // Keep this engine observation explicit; it is not the bundle's
+              // expected cleanup and never authorizes dropping the sync call.
+              expect(native.stdout).toBe(
+                nodeVersion === 'v26.9.0' ? input.node269ObservedStdout! : input.specStdout,
+              );
+            }
             const result = await compile(surface, fixture.dir, minify, false);
             expectSuccess(result);
             if (result.api) expect(result.api.outputFiles).toHaveLength(1);
@@ -174,7 +209,7 @@ describe('single-file async module boundaries (#6959)', () => {
             const actual = execute(emitted, fixture.dir);
             expect(actual.error).toBeUndefined();
             expect(actual.status, actual.stderr).toBe(native.status);
-            expect(actual.stdout).toBe(native.stdout);
+            expect(actual.stdout).toBe(input.specStdout ?? native.stdout);
             expect(actual.stderr).toBe(native.stderr);
           } finally {
             await fixture.cleanup();

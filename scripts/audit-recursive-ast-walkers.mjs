@@ -35,6 +35,10 @@ const srcRoot = join(root, 'src');
 // "<relpath>::<fn>" → { class, note }. class ∈ {iterative_safe, one_level, bounded_recursive, recursive_tracked}.
 // 파일 경로로 스코프해 동명 walker 가 분류를 상속하는 false-negative 를 차단.
 const ALLOWLIST = {
+  'src/bundler/native_async_module_plan.zig::hasOnlyProgramAsyncResources': {
+    class: 'iterative_safe',
+    note: 'explicit heap node stack with visited set; function bodies are pruned while checking physical program-level async resource statements',
+  },
   'src/transformer/ast_plugin.zig::registerInjectedFunctionScopes': {
     class: 'iterative_safe',
     note: 'explicit Work stack carries insertion ScopeId; visited node ids prevent repeated or cyclic descent',

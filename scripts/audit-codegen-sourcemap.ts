@@ -38,6 +38,7 @@ const TARGET_FILES = [
  * 발행하는 위임형 함수.
  */
 const SKIP_FUNCS = new Map<string, string>([
+	["emitAwait", "native module projection delegates to emitYield with the original span; ordinary await maps node.span before output"],
 	["emitProgram", "container — children carry mappings"],
 	["emitBlock", "container — children carry mappings"],
 	["emitBracedList", "container helper for block_statement / class_body"],

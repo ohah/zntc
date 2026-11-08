@@ -663,6 +663,7 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         try self.addGeneratedFunctionScope(self.programScope(), arrow)
     else
         outer_scope;
+    var wrapper_temp_start = self.temp_var_counter;
     self.current_scope = arrow_scope;
     defer self.current_scope = outer_scope;
 
@@ -695,6 +696,16 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         const child: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
         const child_node = self.ast.getNode(child);
         if (child_node.tag == .import_declaration or child_node.tag == .ts_import_equals_declaration) continue;
+        // Select the actual evaluation destination before creating any temps.
+        // Prefix statements remain in the program; the first retained resource
+        // or explicit Await starts the generated body's contiguous allocation
+        // range. Imports/exports retain their separate source-edge handling.
+        const is_resource = child_node.tag == .variable_declaration and
+            self.ast.variableDeclarationKind(child_node).isUsing();
+        const starts_wrapper = !wrapper_started and !isModuleDeclaration(child_node.tag) and
+            (is_resource or try hasTopLevelAwait(self.ast, child));
+        if (starts_wrapper) wrapper_temp_start = self.temp_var_counter;
+        self.current_scope = if (wrapper_started or starts_wrapper) arrow_scope else outer_scope;
         if (isModuleDeclaration(child_node.tag)) {
             if (wrapper_started) {
                 // When the bundle waits for the wrapper, an export declaration
@@ -758,11 +769,16 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     // async arrow body block 생성
     const body_list_nodes = self.scratch.items[body_stmts_top..body_stmts_end];
     const body_list = try self.ast.addNodeList(body_list_nodes);
-    const body_block = try self.ast.addNode(.{
+    const raw_body_block = try self.ast.addNode(.{
         .tag = .block_statement,
         .span = node.span,
         .data = .{ .list = body_list },
     });
+    // Pattern splitting above already produced temps in this actual async
+    // arrow scope. Publish their physical declarations here and consume their
+    // allocator range before the outer program allocates its wrapper result.
+    // The ordinary arrow visitor starts later and cannot own this earlier range.
+    const body_block = try self.hoistArrowBodyTemps(raw_body_block, wrapper_temp_start, node.span, arrow);
 
     // Fill the pre-registered async arrow once the visited body is available.
     self.ast.extra_data.items[arrow_extra + 1] = @backingInt(body_block);

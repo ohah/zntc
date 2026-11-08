@@ -45,9 +45,13 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
     if (statement_emit.isSkipped(self, idx)) return;
 
     const node = self.ast.getNode(idx);
+    if ((node.tag == .identifier_reference or node.tag == .assignment_target_identifier) and try @import("native_module_import_projection.zig").emit(self, idx)) return;
+    if ((node.tag == .identifier_reference or node.tag == .assignment_target_identifier) and try @import("native_module_storage_projection.zig").emit(self, idx)) return;
+    if (node.tag == .variable_declaration and try @import("native_module_using.zig").emit(self, idx)) return;
 
     if (self.options.compiler_statement_insertions) |insertions| {
         if (try insertions.get(self.ast, idx)) |bytes| {
+            try insertions.recordEmission(self.ast, idx, self.buf.items.len, self.gen_line, self.gen_col);
             try self.write(bytes);
             return;
         }

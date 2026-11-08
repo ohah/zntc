@@ -2,6 +2,9 @@
 /// allocator failures.
 pub const Error = error{
     InvalidCompilerStatementInsertion,
+    InvalidNativeModuleUsingContext,
+    InvalidNativeModuleImportProjection,
+    InvalidNativeModuleStorageProjection,
     MissingEnumIifeParameterSymbol,
     MissingNamespaceIifeParameterSymbol,
     MissingGeneratedIifeParameterFinalName,

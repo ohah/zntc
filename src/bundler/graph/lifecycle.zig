@@ -198,6 +198,7 @@ pub fn prepareForPreservedRebuild(self: *ModuleGraph) void {
 }
 
 pub fn deinit(self: *ModuleGraph) void {
+    self.native_async_module_members.deinit(self.allocator);
     self.output_runtime_registry.deinit(self.allocator);
     self.namespace_source_consumed_providers.deinit(self.allocator);
     self.self_namespace_holders.deinit(self.allocator);

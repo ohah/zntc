@@ -177,14 +177,16 @@ const MODULES = [_]HelperModule{
     },
     .{
         .short = "native-async-module",
-        .helpers = &.{ "__nativeAsyncModule", "__nativeAcquire", "__nativeDispose" },
+        .helpers = &.{ "__nativeAsyncModule", "__nativeAcquire", "__nativeDispose", "__nativeNamespace" },
         .body = .{
             .plain = "var __nativeAsyncModule = " ++ @import("bundler/native_async_module_runtime.zig").FACTORY_EXPRESSION ++ ";\n" ++
                 "var __nativeAcquire = " ++ @import("bundler/native_async_disposal_runtime.zig").ACQUIRE_EXPRESSION ++ ";\n" ++
-                "var __nativeDispose = " ++ @import("bundler/native_async_disposal_runtime.zig").DISPOSE_GENERATOR_EXPRESSION ++ ";\n",
+                "var __nativeDispose = " ++ @import("bundler/native_async_disposal_runtime.zig").DISPOSE_GENERATOR_EXPRESSION ++ ";\n" ++
+                "var __nativeNamespace = " ++ @import("bundler/native_module_namespace_runtime.zig").NAMESPACE_EXPRESSION ++ ";\n",
             .min = "var __nativeAsyncModule=" ++ @import("bundler/native_async_module_runtime.zig").FACTORY_EXPRESSION_MIN ++ ";" ++
                 "var __nativeAcquire=" ++ @import("bundler/native_async_disposal_runtime.zig").ACQUIRE_EXPRESSION_MIN ++ ";" ++
-                "var __nativeDispose=" ++ @import("bundler/native_async_disposal_runtime.zig").DISPOSE_GENERATOR_EXPRESSION_MIN ++ ";",
+                "var __nativeDispose=" ++ @import("bundler/native_async_disposal_runtime.zig").DISPOSE_GENERATOR_EXPRESSION_MIN ++ ";" ++
+                "var __nativeNamespace=" ++ @import("bundler/native_module_namespace_runtime.zig").NAMESPACE_EXPRESSION_MIN ++ ";",
         },
     },
     .{

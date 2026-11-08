@@ -53,6 +53,10 @@ pub fn diagnose(graph: *ModuleGraph, options: *const EmitOptions, shaker: ?*cons
 }
 
 fn preservesBoundary(graph: *const ModuleGraph, module: *const Module, options: *const EmitOptions, chunks: ?*const ChunkGraph, shaker: ?*const TreeShaker, entry_count: usize) bool {
+    if (chunks == null and options.format == .esm and !options.dev_mode and !options.preserve_modules and
+        !options.code_splitting and !options.unsupported.using and !options.unsupported.top_level_await and
+        options.transform_options_base.native_async_module_boundaries and
+        @import("native_async_module_plan.zig").contains(graph, module)) return true;
     if (options.format != .esm or options.dev_mode or options.unsupported.using or
         options.unsupported.top_level_await or module.wrap_kind != .none) return false;
     if (chunks) |plan| {

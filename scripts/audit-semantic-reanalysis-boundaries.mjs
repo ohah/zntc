@@ -720,7 +720,11 @@ function tryReject(fn, label) {
 function auditCompilerOutputProgram(program, chunks, emitter) {
   const label = 'src/bundler/compiler_output_program.zig';
   const masked = maskZigNonCode(program);
-  const create = functionBody(masked, 'create', label).body.replace(/\s+/g, '');
+  const scriptEntry = functionBody(masked, 'create', label).body.replace(/\s+/g, '');
+  const moduleEntry = functionBody(masked, 'createModule', label).body.replace(/\s+/g, '');
+  requireCondition(scriptEntry === 'returncreateWithMode(allocator,source,false);', `${label}: script entry must select the owned script constructor`);
+  requireCondition(moduleEntry === 'returncreateWithMode(allocator,source,true);', `${label}: module entry must select the owned module constructor`);
+  const create = functionBody(masked, 'createWithMode', label).body.replace(/\s+/g, '');
   const initSites = analyzerInitSites(program, true).sites;
   requireCondition(initSites.length === 1, `${label}: expected one independent first analyzer`);
   requireCondition(
@@ -734,10 +738,13 @@ function auditCompilerOutputProgram(program, chunks, emitter) {
   const stages = [
     'constbytes=trya.dupe(u8,source);',
     'Scanner.init(a,bytes)',
+    'parser.is_module=is_module;',
+    'scanner.is_module=is_module;',
     'self.root=tryparser.parse();',
     'if(parser.errors.items.len!=0)returnerror.InvalidCompilerOutputProgram;',
     'self.ast=parser.ast;',
     'self.analysis=Analyzer.init(a,&self.ast);',
+    'self.analysis.is_module=is_module;',
     'self.analysis.enable_exact_declaration_anchors=true;',
     'self.analysis.collect_unresolved_reference_nodes=true;',
     'self.analysis.enable_source_external_origins=true;',

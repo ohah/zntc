@@ -592,9 +592,11 @@ const tla_readiness_all_id = "\x00zntc:runtime/readiness-all";
 const native_async_module_id = "\x00zntc:runtime/native-async-module";
 
 fn demandNativeAsyncModuleFactory(self: *ModuleGraph, io: std.Io, runtime_indices: *std.ArrayList(ModuleIndex)) !void {
+    self.native_async_module_demanded = false;
     self.native_async_module_factory = null;
     self.native_async_module_acquire = null;
     self.native_async_module_dispose = null;
+    self.native_async_module_namespace = null;
     if (!self.transform_options_base.native_async_module_boundaries) return;
     var demanded = false;
     var modules = self.modules.iterator(0);
@@ -606,18 +608,29 @@ fn demandNativeAsyncModuleFactory(self: *ModuleGraph, io: std.Io, runtime_indice
         }
     }
     if (!demanded) return;
+    self.native_async_module_demanded = true;
     const start = self.modules.count();
     const helper = try self.addModule(io, native_async_module_id);
     _ = try graph_requested_exports.requestAll(self, helper);
     try runtime_indices.append(self.allocator, helper);
     try discoverPendingModulesSequential(self, io, start);
+    // Every emitted environment is instantiated before source evaluation.
+    // Its real runtime provider must therefore execute before those writers,
+    // including a synchronous source module ordered before the first await.
+    var source_index: usize = 0;
+    while (source_index < start) : (source_index += 1) {
+        const source_module = self.modules.at(source_index);
+        if (source_module.index == helper or source_module.is_external or source_module.is_disabled) continue;
+        try linkDependencyUnique(self, source_module.index, helper);
+    }
 }
 
 fn captureNativeAsyncModuleFactory(self: *ModuleGraph) !void {
     self.native_async_module_factory = null;
     self.native_async_module_acquire = null;
     self.native_async_module_dispose = null;
-    if (!self.transform_options_base.native_async_module_boundaries) return;
+    self.native_async_module_namespace = null;
+    if (!self.transform_options_base.native_async_module_boundaries or !self.native_async_module_demanded) return;
     const index = self.path_to_module.get(native_async_module_id) orelse return;
     const module = self.modules.at(@backingInt(index));
     const origin = module.runtime_helper_source orelse return error.InvalidNativeAsyncModuleFactory;
@@ -634,6 +647,8 @@ fn captureNativeAsyncModuleFactory(self: *ModuleGraph) !void {
             &self.native_async_module_acquire
         else if (std.mem.eql(u8, binding.exported_name, "__nativeDispose"))
             &self.native_async_module_dispose
+        else if (std.mem.eql(u8, binding.exported_name, "__nativeNamespace"))
+            &self.native_async_module_namespace
         else
             continue;
         if (destination.* != null) return error.InvalidNativeAsyncModuleFactory;
@@ -642,11 +657,11 @@ fn captureNativeAsyncModuleFactory(self: *ModuleGraph) !void {
         destination.* = .{ .module_index = index, .export_index = @intCast(i), .symbol_id = @fromBackingInt(@intCast(sid)), .owner_token = semantic.owner_token };
     }
     if (self.native_async_module_factory == null or self.native_async_module_acquire == null or
-        self.native_async_module_dispose == null) return error.InvalidNativeAsyncModuleFactory;
+        self.native_async_module_dispose == null or self.native_async_module_namespace == null) return error.InvalidNativeAsyncModuleFactory;
 }
 
 fn keepNativeAsyncModuleFactorySynchronous(self: *ModuleGraph) !void {
-    if (!self.transform_options_base.native_async_module_boundaries) return;
+    if (!self.transform_options_base.native_async_module_boundaries or !self.native_async_module_demanded) return;
     const index = self.path_to_module.get(native_async_module_id) orelse return;
     const module = self.modules.at(@backingInt(index));
     const origin = module.runtime_helper_source orelse return error.InvalidNativeAsyncModuleFactory;
@@ -884,6 +899,7 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
     // static cycle 멤버 marking 은 별도 pass (#2211).
     try graph_cycles.markViaDynamic(self, entry_indices.items);
 
+    @import("../native_async_module_plan.zig").restore(self);
     graph_finalize.promoteExportsKinds(self);
     graph_finalize.promoteRunBeforeMainModules(self);
     // #4598: cone 계산 → 승격 → 심볼 등록 순서여야 한다. `registerWrapperSymbols` 가
@@ -892,6 +908,7 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
     graph_finalize.propagateTopLevelAwait(self);
     graph_finalize.computeAsyncCone(self);
     graph_finalize.promoteAsyncConeToEsmWrap(self);
+    try @import("../native_async_module_plan.zig").promote(self);
     try keepTlaReadinessAllSynchronous(self);
     try keepNativeAsyncModuleFactorySynchronous(self);
     try graph_finalize.registerWrapperSymbols(self);

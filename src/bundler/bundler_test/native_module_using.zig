@@ -101,14 +101,20 @@ test "native module using guard mode does not require Symbol for legacy null acq
     try std.testing.expectEqualStrings("null\n", actual.stdout);
 }
 
-test "native module using mixed await exports diagnose flattened scope and retain native PM value" {
+test "native module using mixed await exports wait for disposal in single output and native PM" {
     for ([_]bool{ false, true }) |preserve| for ([_]bool{ false, true }) |minify| {
         var tmp = std.testing.tmpDir(.{});
         defer tmp.cleanup();
-        try helpers.writeFile(tmp.dir, "lib.mjs", "using resource={label:'ok',[Symbol.dispose](){}};await using other={async[Symbol.asyncDispose](){}};export{resource};");
+        try helpers.writeFile(tmp.dir, "lib.mjs", "using resource={label:'pending',[Symbol.dispose](){}};await using other={async[Symbol.asyncDispose](){await 0;resource.label='completed'}};export{resource};");
         try helpers.writeFile(tmp.dir, "main.mjs", "const{resource}=await import('./lib.mjs');console.log(resource.label);");
         const entry = try helpers.absPath(&tmp, "main.mjs");
         defer std.testing.allocator.free(entry);
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", entry } });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings("completed\n", native.stdout);
+        try std.testing.expectEqualStrings("", native.stderr);
         var bundler = Bundler.init(std.testing.allocator, .{
             .entry_points = &.{entry},
             .platform = .node,
@@ -125,23 +131,15 @@ test "native module using mixed await exports diagnose flattened scope and retai
         defer bundler.deinit();
         const result = try bundler.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
-        if (!preserve) {
-            try std.testing.expect(result.hasErrors());
-            try std.testing.expectEqual(@as(usize, 0), result.output.len);
-            var found = false;
-            for (result.diagnostics orelse &.{}) |diagnostic| {
-                if (diagnostic.code == .top_level_await_target and diagnostic.severity == .@"error") found = true;
-            }
-            try std.testing.expect(found);
-            continue;
-        }
         try std.testing.expect(!result.hasErrors());
-        const outputs = result.outputs orelse return error.TestUnexpectedResult;
-        for (outputs) |file| {
-            const path = try std.fs.path.join(std.testing.allocator, &.{ "dist", file.path });
-            defer std.testing.allocator.free(path);
-            try helpers.writeFile(tmp.dir, path, file.contents);
-        }
+        if (preserve) {
+            const outputs = result.outputs orelse return error.TestUnexpectedResult;
+            for (outputs) |file| {
+                const path = try std.fs.path.join(std.testing.allocator, &.{ "dist", file.path });
+                defer std.testing.allocator.free(path);
+                try helpers.writeFile(tmp.dir, path, file.contents);
+            }
+        } else try helpers.writeFile(tmp.dir, "dist/main.mjs", result.output);
         const output = try helpers.absPath(&tmp, "dist/main.mjs");
         defer std.testing.allocator.free(output);
         const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", output } });
@@ -149,6 +147,50 @@ test "native module using mixed await exports diagnose flattened scope and retai
         defer std.testing.allocator.free(actual.stderr);
         if (actual.term != .exited or actual.term.exited != 0) std.debug.print("native module using mixed export minify={} stderr={s} code={s}\n", .{ minify, actual.stderr, result.output });
         try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
-        try std.testing.expectEqualStrings("ok\n", actual.stdout);
+        try std.testing.expectEqualStrings("completed\n", actual.stdout);
+    };
+}
+
+test "native module CJS TLA temps keep actual prefix and wrapped pattern owners" {
+    const sources = [_][]const u8{
+        "const{resource}=await import('./lib.mjs');console.log(resource);",
+        "const before=globalThis.missing?.value??7;const{resource}=await import('./lib.mjs');console.log(JSON.stringify([before,resource]));",
+        "function source(x){return x?.value??5}const{resource}=await import('./lib.mjs');console.log(JSON.stringify([source(null),resource]));",
+        "const[value=42,...rest]=await Promise.resolve([undefined,7]);console.log(JSON.stringify([value,rest]));",
+    };
+    for (sources) |source| for ([_]compat.ESTarget{ .esnext, .es5 }) |target| for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "lib.mjs", "export const resource=42;");
+        try helpers.writeFile(tmp.dir, "main.mjs", source);
+        const entry = try helpers.absPath(&tmp, "main.mjs");
+        defer std.testing.allocator.free(entry);
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", entry } });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        var bundler = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .platform = .node,
+            .format = .cjs,
+            .unsupported = compat.fromESTarget(target),
+            .keep_names = true,
+            .minify_syntax = minify,
+            .minify_identifiers = minify,
+            .minify_whitespace = minify,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        try helpers.writeFile(tmp.dir, "output.cjs", result.output);
+        const output = try helpers.absPath(&tmp, "output.cjs");
+        defer std.testing.allocator.free(output);
+        const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", output } });
+        defer std.testing.allocator.free(actual.stdout);
+        defer std.testing.allocator.free(actual.stderr);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        try std.testing.expectEqualStrings(native.stderr, actual.stderr);
     };
 }

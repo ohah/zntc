@@ -70,6 +70,21 @@ Phase B1: 기반 (✅ 완료)          Phase B2: 핵심 (✅ 대부분 완료) P
 다른 모듈과 한 파일의 본문으로 합치거나 일반 factory의 변수 대입으로 바꾸면
 해제 순서와 비동기 작업 순서, export의 live binding 및 TDZ가 달라질 수 있습니다.
 
+native `using`과 top-level `await`를 지원하는 타깃의 단일 ESM 출력은 다음과 같이
+사용합니다. API에서는 `format: 'esm'`, `target: 'esnext'`, `outfile`을 지정합니다.
+
+```sh
+zntc --bundle src/main.mjs --format=esm --target=esnext -o dist/main.mjs
+```
+
+각 원본 모듈은 별도 lexical environment에서 평가합니다. 모듈의 비동기 해제가
+완료되어야 importer의 평가가 진행되며, 순환 참조의 초기화 전 접근과 live export를
+유지합니다. 정적·동적 import가 같은 모듈을 가리키면 평가와 자원 해제를 공유합니다.
+이 경로는 내부 JavaScript ESM 그래프를 대상으로 합니다. 외부 정적 의존성,
+CommonJS/JSON 모듈, `export *`·namespace re-export, 직접 `eval`, 모듈 수준의
+미해결 `arguments`, 중첩 블록의 native `await using`이 포함된 그래프는 이 방식의
+지원 대상이 아니며 아래 모듈별 출력 또는 진단 정책을 따릅니다.
+
 모듈별 native ESM 출력은 명시적으로 선택합니다.
 
 ```sh

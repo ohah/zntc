@@ -7,6 +7,15 @@ const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Owner = @import("../bundler/codegen_output_domain.zig").Owner;
 pub const Error = error{InvalidCompilerStatementInsertion};
 
+pub const Emission = struct {
+    owner: Owner,
+    domain: *const Ast,
+    statement: NodeIndex,
+    byte_offset: usize,
+    line: u32,
+    column: u32,
+};
+
 pub const Entry = struct {
     owner: Owner,
     statement: NodeIndex,
@@ -14,6 +23,7 @@ pub const Entry = struct {
     statement_snapshot: Node,
     expression_snapshot: Node,
     bytes: []const u8,
+    emitted_at: ?*?Emission = null,
 };
 
 pub const Set = struct {
@@ -42,9 +52,28 @@ pub const Set = struct {
         }
     }
 
+    pub fn recordEmission(self: *const Set, domain: *const Ast, statement: NodeIndex, byte_offset: usize, line: u32, column: u32) Error!void {
+        try self.validate(domain, self.owner);
+        for (self.entries) |entry| {
+            if (entry.statement != statement) continue;
+            if (entry.emitted_at) |position| {
+                if (position.* != null) return error.InvalidCompilerStatementInsertion;
+                position.* = .{ .owner = self.owner, .domain = domain, .statement = statement, .byte_offset = byte_offset, .line = line, .column = column };
+            }
+            return;
+        }
+        return error.InvalidCompilerStatementInsertion;
+    }
+
     pub fn get(self: *const Set, domain: *const Ast, statement: NodeIndex) Error!?[]const u8 {
         try self.validate(domain, self.owner);
         for (self.entries) |entry| if (entry.statement == statement) return entry.bytes;
         return null;
     }
 };
+
+test {
+    _ = @import("../bundler/native_module_publication_program.zig");
+    _ = @import("../bundler/native_module_wrapper_program.zig");
+    _ = @import("../bundler/native_module_accessor_program.zig");
+}
