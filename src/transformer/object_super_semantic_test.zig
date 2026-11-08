@@ -723,3 +723,56 @@ test "spread helper identities do not call same-named user bindings" {
         };
     }
 }
+
+test "spread helper source aliases preserve external export names and ESM live values" {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const sources = [_][]const u8{
+        "export default function Object(){}export const Reflect={};export const output={...{a:1},get x(){return 42}};",
+        "export const Object={};export const Reflect={};export const output={...{a:1},get x(){return 42}};",
+        "export function Object(){}export function Reflect(){}export const output={...{a:1},get x(){return 42}};",
+        "export class Object{}export const Reflect=function(){};export const output={...{a:1},get x(){return 42}};",
+        "export const {Object={},Reflect=function(){}}={};export const output={...{a:1},get x(){return 42}};",
+        "export class Object{static seen=this.name;static name='custom'}export const Reflect={};export const output={...{a:1},get x(){return 42}};",
+        "export class Object{static get name(){return 'custom'}static seen=this.name}export const Reflect={};export const output={...{a:1},get x(){return 42}};",
+        "export class \\u004fbject{static seen=this.name}export const \\u0052eflect={};export const output={...{a:1},get x(){return 42}};",
+        "export let Object=0;export const Reflect={};export function advance(){Object++}export const output={...{a:1},get x(){return 42}};",
+    };
+    const probe_body = "console.log(JSON.stringify([Object.keys(m).sort(),m.output.a,m.output.x,typeof m.Object==='function'?m.Object.name:typeof m.Object,typeof m.Reflect==='function'?m.Reflect.name:typeof m.Reflect,m.default?m.default.name:null,m.Object&&m.Object.seen!==void 0?m.Object.seen:null]));if(m.advance){m.advance();console.log(m.Object)}";
+    const probe = "import * as m from './lib.mjs';" ++ probe_body;
+    const cjs_probe = "import{createRequire}from'node:module';const m=createRequire(import.meta.url)('./lib.cjs');" ++ probe_body;
+    for (sources, 0..) |source, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "lib.mjs", source);
+        try helpers.writeFile(tmp.dir, "probe.mjs", probe);
+        const filename = try helpers.absPath(&tmp, "probe.mjs");
+        defer std.testing.allocator.free(filename);
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", filename } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        const native_default = if (index == 0) blk: {
+            try helpers.writeFile(tmp.dir, "probe.mjs", "import * as m from './lib.mjs';console.log(m.default.name,typeof m.default);");
+            break :blk try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", filename } });
+        } else native;
+        try std.testing.expect(native_default.term == .exited and native_default.term.exited == 0);
+        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2015, .es2017, .esnext }) |target| for ([_]bool{ false, true }) |minify| for ([_]@import("../codegen/options.zig").ModuleFormat{ .esm, .cjs }) |format| {
+            // CJS rows compare public keys and reflection names; ESM also
+            // verifies a live exported value after an importer calls advance.
+            if (format == .cjs and index == sources.len - 1) continue;
+            const result = try @import("../transpile.zig").transpile(a, source, "lib.mjs", .{ .unsupported = TransformOptions.compat.fromESTarget(target), .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify, .keep_names = minify, .module_format = format });
+            try helpers.writeFile(tmp.dir, if (format == .esm) "lib.mjs" else "lib.cjs", result.code);
+            const default_cjs = format == .cjs and index == 0;
+            const expected = if (default_cjs) native_default.stdout else native.stdout;
+            try helpers.writeFile(tmp.dir, "probe.mjs", if (default_cjs)
+                "import{createRequire}from'node:module';const m=createRequire(import.meta.url)('./lib.cjs');console.log(m.name,typeof m);"
+            else if (format == .esm) probe else cjs_probe);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", filename } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, expected, actual.stdout))
+                std.debug.print("spread exported alias case={d} target={s} minify={} format={s} expected={s} actual={s} stderr={s} code={s}\n", .{ index, @tagName(target), minify, @tagName(format), expected, actual.stdout, actual.stderr, result.code });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(expected, actual.stdout);
+        };
+    }
+}
