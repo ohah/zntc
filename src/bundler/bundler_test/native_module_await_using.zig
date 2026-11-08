@@ -320,3 +320,108 @@ test "native await using module worker runs emitted assets and classic worker re
         try std.testing.expect(found);
     }
 }
+
+test "native await using private arrays bypass inherited index setters" {
+    const cases = [_]struct { entry: []const u8, lib: []const u8, expected: []const u8 }{
+        .{ .entry = "let events='';Object.defineProperty(Array.prototype,'0',{configurable:true,set(){throw Error('poison')}});process.once('beforeExit',()=>console.log(events));await using resource={[Symbol.asyncDispose](){delete Array.prototype[0];events+='dispose'}};events+='body';", .lib = "export {};", .expected = "bodydispose\n" },
+        .{ .entry = "Object.defineProperty(Array.prototype,'0',{configurable:true,set(){throw Error('poison')}});let result;try{result=(await import('./lib.mjs')).answer}catch(e){result='ERR:'+e.message}finally{delete Array.prototype['0']}console.log(result);", .lib = "delete Array.prototype['0'];await using r=null;export const answer=42;", .expected = "42\n" },
+    };
+    for (cases) |case| for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", case.entry);
+        try helpers.writeFile(tmp.dir, "lib.mjs", case.lib);
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", entry } });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings(case.expected, native.stdout);
+        try std.testing.expectEqualStrings("", native.stderr);
+        var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm, .platform = .node, .unsupported = compat.fromESTarget(.esnext), .minify_syntax = minify, .minify_identifiers = minify, .minify_whitespace = minify });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        try helpers.writeFile(tmp.dir, "output.mjs", result.output);
+        const output = try helpers.absPath(&tmp, "output.mjs");
+        defer std.testing.allocator.free(output);
+        const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", output } });
+        defer std.testing.allocator.free(actual.stdout);
+        defer std.testing.allocator.free(actual.stderr);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+    };
+}
+
+test "native await using component promise fields bypass inherited setters" {
+    const cases = [_]struct { entry: []const u8, lib: []const u8, expected: []const u8 }{
+        .{ .entry = "Object.defineProperty(Object.prototype,'resolve',{configurable:true,set(){throw Error('poison-resolve')}});let result;try{result=(await import('./lib.mjs')).answer}catch(e){result='ERR:'+e.message}finally{delete Object.prototype.resolve}console.log(result);", .lib = "await 0;delete Object.prototype.resolve;await using resource=null;export const answer=42;", .expected = "42\n" },
+        .{ .entry = "Object.defineProperty(Object.prototype,'reject',{configurable:true,set(){throw Error('poison-reject')}});let result;try{result=(await import('./lib.mjs')).answer}catch(e){result='ERR:'+e.message}finally{delete Object.prototype.reject}console.log(result);", .lib = "await 0;delete Object.prototype.reject;await using resource=null;export const answer=42;", .expected = "42\n" },
+    };
+    for (cases) |case| for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", case.entry);
+        try helpers.writeFile(tmp.dir, "lib.mjs", case.lib);
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", entry } });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings(case.expected, native.stdout);
+        try std.testing.expectEqualStrings("", native.stderr);
+        var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm, .platform = .node, .unsupported = compat.fromESTarget(.esnext), .minify_syntax = minify, .minify_identifiers = minify, .minify_whitespace = minify });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        try helpers.writeFile(tmp.dir, "output.mjs", result.output);
+        const output = try helpers.absPath(&tmp, "output.mjs");
+        defer std.testing.allocator.free(output);
+        const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", output } });
+        defer std.testing.allocator.free(actual.stdout);
+        defer std.testing.allocator.free(actual.stderr);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+    };
+}
+
+test "native await using cached import reader slots bypass inherited index setters" {
+    const cases = [_]struct { entry: []const u8, lib: []const u8, expected: []const u8 }{
+        .{ .entry = "Object.defineProperty(Array.prototype,'0',{configurable:true,set(value){if(typeof value==='function')throw 'poison-reader';Object.defineProperty(this,'0',{value,writable:true,enumerable:true,configurable:true})}});let value;try{value=(await import('./lib.mjs')).value}finally{delete Array.prototype[0]}console.log(value);", .lib = "import{value}from'./dep.mjs';delete Array.prototype[0];await using resource=null;export{value};", .expected = "42\n" },
+    };
+    for (cases) |case| for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", case.entry);
+        try helpers.writeFile(tmp.dir, "lib.mjs", case.lib);
+        try helpers.writeFile(tmp.dir, "dep.mjs", "export const value=Number(42);");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", entry } });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings(case.expected, native.stdout);
+        try std.testing.expectEqualStrings("", native.stderr);
+        var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm, .platform = .node, .unsupported = compat.fromESTarget(.esnext), .minify_syntax = minify, .minify_identifiers = minify, .minify_whitespace = minify });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        try helpers.writeFile(tmp.dir, "output.mjs", result.output);
+        const output = try helpers.absPath(&tmp, "output.mjs");
+        defer std.testing.allocator.free(output);
+        const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", output } });
+        defer std.testing.allocator.free(actual.stdout);
+        defer std.testing.allocator.free(actual.stderr);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        try std.testing.expectEqualStrings(native.stderr, actual.stderr);
+    };
+}

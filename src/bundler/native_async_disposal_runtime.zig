@@ -8,9 +8,10 @@
 
 pub const ACQUIRE_EXPRESSION: []const u8 =
     \\(function(asyncDispose, syncDispose, apply, PromiseConstructor, TypeErrorConstructor, ObjectConstructor) {
+    \\  var defineProperty = ObjectConstructor.defineProperty;
     \\  return function(stack, value, asyncHint) {
     \\    if (value === null || value === void 0) {
-    \\      if (asyncHint) stack[stack.length] = { value: void 0, method: void 0, asyncHint: true };
+    \\      if (asyncHint) defineProperty(stack, stack.length, { __proto__: null, value: { value: void 0, method: void 0, asyncHint: true }, writable: true, enumerable: true, configurable: true });
     \\      return value;
     \\    }
     \\    if (ObjectConstructor(value) !== value)
@@ -37,13 +38,13 @@ pub const ACQUIRE_EXPRESSION: []const u8 =
     \\    }
     \\    if (method === null || method === void 0)
     \\      throw new TypeErrorConstructor('Object is not disposable');
-    \\    stack[stack.length] = { value: value, method: method, asyncHint: !!asyncHint };
+    \\    defineProperty(stack, stack.length, { __proto__: null, value: { value: value, method: method, asyncHint: !!asyncHint }, writable: true, enumerable: true, configurable: true });
     \\    return value;
     \\  };
     \\})(Symbol.asyncDispose, Symbol.dispose, Reflect.apply, Promise, TypeError, Object)
 ;
 
-pub const ACQUIRE_EXPRESSION_MIN: []const u8 = "(function(asyncDispose,syncDispose,apply,PromiseConstructor,TypeErrorConstructor,ObjectConstructor){return function(stack,value,asyncHint){if(value===null||value===undefined){if(asyncHint)stack[stack.length]={value:undefined,method:undefined,asyncHint:true};return value}if(ObjectConstructor(value)!==value)throw new TypeErrorConstructor(\"Disposable resource must be an object\");var method;if(asyncHint)method=value[asyncDispose];if(method===null||method===undefined){method=value[syncDispose];if(method!==null&&method!==undefined&&typeof method!==\"function\")throw new TypeErrorConstructor(\"Dispose method must be callable\");if(asyncHint&&method!==null&&method!==undefined){method=function(syncMethod){return function(){var receiver=this;return new PromiseConstructor(function(resolve,reject){try{apply(syncMethod,receiver,[]);resolve(undefined)}catch(error){reject(error)}})}}(method)}}else if(typeof method!==\"function\"){throw new TypeErrorConstructor(\"Dispose method must be callable\")}if(method===null||method===undefined)throw new TypeErrorConstructor(\"Object is not disposable\");stack[stack.length]={value,method,asyncHint:!!asyncHint};return value}})(Symbol.asyncDispose,Symbol.dispose,Reflect.apply,Promise,TypeError,Object)";
+pub const ACQUIRE_EXPRESSION_MIN: []const u8 = "(function(asyncDispose,syncDispose,apply,PromiseConstructor,TypeErrorConstructor,ObjectConstructor){var defineProperty=ObjectConstructor.defineProperty;return function(stack,value,asyncHint){if(value===null||value===undefined){if(asyncHint)defineProperty(stack,stack.length,{__proto__:null,value:{value:undefined,method:undefined,asyncHint:true},writable:true,enumerable:true,configurable:true});return value}if(ObjectConstructor(value)!==value)throw new TypeErrorConstructor(\"Disposable resource must be an object\");var method;if(asyncHint)method=value[asyncDispose];if(method===null||method===undefined){method=value[syncDispose];if(method!==null&&method!==undefined&&typeof method!==\"function\")throw new TypeErrorConstructor(\"Dispose method must be callable\");if(asyncHint&&method!==null&&method!==undefined){method=function(syncMethod){return function(){var receiver=this;return new PromiseConstructor(function(resolve,reject){try{apply(syncMethod,receiver,[]);resolve(undefined)}catch(error){reject(error)}})}}(method)}}else if(typeof method!==\"function\"){throw new TypeErrorConstructor(\"Dispose method must be callable\")}if(method===null||method===undefined)throw new TypeErrorConstructor(\"Object is not disposable\");defineProperty(stack,stack.length,{__proto__:null,value:{value,method,asyncHint:!!asyncHint},writable:true,enumerable:true,configurable:true});return value}})(Symbol.asyncDispose,Symbol.dispose,Reflect.apply,Promise,TypeError,Object)";
 
 pub const DISPOSE_GENERATOR_EXPRESSION: []const u8 =
     \\(function(apply, SuppressedErrorConstructor) {
