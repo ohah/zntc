@@ -12,6 +12,7 @@ const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 const EmitOptions = @import("emitter.zig").EmitOptions;
 const NodeIndex = ast_mod.NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
+const Reference = @import("../semantic/symbol.zig").Reference;
 
 pub fn diagnose(graph: *ModuleGraph, options: *const EmitOptions, shaker: ?*const TreeShaker, chunks: ?*const ChunkGraph) !bool {
     // Chunk membership is authoritative only after the actual planner runs.
@@ -80,11 +81,7 @@ fn retainedDeclaration(a: std.mem.Allocator, module: *const Module, shaker: ?*co
     var visited: std.AutoHashMapUnmanaged(NodeIndex, void) = .empty;
     defer visited.deinit(a);
     var statements = tree.iterateExtraList(tree.getNode(root).data.list);
-    var offset: u32 = 0;
-    while (statements.next()) |statement| : (offset += 1) {
-        if (shaker) |s| if (!s.isStmtReachable(module.index.toU32(), offset)) continue;
-        try stack.append(a, statement);
-    }
+    while (statements.next()) |statement| try stack.append(a, statement);
     while (stack.pop()) |index| {
         if (index.isNone()) continue;
         const raw = @backingInt(index);
@@ -116,13 +113,28 @@ fn retainedDeclaration(a: std.mem.Allocator, module: *const Module, shaker: ?*co
                     }
                 }.isFunction)) return error.InvalidNativeAsyncDisposalOwner;
                 var declarations: usize = 0;
+                var source_statement: u32 = Reference.NO_STMT;
                 for (semantic.references) |reference| {
                     if (reference.declaration_node_index == binding and reference.node_index.isNone() and
                         @backingInt(reference.symbol_id) == sid and reference.scope_id == owner and
-                        reference.flags.declare and !reference.flags.read and !reference.flags.write) declarations += 1;
+                        reference.flags.declare and !reference.flags.read and !reference.flags.write)
+                    {
+                        declarations += 1;
+                        source_statement = reference.stmt_idx;
+                    }
                 }
                 if (declarations != 1 or node.span.start & ast_mod.Ast.STRING_TABLE_BIT != 0 or
                     node.span.end < node.span.start or node.span.end > module.source.len) return error.InvalidNativeAsyncDisposalOwner;
+                // The current program can contain inserted/copied statements.
+                // Only the exact declaration reference owns a source statement
+                // coordinate; verify that source row declares this same SID.
+                if (shaker) |selected| {
+                    if (selected.getModuleStmtInfos(module.index.toU32())) |infos| {
+                        if (source_statement == Reference.NO_STMT or source_statement >= infos.stmts.len or
+                            std.mem.indexOfScalar(u32, infos.stmts[source_statement].declared_symbols, sid) == null) return error.InvalidNativeAsyncDisposalOwner;
+                        if (!selected.isStmtReachable(module.index.toU32(), source_statement)) continue;
+                    }
+                }
                 return node.span;
             },
             else => {},
