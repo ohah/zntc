@@ -1313,6 +1313,29 @@ pub const Bundler = struct {
 
         // emit
         var emit_opts = self.makeEmitOptions(format);
+        // Workers use this single emitter even when the parent plans chunks.
+        // Do not claim a physical native module boundary from parent options.
+        var worker_layout = emit_opts;
+        worker_layout.code_splitting = false;
+        worker_layout.preserve_modules = false;
+        if (try @import("native_async_disposal_publication.zig").diagnose(&worker_graph, &worker_layout, null, null)) {
+            for (worker_graph.diagnostics.items) |diagnostic| {
+                if (diagnostic.code != .top_level_await_target or diagnostic.step != .link or diagnostic.severity != .@"error") continue;
+                var owned = diagnostic;
+                if (worker_graph.path_to_module.get(diagnostic.file_path)) |index| {
+                    const source_module = worker_graph.modules.at(index.toU32());
+                    if (diagnosticSpanBelongsToSource(diagnostic.span, source_module.source.len)) {
+                        if (source_module.line_offsets.len == 0)
+                            source_module.line_offsets = try @import("../lexer/scanner.zig").Scanner.computeLineOffsets(arena_alloc, source_module.source);
+                        const info: @import("../rich_diagnostic.zig").SourceInfo = .{ .source = source_module.source, .line_offsets = source_module.line_offsets };
+                        const location = info.getLineColumn(diagnostic.span.start);
+                        owned.captured_location = .{ .span = diagnostic.span, .source_length = source_module.source.len, .line = location.line + 1, .column = location.column };
+                    }
+                }
+                try parent_graph.addOwnedDiagnostic(owned);
+            }
+            return null;
+        }
         const worker_result = try emitter.emitWithTreeShaking(
             io,
             arena_alloc,
@@ -2085,6 +2108,17 @@ pub const Bundler = struct {
         // waiter. Preserve the normal diagnostic result and emit no partial JS.
         const tla_publication_options = self.makeEmitOptions(self.options.format);
         const lowered_tla_publication_blocked = try @import("lowered_tla_publication.zig").diagnose(graph, &tla_publication_options, if (shaker) |*value| value else null);
+        var native_disposal_publication_blocked = try @import("native_async_disposal_publication.zig").diagnose(graph, &tla_publication_options, if (shaker) |*value| value else null, null);
+        if (!native_disposal_publication_blocked and self.options.output.len > 1) {
+            for (self.options.output) |config| {
+                var layout = tla_publication_options;
+                layout.format = config.format;
+                if (try @import("native_async_disposal_publication.zig").diagnose(graph, &layout, if (shaker) |*value| value else null, null)) {
+                    native_disposal_publication_blocked = true;
+                    break;
+                }
+            }
+        }
 
         var emit_scope = profile.begin(.emit);
         defer emit_scope.end();
@@ -2260,7 +2294,7 @@ pub const Bundler = struct {
         // linker/emit 의 code_splitting 게이트가 splitting 시 프로덕션 init 으로 fallback 한다.
         // kill-switch — lazy_compilation=false(또는 code_splitting=false)면 기존 dev 단일 번들 100% 보존.
         const dev_split = self.options.dev_mode and self.options.code_splitting and self.options.lazy_compilation;
-        if (lowered_tla_publication_blocked) {
+        if (lowered_tla_publication_blocked or native_disposal_publication_blocked) {
             output = try self.allocator.dupe(u8, "");
             outputs = try self.allocator.alloc(OutputFile, 0);
         } else if (self.options.dev_mode and !dev_split) {
@@ -2451,7 +2485,10 @@ pub const Bundler = struct {
                 }
             }
 
-            outputs = try emitter.emitChunksWithIo(
+            if (try @import("native_async_disposal_publication.zig").diagnose(graph, &emit_opts, if (shaker) |*value| value else null, &chunk_graph)) {
+                output = try self.allocator.dupe(u8, "");
+                outputs = try self.allocator.alloc(OutputFile, 0);
+            } else outputs = try emitter.emitChunksWithIo(
                 io,
                 self.allocator,
                 graph,
