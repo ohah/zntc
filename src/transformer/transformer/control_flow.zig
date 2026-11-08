@@ -298,11 +298,13 @@ pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .span = node.span,
         .data = .{ .binary = .{ .left = new_test, .right = result.call_and_check, .flags = node.data.binary.flags } },
     });
-    return self.ast.addNode(.{
+    const wrapper = try self.ast.addNode(.{
         .tag = .block_statement,
         .span = node.span,
         .data = .{ .list = try self.ast.addNodeList(&.{ result.loop_fn, loop_node }) },
     });
+    try @import("semantic_edit.zig").publishCapturedLoopWrapper(self, wrapper, result.loop_fn, loop_node, self.current_scope);
+    return wrapper;
 }
 
 /// for-in/for-of/for-await-of 헤더 전용 ternary visit.
@@ -393,11 +395,13 @@ pub fn visitForInOfTernary(self: *Transformer, idx: NodeIndex, node: Node) Error
                     .data = .{ .ternary = .{ .a = new_a, .b = new_b, .c = result.call_and_check } },
                 });
                 const stmts = try self.ast.addNodeList(&.{ result.loop_fn, loop_node });
-                return self.ast.addNode(.{
+                const wrapper = try self.ast.addNode(.{
                     .tag = .block_statement,
                     .span = node.span,
                     .data = .{ .list = stmts },
                 });
+                try @import("semantic_edit.zig").publishCapturedLoopWrapper(self, wrapper, result.loop_fn, loop_node, self.current_scope);
+                return wrapper;
             }
 
             return self.ast.addNode(.{
@@ -657,7 +661,7 @@ fn visitForStatementCore(self: *Transformer, idx: NodeIndex, has_ready_initializ
                 BlockScoping.analyzeControlFlow(self, orig_body_idx, &flow, 0, 0);
             }
 
-            const new_init: NodeIndex = if (has_ready_initializer) .none else try self.visitNode(init_idx);
+            const new_init: NodeIndex = if (has_ready_initializer) .none else try @import("../lexical_tdz.zig").headerDeclaration(self, init_idx, try self.visitNode(init_idx));
             const new_test = try self.visitNode(self.readNodeIdx(e, 1));
             const new_update = try self.visitNode(self.readNodeIdx(e, 2));
             // 본문에 `yield` 가 있으면(= 나중에 상태 기계로 접힐 generator 안, 예: 일반 방문되는
@@ -743,8 +747,7 @@ fn visitForStatementCore(self: *Transformer, idx: NodeIndex, has_ready_initializ
                     .span = node.span,
                     .data = .{ .list = stmts },
                 });
-                if (has_ready_initializer)
-                    try @import("semantic_edit.zig").publishCapturedLoopWrapper(self, wrapper, result.loop_fn, for_node, self.current_scope);
+                try @import("semantic_edit.zig").publishCapturedLoopWrapper(self, wrapper, result.loop_fn, for_node, self.current_scope);
                 return wrapper;
             }
 
@@ -756,7 +759,7 @@ fn visitForStatementCore(self: *Transformer, idx: NodeIndex, has_ready_initializ
         }
     }
 
-    const new_init: NodeIndex = if (has_ready_initializer) .none else try self.visitNode(init_idx);
+    const new_init: NodeIndex = if (has_ready_initializer) .none else try @import("../lexical_tdz.zig").headerDeclaration(self, init_idx, try self.visitNode(init_idx));
     const new_test = try self.visitNode(self.readNodeIdx(e, 1));
     const new_update = try self.visitNode(self.readNodeIdx(e, 2));
     const old_body = self.readNodeIdx(e, 3);
@@ -806,10 +809,10 @@ pub fn visitSwitchStatement(self: *Transformer, source: NodeIndex, node: Node) E
 }
 
 /// switch_case: extra_data = [test, stmts_start, stmts_len]
-pub fn visitSwitchCase(self: *Transformer, node: Node) Error!NodeIndex {
+pub fn visitSwitchCase(self: *Transformer, source: NodeIndex, node: Node) Error!NodeIndex {
     const e = node.data.extra;
-    const new_test = try self.visitNode(self.readNodeIdx(e, 0));
-    const new_stmts = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
+    const new_test = try @import("../lexical_tdz.zig").switchCaseTest(self, source, try self.visitNode(self.readNodeIdx(e, 0)));
+    const new_stmts = try @import("../lexical_tdz.zig").switchDefaultStatements(self, source, try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) }));
     return self.addExtraNode(.switch_case, node.span, &.{ @backingInt(new_test), new_stmts.start, new_stmts.len });
 }
 

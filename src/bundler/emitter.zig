@@ -233,6 +233,9 @@ pub const DeferredAsyncEntryExports = struct {
 };
 
 pub const EmitOptions = struct {
+    /// Borrowed from the actual typed provider after this output proves inclusion.
+    entry_guard_runtime_name: ?[]const u8 = null,
+
     compiler_literal_overrides: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null,
     defer_async_entry_exports: ?*DeferredAsyncEntryExports = null,
     deferred_module_exports: ?[]DeferredAsyncEntryExports = null,
@@ -436,6 +439,10 @@ pub const EmitOptions = struct {
     /// `Linker.useDevModuleRegistry()` 와 동치 — 단일번들 dev + dev_split 에서 true. esm_wrap 의
     /// init-call lowering(.esm init / RN lazy re-export init)이 사용 — 이들은 *기존*에 단일번들
     /// dev 에서도 registry 였으므로(HMR re-init), useDevModuleRegistry 로 단일번들 dev 보존.
+    pub fn guardFunctionName(self: *const EmitOptions) []const u8 {
+        return self.entry_guard_runtime_name orelse rt.guardFunctionName(self.minify_whitespace, self.code_splitting);
+    }
+
     pub fn useDevModuleRegistry(self: *const EmitOptions) bool {
         return self.dev_mode and (!self.code_splitting or self.lazy_compilation);
     }
@@ -612,10 +619,13 @@ pub fn emitWithTreeShaking(
     io: std.Io,
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
-    options: *const EmitOptions,
+    incoming_options: *const EmitOptions,
     linker: ?*const Linker,
     shaker: ?*const TreeShaker,
 ) !EmitResult {
+    var selected_options = incoming_options.*;
+    selected_options.entry_guard_runtime_name = null;
+    const options = &selected_options;
     var holder_reservations = @import("namespace_holder_reservations.zig").NamespaceHolderReservations.init(allocator);
     defer holder_reservations.deinit();
     // N RFC (#3267) audit: 빌드 시작 시 누적기 reset, return 직전 dump.
@@ -668,6 +678,19 @@ pub fn emitWithTreeShaking(
         std.mem.copyBackwards(*const Module, sorted.items[1 .. at + 1], sorted.items[0..at]);
         sorted.items[0] = factory.module;
     }
+    if (linker) |l| if (try l.classicEntryGuardRuntimeName()) |name| {
+        const provider = graph.entry_guard_ast_provider.?;
+        const actual = graph.getModule(provider.module_index) orelse return error.InvalidEntryGuardProvider;
+        var position: ?usize = null;
+        for (sorted.items, 0..) |candidate, index| if (candidate == actual) {
+            if (position != null) return error.InvalidEntryGuardProvider;
+            position = index;
+        };
+        const at = position orelse return error.InvalidEntryGuardProvider;
+        std.mem.copyBackwards(*const Module, sorted.items[1 .. at + 1], sorted.items[0..at]);
+        sorted.items[0] = actual;
+        selected_options.entry_guard_runtime_name = name;
+    };
     var run_before_main_closure: ?std.DynamicBitSet = null;
     defer if (run_before_main_closure) |*closure| closure.deinit();
     if (options.run_before_main.len > 0) {
@@ -1230,6 +1253,11 @@ pub fn emitWithTreeShaking(
     else
         null;
     var rbm_calls_emitted = false;
+    var default_names_pending = false;
+    for (sorted.items) |module| if (module.legacy_default_names.len != 0) {
+        default_names_pending = true;
+    };
+    var default_names_emitted = false;
     // sequential CJS var wrap 합치기를 위한 직전 모듈 상태 추적 (minify only).
     var prev_was_cjs_var_minify = false;
 
@@ -1248,6 +1276,8 @@ pub fn emitWithTreeShaking(
         collected_helpers = @bitCast(@as(u32, @bitCast(collected_helpers)) | @as(u32, @bitCast(results[i].helpers)));
 
         const code = results[i].code orelse continue;
+        if (default_names_pending and !default_names_emitted and m.runtime_helper_source == null)
+            return error.MissingDefaultNameHelperInitialization;
 
         // Metro 는 factory 정의를 먼저 등록하고 append script 에서 runBeforeMainModule 을
         // require 한다. zntc 는 일부 모듈을 scope-hoist 할 수 있으므로 전역 맨 뒤가 아니라
@@ -1353,6 +1383,17 @@ pub fn emitWithTreeShaking(
             }
         }
 
+        if (default_names_pending and !default_names_emitted and !skip_bundle_concat) {
+            const linked = linker orelse return error.MissingDefaultNameHelperInitialization;
+            const builtin = graph.legacy_name_builtin orelse return error.MissingDefaultNameHelperInitialization;
+            if (m.index == builtin.module_index) {
+                const before = module_output.items.len;
+                try @import("graph/legacy_default_names.zig").appendPreamble(allocator, graph, linked, sorted.items, &module_output, options.format, options.minify_whitespace);
+                module_line += @intCast(std.mem.count(u8, module_output.items[before..], "\n"));
+                default_names_emitted = true;
+            }
+        }
+
         // dev mode: per-module code를 HMR eval 가능한 형태로 수집.
         // IIFE로 래핑 + 런타임 헬퍼 로컬 alias로 eval() 스코프에서 접근 가능.
         if (options.dev_mode and options.collect_module_codes) {
@@ -1430,6 +1471,9 @@ pub fn emitWithTreeShaking(
 
     // #1961 PR 1h: RuntimeHelpers 비트맵 기반 ES2015 런타임 헬퍼는 transformer 가 graph
     // parse 단계에서 helper module 의 named import 으로 emit → graph 가 1급 모듈로 분배.
+    if (default_names_pending and !skip_bundle_concat and !default_names_emitted)
+        return error.MissingDefaultNameHelperInitialization;
+
     // single-bundle / splitting 양쪽 모두 helper preamble 불필요. mangler 는 helper
     // module 의 internal name (`$aS` / `$gn` 등) 을 reserved 로 처리 (linker.zig 의
     // candidates collect 에서 virtual ID 모듈 skip). CJS/ESM wrap, decorator
@@ -2004,7 +2048,7 @@ pub fn appendGuardedModuleCall(
         try mod.allocInitName(allocator, rename_tbl);
     defer allocator.free(call_name);
     // guard helper 에 함수 식별자만 전달. helper 가 fn() 호출.
-    try output.appendSlice(allocator, rt.guardFunctionName(options.minify_whitespace, options.code_splitting));
+    try output.appendSlice(allocator, options.guardFunctionName());
     try output.append(allocator, '(');
     try output.appendSlice(allocator, call_name);
     try output.appendSlice(allocator, ");\n");

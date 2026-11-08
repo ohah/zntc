@@ -140,3 +140,20 @@ pub const ThreadSafeAllocator = struct {
 pub fn threadSafeArena(arena: *std.heap.ArenaAllocator) ThreadSafeAllocator {
     return .{ .child_allocator = arena.allocator() };
 }
+
+/// Execute emitted bytes as a file; virtual IDs may contain NUL bytes.
+pub fn expectOutputRuntime(source: []const u8, expected: []const u8) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "observed.cjs", source);
+    const path = try absPath(&tmp, "observed.cjs");
+    defer std.testing.allocator.free(path);
+    const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", path } });
+    defer std.testing.allocator.free(actual.stdout);
+    defer std.testing.allocator.free(actual.stderr);
+    std.debug.print("OUTPUT_NODE term={any} expected={s} stdout={s} stderr={s}\n", .{ actual.term, expected, actual.stdout, actual.stderr });
+    if (actual.term != .exited or actual.term.exited != 0) std.debug.print("output runtime stderr={s}\n", .{actual.stderr});
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    try std.testing.expectEqualStrings("", actual.stderr);
+    try std.testing.expectEqualStrings(expected, actual.stdout);
+}

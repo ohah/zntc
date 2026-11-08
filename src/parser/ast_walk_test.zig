@@ -363,3 +363,16 @@ test "parameter expressions distinguish unmapped syntax from split environments"
         }
     }
 }
+
+test "lexical TDZ assignment target walker excludes shorthand default expression" {
+    const a = std.testing.allocator;
+    var ctx = try parseSource(a, "let target, alias; ({target = fallback, other: alias = defaultValue} = input);");
+    defer ctx.parser.deinit();
+    defer ctx.scanner.deinit();
+    const target = findFirstTag(&ctx.parser.ast, .object_assignment_target) orelse return error.NotFound;
+    var names = try collectBindingNames(a, &ctx.parser.ast, target, .{});
+    defer names.deinit(a);
+    try std.testing.expectEqual(@as(usize, 2), names.items.len);
+    try std.testing.expectEqualStrings("target", names.items[0]);
+    try std.testing.expectEqualStrings("alias", names.items[1]);
+}

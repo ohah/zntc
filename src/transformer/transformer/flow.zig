@@ -564,13 +564,14 @@ pub fn visitFlowComponentWrapper(self: *Transformer, node: Node) Error!NodeIndex
     const new_func = try self.visitNode(func_decl_idx);
     try self.pending_nodes.append(self.allocator, new_func);
 
-    // const Name = React.forwardRef(Name_withRef) 방문
-    const new_const = try self.visitNode(const_decl_idx);
-    if (self.semantic_edit_enabled and !new_func.isNone() and !new_const.isNone()) {
+    // Publish the exact parser-created argument before visiting the const.
+    // Lexical initialization lowering may wrap its initializer, so the
+    // original declaration shape is no longer an output-identity authority.
+    if (self.semantic_edit_enabled and !new_func.isNone()) {
         const output_func = self.ast.getNode(new_func);
         if (output_func.tag == .function_declaration) {
             const output_name = self.readNodeIdx(output_func.data.extra, ast_mod.FunctionExtra.name);
-            const output_ref = flowComponentForwardRefArgument(self, new_const);
+            const output_ref = forward_ref_argument;
             if (!output_name.isNone() and !output_ref.isNone()) {
                 const symbol = try self.declareSyntheticInScope(output_name, node.span, .function_decl, self.current_scope);
                 if (helper_output_name) |generated_name| {
@@ -585,5 +586,6 @@ pub fn visitFlowComponentWrapper(self: *Transformer, node: Node) Error!NodeIndex
             }
         }
     }
-    return new_const;
+    // const Name = React.forwardRef(Name_withRef) 방문
+    return try self.visitNode(const_decl_idx);
 }

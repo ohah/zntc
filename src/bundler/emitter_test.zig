@@ -14,6 +14,53 @@ const resolve_cache_mod = @import("resolve_cache.zig");
 const writeFile = @import("test_helpers.zig").writeFile;
 const profile = @import("../profile.zig");
 
+// Test-only inspection of the emitted binding and its actual factory AST.
+fn tdzFactoryBindingStart(source: []const u8, selected: []const u8) !usize {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const ast = &parser.ast;
+    var matches: usize = 0;
+    var result: usize = 0;
+    var statements = ast.iterateExtraList(ast.getNode(root).data.list);
+    while (statements.next()) |statement| {
+        const declaration = ast.getNode(statement);
+        if (declaration.tag != .variable_declaration) continue;
+        const start = ast.readExtra(declaration.data.extra, 1);
+        const length = ast.readExtra(declaration.data.extra, 2);
+        for (ast.extra_data.items[start..][0..length]) |raw| {
+            const declarator = ast.getNode(@fromBackingInt(raw));
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.variable_declarator, declarator.tag);
+            const binding = ast.getNode(ast.readExtraNode(declarator.data.extra, 0));
+            if (binding.tag != .binding_identifier or !std.mem.eql(u8, ast.getText(binding.data.string_ref), selected)) continue;
+            const call = ast.getNode(ast.readExtraNode(declarator.data.extra, 2));
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.call_expression, call.tag);
+            var callee = ast.readExtraNode(call.data.extra, 0);
+            while (ast.getNode(callee).tag == .parenthesized_expression) callee = ast.getNode(callee).data.unary.operand;
+            const factory = ast.getNode(callee);
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.function_expression, factory.tag);
+            const body = ast.getNode(ast.readExtraNode(factory.data.extra, @import("../parser/ast.zig").FunctionExtra.body));
+            var body_statements = ast.iterateExtraList(body.data.list);
+            var returned: usize = 0;
+            while (body_statements.next()) |child| {
+                const node = ast.getNode(child);
+                if (node.tag != .return_statement) continue;
+                try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.function_expression, ast.getNode(node.data.unary.operand).tag);
+                returned += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), returned);
+            matches += 1;
+            result = declaration.span.start;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), matches);
+    return result;
+}
+
 fn buildGraph(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !struct { graph: ModuleGraph, cache: resolve_cache_mod.ResolveCache } {
     const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(dp);
@@ -1766,7 +1813,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const call_super_index = std.mem.indexOf(u8, combined.items, "var __callSuper2 = function(Parent, args, NewTarget)").?;
     const super_get_index = std.mem.indexOf(u8, combined.items, "var __superGet2 = (function(O)").?;
     const super_set_index = std.mem.indexOf(u8, combined.items, "var __superSet2 = (function(O)").?;
-    const tdz_index = std.mem.indexOf(u8, combined.items, "var __tdz2 = function(name)").?;
+    const tdz_index = try tdzFactoryBindingStart(combined.items, "__tdz2");
     const read_index = std.mem.indexOf(u8, combined.items, "var __read2 = (").?;
     const tagged_index = std.mem.indexOf(u8, combined.items, "var __taggedTemplateLiteral2 = function").?;
     const using_index = std.mem.indexOf(u8, combined.items, "var __using2 = ((disposeSymbol, apply, TypeErrorCtor) => (stack, value, async, guard) =>").?;
@@ -2453,7 +2500,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected class call
     try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $cC=function(instance,Constructor)"));
 }
 
-test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected tdz local directly" {
+test "appendRuntimeHelpersWithStandaloneLocalNames lexical TDZ selected owner retains factory and runtime marker" {
     var plain: std.ArrayList(u8) = .empty;
     defer plain.deinit(std.testing.allocator);
     try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
@@ -2464,8 +2511,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected tdz local 
         false,
         .{ .tdz = "__tdz2" },
     );
-    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __tdz2 = function(name)"));
-    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __tdz = function(name)"));
+    _ = try tdzFactoryBindingStart(plain.items, "__tdz2");
 
     var minified: std.ArrayList(u8) = .empty;
     defer minified.deinit(std.testing.allocator);
@@ -2477,8 +2523,16 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected tdz local 
         false,
         .{ .tdz = "$td2" },
     );
-    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $td2=function(name)"));
-    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $td=function(name)"));
+    _ = try tdzFactoryBindingStart(minified.items, "$td2");
+    for ([_]struct { text: []const u8, selected: []const u8 }{ .{ .text = plain.items, .selected = "__tdz2" }, .{ .text = minified.items, .selected = "$td2" } }) |entry| {
+        const source = try std.fmt.allocPrint(std.testing.allocator, "var __tdz=function(){{}},$td=function(){{}};{s};var selected={s},caught;try{{selected('value',selected,false)}}catch(e){{caught=e.name}}console.log(JSON.stringify([selected('value',42,false),caught]));", .{ entry.text, entry.selected });
+        defer std.testing.allocator.free(source);
+        const observed = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        defer std.testing.allocator.free(observed.stdout);
+        defer std.testing.allocator.free(observed.stderr);
+        try std.testing.expect(observed.term == .exited and observed.term.exited == 0);
+        try std.testing.expectEqualStrings("[42,\"ReferenceError\"]\n", observed.stdout);
+    }
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected public field local directly" {

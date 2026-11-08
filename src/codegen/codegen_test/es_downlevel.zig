@@ -4747,8 +4747,8 @@ test "상태 기계: 구조분해가 native 인 타겟에서도 구조분해 대
     u.block_scoping = true;
     var r = try e2eFull(std.testing.allocator, "function* g(e){ { let { m } = e; yield 1; log(m); } }", .{ .unsupported = u }, .{ .minify_whitespace = true }, ".ts");
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "m$1=_a.m") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "({") == null);
+    try expectPreparedOutputRuntime(r.output, "function* g(e){ { let { m } = e; yield 1; log(m); } }", "var out=[];function log(value){out.push(value)}var iterator=g({m:42});iterator.next();iterator.next();console.log(JSON.stringify(out));");
+    try expectPreparedPatternShape(r.output, &.{"m"}, false);
 }
 
 test "ES5 상태 기계: 컴파일러가 만든 catch 임시 변수는 리네임하지 않는다 (#4712)" {
@@ -4844,19 +4844,22 @@ test "ES5 상태 기계: 구조분해 대입의 object rest 를 __rest 로 채�
     // r 이 undefined 로 남았다(Hermes 는 #4712 가 이 경로로 바꾼 회귀).
     var r = try e2eTarget(std.testing.allocator, "function* g(o){ const { a, ...r } = o; yield r; }", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "a=_a.a,r=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a,[\"a\"])") != null);
+    try expectPreparedOutputRuntime(r.output, "function* g(o){ const { a, ...r } = o; yield r; }", "console.log(JSON.stringify(g({a:1,b:2}).next()));");
+    try expectPreparedPatternShape(r.output, &.{"a"}, false);
+    try expectPreparedRestCall(r.output, "a");
 }
 
 test "ES5 상태 기계: 구조분해 대입의 array rest 를 slice 로 채우고 패턴 rest 는 재귀로 푼다 (#4750)" {
     var ra = try e2eTarget(std.testing.allocator, "function* g(o){ const [x, ...r] = o; yield r; }", .es5);
     defer ra.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, ra.output, "x=_a[0],r=_a.slice(1)") != null);
+    try expectPreparedOutputRuntime(ra.output, "function* g(o){ const [x, ...r] = o; yield r; }", "console.log(JSON.stringify(g(new Set([1,2,3])).next()));");
+    try expectPreparedPatternShape(ra.output, &.{}, true);
 
     var rn = try e2eTarget(std.testing.allocator, "function* g(o){ const [x, ...[y, z]] = o; yield y+z; }", .es5);
     defer rn.deinit();
+    try expectPreparedOutputRuntime(rn.output, "function* g(o){ const [x, ...[y, z]] = o; yield y+z; }", "console.log(JSON.stringify(g(new Set([1,2,3])).next()));");
     // 중첩 배열 패턴도 `__read` 로 배열을 만든 뒤 푼다 (#4791).
-    try std.testing.expect(std.mem.indexOf(u8, rn.output, "_b=__read(_a.slice(1),2),y=_b[0],z=_b[1]") != null);
+    try expectPreparedPatternShape(rn.output, &.{}, true);
 }
 
 // #4791: 상태 기계의 구조 분해 대입도 선언 경로처럼 `__read` 로 배열을 만든다 — 이터러블(Set 등)에
@@ -4864,12 +4867,14 @@ test "ES5 상태 기계: 구조분해 대입의 array rest 를 slice 로 채우�
 test "ES5 상태 기계: 배열 구조분해 대입이 __read 를 거친다 (#4791)" {
     var r = try e2eTarget(std.testing.allocator, "function* g(){ const [x, ...r] = yield 0; }", .es5);
     defer r.deinit();
-    try expectPreparedPatternShape(r.output, &.{"slice"}, true);
+    try expectPreparedOutputRuntime(r.output, "function* g(){ const [x, ...r] = yield 0; }", "var steps=0,closes=0;var input={[Symbol.iterator](){return{next(){steps++;return steps<4?{value:steps,done:false}:{done:true}},return(){closes++;return{done:true}}}}};var iterator=g();iterator.next();var result=iterator.next(input);console.log(JSON.stringify([result,steps,closes]));");
+    try expectPreparedPatternShape(r.output, &.{}, true);
     try expectPreparedOutputRuntime(r.output, "function* g(){ const [x, ...r] = yield 0; }", "var iterator=g();iterator.next();console.log(JSON.stringify(iterator.next(new Set([1,2,3]))));");
     try expectGeneratorNativeValues("function* g(){ const [x, ...r] = yield 0; }var iterator=g();iterator.next();console.log(JSON.stringify(iterator.next(new Set([1,2,3]))));", "{\"done\":true}\n");
 
     var rn = try e2eTarget(std.testing.allocator, "function* g(){ const { l: [a] } = yield 0; }", .es5);
     defer rn.deinit();
+    try expectPreparedOutputRuntime(rn.output, "function* g(){ const { l: [a] } = yield 0; }", "var steps=0,closes=0,getters=0;var input={[Symbol.iterator](){return{next(){steps++;return{value:42,done:false}},return(){closes++;return{done:true}}}}};var object={get l(){getters++;return input}};var iterator=g();iterator.next();var result=iterator.next(object);console.log(JSON.stringify([result,steps,closes,getters]));");
     try expectPreparedPatternShape(rn.output, &.{"l"}, true);
     try expectPreparedOutputRuntime(rn.output, "function* g(){ const { l: [a] } = yield 0; }", "var iterator=g();iterator.next();console.log(JSON.stringify(iterator.next({l:new Set([42])})));");
     try expectGeneratorNativeValues("function* g(){ const { l: [a] } = yield 0; }var iterator=g();iterator.next();console.log(JSON.stringify(iterator.next({l:new Set([42])})));", "{\"done\":true}\n");
@@ -5054,6 +5059,34 @@ fn expectPreparedPatternShape(output: []const u8, keys: []const []const u8, need
     }
 }
 
+fn expectPreparedRestCall(output: []const u8, excluded: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, output);
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".cjs");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const reachable = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(allocator, &parser.ast, root);
+    var calls: usize = 0;
+    for (reachable) |raw| {
+        const call = parser.ast.nodes.items[raw];
+        if (call.tag != .call_expression) continue;
+        const callee = parser.ast.getNode(parser.ast.readExtraNode(call.data.extra, 0));
+        if (callee.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.getText(callee.data.string_ref), "__rest")) continue;
+        try std.testing.expectEqual(@as(u32, 2), parser.ast.readExtra(call.data.extra, 2));
+        const arguments = parser.ast.readExtra(call.data.extra, 1);
+        const keys = parser.ast.getNode(parser.ast.readExtraNode(arguments, 1));
+        try std.testing.expectEqual(@TypeOf(keys.tag).array_expression, keys.tag);
+        try std.testing.expectEqual(@as(u32, 1), keys.data.list.len);
+        const actual = (try parser.ast.staticKeyName(allocator, parser.ast.readExtraNode(keys.data.list.start, 0))).?;
+        try std.testing.expectEqualStrings(excluded, actual);
+        calls += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), calls);
+}
+
 // Execute the exact semantic-less e2e output with the official helpers too;
 // public-transpile runtime checks below exercise a separate caller contract.
 fn expectPreparedOutputRuntime(output: []const u8, source: []const u8, driver: []const u8) !void {
@@ -5066,12 +5099,24 @@ fn expectPreparedOutputRuntimeWithPrelude(output: []const u8, source: []const u8
     const a = arena.allocator();
     const rt = @import("../../bundler/runtime_helpers.zig");
     const native_source = try std.fmt.allocPrint(a, "{s}\n{s}\n{s}", .{ prelude, source, driver });
-    const lowered_source = try std.fmt.allocPrint(a, "{s}\n{s}\n{s}\n{s}", .{ rt.ASYNC_RUNTIME_ES5 ++ rt.GENERATOR_RUNTIME ++ rt.READ_RUNTIME ++ rt.VALUES_RUNTIME, prelude, output, driver });
-    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", native_source } });
+    const lowered_source = try std.fmt.allocPrint(a, "{s}\n{s}\n{s}\n{s}", .{ rt.ASYNC_RUNTIME_ES5 ++ rt.GENERATOR_RUNTIME ++ rt.READ_RUNTIME ++ rt.VALUES_RUNTIME ++ rt.REST_RUNTIME ++ rt.TDZ_RUNTIME, prelude, output, driver });
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const files = @import("../../bundler/test_helpers.zig");
+    try files.writeFile(tmp.dir, "native.cjs", native_source);
+    try files.writeFile(tmp.dir, "lowered.cjs", lowered_source);
+    const native_path = try files.absPath(&tmp, "native.cjs");
+    defer std.testing.allocator.free(native_path);
+    const lowered_path = try files.absPath(&tmp, "lowered.cjs");
+    defer std.testing.allocator.free(lowered_path);
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", native_path } });
     try std.testing.expect(native.term == .exited and native.term.exited == 0);
-    const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", lowered_source } });
+    const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", lowered_path } });
+    std.debug.print("PREPARED_NODE nativeTerm={any} native={s} actualTerm={any} actual={s} stderr={s}\n", .{ native.term, native.stdout, actual.term, actual.stdout, actual.stderr });
     if (actual.term != .exited or actual.term.exited != 0) std.debug.print("prepared e2e runtime stderr: {s}\n", .{actual.stderr});
     try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    try std.testing.expectEqualStrings("", native.stderr);
+    try std.testing.expectEqualStrings("", actual.stderr);
     try std.testing.expectEqualStrings(native.stdout, actual.stdout);
 }
 

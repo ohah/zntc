@@ -585,7 +585,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const field_env = es_helpers.pushArrowEnv(self);
                 defer es_helpers.popArrowEnv(self, field_env);
                 try moveInstanceInitScopes(self, &cm, source_class_scope, ctor_scope);
+                const field_temp_start = self.temp_var_counter;
                 try emitInstanceInits(self, &cm, span);
+                const field_temp_end = self.temp_var_counter;
                 self.current_scope = saved_scope;
                 try emitPrivateMethodArtifacts(self, cm.private_methods.items, &cm.instance_fields, &post_private_method_initializers, span, name_span, ctor_scope);
                 self.current_scope = ctor_scope;
@@ -628,6 +630,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     self.runtime_helpers.class_call_check = true;
                     if (has_self_alias) alias_check_ref = class_ref;
                 }
+                try constructors_mod.hoistInstanceFieldTemps(self, func_node, field_temp_start, field_temp_end, span);
             }
 
             if (source_ctor == null) try self.bindReservedFunctionOwner(ctor_scope, func_node);
@@ -769,7 +772,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             } else try es_helpers.makeCallExpr(self, wrapper_fn, &.{}, span);
 
             // var ClassName = IIFE;
-            const declarator = try es_helpers.makeDeclarator(self, new_name, iife_call, span);
+            const initialized_class = try @import("module_lexical_initialization.zig").initializedValue(self, new_name, iife_call);
+            const declarator = try es_helpers.makeDeclarator(self, new_name, initialized_class, span);
             const var_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
             try self.pending_nodes.append(self.allocator, var_decl);
             if (self.selective_class_candidate) |candidate| {
@@ -1115,7 +1119,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const field_env = es_helpers.pushArrowEnv(self);
                 defer es_helpers.popArrowEnv(self, field_env);
                 try moveInstanceInitScopes(self, &cm, source_class_scope, ctor_scope);
+                const field_temp_start = self.temp_var_counter;
                 try emitInstanceInits(self, &cm, span);
+                const field_temp_end = self.temp_var_counter;
 
                 func_node = if (cm.constructor_idx) |ctor_idx|
                     try buildFunctionFromConstructor(self, ctor_idx, func_name, cm.instance_fields.items, has_super and super_span != null, cm.fields_need_this_alias, span)
@@ -1154,6 +1160,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         alias_check_ref = class_ref;
                     }
                 }
+                try constructors_mod.hoistInstanceFieldTemps(self, func_node, field_temp_start, field_temp_end, span);
             }
 
             if (source_ctor == null and has_extra) try self.bindReservedFunctionOwner(ctor_scope, func_node);

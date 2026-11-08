@@ -1407,6 +1407,10 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             if (!is_generator and self.semantic_edit_enabled and !call_scope.isNone()) {
                 const function_scope = self.outputOwnedScope(func_expr) orelse try self.addGeneratedFunctionScope(call_scope, func_expr);
                 try self.reparentGeneratedBodyScopes(call_scope, function_scope, transformed_body);
+                // Direct uses in an unbraced extracted body still carry the
+                // source header scope. Publish their actual callback use scope
+                // before splitting header storage or publishing its wrapper.
+                try @import("class_strict_context.zig").moveSourceReferences(self, transformed_body, call_scope, call_scope, function_scope);
                 transformed_body = try lowerExtractedNativeAnnexB(self, transformed_body, call_scope, function_scope);
                 self.ast.extra_data.items[func_extra + 2] = @backingInt(transformed_body);
             }

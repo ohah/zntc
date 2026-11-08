@@ -72,7 +72,15 @@ pub fn transform(self: anytype) Error!NodeIndex {
         self.plugins.worklet.plugin_version_span = self.ast.addString(quoted) catch return Error.OutOfMemory;
     }
 
-    // 블록 스코핑 리네임을 심볼 기준으로 미리 정한다 (#4760).
+    var lexical_tdz = @import("../lexical_tdz.zig").Plan.init(self.allocator);
+    defer lexical_tdz.deinit();
+    const saved_lexical_tdz = self.lexical_tdz_plan;
+    self.lexical_tdz_plan = &lexical_tdz;
+    defer self.lexical_tdz_plan = saved_lexical_tdz;
+    try lexical_tdz.prepare(self);
+
+    // Runtime-global source aliases must be selected before visiting initial
+    // values so the existing named-evaluation/hoisted-name producers see them.
     try self.buildBlockRenameMap();
     try @import("../parameter_environment.zig").collectClassInferredNames(self);
     try @import("../native_parameter_cells.zig").normalize(self);

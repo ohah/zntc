@@ -510,9 +510,15 @@ fn moveDefaultExport(comptime Transformer: type, self: *Transformer, stmt: NodeI
     const pt = self.pending_nodes.items.len;
     const tt = self.trailing_nodes.items.len;
     const value = try self.visitNode(operand);
-    const target = try self.makeIdentifierRefWithSymbol(binding_span, binding);
-    if (self.getSymbolIdAt(binding) != null) try self.trackUserWriteFromBinding(target, binding, self.current_scope);
-    const assign = try es_helpers.makeExprStmt(self, try es_helpers.makeAssignExpr(self, target, value, node.span, 0), node.span);
+    // The actual facade was materialized above. Its module initialization
+    // producer owns the source write and readiness publication together.
+    const initialized = try @import("module_lexical_initialization.zig").initializedValue(self, binding, value);
+    const assignment = if (initialized != value) initialized else blk: {
+        const target = try self.makeIdentifierRefWithSymbol(binding_span, binding);
+        if (self.getSymbolIdAt(binding) != null) try self.trackUserWriteFromBinding(target, binding, self.current_scope);
+        break :blk try es_helpers.makeAssignExpr(self, target, value, node.span, 0);
+    };
+    const assign = try es_helpers.makeExprStmt(self, assignment, node.span);
     try drainPendingAroundTo(Transformer, self, pt, tt, assign, body);
     try bindings.locals.append(self.allocator, binding);
 
@@ -583,7 +589,7 @@ fn moveWrappedReferenceScopes(comptime Transformer: type, self: *Transformer, bo
 /// `self` 는 Transformer. options.unsupported.top_level_await 가 true 일 때만 호출.
 ///
 /// 반환: wrap 된 program 노드 index (TLA 가 없으면 null — caller 가 기본 visit 수행).
-pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) Transformer.Error!?NodeIndex {
+pub fn lowerProgram(comptime Transformer: type, self: *Transformer, source_program: NodeIndex, node: Node) Transformer.Error!?NodeIndex {
     std.debug.assert(node.tag == .program);
     // ⚠️ 멱등성: 같은 program 에 두 번 적용되면 async IIFE 가 **두 개** 방출돼
     // side-effect 가 2회 실행된다(유닛 테스트가 잡음). 플래그는 **AST** 에 둬야 한다 —
@@ -850,9 +856,12 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     }
 
     const new_list = try self.ast.addNodeList(self.scratch.items[imports_top..]);
+    // This path visits program children directly, bypassing visitListNode.
+    // Consume the same exact source entry plan before the wrapper can run.
+    const initialized_list = try @import("lexical_tdz.zig").prepend(self, source_program, new_list);
     return try self.ast.addNode(.{
         .tag = .program,
         .span = node.span,
-        .data = .{ .list = new_list },
+        .data = .{ .list = initialized_list },
     });
 }

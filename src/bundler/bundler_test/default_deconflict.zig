@@ -10,6 +10,33 @@ const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
 const compat_mod = @import("../../transformer/compat.zig");
 
+fn expectPublicCallableGetter(source: []const u8, public_key: []const u8, function_only: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(a, source);
+    var parser = @import("../../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const reachable = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, &parser.ast, root);
+    var getters: usize = 0;
+    for (reachable) |raw| {
+        const node = parser.ast.nodes.items[raw];
+        if (node.tag != .object_property or node.data.binary.right.isNone()) continue;
+        const key = (try parser.ast.staticKeyName(a, node.data.binary.left)) orelse continue;
+        if (!std.mem.eql(u8, key, public_key)) continue;
+        const value = parser.ast.getNode(node.data.binary.right);
+        if (function_only) {
+            try std.testing.expectEqual(@TypeOf(value.tag).function_expression, value.tag);
+        } else {
+            try std.testing.expect(value.tag == .function_expression or value.tag == .arrow_function_expression);
+        }
+        getters += 1;
+    }
+    try std.testing.expect(getters != 0);
+}
+
 // ============================================================
 // Default export advanced patterns (Rollup/Rolldown 참고)
 // ============================================================
@@ -270,7 +297,8 @@ test "Default: mixed default + named imports re-exported from single source (#13
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"DEFVAL\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"NAMEDVAL\"") != null);
     // #4630: arrow 미지원 선언 시 getter 가 function expression.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "named: function() { return named") != null);
+    try expectPublicCallableGetter(result.output, "named", true);
+    try expectDefaultRuntimeOutput(result.output, "DEFVAL NAMEDVAL\n");
 }
 
 test "Default: named re-export of default literal emits safe getter" {
@@ -855,10 +883,12 @@ test "Default: export default from namespace import assigns ns var" {
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
 
-    var b = Bundler.init(std.testing.allocator, .{
-        .entry_points = &.{entry},
-        .platform = .react_native,
-    });
+    const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native };
+    var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var b = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
     defer b.deinit();
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
@@ -867,16 +897,56 @@ test "Default: export default from namespace import assigns ns var" {
     // ns var 할당이 반드시 존재해야 한다. 공유 namespace preamble 경로에서는
     // 병렬 metadata 순서에 따라 var 이름이 X_ns 외의 `<import>_ns`가 될 수 있다.
     try std.testing.expect(std.mem.indexOf(u8, result.output, " = {get foo()") != null);
-    // The exported default is a snapshot facade initialized from the namespace.
-    const has_default_getter = std.mem.indexOf(u8, result.output, "\"default\": function() { return _default; }") != null or
-        std.mem.indexOf(u8, result.output, "\"default\":()=>_default") != null or
-        std.mem.indexOf(u8, result.output, "\"default\": () => _default") != null;
-    try std.testing.expect(has_default_getter);
-    // The facade receives the lowered shared namespace object.
-    const has_assign = (std.mem.indexOf(u8, result.output, "_default = ") != null or
-        std.mem.indexOf(u8, result.output, "_default=") != null) and
-        std.mem.indexOf(u8, result.output, "_ns;") != null;
-    try std.testing.expect(has_assign);
+    const source_path = try absPath(&tmp, "mod.ts");
+    defer std.testing.allocator.free(source_path);
+    const source_module = graph.getModule(graph.path_to_module.get(source_path).?).?;
+    const semantic = source_module.semantic.?;
+    const source_ast = &source_module.ast.?;
+    var facade_sid: ?u32 = null;
+    for (source_module.export_bindings) |exported| {
+        if (!std.mem.eql(u8, exported.exported_name, "default")) continue;
+        try std.testing.expect(facade_sid == null);
+        try std.testing.expectEqual(@TypeOf(exported.kind).local, exported.kind);
+        // The module InitializeBinding producer materializes the original
+        // facade and publishes an exact named alias to that physical local.
+        try std.testing.expect(!exported.has_default_export_facade);
+        const sid = source_module.exportBindingLocalNodeSemanticIndex(exported) orelse return error.MissingDefaultFacadeIdentity;
+        try std.testing.expectEqual(@as(?u32, sid), source_module.exportBindingSemanticIndex(exported));
+        const local = exported.local_symbol_node orelse return error.MissingDefaultFacadeRead;
+        try std.testing.expectEqual(@TypeOf(source_ast.getNode(local).tag).identifier_reference, source_ast.getNode(local).tag);
+        const declaration = exported.source_export_node orelse return error.MissingDefaultFacadeExport;
+        const specifier = exported.source_specifier_node orelse return error.MissingDefaultFacadeSpecifier;
+        const export_node = source_ast.getNode(declaration);
+        try std.testing.expectEqual(@TypeOf(export_node.tag).export_named_declaration, export_node.tag);
+        try std.testing.expect(source_ast.readExtraNode(export_node.data.extra, 0).isNone());
+        try std.testing.expect(source_ast.readExtraNode(export_node.data.extra, 3).isNone());
+        const start = source_ast.readExtra(export_node.data.extra, 1);
+        try std.testing.expectEqual(@as(u32, 1), source_ast.readExtra(export_node.data.extra, 2));
+        try std.testing.expectEqual(specifier, source_ast.readExtraNode(start, 0));
+        const alias = source_ast.getNode(specifier);
+        try std.testing.expectEqual(@TypeOf(alias.tag).export_specifier, alias.tag);
+        try std.testing.expectEqual(local, alias.data.binary.left);
+        const key = try source_ast.staticKeyName(source_module.parse_arena.?.allocator(), alias.data.binary.right) orelse return error.MissingDefaultFacadePublicKey;
+        try std.testing.expectEqualStrings("default", key);
+        try std.testing.expect(semantic.symbols.items[sid].decl_flags.is_default_export);
+        try std.testing.expect(@import("../../semantic/lexical_initialization.zig").validatePair(semantic.symbols.items, semantic.scopes, sid));
+        facade_sid = sid;
+    }
+    try std.testing.expect(facade_sid != null);
+    const library_path = try absPath(&tmp, "lib.ts");
+    defer std.testing.allocator.free(library_path);
+    var namespaces: usize = 0;
+    for (source_module.import_bindings) |binding| {
+        if (binding.kind != .namespace) continue;
+        const local = try source_module.checkedSourceImportLocalSymbol(binding);
+        const checked = try source_module.checkedImportBindingIdentity(binding);
+        try std.testing.expect(local.eql(checked.symbol));
+        try std.testing.expect(local.semanticIndex() != facade_sid);
+        try std.testing.expectEqual(graph.path_to_module.get(library_path).?, source_module.import_records[binding.import_record_index].resolved);
+        namespaces += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), namespaces);
+    try expectPublicCallableGetter(result.output, "default", false);
     try expectDefaultRuntimeOutput(result.output, "barvalue\n");
 }
 
@@ -1608,14 +1678,46 @@ test "Default: facade-name import snapshots stay separate from lexical export ad
     defer output.deinit(std.testing.allocator);
     try std.testing.expect(!output.hasErrors());
     const source_module = graph.getModule(graph.path_to_module.get(entry).?).?;
-    try std.testing.expect(source_module.import_bindings[1].guarded_lazy_calls_lowered);
-    try std.testing.expect(!source_module.import_bindings[2].guarded_lazy_calls_lowered);
     const source_semantic = source_module.semantic.?;
+    const source_ast = &source_module.ast.?;
+    var snapshot_binding: ?@import("../binding_scanner.zig").ImportBinding = null;
+    var live_binding: ?@import("../binding_scanner.zig").ImportBinding = null;
+    const source_reachable = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(source_module.parse_arena.?.allocator(), source_ast, source_ast.transformed_root.?);
+    for (source_reachable) |raw| {
+        const specifier = source_ast.nodes.items[raw];
+        if (specifier.tag != .import_specifier or specifier.span.start & @import("../../parser/ast.zig").Ast.STRING_TABLE_BIT != 0 or
+            specifier.span.end <= specifier.span.start or specifier.span.end > source_ast.source.len) continue;
+        const imported = try source_ast.staticKeyName(source_module.parse_arena.?.allocator(), specifier.data.binary.left) orelse continue;
+        const snapshot = std.mem.eql(u8, imported, "value");
+        const live = std.mem.eql(u8, imported, "change");
+        if (!snapshot and !live) continue;
+        var matches: usize = 0;
+        for (source_module.import_bindings) |binding| {
+            if (binding.source_local_symbol_node != specifier.data.binary.right) continue;
+            const actual = try source_module.checkedSourceImportLocalSymbol(binding);
+            const checked = try source_module.checkedImportBindingIdentity(binding);
+            try std.testing.expect(actual.eql(checked.symbol));
+            try std.testing.expectEqual(actual.semanticIndex(), source_semantic.symbol_ids[@backingInt(specifier.data.binary.right)]);
+            if (snapshot) {
+                try std.testing.expect(snapshot_binding == null);
+                snapshot_binding = binding;
+            } else {
+                try std.testing.expect(live_binding == null);
+                live_binding = binding;
+            }
+            matches += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), matches);
+    }
+    const snapshot = snapshot_binding orelse return error.MissingSnapshotSourceImport;
+    const live = live_binding orelse return error.MissingLiveSourceImport;
+    try std.testing.expect(snapshot.guarded_lazy_calls_lowered);
+    try std.testing.expect(!live.guarded_lazy_calls_lowered);
     var live_aliases: usize = 0;
     for (source_module.export_bindings) |exported| {
         if (exported.has_default_export_facade) continue;
         const anchor = exported.local_symbol_node orelse continue;
-        if (source_semantic.symbol_ids[@backingInt(anchor)] != source_module.import_bindings[2].local_symbol.semanticIndex()) continue;
+        if (source_semantic.symbol_ids[@backingInt(anchor)] != live.local_symbol.semanticIndex()) continue;
         try std.testing.expectEqual(@TypeOf(source_module.ast.?.getNode(anchor).tag).identifier_reference, source_module.ast.?.getNode(anchor).tag);
         live_aliases += 1;
     }
@@ -2365,8 +2467,11 @@ test "preserved plain imports evaluate with exact zero-argument init callees and
         const semantic = module.semantic.?;
         for (module.import_bindings) |binding| {
             if (binding.callsite_target) |target| {
-                try std.testing.expectEqual(@import("../binding_scanner.zig").CallsiteRole.esm_init, target.role);
                 try @import("../runtime_callsite_targets.zig").validateTargetRole(&graph, target);
+                switch (target.role) {
+                    .esm_init, .tdz_helper, .keep_names_helper, .lexical_initialization_flag => {},
+                    else => return error.UnexpectedPlainInitializerRole,
+                }
             } else if (!binding.is_helper) {
                 const sid = binding.local_symbol.semanticIndex().?;
                 try std.testing.expectEqual(@as(?u32, sid), semantic.symbol_ids[@backingInt(binding.local_symbol_node.?)]);
@@ -2384,7 +2489,12 @@ test "preserved plain imports evaluate with exact zero-argument init callees and
             for (module.import_bindings) |binding| {
                 const target = binding.callsite_target orelse continue;
                 if (binding.local_symbol.semanticIndex() != @as(?u32, sid)) continue;
-                try std.testing.expectEqual(@import("../binding_scanner.zig").CallsiteRole.esm_init, target.role);
+                try @import("../runtime_callsite_targets.zig").validateTargetRole(&graph, target);
+                switch (target.role) {
+                    .esm_init => {},
+                    .tdz_helper, .keep_names_helper, .lexical_initialization_flag => continue,
+                    else => return error.UnexpectedPlainInitializerCallRole,
+                }
                 try std.testing.expectEqual(@as(u32, 0), ast.readExtra(node.data.extra, 2));
                 actual_init_calls += 1;
             }

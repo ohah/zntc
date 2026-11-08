@@ -31,7 +31,7 @@ pub fn resolveLoweredAnonymousDefaultClassBinding(
 /// export default class/function → ES5 lowering 시 operand가 .none이 되는 케이스 처리.
 /// lowerClassDeclaration이 pending_nodes에 function 등을 넣고 .none을 반환하므로,
 /// 클래스/함수 이름(또는 익명의 합성 이름 _Class)의 identifier reference를 operand로 사용.
-pub fn visitExportDefaultDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
+pub fn visitExportDefaultDeclaration(self: *Transformer, source_idx: NodeIndex, node: Node) Error!NodeIndex {
     const operand_idx = node.data.unary.operand;
     const saved_default_operand = self.default_export_operand;
     self.default_export_operand = operand_idx;
@@ -73,19 +73,11 @@ pub fn visitExportDefaultDeclaration(self: *Transformer, node: Node) Error!NodeI
                     try self.trackUserReadFromBinding(ref, name_idx, self.current_scope);
                 break :blk ref;
             };
-            return self.ast.addNode(.{
-                .tag = node.tag,
-                .span = node.span,
-                .data = .{ .unary = .{ .operand = name_ref, .flags = node.data.unary.flags } },
-            });
+            return @import("../module_lexical_initialization.zig").exportDefault(self, source_idx, node, name_ref);
         }
     }
 
-    return self.ast.addNode(.{
-        .tag = node.tag,
-        .span = node.span,
-        .data = .{ .unary = .{ .operand = new_operand, .flags = node.data.unary.flags } },
-    });
+    return @import("../module_lexical_initialization.zig").exportDefault(self, source_idx, node, new_operand);
 }
 
 /// Capture actual source binding rows before the import producer erases or
@@ -270,6 +262,8 @@ pub fn visitExportAllDeclaration(self: *Transformer, node: Node) Error!NodeIndex
 /// attrs 는 string literal 쌍이라 visit 불필요 — 원본 리스트 그대로 전달.
 pub fn visitExportNamedDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
     const x = module_parser.readExportNamedExtras(self.ast, node.data.extra);
+    if (try @import("../module_lexical_initialization.zig").declarationNeedsPatternInitialization(self, x.decl))
+        return @import("../module_lexical_initialization.zig").lowerExportedPattern(self, x.decl, node.span);
     const new_decl = try self.visitNode(x.decl);
     if (self.semantic_edit_enabled and !new_decl.isNone() and self.ast.getNode(new_decl).tag == .ts_enum_declaration) {
         const enum_name = self.ast.readExtraNode(self.ast.getNode(new_decl).data.extra, ast_mod.EnumExtra.name);

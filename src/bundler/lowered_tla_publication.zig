@@ -53,10 +53,32 @@ fn activeInitializer(a: std.mem.Allocator, module: *const Module, shaker: ?*cons
     if (program.tag != .program) return error.MissingTlaPromiseIdentity;
     var selected = false;
     var items = tree.iterateExtraList(program.data.list);
-    var offset: u32 = 0;
-    while (items.next()) |node| : (offset += 1) {
+    while (items.next()) |node| {
         if (@backingInt(node) != raw) continue;
-        if (shaker) |s| if (!s.isStmtReachable(module.index.toU32(), offset)) return null;
+        if (selected) return error.MissingTlaPromiseIdentity;
+        if (shaker) |s| {
+            if (s.graph.getModule(module.index) != module) return error.MissingTlaPromiseIdentity;
+            // Linker-owned imports can change the physical program list after
+            // shaking. Only the retained statement's exact node and declared
+            // promise SID select an ordinal in the reachability domain.
+            if (s.getModuleStmtInfos(module.index.toU32())) |infos| {
+                var ordinal: ?u32 = null;
+                for (infos.stmts, 0..) |statement, index| {
+                    if (statement.node_idx != raw) continue;
+                    if (ordinal != null or std.mem.indexOfScalar(u32, statement.declared_symbols, @backingInt(promise.symbol_id)) == null)
+                        return error.MissingTlaPromiseIdentity;
+                    ordinal = @intCast(index);
+                }
+                const actual = ordinal orelse return error.MissingTlaPromiseIdentity;
+                const module_raw = module.index.toU32();
+                if (module_raw >= s.reachable_stmts.len) return error.MissingTlaPromiseIdentity;
+                if (s.reachable_stmts[module_raw]) |bits| {
+                    if (bits.unmanaged.bit_length != infos.stmts.len or actual >= bits.unmanaged.bit_length)
+                        return error.MissingTlaPromiseIdentity;
+                }
+                if (!s.isStmtReachable(module_raw, actual)) return null;
+            }
+        }
         selected = true;
     }
     // A removed label/statement must not become an unsupported-target error

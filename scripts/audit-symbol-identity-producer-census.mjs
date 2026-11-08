@@ -35,19 +35,19 @@ const constructorHelpers = new Set(constructors);
 
 const expected = {
   // Base-plus-feature source label, not a claim that the base commit contains it.
-  revision: '2db55b3888a9365357242072348c9df8d05a11e9+lazy-iterator-reference-consumers',
-  total: 142,
-  files: 45,
-  functions: 92,
+  revision: '3099bd3c24ff51d7abc84ef085bd83b224a938c3+legacy-lexical-tdz',
+  total: 145,
+  files: 47,
+  functions: 95,
   byConstructor: {
     makeSyntheticBinding: 54,
     makeExactSyntheticBinding: 43,
-    makeExactSyntheticBindingFromSpan: 30,
+    makeExactSyntheticBindingFromSpan: 33,
     createSyntheticTempBinding: 9,
     makeUsingBinding: 4,
     createSyntheticTempBindingWithIdentity: 2,
   },
-  fingerprint: '6191ff81358f3e74d6ab1fdbfe83d5446c6b7cb8c0288382d278dc9fcedd8194',
+  fingerprint: 'cb8d54a87f3196be5b996e1103c349aeb529dad252ac118b1bc58a0114a0d552',
 };
 
 const historicalBaseline = {

@@ -2779,6 +2779,12 @@ pub fn publishCapturedLoopWrapper(
         const raw = @backingInt(node);
         if (live.contains(raw)) continue;
         try live.put(self.allocator, raw, {});
+        // A function's body executes in its own published frame. Only the
+        // helper initializer's outer evaluation frontier belongs to this block.
+        if (self.outputOwnedScope(node)) |owned| {
+            if (owned != wrapper_scope and owned.toIndex() < editor.scopes.items.len and
+                editor.scopes.items[owned.toIndex()].kind == .function) continue;
+        }
         const tag = self.ast.getNode(node).tag;
         if (tag == .identifier_reference or tag == .assignment_target_identifier) {
             const reference = editor.referenceForNode(node) catch |err| return editError(err);
@@ -3059,6 +3065,17 @@ fn variableScope(self: *Transformer, start: ScopeId) ScopeId {
 
 fn syntheticTempSymbolKey(name_span: Span, scope: ScopeId) u64 {
     return (@as(u64, @backingInt(scope)) << 32) | name_span.start;
+}
+
+/// Adding an entry reset makes the physical var cell nonconstant even when its
+/// source was const. Preserve source binding identity and discard only the
+/// materializable value fact in the editor-owned output symbol table.
+pub fn prepareLexicalTDZStorage(self: *Transformer, binding: NodeIndex, scope: ScopeId) Transformer.Error!void {
+    const sid = self.getSymbolIdAt(binding) orelse return editError(error.InvalidSymbol);
+    const editor = try editorFor(self);
+    if (sid >= editor.symbols.items.len or editor.symbols.items[sid].scope_id != scope)
+        return editError(error.InvalidScope);
+    editor.symbols.items[sid].const_kind = .none;
 }
 
 pub fn declareSyntheticInScope(self: *Transformer, binding: NodeIndex, declaration_span: Span, kind: SymbolKind, scope: ScopeId) Transformer.Error!?SymbolId {
@@ -5365,6 +5382,20 @@ pub fn renameParameterEnvironmentBindingForDynamicBody(self: *Transformer, raw_i
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);
     editor.renameParameterEnvironmentBindingForDynamicBody(@fromBackingInt(@intCast(raw_id)), name) catch |err| return editError(err);
+}
+
+/// A source plan selects this exact write; prior physical-region producers
+/// may already have moved its reference before the TDZ consumer runs.
+pub fn sourceWriteUseScope(self: *Transformer, node: NodeIndex, raw_id: u32) Transformer.Error!ScopeId {
+    const editor = try editorFor(self);
+    const reference = (editor.referenceForNode(node) catch |err| return editError(err)) orelse
+        return editError(error.ReferenceNotFound);
+    if (reference.flags.declare or !reference.flags.write or reference.node_index != node or
+        @backingInt(reference.symbol_id) != raw_id or self.getSymbolIdAt(node) != @as(?u32, raw_id) or
+        raw_id >= editor.symbols.items.len) return editError(error.InvalidSymbol);
+    if (!scopeVisibleFrom(editor.scopes.items, editor.symbols.items[raw_id].scope_id, reference.scope_id))
+        return editError(error.InvalidScope);
+    return reference.scope_id;
 }
 
 pub fn rebindOutputReference(self: *Transformer, node: NodeIndex, raw_id: u32) Transformer.Error!void {

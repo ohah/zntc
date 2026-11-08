@@ -348,6 +348,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const reserved_switch = try self.ast.addNode(.{ .tag = .switch_statement, .span = span, .data = .{ .extra = reserved_extra } });
             const saved_operation_scope = self.generator_operation_scope;
             self.generator_operation_scope = wrapper_scope;
+            if (self.semantic_edit_enabled) if (self.outputOwnedScope(body_idx)) |body_scope| {
+                if (body_scope != wrapper_scope) {
+                    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+                    if (body_scope.isNone() or body_scope.toIndex() >= scopes.len or
+                        scopes[body_scope.toIndex()].kind != .block or scopes[body_scope.toIndex()].parent != wrapper_scope)
+                        @panic("generator body lost its exact lexical evaluation owner");
+                    // Extracted loop bodies can retain a real lexical block
+                    // below the function. Evaluation stays in that block;
+                    // state temps and the native switch still use the wrapper.
+                    self.generator_operation_scope = body_scope;
+                }
+            };
             defer self.generator_operation_scope = saved_operation_scope;
             const saved_native_scope = self.generator_native_var_scope;
             self.generator_native_var_scope = if (self.semantic_edit_enabled)
@@ -366,8 +378,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 if (self.ast.getNode(statement).tag == .class_declaration)
                     try root_classes.put(self.allocator, statement, {});
             }
+            // Reuse the common selected binding/storage producer for TDZ cells.
+            // Only those exact source cells are registered here; ordinary root
+            // class storage and native-loop ownership policies remain separate.
+            var tdz_bindings: std.ArrayList(NodeIndex) = .empty;
+            defer tdz_bindings.deinit(self.allocator);
+            try @import("lexical_tdz.zig").appendBodyBindings(self, body_idx, &tdz_bindings);
+            var tdz_plan = try prepareStateMachineBindingPlan(self, tdz_bindings.items, false);
+            defer tdz_plan.deinit(self.allocator);
+            try consumeStateMachineBindingPlan(self, &tdz_plan);
             try es2015_block_scoping.ES2015BlockScoping(Transformer).prepareStateMachineDeclarations(self, body.data.list);
-            const body_list = try rewriteUsingForStateMachine(self, body.data.list);
+            const initialized_body = try @import("lexical_tdz.zig").prependState(self, body_idx, body.data.list, tdz_plan.entries.items, wrapper_scope, wrapper_scope);
+            const body_list = try rewriteUsingForStateMachine(self, initialized_body);
             const stmts_start = body_list.statements.start;
             const stmts_len = body_list.statements.len;
 
@@ -881,7 +903,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
             var plan = try prepareStateMachineBindingPlan(self, bindings.items, false);
             defer plan.deinit(self.allocator);
-            var declaration_plan = try prepareDeclarationPlan(self, self.ast.getNode(stmt_idx));
+            var declaration_plan = try prepareDeclarationPlanAt(self, stmt_idx);
             defer declaration_plan.deinit(self.allocator);
             try collectPreparedOperations(self, stmt_idx, &plan, &declaration_plan, ops, next_label);
         }
@@ -1060,6 +1082,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// Visit a retained native statement after removing source var declarations.
         /// Their exact binding nodes were already moved into the wrapper declaration.
         fn visitNativeStateRegion(self: *Transformer, statement: NodeIndex) Transformer.Error!NodeIndex {
+            const saved_native_depth = self.generator_native_region_state_depth;
+            self.generator_native_region_state_depth = self.state_machine_depth;
+            defer self.generator_native_region_state_depth = saved_native_depth;
             const inherited = if (self.generator_operation_scope.isNone()) self.generator_state_machine_scope else self.generator_operation_scope;
             return self.visitNode(try rewriteNativeStateVars(self, statement, inherited));
         }
@@ -2005,6 +2030,31 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const disc_value = try visitExprWithYieldExtraction(self, disc_idx, ops, next_label);
             const disc = try freezeSuspensionPrefix(self, disc_value, self.ast.getNode(disc_idx).span, ops);
 
+            // Case tests execute before any case-body declaration is visited.
+            // Prepare the exact selected source storage/name receipts now so
+            // early TDZ reads and reset writes share the final binding spelling.
+            var switch_tdz_bindings: std.ArrayList(NodeIndex) = .empty;
+            defer switch_tdz_bindings.deinit(self.allocator);
+            try @import("lexical_tdz.zig").appendBodyBindings(self, stmt_idx, &switch_tdz_bindings);
+            var switch_tdz_plan = try prepareStateMachineBindingPlan(self, switch_tdz_bindings.items, false);
+            defer switch_tdz_plan.deinit(self.allocator);
+            try consumeStateMachineBindingPlan(self, &switch_tdz_plan);
+
+            // BlockDeclarationInstantiation initializes direct case functions
+            // before case search. Reuse the same function-storage producer as
+            // a selected ordinary block, retaining Annex B source-position
+            // aliases separately when collection reaches the declaration.
+            var case_declarations: std.ArrayList(NodeIndex) = .empty;
+            defer case_declarations.deinit(self.allocator);
+            for (0..cases_len_val) |index| {
+                const case_idx = self.ast.readExtraNode(cases_start_val, @intCast(index));
+                const case_node = self.ast.getNode(case_idx);
+                const start = self.readU32(case_node.data.extra, 1);
+                const len = self.readU32(case_node.data.extra, 2);
+                for (0..len) |offset| try case_declarations.append(self.allocator, self.ast.readExtraNode(start, @intCast(offset)));
+            }
+            _ = try collectFunctionInitializers(self, try self.ast.addNodeList(case_declarations.items), ops);
+
             // 각 case에 고유 sentinel 할당 (body 처리 후 실제 label로 fixup)
             const sentinel_base = LABEL_SENTINEL_BASE - 100; // 충분히 떨어진 sentinel 영역
             var case_sentinels = try self.allocator.alloc(u32, cases_len_val);
@@ -2040,7 +2090,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
                 // These operations stay after the previous comparison branch:
                 // a matching case skips every later test (including its yield).
-                const new_test = try visitExprWithYieldExtraction(self, test_idx, ops, next_label);
+                const ready_test = try @import("lexical_tdz.zig").switchCaseTest(self, @fromBackingInt(@as(u32, @intCast(raw_idx))), test_idx);
+                const new_test = try visitExprWithYieldExtraction(self, ready_test, ops, next_label);
                 const disc_read = try makeGeneratorTempRefForProducer(self, disc, stmt.span, .{ .read = true });
                 const eq_check = try self.ast.addNode(.{
                     .tag = .binary_expression,
@@ -2090,8 +2141,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const raw_idx = self.ast.extra_data.items[cases_start_val + i];
                 const case_node = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 const ce = case_node.data.extra;
-                const stmts_s = self.readU32(ce, 1);
-                const stmts_l = self.readU32(ce, 2);
+                const case_statements = try @import("lexical_tdz.zig").switchDefaultStatements(self, @fromBackingInt(@as(u32, @intCast(raw_idx))), .{ .start = self.readU32(ce, 1), .len = self.readU32(ce, 2) });
+                const stmts_s = case_statements.start;
+                const stmts_l = case_statements.len;
 
                 // visitNode/collectOperations가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
                 var j_loop: u32 = 0;
@@ -2204,10 +2256,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (parameter.isNone()) return .{ .wrapper_scope = owner };
             const caught = try buildSentCall(self, span);
             const pattern = self.ast.getNode(parameter);
-            const expression = if (pattern.tag == .object_pattern or pattern.tag == .array_pattern)
-                try es2015_destructuring.ES2015Destructuring(Transformer).prepareBindingPatternAssignment(self, pattern, caught, span, owner)
-            else
-                try es_helpers.makeAssignExpr(self, try bindingToAssignTarget(self, parameter), caught, span, 0);
+            if (pattern.tag == .object_pattern or pattern.tag == .array_pattern) {
+                const ready = try es2015_destructuring.ES2015Destructuring(Transformer).prepareBindingPatternStatement(self, pattern, caught, span, .{
+                    .output_scope = owner,
+                    .use_scope = self.outputOwnedScope(clause) orelse self.current_scope,
+                    .source_scope = self.outputOwnedScope(clause) orelse self.current_scope,
+                });
+                return .{ .statement = ready.statement, .wrapper_scope = owner };
+            }
+            const expression = try es_helpers.makeAssignExpr(self, try bindingToAssignTarget(self, parameter), caught, span, 0);
             return .{ .statement = try es_helpers.makeExprStmt(self, expression, span), .wrapper_scope = owner };
         }
 
@@ -2286,8 +2343,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
                 if (catch_initialization.wrapper_scope != self.generator_state_machine_scope)
                     @panic("prepared catch initialization changed its exact wrapper owner");
-                if (!catch_initialization.statement.isNone())
-                    try collectOperations(self, catch_initialization.statement, ops, next_label);
+                if (!catch_initialization.statement.isNone()) {
+                    const statements = try self.ast.addNodeList(&.{catch_initialization.statement});
+                    const initialized = try @import("lexical_tdz.zig").prependState(self, catch_clause, statements, catch_plan.entries.items, self.generator_state_machine_scope, self.generator_state_machine_scope);
+                    for (0..initialized.len) |index|
+                        try collectOperations(self, self.ast.readExtraNode(initialized.start, @intCast(index)), ops, next_label);
+                }
 
                 try collectBodyOperations(self, catch_body_idx, ops, next_label);
             }
@@ -2554,7 +2615,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         }
 
         const PreparedDeclarationPlan = struct {
-            const Entry = struct { binding: NodeIndex, symbol: ?u32, expression: NodeIndex };
+            const Entry = struct { binding: NodeIndex, symbol: ?u32, expression: NodeIndex = .none, statement: NodeIndex = .none };
             entries: std.ArrayListUnmanaged(Entry) = .empty,
             wrapper_scope: ScopeId,
             span: Span,
@@ -2566,6 +2627,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// No visiting, yield extraction or operation emission. Reconstruct
         /// source declaration patterns with the same common builder as catch.
         fn prepareDeclarationPlan(self: *Transformer, declaration: Node) Transformer.Error!PreparedDeclarationPlan {
+            return prepareDeclarationPlanWithSource(self, declaration, .none);
+        }
+
+        fn prepareDeclarationPlanAt(self: *Transformer, declaration: NodeIndex) Transformer.Error!PreparedDeclarationPlan {
+            return prepareDeclarationPlanWithSource(self, self.ast.getNode(declaration), declaration);
+        }
+
+        fn prepareDeclarationPlanWithSource(self: *Transformer, declaration: Node, declaration_key: NodeIndex) Transformer.Error!PreparedDeclarationPlan {
             var plan = PreparedDeclarationPlan{ .wrapper_scope = self.generator_state_machine_scope, .span = declaration.span };
             errdefer plan.deinit(self.allocator);
             if (declaration.tag != .variable_declaration) return plan;
@@ -2576,14 +2645,37 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const item = self.ast.getNode(@fromBackingInt(raw));
                 if (item.tag != .variable_declarator) continue;
                 const binding = self.readNodeIdx(item.data.extra, 0);
-                const initializer = self.readNodeIdx(item.data.extra, 2);
+                var initializer = self.readNodeIdx(item.data.extra, 2);
                 if (initializer.isNone()) continue;
+                initializer = try @import("lexical_tdz.zig").headerInitializerForBinding(self, binding, initializer);
                 const pattern = self.ast.getNode(binding);
-                const expression = if (pattern.tag == .object_pattern or pattern.tag == .array_pattern)
-                    try es2015_destructuring.ES2015Destructuring(Transformer).prepareBindingPatternAssignment(self, pattern, initializer, declaration.span, plan.wrapper_scope)
-                else
-                    try es_helpers.makeAssignExpr(self, try bindingToAssignTarget(self, binding), initializer, declaration.span, 0);
-                try plan.entries.append(self.allocator, .{ .binding = binding, .symbol = self.getSymbolIdAt(binding), .expression = expression });
+                if (pattern.tag == .object_pattern or pattern.tag == .array_pattern) {
+                    const source_scope = if (!self.generator_operation_scope.isNone()) self.generator_operation_scope else self.current_scope;
+                    var use_scope = source_scope;
+                    var iteration_region: NodeIndex = .none;
+                    const iteration_initialization = @import("lexical_tdz.zig").iterationDeclarationNeedsInitialization(self, declaration_key);
+                    if (iteration_initialization) {
+                        iteration_region = try self.ast.addNode(.{ .tag = .block_statement, .span = declaration.span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+                        use_scope = try self.addGeneratedScope(source_scope, iteration_region, .block);
+                    }
+                    const ready = try es2015_destructuring.ES2015Destructuring(Transformer).prepareBindingPatternStatement(self, pattern, initializer, declaration.span, .{
+                        .output_scope = plan.wrapper_scope,
+                        // Storage belongs to the wrapper; evaluation keeps its
+                        // actual source frontier and iteration region lifetime.
+                        .use_scope = use_scope,
+                        .source_scope = source_scope,
+                        .initialization_source = if (iteration_initialization) declaration_key else .none,
+                    });
+                    const statement = if (!iteration_region.isNone()) block: {
+                        self.ast.nodes.items[@backingInt(iteration_region)].data.list = try self.ast.addNodeList(&.{ready.statement});
+                        break :block iteration_region;
+                    } else ready.statement;
+                    try plan.entries.append(self.allocator, .{ .binding = binding, .symbol = self.getSymbolIdAt(binding), .statement = statement });
+                } else {
+                    initializer = try @import("module_lexical_initialization.zig").initializedValue(self, binding, initializer);
+                    const expression = try es_helpers.makeAssignExpr(self, try bindingToAssignTarget(self, binding), initializer, declaration.span, 0);
+                    try plan.entries.append(self.allocator, .{ .binding = binding, .symbol = self.getSymbolIdAt(binding), .expression = expression });
+                }
             }
             return plan;
         }
@@ -2598,6 +2690,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const binding = entry.binding;
                 if (self.getSymbolIdAt(binding) != entry.symbol)
                     @panic("prepared declaration changed its exact source SymbolId");
+                if (!entry.statement.isNone()) {
+                    try collectOperations(self, entry.statement, ops, next_label);
+                    if (self.unsupported_generator_native_lexical != null) return null;
+                    continue;
+                }
                 const expression = try visitExprWithYieldExtraction(self, entry.expression, ops, next_label);
                 if (self.unsupported_generator_native_lexical != null) return null;
                 const statement = try es_helpers.makeExprStmt(self, expression, plan.span);
@@ -3260,7 +3357,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // assignment, with the right side whose yields became temps (#5728).
                 if (patternNeedsLowering(self, node.data.binary.left)) {
                     const new_right = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
-                    const lowered = try es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignmentWithRightInOutputScope(self, node, new_right, true, self.generator_state_machine_scope);
+                    const Destructuring = es2015_destructuring.ES2015Destructuring(Transformer);
+                    if (Destructuring.assignmentNeedsIteratorStatements(self, node)) {
+                        const source_scope = if (!self.generator_operation_scope.isNone()) self.generator_operation_scope else self.current_scope;
+                        const ready = try Destructuring.prepareBindingPatternStatement(self, self.ast.getNode(node.data.binary.left), new_right, node.span, .{
+                            .output_scope = self.generator_state_machine_scope,
+                            .use_scope = source_scope,
+                            .source_scope = source_scope,
+                        });
+                        try collectOperations(self, ready.statement, ops, next_label);
+                        return ready.value;
+                    }
+                    const lowered = try Destructuring.lowerDestructuringAssignmentWithRightInOutputScope(self, node, new_right, true, self.generator_state_machine_scope);
                     // Computed keys/defaults belong to the left pattern, so
                     // they may still suspend after RHS extraction.
                     return visitExprWithYieldExtraction(self, lowered, ops, next_label);
@@ -4393,10 +4501,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             defer self.generator_operation_scope = saved_scope;
             const body_node = self.ast.getNode(body_idx);
             if (body_node.tag == .block_statement) {
-                const list = try rewriteUsingForStateMachine(self, body_node.data.list);
+                try consumeStateMachineBindingPlan(self, plan);
+                const initialized_body = try @import("lexical_tdz.zig").prependState(self, body_idx, body_node.data.list, plan.entries.items, self.generator_state_machine_scope, self.generator_operation_scope);
+                const list = try rewriteUsingForStateMachine(self, initialized_body);
                 const stmts_start = list.statements.start;
                 const stmts_len = list.statements.len;
-                try consumeStateMachineBindingPlan(self, plan);
                 _ = try collectFunctionInitializers(self, list.statements, ops);
                 // collectOperations가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
                 var i_stmt: u32 = 0;

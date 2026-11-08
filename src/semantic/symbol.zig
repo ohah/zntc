@@ -44,13 +44,24 @@ pub const ParameterBodyVarCopy = struct {
     pub const State = enum(u32) { native, lowered };
 };
 
+/// Private runtime state for an exported source lexical binding after legacy
+/// lowering. The flag's identity is produced with the source binding, never
+/// reconstructed from an output spelling or a later namespace getter.
+pub const LexicalInitialization = struct {
+    flag: SymbolId = .none,
+    state: State = .native,
+
+    pub const State = enum(u32) { native, lowered_module };
+};
+
 /// Producer-owned presence bits make loss of an optional source operation
 /// distinguishable from a binding that never had that operation.
 pub const BindingInstantiation = packed struct(u8) {
     annex_b: bool = false,
     parameter_copy: bool = false,
     strict_output_function: bool = false,
-    reserved: u5 = 0,
+    lexical_initialization: bool = false,
+    reserved: u4 = 0,
 };
 
 /// 심볼 종류. 재선언 규칙이 kind별로 다르다.
@@ -369,6 +380,9 @@ pub const SyntheticKind = enum(u8) {
     /// value, not an AST formal; a source var can share this native binding.
     /// Keep appended so serialized SyntheticKind tags remain stable.
     implicit_arguments,
+    /// Private module-instantiation flag owned by one exact exported source
+    /// let/const SymbolId. Keep appended for the semantic cache tag contract.
+    lexical_initialization_flag,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)
@@ -466,6 +480,7 @@ pub const Symbol = struct {
 
     parameter_copy: ParameterBodyVarCopy = .{},
     binding_instantiation: BindingInstantiation = .{},
+    lexical_initialization: LexicalInitialization = .{},
 
     /// 이 심볼의 이름을 반환. 합성은 `synthetic_name`, 정규는 source Span에서.
     pub fn nameText(self: *const Symbol, source: []const u8) []const u8 {

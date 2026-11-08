@@ -98,6 +98,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const rethrow_body = try plannedBlock(self, error_finally.scope, span);
             // Move the iterable's frontier before nesting the loop itself under
             // the wrapper; its functions must close over the initializer scope.
+            try @import("lexical_tdz.zig").prepareIterableRelocation(self, right);
             try moveIterableExpression(self, right, source_loop_scope, wrapper.scope);
             if (self.semantic_edit_enabled) try self.reparentGeneratedScope(source_loop_scope, try_body.scope);
             const loop_ref_scope = if (register_semantics) loop_scope else source_loop_scope;
@@ -171,7 +172,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const value = try es_helpers.makeStaticMember(self, value_ref, try es_helpers.makePropertyName(self, "value"), span);
             const while_stmt = try self.ast.addNode(.{ .tag = .while_statement, .span = span, .data = .{ .binary = .{
                 .left = test_expr,
-                .right = try ForOf.buildLoopBody(self, left, value, body, span, loop_ref_scope, for_body),
+                .right = try ForOf.buildLoopBodyWithSource(self, source_idx, left, value, body, span, loop_ref_scope, for_body),
                 .flags = 0,
             } } });
             if (register_semantics) try self.remapCopiedScopeOwner(source_idx, while_stmt);

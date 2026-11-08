@@ -725,9 +725,48 @@ test "Expression: imported class method nullish temp is method scoped for ES5" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "function m(options,hash,get) {\n\t\tvar _a") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "(_a = options.queryHash)") != null or
-        std.mem.indexOf(u8, result.output, "(_a=options.queryHash)") != null);
+    try test_helpers.expectOutputRuntime(result.output, "1\n");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, result.output);
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var semantic = @import("../../semantic/analyzer.zig").SemanticAnalyzer.init(allocator, &parser.ast);
+    semantic.enable_exact_declaration_anchors = true;
+    try semantic.analyze();
+    const reachable = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(allocator, &parser.ast, root);
+    var captures: usize = 0;
+    for (reachable) |raw| {
+        const assignment = parser.ast.nodes.items[raw];
+        if (assignment.tag != .assignment_expression) continue;
+        const member = parser.ast.getNode(assignment.data.binary.right);
+        if (member.tag != .static_member_expression) continue;
+        const object_index = parser.ast.readExtraNode(member.data.extra, 0);
+        const object = parser.ast.getNode(object_index);
+        const property = (try parser.ast.staticKeyName(allocator, parser.ast.readExtraNode(member.data.extra, 1))) orelse continue;
+        if (object.tag != .identifier_reference or !std.mem.eql(u8, property, "queryHash") or
+            !@import("../../lexer/scanner.zig").Scanner.identifierValueEquals(parser.ast.getText(object.span), "options")) continue;
+        const parameter = semantic.symbol_ids.items[@backingInt(object_index)].?;
+        const target = semantic.symbol_ids.items[@backingInt(assignment.data.binary.left)].?;
+        const parameter_symbol = semantic.symbols.items[parameter];
+        const temporary = semantic.symbols.items[target];
+        try std.testing.expectEqual(@TypeOf(parameter_symbol.kind).parameter, parameter_symbol.kind);
+        try std.testing.expectEqual(@TypeOf(temporary.kind).variable_var, temporary.kind);
+        try std.testing.expectEqual(parameter_symbol.scope_id, temporary.scope_id);
+        try std.testing.expectEqual(@TypeOf(semantic.scopes.items[temporary.scope_id.toIndex()].kind).function, semantic.scopes.items[temporary.scope_id.toIndex()].kind);
+        var declarations: usize = 0;
+        for (semantic.references.items) |reference| {
+            if (@backingInt(reference.symbol_id) != target or !reference.flags.declare) continue;
+            try std.testing.expectEqual(temporary.scope_id, reference.scope_id);
+            declarations += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), declarations);
+        captures += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), captures);
 }
 
 test "Expression: logical assignment across modules" {

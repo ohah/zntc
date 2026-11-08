@@ -524,8 +524,21 @@ pub fn emitCJSExportBinding(self: anytype, decl_idx: NodeIndex) !void {
     }
 }
 
-pub fn emitExportDefault(self: anytype, node: Node) !void {
+pub fn emitExportDefault(self: anytype, node_index: NodeIndex, node: Node) !void {
     try self.addSourceMapping(node.span);
+    if (self.options.linking_metadata) |metadata| if (metadata.native_default_function) |native| {
+        if (native.source == node_index) {
+            if (self.options.module_format != .esm or node.data.unary.operand != native.function or
+                @backingInt(node_index) >= metadata.symbol_ids.len or metadata.symbol_ids[@backingInt(node_index)] != native.symbol or
+                native.function.isNone() or @backingInt(native.function) >= self.ast.nodes.items.len) return error.InvalidDefaultNameProducer;
+            const function = self.ast.getNode(native.function);
+            if (function.tag != .function_declaration or !self.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.name).isNone()) return error.InvalidDefaultNameProducer;
+            try self.write("export default ");
+            self.export_default_start = self.buf.items.len;
+            try self.emitExpr(native.function, .comma, .{});
+            return;
+        }
+    };
     if (self.options.module_format == .cjs) {
         if (self.options.skip_cjs_exports) {
             // __esm 모듈: export는 __export()가 처리.

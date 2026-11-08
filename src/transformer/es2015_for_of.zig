@@ -526,7 +526,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             return buildLoopBodyWithSource(self, .none, left, value, body, span, loop_scope, result);
         }
 
-        fn buildLoopBodyWithSource(self: *Transformer, source_owner: NodeIndex, left: NodeIndex, value: NodeIndex, body: NodeIndex, span: Span, loop_scope: @import("../semantic/scope.zig").ScopeId, result: NodeIndex) Transformer.Error!NodeIndex {
+        pub fn buildLoopBodyWithSource(self: *Transformer, source_owner: NodeIndex, left: NodeIndex, value: NodeIndex, body: NodeIndex, span: Span, loop_scope: @import("../semantic/scope.zig").ScopeId, result: NodeIndex) Transformer.Error!NodeIndex {
             const body_scope = if (self.semantic_edit_enabled)
                 self.outputOwnedScope(result) orelse std.debug.panic("loop body lost its planned scope", .{})
             else
@@ -540,6 +540,10 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                     try es_helpers.makeDeclarator(self, binding, value, span),
                 }, self.ast.variableDeclarationKind(left_node), span);
             } else try es_helpers.makeExprStmt(self, try makeAssign(self, left, value, span), span);
+            if (comptime @hasDecl(Transformer, "recordIterationDeclaration")) {
+                if (!source_owner.isNone() and left_node.tag == .variable_declaration)
+                    try self.recordIterationDeclaration(source_owner, body_scope, head_stmt);
+            }
             // This declaration reuses the source var binding, unlike a fresh
             // helper. Its birth records the actual loop header edge so a later
             // generator visit can replace only this declaration with its write.

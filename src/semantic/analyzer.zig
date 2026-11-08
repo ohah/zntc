@@ -4652,7 +4652,15 @@ pub const SemanticAnalyzer = struct {
 
         // for문은 블록 스코프를 생성 (for(let i=0; ...) 의 i가 블록 스코프)
         const saved = try self.enterScope(.block, self.is_strict_mode);
-        try self.visitNode(@fromBackingInt(@intCast(extras[extra_start]))); // init
+        // All lexical header bindings exist before the first initializer,
+        // including references inside an earlier initializer's closure.
+        const init_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start]));
+        if (!init_idx.isNone() and self.ast.getNode(init_idx).tag == .variable_declaration) {
+            const declaration = self.ast.getNode(init_idx);
+            const kind = self.ast.variableDeclarationKind(declaration);
+            if (kind.isLexical()) try self.predeclareLexicalVarDecl(declaration, symbolKindFor(kind));
+        }
+        try self.visitNode(init_idx); // initialization order stays source order
         try self.visitNode(@fromBackingInt(@intCast(extras[extra_start + 1]))); // test
         try self.visitNode(@fromBackingInt(@intCast(extras[extra_start + 2]))); // update
         try self.visitNode(@fromBackingInt(@intCast(extras[extra_start + 3]))); // body
@@ -4662,6 +4670,14 @@ pub const SemanticAnalyzer = struct {
     fn visitForInOf(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // ternary: { a = left, b = right, c = body }
         const saved = try self.enterScope(.block, self.is_strict_mode);
+        // The complete lexical head exists before any pattern default or
+        // closure is analyzed, including the distinct RHS TDZ environment.
+        const left = node.data.ternary.a;
+        if (!left.isNone() and self.ast.getNode(left).tag == .variable_declaration) {
+            const declaration = self.ast.getNode(left);
+            const kind = self.ast.variableDeclarationKind(declaration);
+            if (kind.isLexical()) try self.predeclareLexicalVarDecl(declaration, symbolKindFor(kind));
+        }
         // for-in/of LHS 는 매 iteration 마다 write target — `for(ns.x in y)`/`for(marker of y)`
         // 처럼 import 바인딩/namespace 멤버를 변형하면 ESM 불법(번들). 선언 head
         // (`for(let x in y)`)는 variable_declaration 이라 checkImportMutation no-op.

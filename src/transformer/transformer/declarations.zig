@@ -67,7 +67,7 @@ fn postProcessVariableDeclaratorInit(
         }
     }
 
-    return init;
+    return @import("../module_lexical_initialization.zig").initializedValue(self, new_name, init);
 }
 
 pub fn visitVariableDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
@@ -137,7 +137,8 @@ pub fn visitVariableDeclaration(self: *Transformer, node: Node) Error!NodeIndex 
                 // for-of/for-in의 left에서 매 반복 iter value를 받으며, `{x} = void 0` 같은
                 // statement는 block_statement로 잘못 파싱되어 syntax error (#1302).
                 const none = @backingInt(NodeIndex.none);
-                const init_node = @backingInt(try es2015_block_scoping.ES2015BlockScoping(Transformer).initializeLoweredLexical(self, new_name, .none, node.span));
+                const initialized = try es2015_block_scoping.ES2015BlockScoping(Transformer).initializeLoweredLexical(self, new_name, .none, node.span);
+                const init_node = @backingInt(try @import("../module_lexical_initialization.zig").initializedValue(self, new_name, initialized));
                 const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @backingInt(new_name), none, init_node });
                 try self.scratch.append(self.allocator, new_decl);
             } else {

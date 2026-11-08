@@ -41,7 +41,7 @@ pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
 // v39: exact producer-owned static capture aliases retain their retirement proof.
 // v43: extracted await-loop source witnesses and function-name environment retirements.
 // v49: class-key, Worklet, enum-member and explicit-drop proofs share one wire layout.
-pub const FORMAT_VERSION: u32 = 53;
+pub const FORMAT_VERSION: u32 = 54;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -194,7 +194,7 @@ comptime {
         "reference_count:u32;write_count:u32;const_kind:semantic.symbol.ConstValue.Kind;" ++
         "synthetic_kind:?semantic.symbol.SyntheticKind;synthetic_name:[]const u8;output_name_hint:[]const u8;" ++
         "requires_uppercase_first_char:bool;" ++
-        "synthetic_owner_id:?semantic.symbol.SymbolId;annex_b_alias:semantic.symbol.AnnexBFunctionAlias;parameter_copy:semantic.symbol.ParameterBodyVarCopy;binding_instantiation:semantic.symbol.BindingInstantiation;";
+        "synthetic_owner_id:?semantic.symbol.SymbolId;annex_b_alias:semantic.symbol.AnnexBFunctionAlias;parameter_copy:semantic.symbol.ParameterBodyVarCopy;binding_instantiation:semantic.symbol.BindingInstantiation;lexical_initialization:semantic.symbol.LexicalInitialization;";
     if (!std.mem.eql(u8, fieldSig(Symbol), symbol_sig))
         @compileError("Symbol 필드 시그니처가 바뀜 — putSymbol/readSymbol 의 명시 직렬화 갱신 후 이 시그니처를 갱신.\n실제: " ++ fieldSig(Symbol));
     const annex_alias_sig = "variable:semantic.symbol.SymbolId;state:semantic.symbol.AnnexBFunctionAlias.State;source_assignment_count:u32;";
@@ -203,8 +203,10 @@ comptime {
     const parameter_copy_sig = "parameter_source:semantic.symbol.SymbolId;state:semantic.symbol.ParameterBodyVarCopy.State;";
     if (!std.mem.eql(u8, fieldSig(symbol_mod.ParameterBodyVarCopy), parameter_copy_sig))
         @compileError("Parameter/body-var role changed; update the explicit semantic wire layout/version.");
-    if (@bitSizeOf(symbol_mod.BindingInstantiation) != 8 or !std.mem.eql(u8, fieldSig(symbol_mod.BindingInstantiation), "annex_b:bool;parameter_copy:bool;strict_output_function:bool;reserved:u5;"))
+    if (@bitSizeOf(symbol_mod.BindingInstantiation) != 8 or !std.mem.eql(u8, fieldSig(symbol_mod.BindingInstantiation), "annex_b:bool;parameter_copy:bool;strict_output_function:bool;lexical_initialization:bool;reserved:u4;"))
         @compileError("Binding instantiation presence bits changed; update the semantic wire layout/version.");
+    if (!std.mem.eql(u8, fieldSig(symbol_mod.LexicalInitialization), "flag:semantic.symbol.SymbolId;state:semantic.symbol.LexicalInitialization.State;"))
+        @compileError("Lexical initialization role changed; update the semantic wire layout/version.");
     const scope_sig = "parent:semantic.scope.ScopeId;kind:semantic.scope.ScopeKind;is_strict:bool;" ++
         "subtree_has_direct_eval:bool;subtree_has_with:bool;symbol_count:u16;";
     if (!std.mem.eql(u8, fieldSig(Scope), scope_sig))
@@ -373,6 +375,8 @@ fn putSymbol(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: Symbol) !void
     try putU32(buf, alloc, @backingInt(s.parameter_copy.parameter_source));
     try putU32(buf, alloc, @backingInt(s.parameter_copy.state));
     try putU8(buf, alloc, @bitCast(s.binding_instantiation));
+    try putU32(buf, alloc, @backingInt(s.lexical_initialization.flag));
+    try putU32(buf, alloc, @backingInt(s.lexical_initialization.state));
 }
 fn putScope(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: Scope) !void {
     try putU32(buf, alloc, @backingInt(s.parent));
@@ -1097,6 +1101,7 @@ fn readFrameHistory(r: *Reader, a: std.mem.Allocator, scope_count: usize, node_c
 pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc: std.mem.Allocator) !void {
     if (!@import("../semantic/annex_b_function.zig").validate(sem.symbols.items)) return error.InvalidAnnexBRole;
     if (!@import("../semantic/parameter_body_var.zig").validate(sem.symbols.items)) return error.InvalidParameterBodyVarRole;
+    if (!@import("../semantic/lexical_initialization.zig").validate(sem.symbols.items, sem.scopes)) return error.InvalidLexicalInitializationRole;
     var payload: std.ArrayList(u8) = .empty;
     defer payload.deinit(alloc);
 
@@ -1475,6 +1480,7 @@ fn readSymbol(r: *Reader, arena: std.mem.Allocator) Error!Symbol {
         .state = std.enums.fromInt(symbol_mod.ParameterBodyVarCopy.State, try r.u32v()) orelse return error.Truncated,
     };
     s.binding_instantiation = @bitCast(try r.byte());
+    s.lexical_initialization = .{ .flag = @fromBackingInt(try r.u32v()), .state = std.enums.fromInt(symbol_mod.LexicalInitialization.State, try r.u32v()) orelse return error.Truncated };
     return s;
 }
 fn readScope(r: *Reader) Error!Scope {
@@ -1531,6 +1537,7 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
     const scopes_len = try r.u32v();
     const scopes = try arena.alloc(Scope, scopes_len);
     for (scopes) |*s| s.* = try readScope(&r);
+    if (!@import("../semantic/lexical_initialization.zig").validate(symbols_slice, scopes)) return error.Truncated;
 
     const symbol_ids_len = try r.u32v();
     const symbol_ids = try arena.alloc(?u32, symbol_ids_len);

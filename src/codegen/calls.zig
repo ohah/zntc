@@ -564,8 +564,19 @@ pub fn resolveImportMetaProp(self: anytype, object: NodeIndex, property: NodeInd
     return self.ast.getText(prop_node.data.string_ref);
 }
 
-pub fn emitMetaProperty(self: anytype, node: Node) !void {
+pub fn emitMetaProperty(self: anytype, index: NodeIndex, node: Node) !void {
     try self.addSourceMapping(node.span);
+    if (node.data.none == 2) {
+        const metadata = self.options.linking_metadata orelse return error.InvalidModuleRuntimeIdentity;
+        if (!metadata.compiler_module_meta_nodes.contains(@backingInt(index)) or !std.mem.eql(u8, self.ast.getText(node.span), "import.meta")) return error.InvalidModuleRuntimeIdentity;
+        if (metadata.compiler_module_meta_cjs) {
+            if (self.options.cjs_module_name.len == 0) return error.InvalidModuleRuntimeIdentity;
+            try self.write("({url:");
+            try self.write(self.options.cjs_module_name);
+            try self.write(".filename})");
+        } else try self.write("import.meta");
+        return;
+    }
     const text = self.ast.getText(node.span);
     if (std.mem.eql(u8, text, "import.meta")) {
         if (shouldReplaceImportMeta(self)) {

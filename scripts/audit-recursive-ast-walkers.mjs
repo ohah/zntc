@@ -51,6 +51,18 @@ const ALLOWLIST = {
     class: 'iterative_safe',
     note: 'explicit pending/order stacks and visited NodeIndex set rewrite expression slots; default/array depth orders local abrupt cleanup without recursive child traversal',
   },
+  'src/transformer/lexical_tdz.zig::prepare': {
+    class: 'iterative_safe',
+    note: 'explicit pending node stack and visited identity set record exact for-in/of RHS references without recursive descent',
+  },
+  'src/transformer/lexical_tdz.zig::prepareIterableRelocation': {
+    class: 'iterative_safe',
+    note: 'explicit pending node stack relocates the selected iterable source subtree and prunes replacements without recursive calls',
+  },
+  'src/transformer/transformer/node_helpers.zig::buildBlockRenameMap': {
+    class: 'iterative_safe',
+    note: 'explicit pending node stack selects an array-pattern demand after actual SourceSymbol role selection; child iteration never recurses',
+  },
   'src/transformer/es2015_destructuring.zig::movePatternExpression': {
     class: 'iterative_safe',
     note: 'explicit pending node stack and visited identity set relocate exact references; child iteration never recurses',

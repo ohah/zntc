@@ -1920,13 +1920,16 @@ pub const Bundler = struct {
                 .entry_error_guard = self.options.entry_error_guard,
             });
             if (mangle_report_enabled) l.mangle_report = &mangle_collector;
-            try l.link();
+            l = try linkGraphAndLegacy(l, graph);
+            errdefer l.deinit();
             if (self.options.code_splitting and !self.options.preserve_modules and !self.options.dev_mode and
                 self.options.entry_error_guard and (self.options.format == .esm or self.options.format == .cjs))
                 try @import("runtime_entry_guard_calls.zig").prepare(graph, io);
             if (self.options.preserve_modules and !self.options.dev_mode and
                 self.options.entry_error_guard and (self.options.format == .esm or self.options.format == .cjs))
                 try @import("runtime_entry_guard_calls.zig").prepareProvider(graph, io);
+
+            try @import("guarded_import_callsite.zig").prepareClassicProvider(graph, &l, io);
 
             // perf/hmr-link-rename-reuse: HMR-incremental 경로에서 가드 통과 시
             // computeRenames 를 skip 하고 초기 빌드 rename_table 을 재주입한다.
@@ -3414,4 +3417,81 @@ fn checkWorkerParserDiagnosticFinalCopy(allocator: std.mem.Allocator) !void {
 
 test "worker parser diagnostic final copy releases every partial allocation" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, checkWorkerParserDiagnosticFinalCopy, .{});
+}
+
+// This is the actual pre-optional ownership transfer. An error releases the
+// populated linker here; a success transfers it to Bundle's existing defers.
+fn linkGraphAndLegacy(input: Linker, graph: *ModuleGraph) !Linker {
+    var linker = input;
+    errdefer linker.deinit();
+    try linker.link();
+    _ = try @import("graph/legacy_lexical_reads.zig").lower(graph, &linker);
+    _ = try @import("graph/legacy_default_names.zig").lower(graph);
+    return linker;
+}
+
+test "legacy lexical TDZ module identity rejects ten crossed receipts and cleans a failed linker transfer" {
+    const helpers = @import("test_helpers.zig");
+    const Identity = @import("graph/legacy_module_identity.zig");
+    const Capture = Identity.Capture;
+    const Graph = ModuleGraph;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.mjs", "import{value}from'./dep.mjs';console.log(value);");
+    try helpers.writeFile(tmp.dir, "dep.mjs", "export const meta=import.meta;export let value=42;");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    const dep = try helpers.absPath(&tmp, "dep.mjs");
+    defer std.testing.allocator.free(dep);
+    const options: BundleOptions = .{ .entry_points = &.{entry}, .platform = .node, .format = .esm, .preserve_modules = true, .unsupported = @import("../transformer/compat.zig").fromESTarget(.es5) };
+    var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+    defer cache.deinit();
+    var graph = Graph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+    defer bundler.deinit();
+    graph.preserve_modules = true;
+    graph.transform_options_base = bundler.buildTransformOptionsBase(.esm);
+    try graph.build(std.testing.io, &.{entry});
+    var initial = try linkGraphAndLegacy(Linker.initWithGlobalIdentifiers(std.testing.allocator, &graph, .esm, &.{}), &graph);
+    defer initial.deinit();
+    const module = graph.moduleAtMut(graph.path_to_module.get(dep).?).?;
+    const foreign = graph.getModule(graph.path_to_module.get(entry).?).?;
+    try Identity.validate(module);
+    const original = module.legacy_module_identity.?;
+    const altered = try module.parse_arena.?.allocator().dupe(Capture, original.captures.items);
+    for (0..10) |attack| {
+        var changed = original;
+        @memcpy(altered, original.captures.items);
+        changed.captures = .fromOwnedSlice(altered);
+        switch (attack) {
+            0 => changed.owner = .unassigned,
+            1 => changed.module = foreign,
+            2 => changed.symbol = .none,
+            3 => changed.binding = original.declaration,
+            4 => changed.declaration = original.prefix,
+            5 => changed.prefix = original.declaration,
+            6 => changed.scope = .none,
+            7 => changed.captures.items[0].meta = .none,
+            8 => changed.captures.items[0].read = .none,
+            9 => changed.captures.items[0].write = original.binding,
+            else => unreachable,
+        }
+        module.legacy_module_identity = changed;
+        try std.testing.expectError(error.InvalidLexicalModuleIdentity, Identity.validate(module));
+        module.legacy_module_identity = original;
+        try Identity.validate(module);
+    }
+    // Keep the installed graph: a second Bundler build intentionally replaces
+    // Source state, so it cannot serve as a receipt-poisoned abort fixture.
+    // Execute the same populated Linker -> production lower transfer boundary
+    // as Bundle's pre-optional ownership block, with no graph reconstruction.
+    var broken = original;
+    broken.owner = .unassigned;
+    module.legacy_module_identity = broken;
+    try std.testing.expectError(error.InvalidLexicalModuleIdentity, linkGraphAndLegacy(Linker.initWithGlobalIdentifiers(std.testing.allocator, &graph, .esm, &.{}), &graph));
+    module.legacy_module_identity = original;
+    try Identity.validate(module);
+    var restored = try linkGraphAndLegacy(Linker.initWithGlobalIdentifiers(std.testing.allocator, &graph, .esm, &.{}), &graph);
+    defer restored.deinit();
 }

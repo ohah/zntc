@@ -261,6 +261,40 @@ test "split entry guard bootstrap uses a distinct artifact scope and exact forei
         emitted_provider = true;
     };
     try std.testing.expect(emitted_provider);
+    // Execute these exact split artifacts. The checked source read must run
+    // provider initialization before testing its lexical initialization flag.
+    try helpers.writeFile(tmp.dir, "package.json", "{\"type\":\"module\"}");
+    for (output.outputs.?) |file| try helpers.writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+    const emitted = try helpers.absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(emitted);
+    const execution = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", emitted } });
+    defer std.testing.allocator.free(execution.stdout);
+    defer std.testing.allocator.free(execution.stderr);
+    try std.testing.expect(execution.term == .exited and execution.term.exited == 0);
+    try std.testing.expectEqualStrings("42\n", execution.stdout);
+    try std.testing.expectEqualStrings("", execution.stderr);
+    const consumer = graph.moduleAtMut(target_index).?;
+    const lexical_reads = @import("graph/legacy_lexical_reads.zig");
+    try std.testing.expectEqual(@as(usize, 1), consumer.legacy_lexical_reads.len);
+    const originals = consumer.legacy_lexical_reads;
+    const projected = originals[0].guarded_projection orelse return error.TestUnexpectedResult;
+    // Direct/canonical provider are identical here: exactly one init call.
+    try std.testing.expectEqual(@as(usize, 1), projected.initializers.len);
+    const altered = try consumer.parse_arena.?.allocator().dupe(lexical_reads.Receipt, originals);
+    for (0..4) |attack| {
+        @memcpy(altered, originals);
+        switch (attack) {
+            0 => altered[0].guarded_projection.?.expression = originals[0].guard,
+            1 => altered[0].value = projected.expression,
+            2 => altered[0].guarded_projection.?.guard_local = originals[0].helper_local,
+            3 => altered[0].guarded_projection.?.initializers = &.{},
+            else => unreachable,
+        }
+        consumer.legacy_lexical_reads = altered;
+        try std.testing.expectError(error.InvalidLexicalInitializationRead, lexical_reads.validate(&graph, consumer));
+    }
+    consumer.legacy_lexical_reads = originals;
+    try lexical_reads.validate(&graph, consumer);
 
     try @import("runtime_entry_guard_ast.zig").installCandidate(&graph, std.testing.io);
     const invocation = try install(&graph, std.testing.io, target_index);

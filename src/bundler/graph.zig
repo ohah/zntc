@@ -104,6 +104,9 @@ pub const ModuleGraph = struct {
     native_async_module_dispose: ?TlaReadinessAll = null,
     native_async_module_namespace: ?TlaReadinessAll = null,
     native_async_module_members: std.AutoHashMapUnmanaged(@import("codegen_output_domain.zig").Owner, @import("native_async_module_plan.zig").Member) = .empty,
+    /// Exact winning TDZ builtin export, captured before final linker naming.
+    lexical_tdz_builtin: ?TlaReadinessAll = null,
+    legacy_name_builtin: ?TlaReadinessAll = null,
     /// Actual installed runtime/source domains; refreshed only at graph
     /// handoff or prepared same-graph publication, never by witness capture.
     output_runtime_registry: @import("../semantic/output_runtime_registration.zig").Registry = .{},
@@ -634,6 +637,9 @@ const IdentityRetainingVisitorMutationState = struct {
     calls: usize = 0,
     observed_tag: ?ast_mod.Node.Tag = null,
     did_mutate: bool = false,
+    observe_programs: bool = false,
+    program_events: [2]struct { source: []const u8, hash: u64, root: ast_mod.NodeIndex, tag: ast_mod.Node.Tag } = undefined,
+    mutation_source: ?[]const u8 = null,
 };
 
 fn identityRetainingVisitorMutationHook(
@@ -645,6 +651,10 @@ fn identityRetainingVisitorMutationHook(
     const state: *IdentityRetainingVisitorMutationState = @ptrCast(@alignCast(state_ptr));
     state.calls += 1;
     state.observed_tag = api.transformer.ast.getNode(node_idx).tag;
+    if (state.observe_programs) {
+        if (state.calls > state.program_events.len) return error.PluginFailed;
+        state.program_events[state.calls - 1] = .{ .source = api.transformer.ast.source, .hash = @import("../util/wyhash.zig").hashU64(api.transformer.ast.source), .root = node_idx, .tag = state.observed_tag.? };
+    }
     if (state.did_mutate) return null;
 
     const ast = api.transformer.ast;
@@ -664,6 +674,7 @@ fn identityRetainingVisitorMutationHook(
     const replacement = replacement_span orelse return error.PluginFailed;
     ast.nodes.items[first].span = replacement;
     state.did_mutate = true;
+    state.mutation_source = ast.source;
     return null;
 }
 
@@ -1821,13 +1832,68 @@ fn expectImportEqualsReferenceRow(semantic: anytype, node: ast_mod.NodeIndex, sy
     try std.testing.expectEqual(@as(usize, 1), rows);
 }
 
+// The TS import-equals fixtures contain no Source module import record.
+// A single generated TDZ import is admitted only through its actual provider.
+fn expectOnlyExactTdzCompilerImport(graph: *const ModuleGraph, module: *const Module) !void {
+    if (module.import_records.len == 0) return;
+    const known = graph.lexical_tdz_builtin orelse return error.MissingExpectedTdzProvider;
+    const builtin = @import("lexical_initialization_builtin.zig");
+    const captured = (try builtin.capture(graph)) orelse return error.MissingExpectedTdzProvider;
+    try std.testing.expectEqualDeep(captured, known);
+    const foreign = try builtin.exact(graph);
+    const provider = graph.getModule(known.module_index) orelse return error.MissingExpectedTdzProvider;
+    try std.testing.expectEqual(@as(usize, 1), module.import_records.len);
+    try std.testing.expectEqual(@as(usize, 1), module.import_bindings.len);
+    const record = module.import_records[0];
+    const binding = module.import_bindings[0];
+    try std.testing.expectEqual(types.ImportKind.static_import, record.kind);
+    try std.testing.expect(!record.is_external);
+    try std.testing.expectEqual(known.module_index, record.resolved);
+    try std.testing.expectEqualStrings(provider.path, record.specifier);
+    try std.testing.expectEqual(@as(u32, 0), binding.import_record_index);
+    try std.testing.expectEqual(@import("binding_scanner.zig").ImportBinding.Kind.named, binding.kind);
+    try std.testing.expectEqualStrings(provider.export_bindings[known.export_index].exported_name, binding.imported_name);
+    const identity = try module.checkedImportBindingIdentity(binding);
+    try std.testing.expectEqual(module.index, identity.symbol.moduleIndex());
+    const local = identity.symbol.semanticIndex() orelse return error.MissingExpectedTdzImportSymbol;
+    const semantic = module.semantic orelse return error.MissingExpectedTdzImportSymbol;
+    const tree = &(module.ast orelse return error.MissingExpectedTdzImportSymbol);
+    try std.testing.expect(local < semantic.symbols.items.len);
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, semantic.symbols.items[local].kind);
+    const declaration = binding.local_declaration_node orelse return error.MissingExpectedTdzImportDeclaration;
+    try std.testing.expect(!declaration.isNone() and @backingInt(declaration) < tree.nodes.items.len);
+    const import_node = tree.getNode(declaration);
+    try std.testing.expectEqual(ast_mod.Node.Tag.import_declaration, import_node.tag);
+    try std.testing.expectEqual(record.source_node, tree.readExtraNode(import_node.data.extra, 2));
+    const start = tree.readExtra(import_node.data.extra, 0);
+    try std.testing.expectEqual(@as(u32, 1), tree.readExtra(import_node.data.extra, 1));
+    const specifier = tree.getNode(tree.readExtraNode(start, 0));
+    try std.testing.expectEqual(ast_mod.Node.Tag.import_specifier, specifier.tag);
+    try std.testing.expectEqual(binding.local_symbol_node, specifier.data.binary.right);
+    try std.testing.expectEqual(@as(?u32, local), semantic.symbol_ids[@backingInt(specifier.data.binary.right)]);
+    if (binding.callsite_target) |target| {
+        try std.testing.expectEqual(@import("binding_scanner.zig").CallsiteRole.tdz_helper, target.role);
+        try std.testing.expect(target.symbol.eql(foreign));
+        try std.testing.expectEqual(known.owner_token, target.owner);
+        try std.testing.expectEqual(declaration, target.declaration);
+        try std.testing.expect(record.callsite_lowered);
+        try @import("runtime_callsite_targets.zig").validateTargetRole(graph, target);
+    } else {
+        // The original Transformer helper import has a real helper-scope row;
+        // it is not an arbitrary named Source import or another catalog.
+        try std.testing.expect(binding.is_helper);
+        try std.testing.expect(!record.callsite_lowered);
+        try std.testing.expectEqual(@as(?usize, local), semantic.helper_scope_map.get(identity.name));
+    }
+}
+
 fn expectLocalImportEqualsGraphModule(
     graph: *const ModuleGraph,
     entry: []const u8,
 ) !TypeScriptImportEqualsGraphIdentity {
     const module = graph.findModuleByPath(entry) orelse return error.MissingImportEqualsGraphModule;
     try std.testing.expectEqual(Module.State.ready, module.state);
-    try std.testing.expectEqual(@as(usize, 0), module.import_records.len);
+    try expectOnlyExactTdzCompilerImport(graph, module);
     const ast = &(module.ast orelse return error.MissingImportEqualsGraphAst);
     const semantic = &(module.semantic orelse return error.MissingImportEqualsGraphSemantic);
     const transformed = module.transform_cache orelse return error.MissingImportEqualsGraphTransform;
@@ -2112,7 +2178,7 @@ fn expectQualifiedLocalImportEqualsGraphModule(
 ) !TypeScriptImportEqualsGraphIdentity {
     const module = graph.findModuleByPath(entry) orelse return error.MissingQualifiedImportEqualsGraphModule;
     try std.testing.expectEqual(Module.State.ready, module.state);
-    try std.testing.expectEqual(@as(usize, 0), module.import_records.len);
+    try expectOnlyExactTdzCompilerImport(graph, module);
     const ast = &(module.ast orelse return error.MissingQualifiedImportEqualsGraphAst);
     const semantic = &(module.semantic orelse return error.MissingQualifiedImportEqualsGraphSemantic);
     const transformed = module.transform_cache orelse return error.MissingQualifiedImportEqualsGraphTransform;
@@ -2254,7 +2320,7 @@ fn expectNestedImportEqualsGraphModule(
 ) !TypeScriptNestedImportEqualsGraphIdentity {
     const module = graph.findModuleByPath(entry) orelse return error.MissingNestedImportEqualsGraphModule;
     try std.testing.expectEqual(Module.State.ready, module.state);
-    try std.testing.expectEqual(@as(usize, 0), module.import_records.len);
+    try expectOnlyExactTdzCompilerImport(graph, module);
     const ast = &(module.ast orelse return error.MissingNestedImportEqualsGraphAst);
     const semantic = &(module.semantic orelse return error.MissingNestedImportEqualsGraphSemantic);
     const transformed = module.transform_cache orelse return error.MissingNestedImportEqualsGraphTransform;
@@ -2465,6 +2531,63 @@ fn expectNestedImportEqualsGraphModule(
     };
 }
 
+// These graph fixtures retain their original Source/other-helper count. Only
+// the one authenticated winning TDZ catalog provider may add a module.
+fn exactGraphTdzProvider(graph: *ModuleGraph) !?*const Module {
+    const builtin = @import("lexical_initialization_builtin.zig");
+    // capture scans actual constructed catalog sources and rejects duplicate
+    // TDZ providers; it selects the export's actual local-node SymbolId.
+    const captured = try builtin.capture(graph);
+    if (captured) |actual| {
+        const known = graph.lexical_tdz_builtin orelse return error.MissingExpectedTdzProvider;
+        try std.testing.expectEqual(actual.module_index, known.module_index);
+        try std.testing.expectEqual(actual.export_index, known.export_index);
+        try std.testing.expectEqual(actual.symbol_id, known.symbol_id);
+        try std.testing.expectEqual(actual.owner_token, known.owner_token);
+        const exact = try builtin.exact(graph);
+        try std.testing.expectEqual(known.module_index, exact.module);
+        try std.testing.expectEqual(known.symbol_id, exact.inner);
+        return graph.getModule(known.module_index);
+    } else {
+        try std.testing.expect(graph.lexical_tdz_builtin == null);
+        return null;
+    }
+}
+
+fn expectGraphCountWithExactTdzProvider(graph: *ModuleGraph, original_count: usize) !void {
+    const provider = try exactGraphTdzProvider(graph);
+    try std.testing.expectEqual(original_count + @as(usize, @intFromBool(provider != null)), graph.moduleCount());
+}
+
+// This receipt records the loader installation event. Later prepasses may
+// replace its AST/semantic arrays, so current-array equality is not asserted.
+fn exactTdzInstalledDiskHit(graph: *ModuleGraph) !usize {
+    const provider = (try exactGraphTdzProvider(graph)) orelse return 0;
+    const receipt = provider.runtime_helper_cache_source orelse return 0;
+    const tree = if (provider.ast) |*value| value else return error.MissingTdzAst;
+    const semantic = if (provider.semantic) |*value| value else return error.MissingTdzSemantic;
+    try std.testing.expect(receipt.module_domain == provider);
+    try std.testing.expect(receipt.ast_domain == tree);
+    try std.testing.expect(receipt.semantic_domain == semantic);
+    try std.testing.expect(receipt.arena_domain == provider.parse_arena.?);
+    try std.testing.expect(receipt.owner != .unassigned);
+    try std.testing.expectEqual(semantic.owner_token, receipt.owner);
+    try std.testing.expectEqual(provider.disk_cache_key, receipt.cache_key);
+    try std.testing.expect(std.meta.eql(provider.runtime_helper_source.?, receipt.constructor));
+    try std.testing.expect(receipt.winning_source.ptr == provider.source.ptr);
+    try std.testing.expectEqualSlices(u8, provider.source, receipt.winning_source);
+    try std.testing.expectEqualSlices(u8, provider.source, receipt.decoded_source);
+    try std.testing.expectEqual(receipt.constructor.contents_hash, receipt.decoded_hash);
+    try std.testing.expectEqual(@import("../util/wyhash.zig").hashU64(receipt.decoded_source), receipt.decoded_hash);
+    try std.testing.expect(@backingInt(receipt.root) < receipt.nodes.len);
+    try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.program, receipt.nodes[@backingInt(receipt.root)].tag);
+    return 1;
+}
+
+fn expectGraphDiskHitsWithExactTdzProvider(graph: *ModuleGraph, original_hits: usize) !void {
+    try std.testing.expectEqual(original_hits + try exactTdzInstalledDiskHit(graph), graph.disk_load_hits.load(.monotonic));
+}
+
 fn expectNestedImportEqualsGraphColdAndCached(
     source: []const u8,
     expect_exported_alias: bool,
@@ -2501,8 +2624,8 @@ fn expectNestedImportEqualsGraphColdAndCached(
 
         try graph.build(std.testing.io, &.{entry});
 
-        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
-        try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+        try expectGraphDiskHitsWithExactTdzProvider(&graph, expected_load_hits);
+        try expectGraphCountWithExactTdzProvider(&graph, 1);
         try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
         const identity = try expectNestedImportEqualsGraphModule(&graph, entry, expect_exported_alias);
         if (cold_identity) |cold| {
@@ -3963,8 +4086,8 @@ test "graph TypeScript caller: local import-equals keeps exact identities on col
 
         try graph.build(std.testing.io, &.{entry});
 
-        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
-        try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+        try expectGraphDiskHitsWithExactTdzProvider(&graph, expected_load_hits);
+        try expectGraphCountWithExactTdzProvider(&graph, 1);
         try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
         const identity = try expectLocalImportEqualsGraphModule(&graph, entry);
         if (cold_identity) |cold| {
@@ -4066,8 +4189,8 @@ test "graph TypeScript caller: qualified local import-equals keeps exact identit
 
         try graph.build(std.testing.io, &.{entry});
 
-        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
-        try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+        try expectGraphDiskHitsWithExactTdzProvider(&graph, expected_load_hits);
+        try expectGraphCountWithExactTdzProvider(&graph, 1);
         try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
         const identity = try expectQualifiedLocalImportEqualsGraphModule(&graph, entry);
         if (cold_identity) |cold| {
@@ -5124,8 +5247,8 @@ test "graph Flow caller: match and ref-component identities survive cold and cac
 
         try graph.build(std.testing.io, &entries);
 
-        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
-        try std.testing.expectEqual(expected_graph_module_count, graph.moduleCount());
+        try expectGraphDiskHitsWithExactTdzProvider(&graph, expected_load_hits);
+        try expectGraphCountWithExactTdzProvider(&graph, expected_graph_module_count);
         var runtime_module_count: usize = 0;
         var graph_modules = graph.modulesIterator();
         while (graph_modules.next()) |graph_module| {
@@ -5140,7 +5263,7 @@ test "graph Flow caller: match and ref-component identities survive cold and cac
             try std.testing.expect(std.mem.startsWith(u8, graph_module.path, "\x00zntc:runtime/"));
             runtime_module_count += 1;
         }
-        try std.testing.expectEqual(@as(usize, 1), runtime_module_count);
+        try std.testing.expectEqual(@as(usize, 1) + @as(usize, @intFromBool((try exactGraphTdzProvider(&graph)) != null)), runtime_module_count);
         try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
 
         for (match_entries, 0..) |entry, index| {
@@ -5197,7 +5320,25 @@ test "graph Flow caller: match and ref-component identities survive cold and cac
         const type_only = graph.findModuleByPath(entries[entry_count - 1]) orelse return error.MissingFlowTypeOnlyGraphModule;
         try std.testing.expectEqual(Module.State.ready, type_only.state);
         try std.testing.expect(!type_only.ast.?.has_flow_runtime_transform);
-        try std.testing.expect(type_only.transform_cache == null);
+        // Flow types remain erased without a Flow runtime transform. The
+        // independent exported lexical still requires its exact TDZ state.
+        const type_tree = &type_only.ast.?;
+        const type_root = type_tree.transformed_root orelse @as(ast_mod.NodeIndex, @fromBackingInt(@as(u32, @intCast(type_tree.nodes.items.len - 1))));
+        const type_reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, type_tree, type_root);
+        defer std.testing.allocator.free(type_reachable);
+        var value_binding: ?u32 = null;
+        for (type_reachable) |raw| {
+            const binding = type_tree.nodes.items[raw];
+            if (binding.tag != .binding_identifier or !std.mem.eql(u8, type_tree.getText(binding.data.string_ref), "value")) continue;
+            try std.testing.expect(value_binding == null);
+            value_binding = type_only.semantic.?.symbol_ids[raw] orelse return error.MissingTypeOnlyValueSymbol;
+        }
+        const value_sid = value_binding orelse return error.MissingTypeOnlyValueBinding;
+        const type_semantic = &type_only.semantic.?;
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").LexicalInitialization.State.lowered_module, type_semantic.symbols.items[value_sid].lexical_initialization.state);
+        try std.testing.expect(@import("../semantic/lexical_initialization.zig").validatePair(type_semantic.symbols.items, type_semantic.scopes, value_sid));
+        const type_cache = type_only.transform_cache orelse return error.MissingLexicalInitializationTransformCache;
+        try std.testing.expect(std.meta.eql(@import("../transformer/mod.zig").RuntimeHelpers{ .tdz = true }, type_cache.runtime_helpers));
         for (graph.diagnostics.items) |diagnostic| try std.testing.expect(diagnostic.severity != .@"error");
     }
 }
@@ -5255,7 +5396,7 @@ test "graph Flow caller: enum identities and runtime import survive cold and cac
 
         try graph.build(std.testing.io, &entries);
 
-        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+        try expectGraphDiskHitsWithExactTdzProvider(&graph, expected_load_hits);
         try std.testing.expect(graph.moduleCount() >= entries.len);
         try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
         for (enum_names, 0..) |enum_name, index| {
@@ -5338,8 +5479,8 @@ test "graph Flow caller: enum runtime links one package module on cold and cache
 
         try graph.build(std.testing.io, &entries);
 
-        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
-        try std.testing.expectEqual(entries.len + 1, graph.moduleCount());
+        try expectGraphDiskHitsWithExactTdzProvider(&graph, expected_load_hits);
+        try expectGraphCountWithExactTdzProvider(&graph, entries.len + 1);
         try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
         const runtime_module = graph.findModuleByPath(runtime_path) orelse return error.MissingFlowEnumRuntimeModule;
         if (cold_runtime_index) |index| {
@@ -5380,6 +5521,65 @@ const GraphDefaultParameterOptions = struct {
     minify_identifiers: bool = true,
     expected_additional_graph_modules: usize = 0,
 };
+
+fn expectExactDefaultFallbackMarker(graph: *const ModuleGraph, module: *const Module, reachable: []const u32, identity: GraphSourceSymbolIdentity) !void {
+    try expectOnlyExactTdzCompilerImport(graph, module);
+    const semantic = &module.semantic.?;
+    const tree = &module.ast.?;
+    const source = semantic.symbols.items[identity.symbol_id];
+    try std.testing.expect(source.kind == .variable_const and !source.isExported());
+    try std.testing.expect(source.lexical_initialization.state == .native and source.lexical_initialization.flag.isNone());
+    const helper_id = module.import_bindings[0].local_symbol.semanticIndex() orelse return error.MissingFallbackTdzHelper;
+    const root = tree.getNode(tree.transformed_root.?);
+    try std.testing.expectEqual(ast_mod.Node.Tag.program, root.tag);
+    var marker_statement: ?u32 = null;
+    var declaration_statement: ?u32 = null;
+    var exact_writes: u32 = 0;
+    for (semantic.references) |reference| {
+        if (@backingInt(reference.symbol_id) != identity.symbol_id or !reference.flags.write) continue;
+        try std.testing.expectEqualDeep(@import("../semantic/symbol.zig").ReferenceFlags{ .write = true }, reference.flags);
+        try std.testing.expectEqual(source.scope_id, reference.scope_id);
+        try std.testing.expectEqual(@as(?u32, identity.symbol_id), semantic.symbol_ids[@backingInt(reference.node_index)]);
+        var assignment: ?u32 = null;
+        for (reachable) |raw| {
+            const candidate = tree.nodes.items[raw];
+            if (candidate.tag != .assignment_expression or candidate.data.binary.left != reference.node_index) continue;
+            try std.testing.expect(assignment == null);
+            assignment = raw;
+            const rhs = candidate.data.binary.right;
+            try std.testing.expectEqual(ast_mod.Node.Tag.identifier_reference, tree.getNode(rhs).tag);
+            try std.testing.expectEqual(@as(?u32, helper_id), semantic.symbol_ids[@backingInt(rhs)]);
+        }
+        const marker = assignment orelse return error.MissingFallbackMarkerAssignment;
+        for (0..root.data.list.len) |offset| {
+            const statement = tree.getNode(tree.readExtraNode(root.data.list.start, @intCast(offset)));
+            if (statement.tag == .expression_statement and @backingInt(statement.data.unary.operand) == marker) {
+                try std.testing.expect(marker_statement == null);
+                marker_statement = @intCast(offset);
+            }
+        }
+        exact_writes += 1;
+    }
+    for (0..root.data.list.len) |offset| {
+        const statement = tree.getNode(tree.readExtraNode(root.data.list.start, @intCast(offset)));
+        if (statement.tag != .variable_declaration) continue;
+        const start = tree.readExtra(statement.data.extra, 1);
+        const len = tree.readExtra(statement.data.extra, 2);
+        for (0..len) |slot| {
+            const declarator = tree.getNode(tree.readExtraNode(start, @intCast(slot)));
+            const binding = tree.readExtraNode(declarator.data.extra, 0);
+            if (semantic.symbol_ids[@backingInt(binding)] != identity.symbol_id) continue;
+            try std.testing.expect(declaration_statement == null);
+            try std.testing.expectEqualDeep(source.declaration_span, tree.getNode(binding).span);
+            const initializer = tree.readExtraNode(declarator.data.extra, 2);
+            try std.testing.expectEqual(ast_mod.Node.Tag.numeric_literal, tree.getNode(initializer).tag);
+            declaration_statement = @intCast(offset);
+        }
+    }
+    try std.testing.expect((marker_statement orelse return error.MissingFallbackMarkerStatement) < (declaration_statement orelse return error.MissingFallbackSourceDeclaration));
+    try std.testing.expectEqual(@as(u32, 1), exact_writes);
+    try std.testing.expectEqual(exact_writes, identity.write_count);
+}
 
 fn expectES5DefaultParameterGraphCacheIdentity(
     cases: []const GraphDefaultParameterCase,
@@ -5423,7 +5623,7 @@ fn expectES5DefaultParameterGraphCacheIdentity(
         defer resolve_cache.deinit();
         var graph = ModuleGraph.init(std.testing.allocator, &resolve_cache);
         defer graph.deinit();
-        var plugin_state: IdentityRetainingVisitorMutationState = .{};
+        var plugin_state: IdentityRetainingVisitorMutationState = .{ .observe_programs = options.with_identity_plugin };
         const identity_plugins = [_]plugin_mod.Plugin{.{
             .name = "identity-retaining-visitor-default-parameter",
             .context = @ptrCast(&plugin_state),
@@ -5444,12 +5644,35 @@ fn expectES5DefaultParameterGraphCacheIdentity(
         try graph.build(std.testing.io, entries);
 
         if (options.with_identity_plugin) {
-            try std.testing.expectEqual(@as(usize, 1), plugin_state.calls);
+            try std.testing.expectEqual(@as(usize, 1), entries.len);
+            const source_module = graph.findModuleByPath(entries[0]) orelse return error.MissingPluginSourceModule;
+            const provider = (try exactGraphTdzProvider(&graph)) orelse return error.MissingPluginTdzProvider;
+            try std.testing.expectEqual(@as(usize, 2), plugin_state.calls);
+            var source_calls: usize = 0;
+            var provider_calls: usize = 0;
+            for (plugin_state.program_events) |event| {
+                try std.testing.expectEqual(ast_mod.Node.Tag.program, event.tag);
+                const actual = if (event.source.ptr == source_module.ast.?.source.ptr and event.source.len == source_module.ast.?.source.len) blk: {
+                    source_calls += 1;
+                    break :blk source_module;
+                } else if (event.source.ptr == provider.ast.?.source.ptr and event.source.len == provider.ast.?.source.len) blk: {
+                    provider_calls += 1;
+                    break :blk provider;
+                } else return error.UnexpectedDefaultParameterPluginDomain;
+                try std.testing.expectEqualSlices(u8, actual.source, event.source);
+                try std.testing.expectEqual(@import("../util/wyhash.zig").hashU64(actual.source), event.hash);
+                try std.testing.expect(@backingInt(event.root) < actual.ast.?.nodes.items.len);
+                try std.testing.expectEqual(ast_mod.Node.Tag.program, actual.ast.?.getNode(event.root).tag);
+            }
+            try std.testing.expectEqual(@as(usize, 1), source_calls);
+            try std.testing.expectEqual(@as(usize, 1), provider_calls);
+            const mutation_source = plugin_state.mutation_source orelse return error.MissingSourcePluginMutation;
+            try std.testing.expect(mutation_source.ptr == source_module.ast.?.source.ptr and mutation_source.len == source_module.ast.?.source.len);
             try std.testing.expectEqual(ast_mod.Node.Tag.program, plugin_state.observed_tag.?);
             try std.testing.expect(plugin_state.did_mutate);
         }
-        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
-        try std.testing.expectEqual(entries.len + options.expected_additional_graph_modules, graph.moduleCount());
+        try expectGraphDiskHitsWithExactTdzProvider(&graph, expected_load_hits);
+        try expectGraphCountWithExactTdzProvider(&graph, entries.len + options.expected_additional_graph_modules);
         try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
         var parameter_identity_offset: usize = 0;
         for (entries, 0..) |entry, index| {
@@ -5508,7 +5731,7 @@ fn expectES5DefaultParameterGraphCacheIdentity(
 
             if (cases[index].fallback_name) |fallback_name| {
                 const fallback_identity = try expectGraphSourceSymbolIdentity(module, reachable, fallback_name);
-                try std.testing.expectEqual(@as(u32, 0), fallback_identity.write_count);
+                try expectExactDefaultFallbackMarker(&graph, module, reachable, fallback_identity);
                 if (expected_load_hits == 0) {
                     cold_fallback_identity = fallback_identity;
                 } else {
@@ -5710,16 +5933,49 @@ test "Flow ref-component identity survives minify modes on cold and cached ASTs"
 
             try graph.build(std.testing.io, &.{entry});
 
-            try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
+            try expectGraphDiskHitsWithExactTdzProvider(&graph, expected_load_hits);
             try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
-            try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
+            try expectGraphCountWithExactTdzProvider(&graph, 2);
             const module = graph.findModuleByPath(entry) orelse return error.MissingFlowMinifyGraphModule;
             try std.testing.expectEqual(Module.State.ready, module.state);
             try std.testing.expect(module.ast.?.has_flow_runtime_transform);
             try std.testing.expect(module.transform_cache != null);
             try std.testing.expect(module.semantic != null);
             const identity = try expectFlowGeneratedIdentity(module, .ref_component_helper);
-            try std.testing.expectEqual(@as(usize, 1), module.dependencies.items.len);
+            const tdz_provider = (try exactGraphTdzProvider(&graph)) orelse return error.MissingFlowTdzDependency;
+            const tdz_target = try @import("lexical_initialization_builtin.zig").exact(&graph);
+            var tdz_dependencies: usize = 0;
+            var original_dependencies: usize = 0;
+            for (module.dependencies.items) |dependency| {
+                if (dependency == tdz_provider.index) tdz_dependencies += 1 else original_dependencies += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), original_dependencies);
+            try std.testing.expectEqual(@as(usize, 1), tdz_dependencies);
+            var tdz_records: usize = 0;
+            for (module.import_records, 0..) |record, record_index| {
+                if (record.resolved != tdz_provider.index) continue;
+                try std.testing.expectEqual(types.ImportKind.static_import, record.kind);
+                try std.testing.expect(!record.is_external);
+                var bindings: usize = 0;
+                for (module.import_bindings) |binding| {
+                    if (binding.import_record_index != record_index) continue;
+                    const local = try module.checkedImportBindingIdentity(binding);
+                    try std.testing.expect(local.symbol.semanticIndex() != null);
+                    try std.testing.expectEqualStrings(tdz_provider.export_bindings[graph.lexical_tdz_builtin.?.export_index].exported_name, binding.imported_name);
+                    if (binding.callsite_target) |target| {
+                        try std.testing.expectEqual(@import("binding_scanner.zig").CallsiteRole.tdz_helper, target.role);
+                        try std.testing.expect(target.symbol.eql(tdz_target));
+                        try @import("runtime_callsite_targets.zig").validateTargetRole(&graph, target);
+                    } else {
+                        try std.testing.expect(binding.is_helper);
+                        try std.testing.expectEqual(@as(?usize, local.symbol.semanticIndex().?), module.semantic.?.helper_scope_map.get(local.name));
+                    }
+                    bindings += 1;
+                }
+                try std.testing.expectEqual(@as(usize, 1), bindings);
+                tdz_records += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), tdz_records);
             const root = module.ast.?.transformed_root orelse return error.MissingFlowMinifyGraphRoot;
             const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, &module.ast.?, root);
             defer std.testing.allocator.free(reachable);
@@ -5810,8 +6066,8 @@ test "Flow match identities survive ES5 lowering and syntax minification on cold
 
         try graph.build(std.testing.io, &entries);
 
-        try std.testing.expectEqual(expected_load_hits, graph.disk_load_hits.load(.monotonic));
-        try std.testing.expect(graph.moduleCount() >= entries.len);
+        try expectGraphDiskHitsWithExactTdzProvider(&graph, expected_load_hits);
+        try expectGraphCountWithExactTdzProvider(&graph, entries.len);
         try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
         for (entries, 0..) |entry, index| {
             const module = graph.findModuleByPath(entry) orelse return error.MissingFlowMatchMinifyModule;
