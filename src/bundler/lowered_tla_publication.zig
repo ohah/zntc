@@ -75,11 +75,17 @@ fn activeInitializer(a: std.mem.Allocator, module: *const Module, shaker: ?*cons
     // variable_declarator = [binding, type_annotation, initializer].
     const init = tree.readExtraNode(decl.data.extra, 2);
     if (init.isNone()) return error.MissingTlaPromiseIdentity;
-    if (!try hasSuspension(a, tree, semantic, init, native_resources_only)) return null;
+    var resource_span: ?@import("../lexer/token.zig").Span = null;
+    if (!try hasSuspension(a, tree, semantic, init, native_resources_only, &resource_span)) return null;
+    if (native_resources_only) {
+        const span = resource_span orelse return error.MissingTlaPromiseIdentity;
+        if (span.end > module.source.len) return error.MissingTlaPromiseIdentity;
+        return span;
+    }
     return statement.span;
 }
 
-fn hasSuspension(a: std.mem.Allocator, tree: *const ast_mod.Ast, semantic: *const @import("module.zig").ModuleSemanticData, init: NodeIndex, native_resources_only: bool) !bool {
+fn hasSuspension(a: std.mem.Allocator, tree: *const ast_mod.Ast, semantic: *const @import("module.zig").ModuleSemanticData, init: NodeIndex, native_resources_only: bool, resource_span: *?@import("../lexer/token.zig").Span) !bool {
     const Work = struct { node: NodeIndex, state: ?u32 = null, native_generator: bool = false, state_switch: bool = false };
     var stack: std.ArrayList(Work) = .empty;
     defer stack.deinit(a);
@@ -113,7 +119,12 @@ fn hasSuspension(a: std.mem.Allocator, tree: *const ast_mod.Ast, semantic: *cons
             },
             .await_expression, .for_await_of_statement => if (!native_resources_only) return true,
             .variable_declaration => if (tree.hasExtra(node.data.extra, 2) and
-                tree.variableDeclarationKind(node) == .await_using) return true,
+                tree.variableDeclarationKind(node) == .await_using)
+            {
+                if (node.span.start & ast_mod.Ast.STRING_TABLE_BIT != 0 or node.span.end < node.span.start) return error.MissingTlaPromiseIdentity;
+                resource_span.* = node.span;
+                return true;
+            },
             .yield_expression => if (!native_resources_only and native_generator) return true,
             .switch_statement => if (state) |sid| {
                 if (stateSwitch(tree, semantic, node, sid)) state_switch = true;

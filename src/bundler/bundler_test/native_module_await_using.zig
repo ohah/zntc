@@ -227,7 +227,10 @@ test "native await using unsupported CJS module layout publishes diagnostics wit
         if (result.outputs) |outputs| try std.testing.expectEqual(@as(usize, 0), outputs.len);
         var found = false;
         for (result.diagnostics orelse &.{}) |diagnostic| {
-            if (diagnostic.code == .top_level_await_target and diagnostic.severity == .@"error") found = true;
+            if (diagnostic.code == .top_level_await_target and diagnostic.severity == .@"error") {
+                try std.testing.expectEqual(@as(u32, 6), diagnostic.span.?.start);
+                found = true;
+            }
         }
         try std.testing.expect(found);
     }
