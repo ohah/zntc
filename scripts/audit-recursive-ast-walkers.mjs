@@ -39,6 +39,10 @@ const ALLOWLIST = {
     class: 'iterative_safe',
     note: 'explicit heap node stack with visited set; function bodies are pruned while checking physical program-level async resource statements',
   },
+  'src/transformer/runtime_builtin_global_roles.zig::hasPrivateWrite': {
+    class: 'iterative_safe',
+    note: 'pending node/write-role worklist and per-node two-bit visited mask bound actual private PutValue demand to at most two visits per node',
+  },
   'src/transformer/es2015_destructuring.zig::referenceExpressionNeedsIterator': {
     class: 'iterative_safe',
     note: 'query-local pending stack and visited NodeIndex set inspect exact expression children without entering separate function/class evaluations',
