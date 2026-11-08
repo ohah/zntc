@@ -1426,7 +1426,16 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
         const program = self.ast.getNode(root);
         if (program.tag == .program) {
             const list = program.data.list;
-            for (self.ast.extra_data.items[list.start .. list.start + list.len]) |stmt| try body_level.put(self.allocator, stmt, {});
+            for (self.ast.extra_data.items[list.start .. list.start + list.len]) |stmt| {
+                try body_level.put(self.allocator, stmt, {});
+                const wrapper = self.ast.getNode(@fromBackingInt(@intCast(stmt)));
+                const declaration: ast_mod.NodeIndex = switch (wrapper.tag) {
+                    .export_named_declaration => self.ast.readExtraNode(wrapper.data.extra, 0),
+                    .export_default_declaration => wrapper.data.unary.operand,
+                    else => .none,
+                };
+                if (!declaration.isNone()) try body_level.put(self.allocator, @backingInt(declaration), {});
+            }
         }
     }
     for (reachable) |raw| {

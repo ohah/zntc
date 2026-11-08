@@ -39,6 +39,24 @@ pub fn renamedOriginal(self: anytype, name_idx: NodeIndex) ?[]const u8 {
     return original;
 }
 
+/// Native class declarations can carry a compiler alias even without user
+/// minification. The source SymbolId owns the original reflection name.
+pub fn renamedClassOriginal(self: anytype, name_idx: NodeIndex) ?[]const u8 {
+    if (!name_idx.isNone()) if (self.options.source_binding_aliases) |aliases| {
+        if (self.sourceSymbolId(name_idx)) |sid| if (aliases.contains(sid)) {
+            if (sid >= self.options.semantic_symbols.len)
+                @panic("class source-name alias has an invalid SymbolId");
+            const symbol = self.options.semantic_symbols[sid];
+            if (symbol.synthetic_kind == null and symbol.kind == .class_decl) {
+                const original = self.ast.getText(symbol.name);
+                const output = self.finalSymbolName(sid) orelse original;
+                if (!std.mem.eql(u8, original, output)) return original;
+            }
+        };
+    };
+    return renamedOriginal(self, name_idx);
+}
+
 /// The renamed binding a function or class expression would take its name
 /// from, when `value` is an anonymous function definition.
 pub fn hintFor(self: anytype, binding: NodeIndex, value: NodeIndex) ?[]const u8 {

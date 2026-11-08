@@ -313,6 +313,10 @@ pub fn emitExportNamed(self: anytype, node: Node) !void {
         }
     }
 
+    const has_local_renames = if (self.options.semantic_symbol_name_overrides) |names| names.count() != 0 else false;
+    const has_linked_renames = if (self.options.linking_metadata) |metadata| metadata.renames.count() != 0 else false;
+    if (!x.decl.isNone() and (has_local_renames or has_linked_renames) and try emitRenamedExportDeclaration(self, x.decl)) return;
+
     try self.write("export ");
     if (!x.decl.isNone()) {
         try self.emitNode(x.decl);
@@ -336,6 +340,85 @@ pub fn emitExportNamed(self: anytype, node: Node) !void {
         }
         try self.writeByte(';');
     }
+}
+
+fn sourceExportBindingName(self: anytype, binding: NodeIndex) []const u8 {
+    if (self.sourceSymbolId(binding)) |sid| {
+        if (self.options.semantic_symbols.len != 0) {
+            if (sid >= self.options.semantic_symbols.len)
+                @panic("export binding has an invalid semantic SymbolId");
+            const symbol = self.options.semantic_symbols[sid];
+            if (symbol.synthetic_kind == null) return self.ast.getText(symbol.name);
+        }
+    }
+    return self.ast.getText(self.ast.getNode(binding).data.string_ref);
+}
+
+/// A compiler-owned local alias must never rename the public ESM binding.
+/// Use the existing binding-only walker so defaults and computed keys cannot
+/// contribute unrelated bindings to the export list.
+fn isSourceNamedExportBinding(self: anytype, binding: NodeIndex) bool {
+    if (self.sourceSymbolId(binding)) |sid| {
+        if (self.options.semantic_symbols.len != 0) {
+            if (sid >= self.options.semantic_symbols.len)
+                @panic("named export binding has an invalid semantic SymbolId");
+            const symbol = self.options.semantic_symbols[sid];
+            return symbol.synthetic_kind == null and symbol.decl_flags.is_exported;
+        }
+    }
+    return true;
+}
+
+fn collectExportDeclarationBindings(self: anytype, declaration: NodeIndex, bindings: *std.ArrayList(NodeIndex)) !void {
+    const node = self.ast.getNode(declaration);
+    switch (node.tag) {
+        .variable_declaration => {
+            const start = self.ast.extra_data.items[node.data.extra + 1];
+            const len = self.ast.extra_data.items[node.data.extra + 2];
+            for (0..len) |offset| {
+                const declarator = self.ast.getNode(self.ast.readExtraNode(start, @intCast(offset)));
+                const target = self.ast.readExtraNode(declarator.data.extra, 0);
+                var walker = try @import("../parser/ast_walk.zig").bindingIdentifiers(self.allocator, self.ast, target, .{});
+                defer walker.deinit();
+                while (try walker.next()) |binding| if (isSourceNamedExportBinding(self, binding)) try bindings.append(self.allocator, binding);
+            }
+        },
+        .function_declaration, .class_declaration => {
+            const binding = self.ast.readExtraNode(node.data.extra, 0);
+            if (!binding.isNone()) if (isSourceNamedExportBinding(self, binding)) try bindings.append(self.allocator, binding);
+        },
+        else => return,
+    }
+}
+
+fn emitRenamedExportDeclaration(self: anytype, declaration: NodeIndex) !bool {
+    var bindings: std.ArrayList(NodeIndex) = .empty;
+    defer bindings.deinit(self.allocator);
+    try collectExportDeclarationBindings(self, declaration, &bindings);
+    var renamed = false;
+    for (bindings.items) |binding| {
+        const source = sourceExportBindingName(self, binding);
+        if (!std.mem.eql(u8, source, outputNameForSymbol(self, binding, source))) {
+            renamed = true;
+            break;
+        }
+    }
+    if (!renamed) return false;
+    try self.emitNode(declaration);
+    try self.write("export {");
+    for (bindings.items, 0..) |binding, index| {
+        if (index != 0) try self.writeByte(',');
+        const source = sourceExportBindingName(self, binding);
+        const output = outputNameForSymbol(self, binding, source);
+        try self.addSourceMapping(self.ast.getNode(binding).span);
+        try self.writeIdentifierText(output);
+        if (!std.mem.eql(u8, source, output)) {
+            try self.write(" as ");
+            try self.write(source);
+        }
+    }
+    try self.write("};");
+    return true;
 }
 
 /// ESM export specifier: `foo` 또는 `foo as bar`
@@ -426,54 +509,18 @@ fn outputNameForSymbol(self: anytype, idx: NodeIndex, source_name: []const u8) [
 /// 변수/함수/클래스 선언에서 이름을 추출하여 exports.name=name; 출력.
 /// variable_declarator의 이름은 span 텍스트에서 직접 추출 (extra 경유 불필요).
 pub fn emitCJSExportBinding(self: anytype, decl_idx: NodeIndex) !void {
-    const decl = self.ast.getNode(decl_idx);
-    switch (decl.tag) {
-        .variable_declaration => {
-            const e = decl.data.extra;
-            const list_start = self.ast.extra_data.items[e + 1];
-            const list_len = self.ast.extra_data.items[e + 2];
-            const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
-            for (declarators) |raw_idx| {
-                const declarator = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
-                const de = declarator.data.extra;
-                const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[de]));
-                if (!name_idx.isNone()) {
-                    const name_node = self.ast.getNode(name_idx);
-                    const name = self.ast.getText(name_node.data.string_ref);
-                    const ref_name = outputNameForSymbol(self, name_idx, name);
-                    try self.write(self.options.cjs_exports_name);
-                    try self.writeByte('.');
-                    try self.write(name);
-                    try self.writeByte('=');
-                    if (std.mem.eql(u8, ref_name, name)) {
-                        try self.write(name);
-                    } else {
-                        try self.writeIdentifierText(ref_name);
-                    }
-                    try self.writeByte(';');
-                }
-            }
-        },
-        .function_declaration, .class_declaration => {
-            const e = decl.data.extra;
-            const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
-            if (!name_idx.isNone()) {
-                const name_node = self.ast.getNode(name_idx);
-                const name = self.ast.getText(name_node.data.string_ref);
-                const ref_name = outputNameForSymbol(self, name_idx, name);
-                try self.write(self.options.cjs_exports_name);
-                try self.writeByte('.');
-                try self.write(name);
-                try self.writeByte('=');
-                if (std.mem.eql(u8, ref_name, name)) {
-                    try self.write(name);
-                } else {
-                    try self.writeIdentifierText(ref_name);
-                }
-                try self.writeByte(';');
-            }
-        },
-        else => {},
+    var bindings: std.ArrayList(NodeIndex) = .empty;
+    defer bindings.deinit(self.allocator);
+    try collectExportDeclarationBindings(self, decl_idx, &bindings);
+    for (bindings.items) |binding| {
+        const name = sourceExportBindingName(self, binding);
+        const ref_name = outputNameForSymbol(self, binding, name);
+        try self.write(self.options.cjs_exports_name);
+        try self.writeByte('.');
+        try self.write(name);
+        try self.writeByte('=');
+        try self.writeIdentifierText(ref_name);
+        try self.writeByte(';');
     }
 }
 
@@ -523,6 +570,23 @@ pub fn emitExportDefault(self: anytype, node: Node) !void {
                 }
             }
             return;
+        }
+        const source_value = node.data.unary.operand;
+        const value_node = self.ast.getNode(source_value);
+        if (value_node.tag == .function_declaration or value_node.tag == .class_declaration) {
+            const binding = self.ast.readExtraNode(value_node.data.extra, 0);
+            if (!binding.isNone()) if (self.sourceSymbolId(binding)) |sid| {
+                if (self.options.source_binding_aliases) |aliases| if (aliases.contains(sid)) {
+                    // The original named default declaration owns a module
+                    // binding. Its hoisted name-restoration call reads it.
+                    try self.emitNode(source_value);
+                    try self.write(self.options.cjs_module_name);
+                    try self.write(".exports=");
+                    try self.emitNode(binding);
+                    try self.writeByte(';');
+                    return;
+                };
+            };
         }
         try self.write(self.options.cjs_module_name);
         try self.write(".exports=");

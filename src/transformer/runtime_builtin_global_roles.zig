@@ -39,7 +39,7 @@ pub fn collectRootSourceBindings(self: anytype, roles: []const Role, selected: *
             var bindings = maps[owner].iterator();
             while (bindings.next()) |binding| {
                 if (binding.value_ptr.* != sid) continue;
-                if (!Scanner.identifierValueEquals(binding.key_ptr.*, name))
+                if (!Scanner.identifierValueEquals(binding.key_ptr.*, role.globalName()))
                     @panic("runtime builtin source binding changed its exact owner map");
                 found = true;
             }

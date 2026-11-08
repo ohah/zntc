@@ -5206,7 +5206,20 @@ fn transpileWithCallbackInternal(
     }
     // Reserve a typed candidate before mangling. A raw name call may be emitted
     // later, but a no-rename file must not execute an unused runtime preamble.
-    if (options.keep_names)
+    var has_compiler_class_name_alias = false;
+    if (transformer.block_rename_map) |*aliases| {
+        const symbols = if (transformer.semantic_editor) |*editor| editor.symbols.items else transformer.symbols;
+        var ids = aliases.keyIterator();
+        while (ids.next()) |sid| {
+            if (sid.* >= symbols.len) return error.TransformError;
+            const symbol = symbols[sid.*];
+            if (symbol.synthetic_kind == null and symbol.kind == .class_decl) {
+                has_compiler_class_name_alias = true;
+                break;
+            }
+        }
+    }
+    if (options.keep_names or has_compiler_class_name_alias)
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__name", options.minify_whitespace);
     if (analyzer_storage) |*analyzer| {
         // The transformer took the analyzer's map header by value and kept
@@ -5743,7 +5756,7 @@ fn transpileWithCallbackInternal(
         .final_renames = helper_final_renames,
         .final_output_names = if (use_late_helper_names) &standalone_late_output_name_overrides else null,
     };
-    const keep_names_helper_name = if (options.keep_names or transformer.runtime_helpers.keep_names)
+    const keep_names_helper_name = if (options.keep_names or has_compiler_class_name_alias or transformer.runtime_helpers.keep_names)
         try helper_name_resolver.resolve("__name", options.minify_whitespace)
     else
         null;
@@ -5770,7 +5783,7 @@ fn transpileWithCallbackInternal(
             }
         }
     }
-    if (mangle_metadata == null and analyzer_storage != null) {
+    if (analyzer_storage != null) {
         reserveStandaloneExplicitGlobalShadows(
             arena_alloc,
             &transformer,
@@ -5914,6 +5927,7 @@ fn transpileWithCallbackInternal(
         .semantic_symbol_ids = codegen_symbol_ids,
         .semantic_symbols = if (analyzer_storage) |*analyzer| analyzer.symbols.items else &.{},
         .semantic_symbol_name_overrides = codegen_symbol_name_overrides,
+        .source_binding_aliases = codegen_transform_name_overrides,
         .semantic_scope_maps = if (analyzer_storage) |*analyzer| analyzer.scope_maps.items else &.{},
         .generated_iife_scope_owner_map = if (analyzer_storage) |*analyzer| &analyzer.scope_owner_map else null,
         .require_generated_iife_symbols = true,
@@ -5931,7 +5945,7 @@ fn transpileWithCallbackInternal(
         cg.line_offsets = scanner.line_offsets.items;
     }
     var output = cg.generate(root) catch return error.CodegenError;
-    if (options.keep_names and cg.keep_names_used and !transformer.runtime_helpers.keep_names) {
+    if ((options.keep_names or has_compiler_class_name_alias) and cg.keep_names_used and !transformer.runtime_helpers.keep_names) {
         // Demand is known only after the selected names and emit contexts are
         // resolved. Re-emit with the helper before user code so source maps and
         // directive/hashbang boundaries use the final preamble from the start.
