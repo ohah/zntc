@@ -39,6 +39,14 @@ const ALLOWLIST = {
     class: 'iterative_safe',
     note: 'explicit heap node stack with visited set; function bodies are pruned while checking physical program-level async resource statements',
   },
+  'src/transformer/es2015_destructuring.zig::referenceExpressionNeedsIterator': {
+    class: 'iterative_safe',
+    note: 'query-local pending stack and visited NodeIndex set inspect exact expression children without entering separate function/class evaluations',
+  },
+  'src/transformer/es2015_destructuring.zig::prepareReferenceRegion': {
+    class: 'iterative_safe',
+    note: 'explicit pending/order stacks and visited NodeIndex set rewrite expression slots; default/array depth orders local abrupt cleanup without recursive child traversal',
+  },
   'src/transformer/es2015_destructuring.zig::movePatternExpression': {
     class: 'iterative_safe',
     note: 'explicit pending node stack and visited identity set relocate exact references; child iteration never recurses',

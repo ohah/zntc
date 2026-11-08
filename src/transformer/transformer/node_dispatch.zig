@@ -262,6 +262,8 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             defer self.discarded_expression = saved_discarded;
             if (self.options.unsupported.destructuring and !discarded.isNone()) {
                 const Destructuring = @import("../es2015_destructuring.zig").ES2015Destructuring(Transformer);
+                if (try Destructuring.referenceExpressionNeedsIterator(self, discarded))
+                    return self.visitNode((try Destructuring.prepareReferenceExpressionStatement(self, discarded, .{ .use_scope = self.current_scope })).statement);
                 if (try Destructuring.expressionNeedsIteratorStatements(self, discarded)) {
                     const plan = try Destructuring.prepareIteratorExpressionStatement(self, discarded, .{ .use_scope = self.current_scope });
                     return self.visitNode(plan.statement);
@@ -571,6 +573,11 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (!child_idx.isNone()) {
                 _ = try es2025_using.ES2025Using(Transformer).normalizeForOfUsingHead(self, child_idx, true);
                 const child = self.ast.getNode(child_idx);
+                if (self.options.unsupported.destructuring and child.tag == .for_statement) {
+                    const Destructuring = @import("../es2015_destructuring.zig").ES2015Destructuring(Transformer);
+                    if (try Destructuring.forReferenceNeedsIterator(self, child_idx))
+                        return self.visitNode(try Destructuring.prepareIteratorForReference(self, child_idx, idx));
+                }
                 if (self.options.unsupported.needsForAwaitOfDownlevel() and child.tag == .for_await_of_statement) {
                     return es2018_for_await.ES2018ForAwait(Transformer).lowerForAwaitOfLabeled(self, child_idx, child, node.data.binary.left);
                 }
