@@ -194,7 +194,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 
         // object_expression: spread(ES2018) / method shorthand / computed property(ES2015) 다운레벨링
         .object_expression => {
-            const object_super_needs_lowering = self.options.unsupported.class or
+            const object_super_needs_lowering = object_super.spreadChangesHome(self, node) or self.options.unsupported.class or
                 (self.options.unsupported.needsObjectMethodDownlevel() and
                     es2015_object_methods.ES2015ObjectMethods(Transformer).needsObjectMethodLowering(self, node));
             if (object_super_needs_lowering and
@@ -1376,7 +1376,7 @@ fn moveLabelOntoLoopInBlock(self: *Transformer, label: NodeIndex, block_idx: Nod
 fn visitObjectExpressionLowering(self: *Transformer, idx: NodeIndex, node: ast_mod.Node) Error!NodeIndex {
     if (self.options.unsupported.object_spread) {
         if (es2018.ES2018(Transformer).hasSpreadProperty(self, node)) {
-            return es2018.ES2018(Transformer).lowerObjectSpread(self, node);
+            return es2018.ES2018(Transformer).lowerObjectSpread(self, idx, node);
         }
     }
     // method shorthand → { key: function() {} } 를 먼저 처리.

@@ -5158,6 +5158,12 @@ fn transpileWithCallbackInternal(
     }
     if (transformer.used_unsupported_static_initializer_dynamic_scope)
         return error.StaticInitializerDynamicScope;
+    if (transformer.spread_props_used) {
+        // Both declarations belong to the same provider. A source containing
+        // only a spread operand may never create a __spreadProps call node.
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__spreadProps", options.minify_whitespace);
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__spreadValues", options.minify_whitespace);
+    }
     if (transformer.runtime_helpers.values or transformer.runtime_helpers.async_values) {
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__values", options.minify_whitespace);
     }
@@ -5725,7 +5731,7 @@ fn transpileWithCallbackInternal(
     // All output consumers share the producer's live map, with or without
     // identifier/syntax minification. Graphless callers retain their empty map.
     const codegen_symbol_ids = transformer.symbol_ids.items;
-    var has_helpers = transformer.runtime_helpers.hasAny();
+    var has_helpers = transformer.runtime_helpers.hasAny() or transformer.spread_props_used;
     var helper_final_renames: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null;
     if (mangle_result) |*mr| helper_final_renames = &mr.renames;
     const helper_name_resolver: StandaloneRuntimeHelperNameResolver = .{
@@ -5792,6 +5798,10 @@ fn transpileWithCallbackInternal(
         }
         if (transformer.runtime_helpers.class_call_check)
             local_names.class_call_check = try helper_name_resolver.resolve("__classCallCheck", options.minify_whitespace);
+        if (transformer.spread_props_used) {
+            local_names.spread_props = try helper_name_resolver.resolve("__spreadProps", options.minify_whitespace);
+            local_names.spread_values = try helper_name_resolver.resolve("__spreadValues", options.minify_whitespace);
+        }
         if (transformer.suspension_invoke_used)
             local_names.suspension_invoke = try helper_name_resolver.resolve("__suspensionInvoke", options.minify_whitespace);
         if (transformer.class_define_property_used)

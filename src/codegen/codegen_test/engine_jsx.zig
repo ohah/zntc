@@ -116,7 +116,7 @@ test "engine target: safari11.0 → object spread 미지원 (11.1부터)" {
         .{ .engine = .safari, .major = 11, .minor = 0 },
     });
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__spreadValues") != null);
 }
 
 test "engine target: safari11.1 → object spread 지원" {
@@ -645,7 +645,7 @@ test "JSX classic: downlevels spread props and child in the same element" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...props") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...arr") == null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign({},props)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__spreadValues({},props)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "React.createElement.apply") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__toConsumableArray(arr)") != null);
 }
@@ -660,7 +660,7 @@ test "JSX classic: downlevels static literal spread props with spread child" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...arr") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "React.createElement.apply") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__toConsumableArray(arr)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__spreadValues") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "id:label") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "count:count") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "optional:undefined") != null);
@@ -683,7 +683,7 @@ test "JSX classic: retains detached spread props with a different spread child" 
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...items") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "React.createElement.apply") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__toConsumableArray(items)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__spreadValues") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "id:\"literal\"") != null);
 }
 

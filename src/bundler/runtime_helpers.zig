@@ -40,6 +40,8 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     super_set: ?[]const u8 = null,
     class_call_check: ?[]const u8 = null,
     class_define_property: ?[]const u8 = null,
+    spread_props: ?[]const u8 = null,
+    spread_values: ?[]const u8 = null,
     suspension_invoke: ?[]const u8 = null,
     async_helper: ?[]const u8 = null,
     async_generator: ?[]const u8 = null,
@@ -570,6 +572,40 @@ pub const CLASS_CALL_CHECK_RUNTIME_MIN = "var " ++ NAMES.CLASS_CALL_CHECK_MIN ++
 
 /// The provider is outside a pinned source parameter's lexical environment.
 /// Keep this a pure declaration: unused class families must not read Object.
+// Ordinary object groups define properties; unlike spread operands, their
+// accessors must not be invoked while composing the final object.
+pub const SPREAD_VALUES_RUNTIME =
+    \\var __spreadValues = function(target, source) {
+    \\  if (source == null) return target;
+    \\  source = Object(source);
+    \\  var keys = typeof Reflect === "object" && Reflect.ownKeys ? Reflect.ownKeys(source) : Object.getOwnPropertyNames(source);
+    \\  if (!(typeof Reflect === "object" && Reflect.ownKeys) && Object.getOwnPropertySymbols) keys = keys.concat(Object.getOwnPropertySymbols(source));
+    \\  for (var i = 0; i < keys.length; i++) {
+    \\    var key = keys[i], descriptor = Object.getOwnPropertyDescriptor(source, key);
+    \\    if (descriptor && descriptor.enumerable) Object.defineProperty(target, key, { value: source[key], enumerable: true, configurable: true, writable: true });
+    \\  }
+    \\  return target;
+    \\};
+;
+pub const SPREAD_VALUES_RUNTIME_MIN = "var " ++ NAMES.SPREAD_VALUES_MIN ++ "=function(t,s){if(s==null)return t;s=Object(s);var r=typeof Reflect==\"object\"&&Reflect.ownKeys,k=r?r(s):Object.getOwnPropertyNames(s);if(!r&&Object.getOwnPropertySymbols)k=k.concat(Object.getOwnPropertySymbols(s));for(var i=0;i<k.length;i++){var p=k[i],d=Object.getOwnPropertyDescriptor(s,p);if(d&&d.enumerable)Object.defineProperty(t,p,{value:s[p],enumerable:true,configurable:true,writable:true})}return t};";
+
+pub const SPREAD_PROPS_RUNTIME =
+    \\var __spreadProps = function(target, source) {
+    \\  var prototype = Object.getPrototypeOf(source);
+    \\  if (prototype !== Object.prototype) Object.setPrototypeOf(target, prototype);
+    \\  var keys = Object.getOwnPropertyNames(source), symbols = Object.getOwnPropertySymbols;
+    \\  if (symbols) keys = keys.concat(symbols(source));
+    \\  for (var i = 0; i < keys.length; i++) {
+    \\    var descriptor = Object.getOwnPropertyDescriptor(source, keys[i]);
+    \\    if ("get" in descriptor && descriptor.get === void 0) delete descriptor.get;
+    \\    if ("set" in descriptor && descriptor.set === void 0) delete descriptor.set;
+    \\    Object.defineProperty(target, keys[i], descriptor);
+    \\  }
+    \\  return target;
+    \\};
+;
+pub const SPREAD_PROPS_RUNTIME_MIN = "var " ++ NAMES.SPREAD_PROPS_MIN ++ "=function(t,s){var p=Object.getPrototypeOf(s);if(p!==Object.prototype)Object.setPrototypeOf(t,p);var k=Object.getOwnPropertyNames(s),y=Object.getOwnPropertySymbols;if(y)k=k.concat(y(s));for(var i=0;i<k.length;i++){var d=Object.getOwnPropertyDescriptor(s,k[i]);if(\"get\" in d&&d.get===void 0)delete d.get;if(\"set\" in d&&d.set===void 0)delete d.set;Object.defineProperty(t,k[i],d)}return t};";
+
 pub const CLASS_DEFINE_PROPERTY_RUNTIME =
     \\var __classDefineProperty = function(target, key, descriptor) {
     \\  return Object.defineProperty(target, key, descriptor);
@@ -2263,6 +2299,12 @@ fn appendRuntimeHelpersInternal(
             default_name,
             local_names.class_private_method_get orelse default_name,
         );
+    }
+    if (local_names.spread_values) |local| {
+        try appendRuntimeTemplateWithLocalName(buf, allocator, if (minify) SPREAD_VALUES_RUNTIME_MIN else SPREAD_VALUES_RUNTIME, helperName("__spreadValues", minify), local);
+    }
+    if (local_names.spread_props) |local| {
+        try appendRuntimeTemplateWithLocalName(buf, allocator, if (minify) SPREAD_PROPS_RUNTIME_MIN else SPREAD_PROPS_RUNTIME, helperName("__spreadProps", minify), local);
     }
     if (helpers.class_call_check) {
         const default_name = helperName("__classCallCheck", minify);
