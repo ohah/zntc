@@ -39,6 +39,14 @@ const ALLOWLIST = {
     class: 'iterative_safe',
     note: 'explicit heap node stack with visited set; function bodies are pruned while checking physical program-level async resource statements',
   },
+  'src/transformer/es2015_destructuring.zig::movePatternExpression': {
+    class: 'iterative_safe',
+    note: 'explicit pending node stack and visited identity set relocate exact references; child iteration never recurses',
+  },
+  'src/transformer/transformer/semantic_edit.zig::publishCapturedLoopWrapper': {
+    class: 'iterative_safe',
+    note: 'explicit pending node stack and live identity set move only the actual helper frontier and synchronize exact reference coordinates',
+  },
   'src/transformer/ast_plugin.zig::registerInjectedFunctionScopes': {
     class: 'iterative_safe',
     note: 'explicit Work stack carries insertion ScopeId; visited node ids prevent repeated or cyclic descent',

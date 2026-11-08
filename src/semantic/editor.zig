@@ -864,6 +864,74 @@ pub const SemanticEditor = struct {
         self.scope_owner_map.putAssumeCapacity(new_key, scope_id);
     }
 
+    /// A destructuring for initializer becomes a statement region while the
+    /// original header scope remains its lexical owner. This is deliberately
+    /// separate from the generic copied-owner tag transitions.
+    pub fn publishIteratorForRegion(self: *SemanticEditor, source: NodeIndex, initializer: NodeIndex, region: NodeIndex, ready: NodeIndex, loop: NodeIndex, expected_scope: ScopeId) Error!void {
+        for ([_]NodeIndex{ source, initializer, region, ready, loop }) |node| {
+            if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len) return error.InvalidNode;
+        }
+        const before = self.ast.getNode(source);
+        const after = self.ast.getNode(region);
+        const prepared = self.ast.getNode(ready);
+        const iteration = self.ast.getNode(loop);
+        if (before.tag != .for_statement or after.tag != .block_statement or
+            prepared.tag != .block_statement or iteration.tag != .for_statement) return error.InvalidNode;
+        const extras = self.ast.extra_data.items.len;
+        if (before.data.extra > extras or extras - before.data.extra < 4 or
+            iteration.data.extra > extras or extras - iteration.data.extra < 4 or
+            after.data.list.start > extras or after.data.list.len > extras - after.data.list.start) return error.InvalidNode;
+        if (self.ast.readExtraNode(before.data.extra, 0) != initializer or
+            !self.ast.readExtraNode(iteration.data.extra, 0).isNone()) return error.InvalidNode;
+        const scope = self.scope_owner_map.get(@backingInt(source)) orelse return error.InvalidScope;
+        if (scope != @backingInt(expected_scope) or scope >= self.scopes.items.len or
+            self.scopes.items[scope].kind != .block) return error.InvalidScope;
+        // Recorder captures these immutable rows in source-node order. Query
+        // that index rather than rescanning every owner for each loop.
+        const owners = self.scope_history.source_owners;
+        var low: usize = 0;
+        var high = owners.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            if (@backingInt(owners[middle].owner.node) < @backingInt(source)) low = middle + 1 else high = middle;
+        }
+        if (low == owners.len or owners[low].owner.node != source or
+            owners[low].scope != expected_scope or owners[low].owner.tag != .for_statement) return error.InvalidNode;
+        const ready_scope = self.scope_owner_map.get(@backingInt(ready)) orelse return error.InvalidScope;
+        const loop_scope = self.scope_owner_map.get(@backingInt(loop)) orelse return error.InvalidScope;
+        if (ready_scope >= self.scopes.items.len or loop_scope >= self.scopes.items.len or
+            self.scopes.items[ready_scope].parent != expected_scope or
+            self.scopes.items[loop_scope].parent != expected_scope) return error.InvalidScope;
+        if (after.data.list.len < 2 or
+            self.ast.readExtraNode(after.data.list.start, after.data.list.len - 2) != ready or
+            self.ast.readExtraNode(after.data.list.start, after.data.list.len - 1) != loop) return error.InvalidNode;
+        for (0..after.data.list.len - 2) |offset| {
+            const declaration_node = self.ast.readExtraNode(after.data.list.start, @intCast(offset));
+            if (declaration_node.isNone() or @backingInt(declaration_node) >= self.ast.nodes.items.len) return error.InvalidNode;
+            const declaration = self.ast.getNode(declaration_node);
+            if (declaration.tag != .variable_declaration or declaration.data.extra > extras or extras - declaration.data.extra < 3) return error.InvalidNode;
+            if (self.ast.readExtra(declaration.data.extra, 0) != @backingInt(ast_mod.VariableDeclarationKind.@"var")) return error.InvalidNode;
+            const start = self.ast.readExtra(declaration.data.extra, 1);
+            const count = self.ast.readExtra(declaration.data.extra, 2);
+            if (start > extras or count > extras - start) return error.InvalidNode;
+            for (0..count) |entry| {
+                const declarator_node = self.ast.readExtraNode(start, @intCast(entry));
+                if (declarator_node.isNone() or @backingInt(declarator_node) >= self.ast.nodes.items.len) return error.InvalidNode;
+                const declarator = self.ast.getNode(declarator_node);
+                if (declarator.tag != .variable_declarator or declarator.data.extra > extras or extras - declarator.data.extra < 3 or
+                    !self.ast.readExtraNode(declarator.data.extra, 2).isNone()) return error.InvalidNode;
+                const binding = self.ast.readExtraNode(declarator.data.extra, 0);
+                if (binding.isNone() or @backingInt(binding) >= self.ast.nodes.items.len or
+                    self.ast.getNode(binding).tag != .binding_identifier) return error.InvalidNode;
+            }
+        }
+        if (self.scope_owner_map.contains(@backingInt(region))) return error.ScopeOwnerConflict;
+        try self.scope_owner_map.ensureUnusedCapacity(self.allocator, 1);
+        self.scope_history.recordOwner(self.allocator, self.ast, expected_scope, self.scopes.items[scope], source, region, .{}) catch |err| return historyError(err);
+        _ = self.scope_owner_map.remove(@backingInt(source));
+        self.scope_owner_map.putAssumeCapacity(@backingInt(region), scope);
+    }
+
     /// Transfer an owner after a controlled in-place rewrite changed the old
     /// node's tag before semantic edits are finalized. The caller must have
     /// recorded this exact replacement; all node, scope, and conflict checks
@@ -5550,4 +5618,58 @@ test "default facade materialization preserves the source SID beside a user defa
         if (@backingInt(row.symbol_id) == raw and row.flags.declare and row.declaration_node_index == binding) anchored += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), anchored);
+}
+
+test "lazy iterator for region requires exact source and generated owner edges" {
+    const Mutation = enum { healthy, source, initializer, region, ready, loop, scope, ready_parent, loop_parent, order, initialized_prefix, duplicate_owner, source_layout, loop_layout, region_layout };
+    inline for (std.meta.tags(Mutation)) |mutation| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, "for(let [value]=[1];false;){}");
+        var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".mjs");
+        const root = try parser.parse();
+        var analyzer = @import("analyzer.zig").SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_module = parser.is_module;
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        try analyzer.analyze();
+        var editor = try analyzer.beginEdit();
+        defer editor.deinit();
+        editor.scope_history = try @import("scope_frame_history.zig").Recorder.init(allocator, &parser.ast, editor.scopes.items, &editor.scope_owner_map);
+        const tree = &parser.ast;
+        const source = tree.readExtraNode(tree.getNode(root).data.list.start, 0);
+        const original = tree.getNode(source);
+        const initializer = tree.readExtraNode(original.data.extra, 0);
+        const owned: ScopeId = @fromBackingInt(editor.scope_owner_map.get(@backingInt(source)).?);
+        const parent = editor.scopes.items[owned.toIndex()].parent;
+        const ready = try tree.addNode(.{ .tag = .block_statement, .span = original.span, .data = .{ .list = try tree.addNodeList(&.{}) } });
+        _ = try editor.addScope(if (mutation == .ready_parent) parent else owned, ready, .block, false);
+        const loop_extra = try tree.addExtras(&.{ @backingInt(NodeIndex.none), @backingInt(tree.readExtraNode(original.data.extra, 1)), @backingInt(tree.readExtraNode(original.data.extra, 2)), @backingInt(tree.readExtraNode(original.data.extra, 3)) });
+        const loop = try tree.addNode(.{ .tag = .for_statement, .span = original.span, .data = .{ .extra = loop_extra } });
+        _ = try editor.addScope(if (mutation == .loop_parent) parent else owned, loop, .block, false);
+        const children: []const NodeIndex = if (mutation == .order) &.{ loop, ready } else if (mutation == .initialized_prefix) &.{ initializer, ready, loop } else &.{ ready, loop };
+        const region = try tree.addNode(.{ .tag = .block_statement, .span = original.span, .data = .{ .list = try tree.addNodeList(children) } });
+        if (mutation == .duplicate_owner) _ = try editor.addScope(parent, region, .block, false);
+        if (mutation == .source_layout) tree.nodes.items[@backingInt(source)].data.extra = @intCast(tree.extra_data.items.len);
+        if (mutation == .loop_layout) tree.nodes.items[@backingInt(loop)].data.extra = @intCast(tree.extra_data.items.len);
+        if (mutation == .region_layout) tree.nodes.items[@backingInt(region)].data.list.start = @intCast(tree.extra_data.items.len);
+        const result = editor.publishIteratorForRegion(
+            if (mutation == .source) ready else source,
+            if (mutation == .initializer) .none else initializer,
+            if (mutation == .region) source else region,
+            if (mutation == .ready) loop else ready,
+            if (mutation == .loop) ready else loop,
+            if (mutation == .scope) .none else owned,
+        );
+        if (mutation == .healthy) {
+            try result;
+            try std.testing.expect(!editor.scope_owner_map.contains(@backingInt(source)));
+            try std.testing.expectEqual(@backingInt(owned), editor.scope_owner_map.get(@backingInt(region)).?);
+        } else if (mutation == .scope or mutation == .ready_parent or mutation == .loop_parent) {
+            try std.testing.expectError(error.InvalidScope, result);
+        } else if (mutation == .duplicate_owner) {
+            try std.testing.expectError(error.ScopeOwnerConflict, result);
+        } else try std.testing.expectError(error.InvalidNode, result);
+    }
 }

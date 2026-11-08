@@ -2351,6 +2351,9 @@ fn foldIf(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) 
         const then_ni = @backingInt(node.data.ternary.b);
         if (then_ni >= ast.nodes.items.len) return;
         if (ast.nodes.items[then_ni].tag == .function_declaration) return;
+        if (semantic) if (ctx.semantic_journal) |journal| {
+            if (!journal.recordDiscardedBranch(ast, node_idx, node.data.ternary.c, node.data.ternary.b, true)) return;
+        };
         if (semantic and !node.data.ternary.c.isNone()) decrementRefsShallow(ast, ctx, node.data.ternary.c);
         replaceNodeFromChild(ast, ctx, node_idx, then_ni, ast.nodes.items[then_ni], changed);
     } else {
@@ -2359,10 +2362,16 @@ fn foldIf(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) 
             const else_ni = @backingInt(node.data.ternary.c);
             if (else_ni >= ast.nodes.items.len) return;
             if (ast.nodes.items[else_ni].tag == .function_declaration) return;
+            if (semantic) if (ctx.semantic_journal) |journal| {
+                if (!journal.recordDiscardedBranch(ast, node_idx, node.data.ternary.b, node.data.ternary.c, false)) return;
+            };
             if (semantic) decrementRefsShallow(ast, ctx, node.data.ternary.b);
             replaceNodeFromChild(ast, ctx, node_idx, else_ni, ast.nodes.items[else_ni], changed);
         } else {
             // if (false) { A } → empty_statement. then (A) 분기 cascade.
+            if (semantic) if (ctx.semantic_journal) |journal| {
+                if (!journal.recordDiscardedBranch(ast, node_idx, node.data.ternary.b, node.data.ternary.c, false)) return;
+            };
             if (semantic) decrementRefsShallow(ast, ctx, node.data.ternary.b);
             replaceNode(ast, node_idx, .{
                 .tag = .empty_statement,

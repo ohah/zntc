@@ -41,7 +41,7 @@ pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
 // v39: exact producer-owned static capture aliases retain their retirement proof.
 // v43: extracted await-loop source witnesses and function-name environment retirements.
 // v49: class-key, Worklet, enum-member and explicit-drop proofs share one wire layout.
-pub const FORMAT_VERSION: u32 = 52;
+pub const FORMAT_VERSION: u32 = 53;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -232,7 +232,7 @@ comptime {
         @backingInt(StrictName.binding) != 0 or @backingInt(StrictName.anonymous_default) != 1)
         @compileError("strict role wire tags changed; update codec/version");
     const Retirement = @import("../semantic/source_owned_retirement.zig").Witness;
-    const retirement_fields = [_][]const u8{ "symbol_id", "before", "declaration", "declaration_node", "source_owner", "source_owner_node", "source_scope", "source_parent", "source_name", "source_name_symbol", "closure_scope", "closure_parent", "reason", "erased_import", "static_capture_alias", "function_name_elision", "enum_environment", "dropped_statement", "inlined_binding" };
+    const retirement_fields = [_][]const u8{ "symbol_id", "before", "declaration", "declaration_node", "source_owner", "source_owner_node", "source_scope", "source_parent", "source_name", "source_name_symbol", "closure_scope", "closure_parent", "reason", "erased_import", "static_capture_alias", "function_name_elision", "enum_environment", "dropped_statement", "inlined_binding", "generated_branch" };
     if (@typeInfo(Retirement).@"struct".field_names.len != retirement_fields.len) @compileError("source retirement wire fields changed; update codec/version");
     for (retirement_fields, @typeInfo(Retirement).@"struct".field_names) |expected, actual| if (!std.mem.eql(u8, expected, actual)) @compileError("source retirement wire order changed; update codec/version");
     const InlineBinding = @import("../semantic/inlined_binding_retirement.zig").Witness;
@@ -243,7 +243,7 @@ comptime {
     const static_alias_fields = [_][]const u8{ "statement", "statement_node", "declarator", "declarator_node", "initializer", "initializer_node", "read", "read_node", "class_binding_node", "class_before", "class_scope", "replacement" };
     if (@typeInfo(StaticAlias).@"struct".field_names.len != static_alias_fields.len) @compileError("static capture wire fields changed; update codec/version");
     for (static_alias_fields, @typeInfo(StaticAlias).@"struct".field_names) |expected, actual| if (!std.mem.eql(u8, expected, actual)) @compileError("static capture wire order changed; update codec/version");
-    if (std.enums.values(@FieldType(Retirement, "reason")).len != 8) @compileError("source retirement reason tags changed; update codec/version");
+    if (std.enums.values(@FieldType(Retirement, "reason")).len != 9) @compileError("source retirement reason tags changed; update codec/version");
     const NameElision = @import("../semantic/function_name_retirement.zig");
     const name_witness_fields = [_][]const u8{ "event", "name_scope", "parameter_scope", "retire_parameters", "body_scope", "outer_scope", "name_frame", "parameter_frame", "body_frame", "formals", "engine", "owners" };
     if (@typeInfo(NameElision.Witness).@"struct".field_names.len != name_witness_fields.len) @compileError("name retirement wire fields changed; update codec/version");
@@ -459,7 +459,7 @@ fn putNumTexts(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, m: *const std.
 
 fn putRetirementNode(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, node: @import("../parser/ast.zig").Node) !void {
     switch (node.tag) {
-        .binding_identifier, .identifier_reference, .import_default_specifier, .import_namespace_specifier, .function_declaration, .function_expression, .arrow_function_expression, .ts_enum_declaration, .import_declaration, .import_specifier, .class_declaration, .class_expression, .variable_declaration, .variable_declarator, .labeled_statement, .expression_statement, .debugger_statement => {},
+        .binding_identifier, .identifier_reference, .import_default_specifier, .import_namespace_specifier, .function_declaration, .function_expression, .arrow_function_expression, .ts_enum_declaration, .import_declaration, .import_specifier, .class_declaration, .class_expression, .variable_declaration, .variable_declarator, .labeled_statement, .expression_statement, .debugger_statement, .block_statement => {},
         else => return error.InvalidSourceOwnedRetirement,
     }
     try putU32(buf, alloc, @backingInt(node.tag));
@@ -479,6 +479,10 @@ fn putRetirementNode(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, node: @i
             try putU32(buf, alloc, @backingInt(node.data.unary.operand));
             try putU32(buf, alloc, node.data.unary.flags);
         },
+        .block_statement => {
+            try putU32(buf, alloc, node.data.list.start);
+            try putU32(buf, alloc, node.data.list.len);
+        },
         .debugger_statement => try putU32(buf, alloc, node.data.none),
         else => try putU32(buf, alloc, node.data.extra),
     }
@@ -491,7 +495,7 @@ fn readRetirementNode(r: *Reader, declaration: bool) Error!@import("../parser/as
         .binding_identifier, .identifier_reference, .import_default_specifier, .import_namespace_specifier => {},
         else => return error.Truncated,
     } else switch (tag) {
-        .function_declaration, .function_expression, .arrow_function_expression, .ts_enum_declaration, .import_declaration, .import_specifier, .import_default_specifier, .import_namespace_specifier, .class_declaration, .class_expression, .variable_declaration, .variable_declarator, .labeled_statement, .expression_statement, .debugger_statement => {},
+        .function_declaration, .function_expression, .arrow_function_expression, .ts_enum_declaration, .import_declaration, .import_specifier, .import_default_specifier, .import_namespace_specifier, .class_declaration, .class_expression, .variable_declaration, .variable_declarator, .labeled_statement, .expression_statement, .debugger_statement, .block_statement => {},
         else => return error.Truncated,
     }
     var node: Node = .{ .tag = tag, .span = .{ .start = try r.u32v(), .end = try r.u32v() }, .data = std.mem.zeroes(Node.Data) };
@@ -508,6 +512,7 @@ fn readRetirementNode(r: *Reader, declaration: bool) Error!@import("../parser/as
             const flags = std.math.cast(u16, try r.u32v()) orelse return error.Truncated;
             node.data.unary = .{ .operand = @fromBackingInt(operand), .flags = flags };
         },
+        .block_statement => node.data.list = .{ .start = try r.u32v(), .len = try r.u32v() },
         .debugger_statement => node.data.none = try r.u32v(),
         else => node.data.extra = try r.u32v(),
     }
@@ -882,6 +887,35 @@ fn readDropNode(r: *Reader, node_count: usize, symbol_count: usize) Error!@impor
     result.extra_len = @intCast(count);
     for (result.extra[0..count]) |*word| word.* = try r.u32v();
     return result;
+}
+
+fn putGeneratedBranch(buf: *std.ArrayList(u8), a: std.mem.Allocator, value: @import("../semantic/generated_branch_retirement.zig").Witness) !void {
+    inline for (.{ value.branch.control, value.branch.condition, value.branch.dropped, value.branch.control_after, value.catch_owner }) |snapshot| try putDropNode(buf, a, snapshot);
+    try putU32(buf, a, @intFromBool(value.branch.kept != null));
+    if (value.branch.kept) |kept| try putDropNode(buf, a, kept);
+    try putU32(buf, a, value.branch.source_epoch);
+    try putU32(buf, a, @backingInt(value.branch.root_scope));
+    try putU32(buf, a, @intFromBool(value.branch.truthy));
+    try putU32(buf, a, @backingInt(value.catch_scope));
+}
+
+fn readGeneratedBranch(r: *Reader, nodes: usize, symbols: usize, scopes: usize, epochs: usize) Error!@import("../semantic/generated_branch_retirement.zig").Witness {
+    const control = try readDropNode(r, nodes, symbols);
+    const condition = try readDropNode(r, nodes, symbols);
+    const dropped = try readDropNode(r, nodes, symbols);
+    const control_after = try readDropNode(r, nodes, symbols);
+    const catch_owner = try readDropNode(r, nodes, symbols);
+    const has_kept = try r.u32v();
+    if (has_kept > 1) return error.Truncated;
+    const kept = if (has_kept == 1) try readDropNode(r, nodes, symbols) else null;
+    const epoch = try r.u32v();
+    const root_scope: scope_mod.ScopeId = @fromBackingInt(try r.u32v());
+    const truthy = try r.u32v();
+    const catch_scope: scope_mod.ScopeId = @fromBackingInt(try r.u32v());
+    if (control.tag != .if_statement or dropped.tag != .block_statement or catch_owner.tag != .catch_clause or
+        control.index != control_after.index or root_scope.isNone() or root_scope.toIndex() >= scopes or
+        catch_scope.isNone() or catch_scope.toIndex() >= scopes or epoch > epochs or truthy > 1) return error.Truncated;
+    return .{ .branch = .{ .control = control, .condition = condition, .dropped = dropped, .kept = kept, .control_after = control_after, .source_epoch = epoch, .root_scope = root_scope, .truthy = truthy != 0 }, .catch_owner = catch_owner, .catch_scope = catch_scope };
 }
 
 fn putFrameHistory(buf: *std.ArrayList(u8), a: std.mem.Allocator, history: @import("../semantic/scope_frame_history.zig").History) !void {
@@ -1327,6 +1361,8 @@ pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc:
         }
         try putU32(&payload, alloc, @intFromBool(witness.inlined_binding != null));
         if (witness.inlined_binding) |inlined| try putInlinedBinding(&payload, alloc, inlined);
+        try putU32(&payload, alloc, @intFromBool(witness.generated_branch != null));
+        if (witness.generated_branch) |branch| try putGeneratedBranch(&payload, alloc, branch);
     }
 
     const checksum = wyhash.hashU64(payload.items);
@@ -1776,12 +1812,16 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
         const has_inlined = try r.u32v();
         if (has_inlined > 1) return error.Truncated;
         const inlined_binding = if (has_inlined == 1) try readInlinedBinding(&r, symbol_ids.len, scopes.len, symbols_len, scope_history.events.len) else null;
+        const has_generated_branch = try r.u32v();
+        if (has_generated_branch > 1) return error.Truncated;
+        const generated_branch = if (has_generated_branch == 1) try readGeneratedBranch(&r, symbol_ids.len, symbols_len, scopes.len, scope_history.events.len) else null;
+        if ((reason == .generated_branch) != (generated_branch != null)) return error.Truncated;
         if ((reason == .inlined_local_binding) != (inlined_binding != null)) return error.Truncated;
         if ((reason == .dropped_statement) != (dropped_statement != null)) return error.Truncated;
         if ((reason == .erased_const_enum_environment) != (enum_environment != null)) return error.Truncated;
         if (enum_environment) |environment| if (@backingInt(environment.parameter_symbol) >= symbols_len) return error.Truncated;
         if ((reason == .erased_import_binding) != (erased_import != null) or owner.isNone() or @backingInt(owner) >= symbol_ids.len or source_scope.isNone() or source_scope.toIndex() >= scopes.len or
-            (if (reason == .source_function_closure or reason == .elided_function_name or reason == .erased_const_enum_environment or (reason == .dropped_statement and dropped_statement.?.scope_owner != null)) closure_scope.isNone() or closure_scope.toIndex() >= scopes.len else !closure_scope.isNone() or !closure_parent.isNone()) or
+            (if (reason == .source_function_closure or reason == .elided_function_name or reason == .erased_const_enum_environment or reason == .generated_branch or (reason == .dropped_statement and dropped_statement.?.scope_owner != null)) closure_scope.isNone() or closure_scope.toIndex() >= scopes.len else !closure_scope.isNone() or !closure_parent.isNone()) or
             (!source_name.isNone() and @backingInt(source_name) >= symbol_ids.len) or (!source_name_symbol.isNone() and @backingInt(source_name_symbol) >= symbols_len) or
             source_name.isNone() != source_name_symbol.isNone() or @backingInt(declaration.symbol_id) != sid) return error.Truncated;
         var expected = before;
@@ -1808,6 +1848,7 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
             .enum_environment = enum_environment,
             .dropped_statement = dropped_statement,
             .inlined_binding = inlined_binding,
+            .generated_branch = generated_branch,
         });
     }
     if (r.remaining() != 0) return error.Truncated;
@@ -1833,4 +1874,57 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
         .runtime_identities = runtime_identities,
         .strict_output_context = .{ .program = strict_program, .directive = strict_directive, .functions = strict_roles },
     };
+}
+
+test "lazy iterator generated branch codec preserves exact receipt and rejects malformed authority" {
+    const a = std.testing.allocator;
+    const Drop = @import("../semantic/source_drop_registry.zig");
+    const Generated = @import("../semantic/generated_branch_retirement.zig");
+    const original: Generated.Witness = .{
+        .branch = .{
+            .control = .{ .index = @fromBackingInt(1), .tag = .if_statement, .span = .{ .start = 0, .end = 1 } },
+            .condition = .{ .index = @fromBackingInt(2), .tag = .boolean_literal, .span = .{ .start = 0, .end = 1 } },
+            .dropped = .{ .index = @fromBackingInt(3), .tag = .block_statement, .span = .{ .start = 0, .end = 1 } },
+            .kept = null,
+            .control_after = .{ .index = @fromBackingInt(1), .tag = .empty_statement, .span = .{ .start = 0, .end = 1 } },
+            .source_epoch = 7,
+            .root_scope = @fromBackingInt(2),
+            .truthy = false,
+        },
+        .catch_owner = .{ .index = @fromBackingInt(4), .tag = .catch_clause, .span = .{ .start = 0, .end = 1 } },
+        .catch_scope = @fromBackingInt(3),
+    };
+    _ = Drop;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try putGeneratedBranch(&bytes, a, original);
+    var reader: Reader = .{ .buf = bytes.items };
+    const decoded = try readGeneratedBranch(&reader, 8, 8, 5, 7);
+    try std.testing.expect(std.meta.eql(original, decoded));
+    try std.testing.expectEqual(bytes.items.len, reader.pos);
+    for (0..bytes.items.len) |length| {
+        var short: Reader = .{ .buf = bytes.items[0..length] };
+        try std.testing.expectError(error.Truncated, readGeneratedBranch(&short, 8, 8, 5, 7));
+    }
+    // These are wire-boundary negatives, independent of graph-proof tests.
+    for (0..6) |variant| {
+        var bad = original;
+        switch (variant) {
+            0 => bad.branch.control.tag = .empty_statement,
+            1 => bad.branch.dropped.tag = .empty_statement,
+            2 => bad.catch_owner.tag = .empty_statement,
+            3 => bad.branch.control_after.index = @fromBackingInt(6),
+            4 => bad.branch.root_scope = .none,
+            5 => bad.catch_scope = @fromBackingInt(5),
+            else => unreachable,
+        }
+        bytes.clearRetainingCapacity();
+        try putGeneratedBranch(&bytes, a, bad);
+        var malformed: Reader = .{ .buf = bytes.items };
+        try std.testing.expectError(error.Truncated, readGeneratedBranch(&malformed, 8, 8, 5, 7));
+    }
+    bytes.clearRetainingCapacity();
+    try putGeneratedBranch(&bytes, a, original);
+    var old_epoch: Reader = .{ .buf = bytes.items };
+    try std.testing.expectError(error.Truncated, readGeneratedBranch(&old_epoch, 8, 8, 5, 6));
 }

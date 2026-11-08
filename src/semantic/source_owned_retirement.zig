@@ -18,13 +18,14 @@ pub const Witness = struct {
     source_name_symbol: symbols.SymbolId,
     closure_scope: ScopeId,
     closure_parent: ScopeId,
-    reason: enum { source_function_closure, erased_import_binding, erased_const_enum_binding, static_class_capture_alias, elided_function_name, erased_const_enum_environment, dropped_statement, inlined_local_binding },
+    reason: enum { source_function_closure, erased_import_binding, erased_const_enum_binding, static_class_capture_alias, elided_function_name, erased_const_enum_environment, dropped_statement, inlined_local_binding, generated_branch },
     erased_import: ?@import("import_erasure.zig").Binding = null,
     static_capture_alias: ?@import("static_capture_retirement.zig").Witness = null,
     function_name_elision: ?@import("function_name_retirement.zig").Witness = null,
     enum_environment: ?@import("enum_environment_retirement.zig").Witness = null,
     dropped_statement: ?@import("drop_statement_retirement.zig").Witness = null,
     inlined_binding: ?@import("inlined_binding_retirement.zig").Witness = null,
+    generated_branch: ?@import("generated_branch_retirement.zig").Witness = null,
 };
 
 pub const Map = std.AutoHashMapUnmanaged(u32, Witness);
@@ -109,10 +110,33 @@ pub fn validateWithIndex(
     defer argument_scopes.deinit();
     var source_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer source_owners.deinit(allocator);
+    const Generated = @import("generated_branch_retirement.zig");
+    var generated: std.AutoHashMapUnmanaged(u32, Generated.Prepared) = .empty;
+    defer {
+        var prepared = generated.valueIterator();
+        while (prepared.next()) |value| value.deinit(allocator);
+        generated.deinit(allocator);
+    }
     var entries = state.iterator();
     while (entries.next()) |entry| {
         const sid = entry.key_ptr.*;
         const witness = entry.value_ptr.*;
+        if (witness.reason == .generated_branch) {
+            const proof = witness.generated_branch orelse return false;
+            const index = frame_index orelse return false;
+            const key = @backingInt(proof.branch.dropped.index);
+            if (!generated.contains(key)) {
+                var prepared = (try Generated.prepare(allocator, ast_ptr, proof.branch, reachable, index)) orelse return false;
+                generated.put(allocator, key, prepared) catch |err| {
+                    prepared.deinit(allocator);
+                    return err;
+                };
+            }
+            if (@backingInt(witness.symbol_id) != sid or !Generated.validate(witness, generated.getPtr(key).?, ast_ptr, symbol_rows, symbol_ids, index)) return false;
+            closure_roots.set(proof.catch_scope.toIndex());
+            continue;
+        }
+        if (witness.generated_branch != null) return false;
         if (witness.reason == .inlined_local_binding) {
             if (@backingInt(witness.symbol_id) != sid or !try @import("inlined_binding_retirement.zig").validate(allocator, witness, ast_ptr, reachable, symbol_rows, symbol_ids, scopes, scope_maps, references, roots, frame_index)) return false;
             const raw = @backingInt(witness.source_name);

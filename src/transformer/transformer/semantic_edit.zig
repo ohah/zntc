@@ -2717,6 +2717,89 @@ pub fn bindEnumPreludeOwner(self: *Transformer, body: NodeIndex, scope: ScopeId)
 }
 
 /// AST 생성 시점의 current_scope와 실제 삽입 위치가 다를 때 명시한 스코프에 등록한다.
+pub fn publishCapturedLoopWrapper(
+    self: *Transformer,
+    wrapper: NodeIndex,
+    helper: NodeIndex,
+    loop: NodeIndex,
+    call_scope: ScopeId,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    if (call_scope.isNone() or call_scope != self.current_scope or call_scope.toIndex() >= editor.scopes.items.len)
+        return editError(error.InvalidScope);
+    const outer = self.ast.getNode(wrapper);
+    const declaration = self.ast.getNode(helper);
+    if (outer.tag != .block_statement or outer.data.list.len != 2 or
+        self.ast.readExtraNode(outer.data.list.start, 0) != helper or self.ast.readExtraNode(outer.data.list.start, 1) != loop or
+        declaration.tag != .variable_declaration or self.ast.variableDeclarationKind(declaration) != .@"var")
+        return editError(error.InvalidNode);
+    const loop_node = self.ast.getNode(loop);
+    const body = switch (loop_node.tag) {
+        .while_statement, .do_while_statement => loop_node.data.binary.right,
+        .for_statement => self.ast.readExtraNode(loop_node.data.extra, 3),
+        .for_in_statement, .for_of_statement, .for_await_of_statement => loop_node.data.ternary.c,
+        else => return editError(error.InvalidNode),
+    };
+    if (self.outputOwnedScope(body)) |callsite| {
+        if (callsite.toIndex() >= editor.scopes.items.len or editor.scopes.items[callsite.toIndex()].parent != call_scope)
+            return editError(error.InvalidScope);
+    }
+    // A syntactic block owns a real block scope, never an alias of its
+    // surrounding function. Register that boundary before output statement
+    // projection so source condition/header uses acquire the actual use scope.
+    if (self.outputOwnedScope(wrapper) != null) return editError(error.InvalidScope);
+    // A traditional for already owns the header's lexical scope. The new
+    // syntactic wrapper is outside that owner; its loop body must remain a
+    // child of the header, not be flattened directly under the wrapper.
+    const loop_scope = self.outputOwnedScope(loop);
+    const wrapper_parent = if (loop_scope) |owned| blk: {
+        if (owned != call_scope or owned.toIndex() >= editor.scopes.items.len)
+            return editError(error.InvalidScope);
+        const parent = editor.scopes.items[owned.toIndex()].parent;
+        if (parent.isNone()) return editError(error.InvalidScope);
+        break :blk parent;
+    } else call_scope;
+    const wrapper_scope = try addGeneratedScope(self, wrapper_parent, wrapper, .block);
+    const moved_uses = if (loop_scope != null) helper else wrapper;
+    // Move the helper's frontier while the header is still outside the new
+    // wrapper. Moving the header first would make its descendants appear
+    // already contained and hide the helper's distinct output placement.
+    try reparentGeneratedBodyScopes(self, call_scope, wrapper_scope, moved_uses);
+    if (loop_scope) |owned| {
+        editor.reparentScope(owned, wrapper_scope) catch |err| return editError(err);
+    }
+    var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer live.deinit(self.allocator);
+    var pending: std.ArrayList(NodeIndex) = .empty;
+    defer pending.deinit(self.allocator);
+    try pending.append(self.allocator, moved_uses);
+    while (pending.pop()) |node| {
+        if (node.isNone()) continue;
+        const raw = @backingInt(node);
+        if (live.contains(raw)) continue;
+        try live.put(self.allocator, raw, {});
+        const tag = self.ast.getNode(node).tag;
+        if (tag == .identifier_reference or tag == .assignment_target_identifier) {
+            const reference = editor.referenceForNode(node) catch |err| return editError(err);
+            if (reference) |before| if (!before.flags.declare and before.scope_id == call_scope) {
+                // The storage SID stays unchanged. Only this physically moved
+                // use crosses the newly created lexical boundary.
+                if (self.getSymbolIdAt(node) != @backingInt(before.symbol_id)) return editError(error.InvalidSymbol);
+                if (self.generator_function_coordinate_handoffs.getPtr(raw)) |publication| {
+                    if (publication.scope != before.scope_id or publication.symbol_id != before.symbol_id or
+                        publication.stmt != before.stmt_idx or publication.scope_stmt != before.scope_stmt_idx)
+                        return editError(error.InvalidScope);
+                    publication.scope = wrapper_scope;
+                }
+                editor.relocateReference(node, wrapper_scope, before.symbol_id, before.stmt_idx, before.scope_stmt_idx) catch |err| return editError(err);
+            };
+        }
+        var children = ast_walk.children(self.ast, self.ast.getNode(node));
+        while (children.next()) |child| try pending.append(self.allocator, child);
+    }
+}
+
 pub fn addGeneratedFunctionScope(self: *Transformer, parent: ScopeId, owner: NodeIndex) Transformer.Error!ScopeId {
     if (!self.semantic_edit_enabled) return .none;
     const editor = try editorFor(self);

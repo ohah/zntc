@@ -31,6 +31,7 @@ pub const SemanticJournal = struct {
         scopes: []const Scope,
         scope_maps: []const std.StringHashMapUnmanaged(usize),
         source_epoch: u32 = 0,
+        source_scope_count: ?usize = null,
     };
     pub const Event = struct {
         source: u32,
@@ -44,6 +45,16 @@ pub const SemanticJournal = struct {
         target_payload: ast_mod.Node,
         source_reference: ?Reference,
     };
+    pub const DiscardedOwner = struct { node: ast_mod.NodeIndex, scope: @import("../../semantic/scope.zig").ScopeId };
+    pub const DiscardedCatch = struct { before: symbol_mod.Symbol, declaration: Reference, binding: ast_mod.Node };
+    pub const DiscardedBranch = struct {
+        branch: @import("../../semantic/generated_branch_retirement.zig").Branch,
+        nodes: []const u32,
+        owners: []const DiscardedOwner,
+        catches: []const DiscardedCatch,
+    };
+    declarations: std.AutoHashMapUnmanaged(u32, Reference) = .empty,
+    discarded_branches: std.ArrayList(DiscardedBranch) = .empty,
     allocator: std.mem.Allocator,
     domain: *const ast_mod.Ast,
     source_references: []Reference = &.{},
@@ -60,6 +71,7 @@ pub const SemanticJournal = struct {
     inlined_bindings: std.ArrayList(InlineBinding.Event) = .empty,
     baseline_scopes: []const Scope = &.{},
     source_epoch: u32 = 0,
+    source_scope_count: usize = 0,
     failure: ?Error = null,
     owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     expressions: NodeProvenance.Map = .empty,
@@ -72,6 +84,11 @@ pub const SemanticJournal = struct {
         var self: SemanticJournal = .{ .allocator = allocator, .domain = maps.domain };
         errdefer self.deinit();
         self.source_references = try allocator.dupe(Reference, references);
+        for (references) |row| if (row.flags.declare and !row.declaration_node_index.isNone()) {
+            const entry = try self.declarations.getOrPut(allocator, @backingInt(row.declaration_node_index));
+            if (entry.found_existing) return error.InvalidReferenceIdentity;
+            entry.value_ptr.* = row;
+        };
         self.source_expressions = try maps.expressions.clone(allocator);
         const runtime_nodes = try reference_walk.collectIdentifierReferences(allocator, maps.domain, maps.root);
         defer allocator.free(runtime_nodes);
@@ -134,12 +151,20 @@ pub const SemanticJournal = struct {
         try self.scopes.appendSlice(allocator, maps.scopes);
         self.baseline_scopes = maps.scopes;
         self.source_epoch = maps.source_epoch;
+        self.source_scope_count = maps.source_scope_count orelse maps.scopes.len;
         self.symbols = maps.symbols;
         self.scope_maps = maps.scope_maps;
         return self;
     }
 
     pub fn deinit(self: *SemanticJournal) void {
+        self.declarations.deinit(self.allocator);
+        for (self.discarded_branches.items) |source| {
+            self.allocator.free(source.nodes);
+            self.allocator.free(source.owners);
+            self.allocator.free(source.catches);
+        }
+        self.discarded_branches.deinit(self.allocator);
         self.inactive_bindings.deinit(self.allocator);
         self.identity_baseline.deinit(self.allocator);
         self.reference_steps.deinit(self.allocator);
@@ -375,11 +400,188 @@ pub const SemanticJournal = struct {
         return true;
     }
 
+    /// Called by the actual foldIf producer before its controlling edge is
+    /// overwritten. A missing retirement proof prevents only that edit.
+    pub fn recordDiscardedBranch(self: *SemanticJournal, ast: *const ast_mod.Ast, control: u32, dropped: ast_mod.NodeIndex, kept: ast_mod.NodeIndex, truthy: bool) bool {
+        if (self.failure != null) return false;
+        return self.recordDiscardedBranchFallible(ast, control, dropped, kept, truthy) catch |err| {
+            self.failure = err;
+            return false;
+        };
+    }
+
+    fn recordDiscardedBranchFallible(self: *SemanticJournal, ast: *const ast_mod.Ast, control: u32, dropped: ast_mod.NodeIndex, kept: ast_mod.NodeIndex, truthy: bool) Error!bool {
+        const Generated = @import("../../semantic/generated_branch_retirement.zig");
+        const Drop = @import("../../semantic/source_drop_registry.zig");
+        if (ast != self.domain or control >= ast.nodes.items.len) return error.InvalidReferenceIdentity;
+        if (dropped.isNone()) return true;
+        const control_node = ast.nodes.items[control];
+        if (control_node.tag != .if_statement or
+            (if (truthy) control_node.data.ternary.c else control_node.data.ternary.b) != dropped or
+            (if (truthy) control_node.data.ternary.b else control_node.data.ternary.c) != kept) return error.InvalidReferenceIdentity;
+        const nodes = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(self.allocator, ast, dropped);
+        errdefer self.allocator.free(nodes);
+        var owners: std.ArrayList(DiscardedOwner) = .empty;
+        errdefer owners.deinit(self.allocator);
+        var catches: std.ArrayList(DiscardedCatch) = .empty;
+        errdefer catches.deinit(self.allocator);
+        for (nodes) |raw| {
+            if (self.owners.get(raw)) |scope| try owners.append(self.allocator, .{ .node = @fromBackingInt(raw), .scope = @fromBackingInt(scope) });
+            const declaration = self.declarations.get(raw) orelse continue;
+            const sid = @backingInt(declaration.symbol_id);
+            if (sid >= self.symbols.len) return error.InvalidReferenceIdentity;
+            const before = self.symbols[sid];
+            if (before.kind != .catch_binding or before.synthetic_name.len == 0) continue;
+            try catches.append(self.allocator, .{ .before = before, .declaration = declaration, .binding = ast.nodes.items[raw] });
+        }
+        var generated_owner = false;
+        for (owners.items) |owner| if (owner.scope.toIndex() >= self.source_scope_count) {
+            generated_owner = true;
+            break;
+        };
+        if (!generated_owner) {
+            self.allocator.free(nodes);
+            owners.deinit(self.allocator);
+            catches.deinit(self.allocator);
+            return true;
+        }
+        const root_scope = self.owners.get(@backingInt(dropped)) orelse {
+            self.allocator.free(nodes);
+            owners.deinit(self.allocator);
+            catches.deinit(self.allocator);
+            return false;
+        };
+        const condition = Drop.Node.capture(ast, control_node.data.ternary.a) orelse return error.InvalidReferenceIdentity;
+        const actual = (try Generated.literalTruthiness(self.allocator, ast, condition)) orelse {
+            self.allocator.free(nodes);
+            owners.deinit(self.allocator);
+            catches.deinit(self.allocator);
+            return false;
+        };
+        if (actual != truthy or ast.getNode(dropped).tag != .block_statement) return error.InvalidReferenceIdentity;
+        const control_snapshot = Drop.Node.capture(ast, @fromBackingInt(control)) orelse return error.InvalidReferenceIdentity;
+        const source: DiscardedBranch = .{
+            .branch = .{ .control = control_snapshot, .condition = condition, .dropped = Drop.Node.capture(ast, dropped) orelse return error.InvalidReferenceIdentity, .kept = if (kept.isNone()) null else Drop.Node.capture(ast, kept) orelse return error.InvalidReferenceIdentity, .control_after = control_snapshot, .source_epoch = self.source_epoch, .root_scope = @fromBackingInt(root_scope), .truthy = truthy },
+            .nodes = nodes,
+            .owners = try owners.toOwnedSlice(self.allocator),
+            .catches = try catches.toOwnedSlice(self.allocator),
+        };
+        errdefer self.allocator.free(source.owners);
+        errdefer self.allocator.free(source.catches);
+        try self.discarded_branches.append(self.allocator, source);
+        return true;
+    }
+
+    /// Phase 1 has already consumed the exact removed runtime references.
+    /// Retire only the catch declarations and generated owners selected by
+    /// real discarded-edge receipts; stable symbol/scope rows remain intact.
+    pub fn retireDiscardedGeneratedBranches(self: *const SemanticJournal, editor: *SemanticEditor, root: ast_mod.NodeIndex, receipt: RetirementReceipt.ApplicationReceipt) !void {
+        if (self.discarded_branches.items.len == 0) return;
+        if (receipt.domain != self.domain or editor.ast != self.domain) return error.InvalidReferenceIdentity;
+        const Generated = @import("../../semantic/generated_branch_retirement.zig");
+        const Drop = @import("../../semantic/source_drop_registry.zig");
+        const History = @import("../../semantic/scope_frame_history.zig");
+        const live_nodes = try @import("../../parser/ast_walk.zig").collectReachableNodeIndicesFrom(self.allocator, editor.ast, root);
+        defer self.allocator.free(live_nodes);
+        var live = try std.DynamicBitSet.initEmpty(self.allocator, editor.ast.nodes.items.len);
+        defer live.deinit();
+        for (live_nodes) |raw| live.set(raw);
+        var removal_capacity: usize = 0;
+        for (self.discarded_branches.items) |source| removal_capacity += source.owners.len;
+        try editor.scope_history.events.ensureUnusedCapacity(self.allocator, removal_capacity);
+        var history = editor.scopeHistoryView();
+        var index = try History.validateAndIndex(self.allocator, editor.ast, editor.scopes.items, &editor.scope_owner_map, &history, null);
+        defer index.deinit(self.allocator);
+        if (!index.valid) return error.ScopeOwnerConflict;
+        for (self.discarded_branches.items) |source| {
+            var branch = source.branch;
+            branch.control_after = Drop.Node.capture(editor.ast, branch.control.index) orelse return error.InvalidReferenceIdentity;
+            var prepared = (try Generated.prepare(self.allocator, editor.ast, branch, &live, &index)) orelse return error.InvalidReferenceIdentity;
+            defer prepared.deinit(self.allocator);
+            for (source.nodes) |raw| if (raw >= live.capacity() or live.isSet(raw)) return error.InvalidReferenceIdentity;
+            for (source.catches) |caught| {
+                const sid = @backingInt(caught.declaration.symbol_id);
+                if (editor.source_owned_retirements.contains(sid)) continue;
+                const scope = caught.before.scope_id;
+                if (scope.isNone() or scope.toIndex() < history.source_scopes.len or scope.toIndex() >= editor.scopes.items.len or
+                    caught.before.origin_scope != scope or editor.scopes.items[scope.toIndex()].kind != .catch_clause or
+                    sid >= editor.symbols.items.len) return error.InvalidReferenceIdentity;
+                const binding = caught.declaration.declaration_node_index;
+                if (binding.isNone() or @backingInt(binding) >= editor.symbol_ids.items.len or
+                    editor.symbol_ids.items[@backingInt(binding)] != sid or !prepared.members.contains(@backingInt(binding))) return error.InvalidReferenceIdentity;
+                var catch_owner: ?Drop.Node = null;
+                for (source.owners) |owner| {
+                    if (owner.scope != scope) continue;
+                    const snapshot = Drop.Node.capture(editor.ast, owner.node) orelse return error.InvalidReferenceIdentity;
+                    if (snapshot.tag != .catch_clause or Generated.node(snapshot).data.binary.left != binding or
+                        editor.scope_owner_map.get(@backingInt(owner.node)) != @as(?u32, @backingInt(scope)) or catch_owner != null) return error.ScopeOwnerConflict;
+                    catch_owner = snapshot;
+                }
+                const owner = catch_owner orelse return error.ScopeOwnerConflict;
+                if (!Generated.ownerAt(&index, scope, owner.index, branch.source_epoch)) return error.ScopeOwnerConflict;
+                var expected = caught.before;
+                expected.reference_count = 0;
+                expected.write_count = 0;
+                if (!@import("../../semantic/source_owned_retirement.zig").equalSymbol(expected, editor.symbols.items[sid])) return error.InvalidReferenceIdentity;
+                for (editor.references.items) |row| if (@backingInt(row.symbol_id) == sid and !row.flags.declare) return error.InvalidReferenceIdentity;
+                const frame = index.frameAt(scope, branch.source_epoch) orelse return error.ScopeOwnerConflict;
+                const witness: @import("../../semantic/source_owned_retirement.zig").Witness = .{
+                    .symbol_id = caught.declaration.symbol_id,
+                    .before = caught.before,
+                    .declaration = caught.declaration,
+                    .declaration_node = caught.binding,
+                    .source_owner = branch.dropped.index,
+                    .source_owner_node = Generated.node(branch.dropped),
+                    .source_scope = scope,
+                    .source_parent = frame.parent,
+                    .source_name = binding,
+                    .source_name_symbol = caught.declaration.symbol_id,
+                    .closure_scope = scope,
+                    .closure_parent = frame.parent,
+                    .reason = .generated_branch,
+                    .generated_branch = .{ .branch = branch, .catch_owner = owner, .catch_scope = scope },
+                };
+                try editor.source_owned_retirements.ensureUnusedCapacity(self.allocator, 1);
+                _ = try editor.removeDeclarationAtNode(binding, caught.declaration.symbol_id);
+                editor.symbol_ids.items[@backingInt(binding)] = null;
+                var keys: std.ArrayList([]const u8) = .empty;
+                defer keys.deinit(self.allocator);
+                var names = editor.scope_maps.items[scope.toIndex()].iterator();
+                while (names.next()) |name| if (name.value_ptr.* == sid) try keys.append(self.allocator, name.key_ptr.*);
+                if (keys.items.len == 0 or editor.scopes.items[scope.toIndex()].symbol_count == 0) return error.ScopeOwnerConflict;
+                for (keys.items) |key| _ = editor.scope_maps.items[scope.toIndex()].remove(key);
+                editor.scopes.items[scope.toIndex()].symbol_count -= 1;
+                _ = editor.node_scope_provenance.remove(binding);
+                editor.source_owned_retirements.putAssumeCapacity(sid, witness);
+            }
+            for (source.owners) |owner| {
+                if (owner.scope.toIndex() < history.source_scopes.len) continue;
+                if (editor.scope_owner_map.get(@backingInt(owner.node))) |scope| {
+                    if (scope != @backingInt(owner.scope) or editor.scope_maps.items[scope].count() != 0) return error.ScopeOwnerConflict;
+                    _ = try editor.removeScopeOwner(owner.node);
+                }
+            }
+            // Build the selected scope set once; alias rejection is linear in
+            // this receipt plus current owners, never owners times owners.
+            var retired_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer retired_scopes.deinit(self.allocator);
+            for (source.owners) |owner| {
+                if (owner.scope.toIndex() >= history.source_scopes.len)
+                    try retired_scopes.put(self.allocator, @backingInt(owner.scope), {});
+            }
+            var remaining = editor.scope_owner_map.iterator();
+            while (remaining.next()) |entry| {
+                if (retired_scopes.contains(entry.value_ptr.*)) return error.ScopeOwnerConflict;
+            }
+        }
+    }
+
     /// Drain into the caller's candidate editor. Original inputs remain owned
     /// by the caller. A failure must discard this candidate, never reanalyze it.
     pub fn apply(self: *const SemanticJournal, editor: *SemanticEditor, root: ast_mod.NodeIndex, origins: ?*std.AutoHashMapUnmanaged(u32, u32), class_self: ?*std.AutoHashMapUnmanaged(u32, u32)) !void {
         const receipt = try self.applyReferenceAndOwnerEdits(editor, root, origins, class_self);
         defer self.freeApplicationReceipt(receipt);
+        try self.retireDiscardedGeneratedBranches(editor, root, receipt);
         try self.retireInlinedBindings(editor, root, receipt);
         try self.retireDeadDeclarationAnchors(editor, root);
     }
