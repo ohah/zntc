@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { build, buildSync, close, init, type BuildOptions } from '../../../packages/core/index.ts';
 import { createFixture, ZNTC_BIN } from './helpers';
@@ -172,6 +172,37 @@ beforeAll(() => {
 afterAll(() => close());
 
 describe('single-file async module boundaries (#6959)', () => {
+  for (const surface of surfaces)
+    for (const minify of modes)
+      for (const dynamic of [false, true])
+        test(`${surface} entry namespace identity diagnostic dynamic=${dynamic} minify=${minify}`, async () => {
+          const sentinel = '// existing entry must survive\n';
+          const fixture = await createFixture({
+            'entry.mjs': dynamic
+              ? "await using resource=null;export async function namespace(){return import('./entry.mjs')}"
+              : "import*as self from'./entry.mjs';await using resource=null;export function namespace(){return self}",
+            'observer.mjs': "import*as ns from'./entry.mjs';console.log(await ns.namespace()===ns)",
+            'dist/entry.mjs': sentinel,
+          });
+          try {
+            const native = execute(join(fixture.dir, 'observer.mjs'), fixture.dir);
+            expect(native.status, native.stderr).toBe(0);
+            expect(native.stdout).toBe('true\n');
+            const result = await compile(surface, fixture.dir, minify, false);
+            if (result.cli) {
+              expect(result.cli.status).not.toBe(0);
+              expect(result.cli.stderr).toContain('ZNTC0001');
+            } else {
+              expect(
+                result.api!.errors.some((error) => error.code === 'top_level_await_target'),
+              ).toBe(true);
+              expect(result.api!.outputFiles).toHaveLength(0);
+            }
+            expect(readFileSync(join(fixture.dir, 'dist', 'entry.mjs'), 'utf8')).toBe(sentinel);
+          } finally {
+            await fixture.cleanup();
+          }
+        });
   for (const surface of surfaces)
     for (const minify of modes)
       for (const input of inputs)

@@ -84,6 +84,8 @@ zntc --bundle src/main.mjs --format=esm --target=esnext -o dist/main.mjs
 CommonJS/JSON 모듈, `export *`·namespace re-export, 직접 `eval`, 모듈 수준의
 미해결 `arguments`, 중첩 블록의 native `await using`이 포함된 그래프는 이 방식의
 지원 대상이 아니며 아래 모듈별 출력 또는 진단 정책을 따릅니다.
+공개 entry를 내부에서 다시 namespace import 또는 동적 import하는 경로도 실제
+출력 모듈과 내부 namespace의 동일성을 보장하지 못하므로 단일 파일에서 거부합니다.
 
 모듈별 native ESM 출력은 명시적으로 선택합니다.
 

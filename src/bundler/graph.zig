@@ -99,6 +99,7 @@ pub const ModuleGraph = struct {
     /// Rebuilt from the installed helper graph, never restored by spelling.
     native_async_module_factory: ?TlaReadinessAll = null,
     native_async_module_demanded: bool = false,
+    native_async_module_entry_namespace_blocked: bool = false,
     native_async_module_acquire: ?TlaReadinessAll = null,
     native_async_module_dispose: ?TlaReadinessAll = null,
     native_async_module_namespace: ?TlaReadinessAll = null,

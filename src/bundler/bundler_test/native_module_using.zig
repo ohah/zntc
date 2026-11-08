@@ -194,3 +194,84 @@ test "native module CJS TLA temps keep actual prefix and wrapped pattern owners"
         try std.testing.expectEqualStrings(native.stderr, actual.stderr);
     };
 }
+
+test "native module using selected disposal owner uses current physical rows and rejects foreign metadata" {
+    const ResolveCache = @import("../resolve_cache.zig").ResolveCache;
+    const Graph = @import("../graph.zig").ModuleGraph;
+    const Linker = @import("../linker.zig").Linker;
+    const Shaker = @import("../tree_shaker.zig").TreeShaker;
+    const publication = @import("../native_async_disposal_publication.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "main.mjs", "import{resource}from'./lib.mjs';console.log(resource);");
+    try helpers.writeFile(tmp.dir, "lib.mjs", "await using ignored={async[Symbol.asyncDispose](){globalThis.disposed=true}};export const resource=7;");
+    const entry = try helpers.absPath(&tmp, "main.mjs");
+    defer std.testing.allocator.free(entry);
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = Graph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    linker.populateImportSymbols();
+    var shaker = try Shaker.init(std.testing.allocator, &graph, &linker);
+    defer shaker.deinit();
+    try shaker.analyze(&.{entry});
+    const main = graph.moduleAtMut(@fromBackingInt(@as(u32, 0))).?;
+    try std.testing.expect(main.is_entry_point);
+    const module = graph.moduleAtMut(main.import_records[0].resolved).?;
+    try std.testing.expect(shaker.isIncluded(module.index.toU32()));
+    // The healthy selection comes from real parse -> semantic -> link -> shake.
+    try std.testing.expect((try publication.retainedDeclaration(std.testing.allocator, module, &shaker)) != null);
+    const infos = &shaker.module_stmt_infos[module.index.toU32()].?;
+    var row: ?usize = null;
+    for (infos.stmts, 0..) |statement, i| {
+        const node = module.ast.?.nodes.items[statement.node_idx];
+        if (node.tag == .variable_declaration and module.ast.?.variableDeclarationKind(node) == .await_using) {
+            try std.testing.expect(row == null);
+            row = i;
+        }
+    }
+    const selected_row = row orelse return error.TestUnexpectedResult;
+    try std.testing.expect(shaker.isStmtReachable(module.index.toU32(), @intCast(selected_row)));
+    const original = infos.stmts[selected_row];
+    try std.testing.expect(infos.stmts.len >= 2);
+    // Wrong physical node must not borrow the other declaration's coordinate.
+    {
+        defer infos.stmts[selected_row] = original;
+        infos.stmts[selected_row].node_idx = infos.stmts[if (selected_row == 0) 1 else 0].node_idx;
+        try std.testing.expectError(error.InvalidNativeAsyncDisposalOwner, publication.retainedDeclaration(std.testing.allocator, module, &shaker));
+    }
+    // The same physical declaration must still own its exact declared SID.
+    {
+        defer infos.stmts[selected_row] = original;
+        infos.stmts[selected_row].declared_symbols = &.{};
+        try std.testing.expectError(error.InvalidNativeAsyncDisposalOwner, publication.retainedDeclaration(std.testing.allocator, module, &shaker));
+    }
+    // A controlled dead-row change observes actual selected-shaker metadata;
+    // it is not a claim that policy may erase an effectful resource.
+    {
+        defer shaker.reachable_stmts[module.index.toU32()].?.set(selected_row);
+        shaker.reachable_stmts[module.index.toU32()].?.unset(selected_row);
+        try std.testing.expect((try publication.retainedDeclaration(std.testing.allocator, module, &shaker)) == null);
+    }
+    try std.testing.expect((try publication.retainedDeclaration(std.testing.allocator, module, &shaker)) != null);
+    // A separately built actual graph has coincident numeric IDs, not ownership.
+    var foreign_graph = Graph.init(std.testing.allocator, &cache);
+    defer foreign_graph.deinit();
+    try foreign_graph.build(std.testing.io, &.{entry});
+    var foreign_linker = Linker.init(std.testing.allocator, &foreign_graph, .esm);
+    defer foreign_linker.deinit();
+    try foreign_linker.link();
+    foreign_linker.populateImportSymbols();
+    var foreign_shaker = try Shaker.init(std.testing.allocator, &foreign_graph, &foreign_linker);
+    defer foreign_shaker.deinit();
+    try foreign_shaker.analyze(&.{entry});
+    const foreign_module = foreign_graph.moduleAtMut(module.index).?;
+    try std.testing.expect(foreign_module != module);
+    try std.testing.expectEqual(module.index, foreign_module.index);
+    try std.testing.expectError(error.InvalidNativeAsyncDisposalOwner, publication.retainedDeclaration(std.testing.allocator, module, &foreign_shaker));
+    try std.testing.expect((try publication.retainedDeclaration(std.testing.allocator, module, &shaker)) != null);
+}

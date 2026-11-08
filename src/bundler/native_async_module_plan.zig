@@ -21,6 +21,7 @@ pub fn restore(graph: *ModuleGraph) void {
         @import("graph/native_async_module_roles.zig").restore(graph, module.index, prior);
     }
     graph.native_async_module_members.clearRetainingCapacity();
+    graph.native_async_module_entry_namespace_blocked = false;
 }
 
 pub fn contains(graph: *const ModuleGraph, module: *const Module) bool {
@@ -39,6 +40,26 @@ pub fn promote(graph: *ModuleGraph) !void {
     if (origin.catalog != .native_async_module or
         !@import("../runtime_helper_modules.zig").matchesConstructedSource(origin, graph.helper_plugin_opts, factory.source) or
         factory.dependencies.items.len != 0) return error.InvalidNativeAsyncModuleFactory;
+
+    // An internal namespace back-edge cannot be identical to the engine's
+    // public entry namespace. Retain this rejection through publication too:
+    // the ordinary unwrapped-entry fallback only proves resource lifetime.
+    var backedges = graph.modulesIterator();
+    while (backedges.next()) |module| {
+        if (module == factory or module.is_disabled or module.is_external) continue;
+        for (module.import_bindings) |binding| {
+            if (binding.kind != .namespace) continue;
+            if (binding.import_record_index >= module.import_records.len) return error.InvalidNativeAsyncModuleOwner;
+            const target = graph.getModule(module.import_records[binding.import_record_index].resolved) orelse continue;
+            if (target.is_entry_point) graph.native_async_module_entry_namespace_blocked = true;
+        }
+        for (module.import_records) |record| {
+            if (record.kind != .dynamic_import or record.ts_elided) continue;
+            const target = graph.getModule(record.resolved) orelse continue;
+            if (target.is_entry_point) graph.native_async_module_entry_namespace_blocked = true;
+        }
+    }
+    if (graph.native_async_module_entry_namespace_blocked) return;
 
     // The first environment protocol admits closed JavaScript ESM graphs.
     // Other layouts retain the existing fail-closed publication diagnostic.
