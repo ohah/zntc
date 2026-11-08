@@ -74,7 +74,7 @@ fn preservesBoundary(graph: *const ModuleGraph, module: *const Module, options: 
     return true;
 }
 
-fn retainedDeclaration(a: std.mem.Allocator, module: *const Module, shaker: ?*const TreeShaker) !?Span {
+pub fn retainedDeclaration(a: std.mem.Allocator, module: *const Module, shaker: ?*const TreeShaker) !?Span {
     const tree = &(module.ast orelse return null);
     if (tree.nodes.items.len == 0) return null;
     const root = tree.transformed_root orelse @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(tree.nodes.items.len - 1))));

@@ -176,6 +176,18 @@ const MODULES = [_]HelperModule{
         .body = .{ .plain = rt.READINESS_ALL_RUNTIME, .min = rt.READINESS_ALL_RUNTIME_MIN },
     },
     .{
+        .short = "native-async-module",
+        .helpers = &.{ "__nativeAsyncModule", "__nativeAcquire", "__nativeDispose" },
+        .body = .{
+            .plain = "var __nativeAsyncModule = " ++ @import("bundler/native_async_module_runtime.zig").FACTORY_EXPRESSION ++ ";\n" ++
+                "var __nativeAcquire = " ++ @import("bundler/native_async_disposal_runtime.zig").ACQUIRE_EXPRESSION ++ ";\n" ++
+                "var __nativeDispose = " ++ @import("bundler/native_async_disposal_runtime.zig").DISPOSE_GENERATOR_EXPRESSION ++ ";\n",
+            .min = "var __nativeAsyncModule=" ++ @import("bundler/native_async_module_runtime.zig").FACTORY_EXPRESSION_MIN ++ ";" ++
+                "var __nativeAcquire=" ++ @import("bundler/native_async_disposal_runtime.zig").ACQUIRE_EXPRESSION_MIN ++ ";" ++
+                "var __nativeDispose=" ++ @import("bundler/native_async_disposal_runtime.zig").DISPOSE_GENERATOR_EXPRESSION_MIN ++ ";",
+        },
+    },
+    .{
         .short = "class-define-property",
         .helpers = &.{"__classDefineProperty"},
         .body = .{ .plain = rt.CLASS_DEFINE_PROPERTY_RUNTIME, .min = rt.CLASS_DEFINE_PROPERTY_RUNTIME_MIN },
@@ -565,6 +577,7 @@ fn catalogFor(m: *const HelperModule) ?source_origin.Catalog {
         .{ .short = "wrap-regex", .catalog = .wrap_regex },
         .{ .short = "readiness-all", .catalog = .readiness_all },
         .{ .short = "suspension-invoke", .catalog = .suspension_invoke },
+        .{ .short = "native-async-module", .catalog = .native_async_module },
     };
     for (known) |entry| if (m == findModule(entry.short).?) return entry.catalog;
     return null;
@@ -579,6 +592,7 @@ fn moduleForCatalog(catalog: source_origin.Catalog) *const HelperModule {
         .wrap_regex => "wrap-regex",
         .readiness_all => "readiness-all",
         .suspension_invoke => "suspension-invoke",
+        .native_async_module => "native-async-module",
     }).?;
 }
 

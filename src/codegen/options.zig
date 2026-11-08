@@ -73,8 +73,12 @@ pub const default_cjs_exports_name = "exports";
 pub const default_cjs_module_name = "module";
 
 pub const CodegenOptions = struct {
+    compiler_statement_insertions: ?*const @import("compiler_statement_insertions.zig").Set = null,
     compiler_literal_overrides: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null,
     module_format: ModuleFormat = .esm,
+    /// Emit source-module execution awaits inside the native generator shell.
+    /// Source function execution boundaries suspend this projection locally.
+    module_await_as_yield: bool = false,
     /// Standalone runtime helpers, emitted after the program's hashbang and
     /// directive prologue. Writing them through codegen also advances mappings.
     program_preamble: []const u8 = "",
@@ -218,3 +222,7 @@ pub const CodegenOptions = struct {
     /// raw private AST가 codegen까지 도달하면 사용자 입력 에러가 아니라 transformer 버그다.
     assert_no_raw_private_syntax: bool = false,
 };
+
+test {
+    _ = @import("module_await_projection_test.zig");
+}

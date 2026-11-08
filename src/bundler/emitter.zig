@@ -1839,6 +1839,47 @@ pub const ReadinessAllProvider = struct {
     local_name: []const u8,
 };
 
+pub const NativeAsyncModuleFactoryProvider = struct {
+    module: *const Module,
+    binding: *const @import("binding_scanner.zig").ExportBinding,
+    local_name: []const u8,
+};
+
+/// Resolve only the exact runtime export installed by the graph's demand
+/// producer. A source spelling or a second module cannot replace this owner.
+pub fn checkedNativeAsyncModuleFactory(graph: *const ModuleGraph, linker: *Linker) !NativeAsyncModuleFactoryProvider {
+    const known = graph.native_async_module_factory orelse return error.MissingNativeAsyncModuleFactory;
+    return checkedNativeAsyncModuleExport(graph, linker, known, "__nativeAsyncModule");
+}
+
+pub fn checkedNativeAsyncModuleAcquire(graph: *const ModuleGraph, linker: *Linker) !NativeAsyncModuleFactoryProvider {
+    const known = graph.native_async_module_acquire orelse return error.MissingNativeAsyncModuleFactory;
+    return checkedNativeAsyncModuleExport(graph, linker, known, "__nativeAcquire");
+}
+
+pub fn checkedNativeAsyncModuleDispose(graph: *const ModuleGraph, linker: *Linker) !NativeAsyncModuleFactoryProvider {
+    const known = graph.native_async_module_dispose orelse return error.MissingNativeAsyncModuleFactory;
+    return checkedNativeAsyncModuleExport(graph, linker, known, "__nativeDispose");
+}
+
+fn checkedNativeAsyncModuleExport(graph: *const ModuleGraph, linker: *Linker, known: @import("graph.zig").TlaReadinessAll, expected_name: []const u8) !NativeAsyncModuleFactoryProvider {
+    const module = graph.getModule(known.module_index) orelse return error.InvalidNativeAsyncModuleFactory;
+    const semantic = module.semantic orelse return error.InvalidNativeAsyncModuleFactory;
+    const origin = module.runtime_helper_source orelse return error.InvalidNativeAsyncModuleFactory;
+    if (known.owner_token == .unassigned or semantic.owner_token != known.owner_token or
+        origin.catalog != .native_async_module or
+        !@import("../runtime_helper_modules.zig").matchesConstructedSource(origin, graph.helper_plugin_opts, module.source) or
+        module.wrap_kind != .none or module.self_uses_top_level_await or module.dependencies.items.len != 0 or
+        linker.getModule(known.module_index.toU32()) != module or known.export_index >= module.export_bindings.len or
+        @backingInt(known.symbol_id) >= semantic.symbols.items.len) return error.InvalidNativeAsyncModuleFactory;
+    const binding = &module.export_bindings[known.export_index];
+    if (module.exportBindingSemanticIndex(binding.*) != @as(?u32, @backingInt(known.symbol_id)) or
+        !std.mem.eql(u8, binding.exported_name, expected_name) or
+        semantic.symbols.items[@backingInt(known.symbol_id)].kind != .variable_var) return error.InvalidNativeAsyncModuleFactory;
+    const local = linker.getCanonicalForExport(binding.*, known.module_index.toU32()) orelse return error.InvalidNativeAsyncModuleFactory;
+    return .{ .module = module, .binding = binding, .local_name = local };
+}
+
 /// Read only the helper export captured by the graph's real demand producer.
 /// This accessor cannot find a replacement SID from a spelling or another module.
 pub fn checkedReadinessAllProvider(graph: *const ModuleGraph, linker: *const Linker) !ReadinessAllProvider {

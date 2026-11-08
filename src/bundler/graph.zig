@@ -95,6 +95,11 @@ pub const ModuleGraph = struct {
 
     allocator: std.mem.Allocator,
     tla_readiness_all: ?TlaReadinessAll = null,
+    /// Exact winning runtime export used by the native single-file evaluator.
+    /// Rebuilt from the installed helper graph, never restored by spelling.
+    native_async_module_factory: ?TlaReadinessAll = null,
+    native_async_module_acquire: ?TlaReadinessAll = null,
+    native_async_module_dispose: ?TlaReadinessAll = null,
     /// Actual installed runtime/source domains; refreshed only at graph
     /// handoff or prepared same-graph publication, never by witness capture.
     output_runtime_registry: @import("../semantic/output_runtime_registration.zig").Registry = .{},

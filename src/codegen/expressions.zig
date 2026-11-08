@@ -470,8 +470,13 @@ pub fn emitSpread(self: anytype, node: Node, level: Level, flags: ExprFlags) !vo
 }
 
 pub fn emitAwait(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
-    _ = level; // PR6: wrap = level.gte(.prefix)
-    _ = flags;
+    if (self.options.module_await_as_yield) {
+        return emitYield(self, .{
+            .tag = .yield_expression,
+            .span = node.span,
+            .data = .{ .unary = .{ .operand = node.data.unary.operand, .flags = 0 } },
+        }, level, flags);
+    }
     try self.addSourceMapping(node.span);
     try self.write("await ");
     // value level = .prefix.lower() (esbuild EAwait value = LPrefix-1)

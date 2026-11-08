@@ -155,7 +155,9 @@ comptime {
     // standalone JSX import emit, late runtime-helper
     // naming 옵션은 transform/codegen 전용 (parse/pre-pass 결과에는 영향 없음) —
     // SelectiveOptions 미편입. ⚠️ post-transform 캐시로 확장하면 편입 필수.
-    if (tf_fields != 52)
+    // native_async_module_boundaries is likewise transform/link/emit-only.
+    // Initial parser/semantic results do not consume this output-layout role.
+    if (tf_fields != 53)
         @compileError("TransformOptions 필드 수 변경 — 새 필드의 parse-영향 여부 판정 후 SelectiveOptions 갱신 + 이 수 갱신 필요.");
 }
 

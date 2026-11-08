@@ -1092,6 +1092,10 @@ pub const Bundler = struct {
                 !self.options.code_splitting and
                 !self.options.preserve_modules and
                 format == .esm,
+            .native_async_module_boundaries = format == .esm and !self.options.dev_mode and
+                !self.options.code_splitting and !self.options.preserve_modules and
+                !self.options.unsupported.using and !self.options.unsupported.top_level_await and
+                !self.options.unsupported.async_await and !self.options.unsupported.generator,
             .define = self.options.define,
             .experimental_decorators = self.options.experimental_decorators,
             .emit_decorator_metadata = self.options.emit_decorator_metadata,

@@ -85,6 +85,9 @@ pub fn emitTaggedTemplate(self: anytype, node: Node, flags: ExprFlags) !void {
 }
 
 pub fn emitFunction(self: anytype, node: Node) !void {
+    const saved_module_await = self.options.module_await_as_yield;
+    self.options.module_await_as_yield = false;
+    defer self.options.module_await_as_yield = saved_module_await;
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     // function_expression은 ret_type 없이 4 slots, function_declaration/function은 5 slots.
@@ -166,6 +169,9 @@ pub fn emitFunction(self: anytype, node: Node) !void {
 
 /// arrow_function_expression: extra = [params, body, flags]
 pub fn emitArrow(self: anytype, node: Node) !void {
+    const saved_module_await = self.options.module_await_as_yield;
+    self.options.module_await_as_yield = false;
+    defer self.options.module_await_as_yield = saved_module_await;
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items;
@@ -375,6 +381,9 @@ pub fn emitClassBody(self: anytype, node: Node) !void {
 // minify 경로가 이미 AST 로 출력하고 있었고 그쪽은 정상이었다 — 즉 AST 출력은 이미
 // 검증된 경로다. 소스 복사는 원본 공백/주석을 보존하는 것 외에 이점이 없다.
 pub fn emitStaticBlock(self: anytype, node: Node) !void {
+    const saved_module_await = self.options.module_await_as_yield;
+    self.options.module_await_as_yield = false;
+    defer self.options.module_await_as_yield = saved_module_await;
     try self.addSourceMapping(node.span);
     try self.write("static");
     try self.writeSpace();
@@ -417,6 +426,9 @@ pub fn emitMethodDef(self: anytype, node: Node) !void {
 
     try self.emitNode(key);
     try self.writeByte('(');
+    const saved_module_await = self.options.module_await_as_yield;
+    self.options.module_await_as_yield = false;
+    defer self.options.module_await_as_yield = saved_module_await;
     try self.emitNodeList(params_start, params_len, ",");
     try self.writeByte(')');
     try emitNestedExecutionBody(self, body);
@@ -437,6 +449,9 @@ pub fn emitPropertyDef(self: anytype, node: Node) !void {
     if (flags & ast_mod.PropertyFlags.is_static != 0) try self.write("static ");
     try self.emitNode(key);
     if (!value.isNone()) {
+        const saved_module_await = self.options.module_await_as_yield;
+        self.options.module_await_as_yield = false;
+        defer self.options.module_await_as_yield = saved_module_await;
         try self.writeSpace();
         try self.writeByte('=');
         try self.writeSpace();
@@ -493,6 +508,9 @@ pub fn emitAccessorProp(self: anytype, node: Node) !void {
     try self.write("accessor ");
     try self.emitNode(key);
     if (!value.isNone()) {
+        const saved_module_await = self.options.module_await_as_yield;
+        self.options.module_await_as_yield = false;
+        defer self.options.module_await_as_yield = saved_module_await;
         try self.writeSpace();
         try self.writeByte('=');
         try self.writeSpace();
