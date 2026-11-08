@@ -695,45 +695,22 @@ pub const CALL_SUPER_RUNTIME_MIN = "var " ++ NAMES.CALL_SUPER_MIN ++ "=function(
 /// `Parent.prototype.x` 직접 접근은 getter/setter의 this를 Parent.prototype으로 바꾸므로
 /// ES2015 [[Get]]/[[Set]]의 receiver 인자를 helper에서 명시적으로 전달한다.
 pub const SUPER_GET_RUNTIME =
-    \\var __superGet = (function(O){var getDesc=O.getOwnPropertyDescriptor,getProto=O.getPrototypeOf;return function(parent, prop, receiver) {
-    \\  var desc;
-    \\  while (parent) {
-    \\    desc = getDesc(parent, prop);
-    \\    if (desc) {
-    \\      if (desc.get) return desc.get.call(receiver);
-    \\      return desc.value;
-    \\    }
-    \\    parent = getProto(parent);
-    \\  }
-    \\};
-    \\;})(({}).constructor);
+    \\var __superGet = (function(O){
+    \\var getDesc=O.getOwnPropertyDescriptor,getProto=O.getPrototypeOf,invoke=(function(){}).call.bind((function(){}).apply);
+    \\return function(parent,prop,receiver){
+    \\while(parent){var desc=getDesc(parent,prop);if(desc){var getter=getDesc(desc,"get");if(getter)return getter.value?invoke(getter.value,receiver,[]):void 0;return desc.value;}parent=getProto(parent);}
+    \\};})(({}).constructor);
 ;
-pub const SUPER_GET_RUNTIME_MIN = "var " ++ NAMES.SUPER_GET_MIN ++ "=(function(O){var r=O.getOwnPropertyDescriptor,i=O.getPrototypeOf;return function(n,a,o){var t;while(n){t=r(n,a);if(t){return t.get?t.get.call(o):t.value}n=i(n)}}})({}.constructor);";
+pub const SUPER_GET_RUNTIME_MIN = "var " ++ NAMES.SUPER_GET_MIN ++ "=(function(O){var i=O.getOwnPropertyDescriptor,a=O.getPrototypeOf,o=(function(){}).call.bind((function(){}).apply);return function(t,s,c){while(t){var n=i(t,s);if(n){var r=i(n,\"get\");return r?r.value?o(r.value,c,[]):void 0:n.value}t=a(t)}}})({}.constructor);";
 
 pub const SUPER_SET_RUNTIME =
-    \\var __superSet = (function(O){var getDesc=O.getOwnPropertyDescriptor,getProto=O.getPrototypeOf;return function(parent, prop, value, receiver) {
-    \\  var desc;
-    \\  while (parent) {
-    \\    desc = getDesc(parent, prop);
-    \\    if (desc) {
-    \\      if (desc.set) {
-    \\        desc.set.call(receiver, value);
-    \\        return value;
-    \\      }
-    \\      if (desc.writable) {
-    \\        receiver[prop] = value;
-    \\        return value;
-    \\      }
-    \\      throw new TypeError("Cannot set property");
-    \\    }
-    \\    parent = getProto(parent);
-    \\  }
-    \\  receiver[prop] = value;
-    \\  return value;
-    \\};
-    \\;})(({}).constructor);
+    \\var __superSet = (function(O){
+    \\var getDesc=O.getOwnPropertyDescriptor,getProto=O.getPrototypeOf,invoke=(function(){}).call.bind((function(){}).apply);
+    \\return function(parent,prop,value,receiver){
+    \\while(parent){var desc=getDesc(parent,prop);if(desc){var setter=getDesc(desc,"set");if(setter){if(setter.value){invoke(setter.value,receiver,[value]);return value;}throw new TypeError("Cannot set property");}if(desc.writable){receiver[prop]=value;return value;}throw new TypeError("Cannot set property");}parent=getProto(parent);}receiver[prop]=value;return value;
+    \\};})(({}).constructor);
 ;
-pub const SUPER_SET_RUNTIME_MIN = "var " ++ NAMES.SUPER_SET_MIN ++ "=(function(O){var o=O.getOwnPropertyDescriptor,s=O.getPrototypeOf;return function(r,i,t,a){var n;while(r){n=o(r,i);if(n){if(n.set){n.set.call(a,t);return t}if(n.writable){a[i]=t;return t}throw new TypeError(\"Cannot set property\")}r=s(r)}a[i]=t;return t}})({}.constructor);";
+pub const SUPER_SET_RUNTIME_MIN = "var " ++ NAMES.SUPER_SET_MIN ++ "=(function(O){var s=O.getOwnPropertyDescriptor,c=O.getPrototypeOf,l=(function(){}).call.bind((function(){}).apply);return function(n,r,t,i){while(n){var a=s(n,r);if(a){var o=s(a,\"set\");if(o){if(o.value){l(o.value,i,[t]);return t}throw new TypeError(\"Cannot set property\")}if(a.writable){i[r]=t;return t}throw new TypeError(\"Cannot set property\")}n=c(n)}i[r]=t;return t}})({}.constructor);";
 
 /// derived constructor의 `this` 초기화 상태를 ES5 출력에서 보존한다.
 /// Babel/SWC helper와 같은 역할: super() 전 this 접근, super() 중복 호출,
