@@ -1470,12 +1470,13 @@ pub const STATIC_PRIVATE_FIELD_RUNTIME_MIN =
 /// 통합 spec: `this.#x = v` expression value === v, `this.#x += 5` === new value.
 pub const PRIVATE_FIELD_SET_RUNTIME =
     \\var __zntcClassPrivateFieldSet = function(wm, obj, value) {
+    \\  if (!wm.has(obj)) (void 0)();
     \\  wm.set(obj, value);
     \\  return value;
     \\};
     \\
 ;
-pub const PRIVATE_FIELD_SET_RUNTIME_MIN = "var " ++ NAMES.PRIVATE_FIELD_SET_MIN ++ "=function(wm,obj,value){wm.set(obj,value);return value};";
+pub const PRIVATE_FIELD_SET_RUNTIME_MIN = "var " ++ NAMES.PRIVATE_FIELD_SET_MIN ++ "=function(wm,obj,value){if(!wm.has(obj))(void 0)();wm.set(obj,value);return value};";
 
 // ============================================================
 // HMR (Dev Server)
@@ -3278,4 +3279,22 @@ test "guard name selection keeps split raw callsites on the public binding" {
 
 test {
     _ = @import("native_constructor_frame_runtime.zig");
+}
+
+test "private field set requires its existing brand before updating the value" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    for ([_]bool{ false, true }) |minify| {
+        const helper = if (minify) PRIVATE_FIELD_SET_RUNTIME_MIN else PRIVATE_FIELD_SET_RUNTIME;
+        const name = if (minify) NAMES.PRIVATE_FIELD_SET_MIN else "__zntcClassPrivateFieldSet";
+        const source = try std.fmt.allocPrint(allocator, "{s}\nconst state=new WeakMap(),owned={{}};state.set(owned,1);" ++
+            "function TypeError(){{throw 'source TypeError must not run'}};" ++
+            "console.log({s}(state,owned,42),state.get(owned));" ++
+            "try{{{s}(state,{{}},9)}}catch(error){{console.log(error.name)}};" ++
+            "try{{{s}(state,null,9)}}catch(error){{console.log(error.name)}};", .{ helper, name, name, name });
+        const actual = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("42 42\nTypeError\nTypeError\n", actual.stdout);
+    }
 }
