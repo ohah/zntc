@@ -578,8 +578,8 @@ pub const SPREAD_VALUES_RUNTIME =
     \\var __spreadValues = function(target, source) {
     \\  if (source == null) return target;
     \\  source = Object(source);
-    \\  var keys = typeof Reflect === "object" && Reflect.ownKeys ? Reflect.ownKeys(source) : Object.getOwnPropertyNames(source);
-    \\  if (!(typeof Reflect === "object" && Reflect.ownKeys) && Object.getOwnPropertySymbols) keys = keys.concat(Object.getOwnPropertySymbols(source));
+    \\  var keys = typeof Reflect === "object" && Reflect !== null && Reflect.ownKeys ? Reflect.ownKeys(source) : Object.getOwnPropertyNames(source);
+    \\  if (!(typeof Reflect === "object" && Reflect !== null && Reflect.ownKeys) && Object.getOwnPropertySymbols) keys = keys.concat(Object.getOwnPropertySymbols(source));
     \\  for (var i = 0; i < keys.length; i++) {
     \\    var key = keys[i], descriptor = Object.getOwnPropertyDescriptor(source, key);
     \\    if (descriptor && descriptor.enumerable) Object.defineProperty(target, key, { value: source[key], enumerable: true, configurable: true, writable: true });
@@ -587,7 +587,7 @@ pub const SPREAD_VALUES_RUNTIME =
     \\  return target;
     \\};
 ;
-pub const SPREAD_VALUES_RUNTIME_MIN = "var " ++ NAMES.SPREAD_VALUES_MIN ++ "=function(t,s){if(s==null)return t;s=Object(s);var r=typeof Reflect==\"object\"&&Reflect.ownKeys,k=r?r(s):Object.getOwnPropertyNames(s);if(!r&&Object.getOwnPropertySymbols)k=k.concat(Object.getOwnPropertySymbols(s));for(var i=0;i<k.length;i++){var p=k[i],d=Object.getOwnPropertyDescriptor(s,p);if(d&&d.enumerable)Object.defineProperty(t,p,{value:s[p],enumerable:true,configurable:true,writable:true})}return t};";
+pub const SPREAD_VALUES_RUNTIME_MIN = "var " ++ NAMES.SPREAD_VALUES_MIN ++ "=function(t,s){if(s==null)return t;s=Object(s);var r=typeof Reflect==\"object\"&&Reflect!==null&&Reflect.ownKeys,k=r?r(s):Object.getOwnPropertyNames(s);if(!r&&Object.getOwnPropertySymbols)k=k.concat(Object.getOwnPropertySymbols(s));for(var i=0;i<k.length;i++){var p=k[i],d=Object.getOwnPropertyDescriptor(s,p);if(d&&d.enumerable)Object.defineProperty(t,p,{value:s[p],enumerable:true,configurable:true,writable:true})}return t};";
 
 pub const SPREAD_PROPS_RUNTIME =
     \\var __spreadProps = function(target, source) {

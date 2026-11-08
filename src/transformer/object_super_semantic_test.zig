@@ -700,6 +700,7 @@ test "spread groups preserve intermediate data resets of accessor halves" {
 
 test "spread helper identities do not call same-named user bindings" {
     const sources = [_][]const u8{
+        "const saved=Reflect;Reflect=null;const o={...{a:1},b:2};Reflect=saved;console.log(o.a,o.b);",
         "const __spreadValues=()=>{throw Error(\"user spreadValues\")};const __spreadProps=()=>{throw Error(\"user spreadProps\")};function make(__spreadValues,__spreadProps){return {__proto__:{value:42},...{extra:1},read(){return super.value},get extraRead(){return this.extra}}}const o=make(__spreadValues,__spreadProps);console.log(o.read(),o.extraRead,typeof __spreadValues,typeof __spreadProps);",
     };
     for (sources, 0..) |source, case_index| {
