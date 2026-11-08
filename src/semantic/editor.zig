@@ -5756,3 +5756,87 @@ test "lazy iterator for region requires exact source and generated owner edges" 
         } else try std.testing.expectError(error.InvalidNode, result);
     }
 }
+
+test "iterator Reference for publication rejects foreign source scope and reset identities" {
+    const Mutation = enum { healthy, healthy_label, wrong_source, wrong_loop, wrong_region, region_parent, body_parent, scope, history, source_reset, reference_scope, reset_value, label_edge, body_children };
+    inline for (std.meta.tags(Mutation)) |mutation| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, "var outside=0; outer:for(let value=0;false;){continue outer;}");
+        var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".mjs");
+        const root = try parser.parse();
+        var analyzer = @import("analyzer.zig").SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_module = parser.is_module;
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        try analyzer.analyze();
+        var editor = try analyzer.beginEdit();
+        defer editor.deinit();
+        editor.scope_history = try @import("scope_frame_history.zig").Recorder.init(allocator, &parser.ast, editor.scopes.items, &editor.scope_owner_map);
+        const tree = &parser.ast;
+        const label = tree.readExtraNode(tree.getNode(root).data.list.start, 1);
+        const source = tree.getNode(label).data.binary.right;
+        const original = tree.getNode(source);
+        const owned: ScopeId = @fromBackingInt(editor.scope_owner_map.get(@backingInt(source)).?);
+        const parent = editor.scopes.items[owned.toIndex()].parent;
+        const region = try tree.addNode(.{ .tag = .block_statement, .span = original.span, .data = .{ .list = try tree.addNodeList(&.{}) } });
+        const region_scope = try editor.addScope(if (mutation == .region_parent) owned else parent, region, .block, false);
+        const body = try tree.addNode(.{ .tag = .block_statement, .span = original.span, .data = .{ .list = try tree.addNodeList(&.{source}) } });
+        const body_scope = try editor.addScope(if (mutation == .body_parent) parent else region_scope, body, .block, false);
+        const duplicate = try tree.addNode(original);
+        const use_label = mutation == .healthy_label or mutation == .label_edge;
+        if (use_label) {
+            var copied = tree.getNode(label);
+            copied.data.binary.right = if (mutation == .label_edge) duplicate else source;
+            const output_label = try tree.addNode(copied);
+            tree.nodes.items[@backingInt(body)].data.list = try tree.addNodeList(&.{output_label});
+        }
+        if (mutation == .body_children) tree.nodes.items[@backingInt(body)].data.list = try tree.addNodeList(&.{ source, duplicate });
+        const catch_body = try tree.addNode(.{ .tag = .block_statement, .span = original.span, .data = .{ .list = try tree.addNodeList(&.{}) } });
+        const caught = try tree.addNode(.{ .tag = .catch_clause, .span = original.span, .data = .{ .binary = .{ .left = .none, .right = catch_body, .flags = 0 } } });
+        const caught_scope = try editor.addScope(region_scope, caught, .catch_clause, false);
+        _ = try editor.addScope(caught_scope, catch_body, .block, false);
+        const final = try tree.addNode(.{ .tag = .block_statement, .span = original.span, .data = .{ .list = try tree.addNodeList(&.{}) } });
+        _ = try editor.addScope(region_scope, final, .block, false);
+        const statement = try tree.addNode(.{ .tag = .try_statement, .span = original.span, .data = .{ .ternary = .{ .a = body, .b = caught, .c = final } } });
+        var prefix: [2]NodeIndex = undefined;
+        for (&prefix, 0..) |*slot, offset| {
+            const name = try tree.addString(if (offset == 0) "record" else "thrown");
+            const temp = try editor.reserveSyntheticTempSymbol(name, original.span, region_scope);
+            const sid: SymbolId = if (mutation == .source_reset and offset == 0)
+                @fromBackingInt(@as(u32, @intCast(editor.scope_maps.items[parent.toIndex()].get("outside").?)))
+            else
+                temp;
+            const reference = try tree.addNode(.{ .tag = .identifier_reference, .span = original.span, .data = .{ .string_ref = editor.symbols.items[@backingInt(sid)].name } });
+            try editor.addReference(reference, sid, if (mutation == .reference_scope and offset == 0) owned else region_scope, .{ .write = true }, Reference.NO_STMT, Reference.NO_STMT);
+            const value = if (offset == 0) value: {
+                const zero = try tree.addNode(.{ .tag = .numeric_literal, .span = try tree.addString("0"), .data = .{ .none = 0 } });
+                break :value try tree.addNode(.{ .tag = .unary_expression, .span = original.span, .data = .{ .extra = try tree.addExtras(&.{ @backingInt(zero), @backingInt(@import("../lexer/token.zig").Kind.kw_void) }) } });
+            } else try tree.addNode(.{ .tag = .boolean_literal, .span = try tree.addString(if (mutation == .reset_value) "true" else "false"), .data = .{ .none = if (mutation == .reset_value) 1 else 0 } });
+            const assignment = try tree.addNode(.{ .tag = .assignment_expression, .span = original.span, .data = .{ .binary = .{ .left = reference, .right = value, .flags = 0 } } });
+            slot.* = try tree.addNode(.{ .tag = .expression_statement, .span = original.span, .data = .{ .unary = .{ .operand = assignment, .flags = 0 } } });
+        }
+        tree.nodes.items[@backingInt(region)].data.list = try tree.addNodeList(&.{ prefix[0], prefix[1], statement });
+        if (mutation == .history) for (editor.scope_history.source_owners) |*row| {
+            if (row.owner.node == source) row.scope = parent;
+        };
+        const result = editor.publishIteratorForReferenceRegion(
+            if (mutation == .wrong_source) region else source,
+            if (use_label) label else .none,
+            if (mutation == .wrong_region) source else region,
+            body,
+            if (mutation == .wrong_loop) duplicate else source,
+            if (mutation == .scope) .none else owned,
+        );
+        if (mutation == .healthy or mutation == .healthy_label) {
+            try result;
+            try std.testing.expectEqual(body_scope, editor.scopes.items[owned.toIndex()].parent);
+            try std.testing.expectEqual(@backingInt(owned), editor.scope_owner_map.get(@backingInt(source)).?);
+        } else if (mutation == .region_parent or mutation == .body_parent or mutation == .scope) {
+            try std.testing.expectError(error.InvalidScope, result);
+        } else if (mutation == .source_reset or mutation == .reference_scope) {
+            try std.testing.expectError(error.InvalidSymbol, result);
+        } else try std.testing.expectError(error.InvalidNode, result);
+    }
+}
