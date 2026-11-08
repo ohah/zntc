@@ -41,18 +41,7 @@ const MODES: { name: string; args: string[] }[] = [
 
 /// fixture 이름 → 실패가 알려진 칸(`<target>/<mode>`). 각 줄에 이슈 번호.
 const KNOWN_FAILURES: Record<string, string[]> = {
-  // #4732 객체 spread 가 섞이면 메서드의 home object 를 잃는다 (esbuild·rolldown 도 동일)
-  '4729-super-10': [
-    'es2015/plain',
-    'es2015/minify',
-    'es2017/plain',
-    'es2017/minify',
-    'transpile/es2015/plain',
-    'transpile/es2015/minify',
-    'transpile/es2017/plain',
-    'transpile/es2017/minify',
-  ],
-  // es5 는 `const` 를 `var` 로 낮춰 TDZ 자체가 없다(tsc 동일) — 선언 전 호출이 에러 대신 undefined 를 본다 (#4739)
+  // es5 는 `const` 를 `var` 로 낮춰 TDZ 자체가 없다(tsc 동일) — 선언 전 호출이 에러 대신 undefined 를 본다 (#6961)
   '4730-using-25': [
     'es5/plain',
     'es5/minify',
