@@ -46,7 +46,7 @@ test "lazy iterator Reference private brand primordial and builtin roles preserv
     try std.testing.expectEqual(@as(usize, 0), failures);
 }
 
-test "private WeakMap dynamic constructor preserves the prior intrinsic admission boundary" {
+test "lazy iterator Reference preserved private WeakMap dynamic constructor diagnostic boundary" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
