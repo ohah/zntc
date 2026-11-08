@@ -31,9 +31,13 @@ pub fn diagnose(graph: *ModuleGraph, options: *const EmitOptions, shaker: ?*cons
         if (module.is_external or module.is_disabled or !module.module_type.isJavaScriptLike()) continue;
         // Initial analysis marks the implicit Await as well as explicit await.
         // Ordinary modules must not pay for another complete AST traversal.
-        if (!module.self_uses_top_level_await) continue;
+        const lowered_resource = if (module.tla_iife_stmt != null)
+            try @import("lowered_tla_publication.zig").activeNativeResourceInitializer(graph.allocator, module, shaker)
+        else
+            null;
+        if (!module.self_uses_top_level_await and lowered_resource == null) continue;
         if (preservesBoundary(graph, module, options, chunks, shaker, entry_count)) continue;
-        const span = try retainedDeclaration(graph.allocator, module, shaker) orelse continue;
+        const span = lowered_resource orelse (try retainedDeclaration(graph.allocator, module, shaker) orelse continue);
         try graph.addOwnedDiagnostic(.{
             .code = .top_level_await_target,
             .severity = .@"error",

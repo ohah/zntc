@@ -457,7 +457,14 @@ fn placeWrappedStatement(comptime Transformer: type, self: *Transformer, stmt: N
     const node = self.ast.getNode(stmt);
     switch (node.tag) {
         .function_declaration => try (if (hoist_function) prelude else body).append(self.allocator, stmt),
-        .variable_declaration => try splitWrappedDeclaration(Transformer, self, stmt, false, program_scope, bindings, body),
+        .variable_declaration => {
+            const kind = self.ast.variableDeclarationKind(node);
+            // Resource registration belongs to the actual async body. Splitting
+            // it into an outer var plus assignment erases disposal entirely.
+            if (kind == .using or kind == .await_using) {
+                try body.append(self.allocator, stmt);
+            } else try splitWrappedDeclaration(Transformer, self, stmt, false, program_scope, bindings, body);
+        },
         .class_declaration => if (!try splitWrappedClass(Transformer, self, stmt, false, program_scope, bindings, body)) try body.append(self.allocator, stmt),
         .export_named_declaration => {
             const declaration: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.extra]));
@@ -719,6 +726,17 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
             try drainPendingAroundTo(Transformer, self, pt, tt, visited, &prelude_stmts);
             try prelude_exports.put(self.allocator, @backingInt(child), {});
             continue;
+        }
+        // Resource declarations must reach the generated body's list visitor
+        // before block-scoping can turn their kind into var. That visitor owns
+        // disposal lowering and must still see the original registration.
+        if (child_node.tag == .variable_declaration) {
+            const kind = self.ast.variableDeclarationKind(child_node);
+            if (kind == .using or kind == .await_using) {
+                wrapper_started = true;
+                try self.scratch.append(self.allocator, child);
+                continue;
+            }
         }
         const pt = self.pending_nodes.items.len;
         const tt = self.trailing_nodes.items.len;
