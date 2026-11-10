@@ -1229,7 +1229,16 @@ pub const Bundler = struct {
             .external_patterns = self.getResolveCache().external_patterns,
             .packages_external = self.getResolveCache().packages_external,
             .external_alias = self.getResolveCache().external_alias,
+            .alias = self.getResolveCache().resolver.alias,
+            .fallback = self.getResolveCache().resolver.fallback,
+            .ts_paths = self.getResolveCache().resolver.ts_paths,
+            .main_fields = self.getResolveCache().resolver.main_fields,
+            .preserve_symlinks = self.getResolveCache().resolver.preserve_symlinks,
+            .resolve_symlink_siblings = self.getResolveCache().resolver.resolve_symlink_siblings,
+            .disable_hierarchical_lookup = self.getResolveCache().resolver.disable_hierarchical_lookup,
         });
+
+        try worker_resolve_cache.cloneEffectiveConditionsFrom(self.getResolveCache());
 
         // A worker asset has one physical output even when its parent chunks.
         // Reuse the ordinary options/base producers for that actual layout.
@@ -3818,5 +3827,72 @@ test "worker external policy and classic globals share parent authority" {
             if (diagnostic.code == .unresolved_import and diagnostic.severity == .warning) classic_warnings += 1;
         };
         try std.testing.expectEqual(@as(usize, if (mode == 3) 1 else 0), classic_warnings);
+    }
+}
+
+test "worker resolver redirects use actual importer and preserve relative path guard" {
+    const helpers = @import("test_helpers.zig");
+    inline for (.{ @as(u8, 0), 1, 2 }) |mode| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "main/entry.mjs", "new Worker(new URL('../worker/worker.mjs',import.meta.url),{type:'module'});");
+        try helpers.writeFile(tmp.dir, "worker/worker.mjs", "import {value} from 'virtual-pkg';import {local} from './local.mjs';self.postMessage([value,local]);");
+        try helpers.writeFile(tmp.dir, "main/target.mjs", "export const value='wrong-importer';");
+        try helpers.writeFile(tmp.dir, "worker/target.mjs", "export const value='worker-target';");
+        try helpers.writeFile(tmp.dir, "worker/local.mjs", "export const local='actual-worker-local';");
+        try helpers.writeFile(tmp.dir, "mapped/virtual-pkg.mjs", "export const value='mapped-target';");
+        try helpers.writeFile(tmp.dir, "mapped/local.mjs.mjs", "export const local='wrong-relative-path-map';");
+        const entry = try helpers.absPath(&tmp, "main/entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const mapped = try helpers.absPath(&tmp, "mapped");
+        defer std.testing.allocator.free(mapped);
+        const prefix = try std.fmt.allocPrint(std.testing.allocator, "{s}/", .{mapped});
+        defer std.testing.allocator.free(prefix);
+        const options: BundleOptions = .{ .entry_points = &.{entry}, .format = .esm };
+        var cache = ResolveCache.init(std.testing.allocator, .{
+            .alias = if (mode == 0) &.{.{ .from = "virtual-pkg", .to = "./target.mjs" }} else &.{},
+            .fallback = if (mode == 1) &.{.{ .from = "virtual-pkg", .to = "./target.mjs" }} else &.{},
+            .ts_paths = if (mode == 2) &.{.{ .key_prefix = "", .key_suffix = "", .has_wildcard = true, .targets = &.{.{ .prefix = prefix, .suffix = ".mjs" }} }} else &.{},
+        });
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
+        try std.testing.expectEqual(@as(usize, 1), outputs.len);
+        try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, if (mode == 2) "mapped-target" else "worker-target") != null);
+        try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "actual-worker-local") != null);
+        try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "wrong-importer") == null);
+        try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "wrong-relative-path-map") == null);
+    }
+}
+
+test "worker resolver injected hierarchy boundary is retained" {
+    const helpers = @import("test_helpers.zig");
+    inline for (.{ false, true }) |disabled| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "new Worker(new URL('./worker/worker.mjs',import.meta.url),{type:'module'});");
+        try helpers.writeFile(tmp.dir, "worker/worker.mjs", "import {value} from 'hierarchy-pkg';self.postMessage(value);");
+        try helpers.writeFile(tmp.dir, "node_modules/hierarchy-pkg/package.json", "{\"name\":\"hierarchy-pkg\",\"main\":\"index.js\"}");
+        try helpers.writeFile(tmp.dir, "node_modules/hierarchy-pkg/index.js", "export const value='hierarchy-marker';");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const options: BundleOptions = .{ .entry_points = &.{entry}, .format = .esm };
+        var cache = ResolveCache.init(std.testing.allocator, .{ .disable_hierarchical_lookup = disabled });
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
+        try std.testing.expectEqual(@as(usize, 1), outputs.len);
+        try std.testing.expectEqual(!disabled, std.mem.indexOf(u8, outputs[0].contents, "hierarchy-marker") != null);
     }
 }
