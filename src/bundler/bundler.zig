@@ -1212,7 +1212,7 @@ pub const Bundler = struct {
     }
 
     /// Worker 파일을 별도 번들로 빌드한다.
-    fn buildWorker(self: *Bundler, io: std.Io, worker_path: []const u8, format: EmitOptions.Format, parent_graph: *ModuleGraph) !?WorkerBuildResult {
+    fn buildWorker(self: *Bundler, io: std.Io, worker_path: []const u8, format: EmitOptions.Format, parent_graph: *ModuleGraph, explicit_run_before_main: []const []const u8) !?WorkerBuildResult {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const arena_alloc = arena.allocator();
@@ -1238,6 +1238,8 @@ pub const Bundler = struct {
         worker_graph.defines = self.options.define;
         // Inject roots execute independently in each worker realm (#4603).
         worker_graph.inject_files = parent_graph.inject_files;
+        // Parent automatic polyfill roots belong to its own usage plan.
+        worker_graph.run_before_main_files = explicit_run_before_main;
         worker_graph.loader_overrides = self.options.loader_overrides;
         worker_graph.public_path = self.options.public_path;
         // asset 관련 옵션이 worker graph 에 빠져 있으면 worker 번들만 ModuleGraph 의
@@ -1326,6 +1328,7 @@ pub const Bundler = struct {
 
         // emit
         var emit_opts = self.makeEmitOptions(format);
+        emit_opts.run_before_main = explicit_run_before_main;
         // Workers use this single emitter even when the parent plans chunks.
         // Do not claim a physical native module boundary from parent options.
         var worker_layout = emit_opts;
@@ -2099,7 +2102,7 @@ pub const Bundler = struct {
                 // 같은 worker 파일이 여러 곳에서 참조되면 한 번만 빌드
                 if (!worker_output_map.contains(we.resolved_path)) {
                     const worker_format = self.workerFormatFor(!classic_workers.contains(we.resolved_path));
-                    const worker_result = self.buildWorker(io, we.resolved_path, worker_format, graph) catch |err| switch (err) {
+                    const worker_result = self.buildWorker(io, we.resolved_path, worker_format, graph, original_rbm) catch |err| switch (err) {
                         error.OutOfMemory, error.ClassHeritageEval, error.LoopDynamicScope, error.GeneratorNativeLexicalResume, error.GeneratorNativeLexicalNesting => return err,
                         else => continue,
                     } orelse {
@@ -3639,4 +3642,26 @@ test "worker node paths retain actual parent block list veto" {
         try std.testing.expectEqual(@as(usize, 1), outputs.len);
         try std.testing.expectEqual(!blocked, std.mem.indexOf(u8, outputs[0].contents, "custom-package-marker") != null);
     }
+}
+
+test "worker registers explicit run before main roots" {
+    const helpers = @import("test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.mjs", "new Worker(new URL('./worker.mjs',import.meta.url),{type:'module'});");
+    try helpers.writeFile(tmp.dir, "worker.mjs", "self.postMessage(globalThis.beforeToken);");
+    try helpers.writeFile(tmp.dir, "before.mjs", "globalThis.beforeToken=41;globalThis.beforeCount=(globalThis.beforeCount||0)+1;");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    const before = try helpers.absPath(&tmp, "before.mjs");
+    defer std.testing.allocator.free(before);
+    var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm, .run_before_main = &.{before} });
+    defer bundler.deinit();
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "beforeCount") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "beforeCount") != null);
 }
