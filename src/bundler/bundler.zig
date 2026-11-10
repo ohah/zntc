@@ -1345,7 +1345,7 @@ pub const Bundler = struct {
         worker_graph.run_before_main_files = worker_run_before_main;
 
         // 링킹
-        var worker_linker = Linker.init(arena_alloc, &worker_graph, format);
+        var worker_linker = Linker.initWithGlobalIdentifiers(arena_alloc, &worker_graph, format, worker_context.options.global_identifiers);
         // #1621: worker 청크도 minify 시 preamble 축약 이름 사용.
         worker_linker.minify_whitespace = self.options.minify_whitespace;
         worker_linker.keep_names = self.options.keep_names;
@@ -3918,5 +3918,28 @@ test "worker missing export shim follows explicit and RN policy" {
         const observed = try std.fmt.allocPrint(std.testing.allocator, "globalThis.self=globalThis;globalThis.postMessage=value=>console.log(JSON.stringify(value));\n{s}", .{outputs[0].contents});
         defer std.testing.allocator.free(observed);
         try helpers.expectOutputRuntime(observed, "{\"shimmed\":true}\n");
+    }
+}
+
+test "worker linker preserves explicit global identifier reservations" {
+    const helpers = @import("test_helpers.zig");
+    inline for (.{ false, true }) |reserved| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "new Worker(new URL('./worker.mjs',import.meta.url),{type:'module'});");
+        try helpers.writeFile(tmp.dir, "worker.mjs", "import {RuntimeMarker as local} from './dep.mjs';globalThis.RuntimeMarker=41;postMessage({local,read:eval('RuntimeMarker')});");
+        try helpers.writeFile(tmp.dir, "dep.mjs", "export const RuntimeMarker=7;");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm, .global_identifiers = if (reserved) &.{"RuntimeMarker"} else &.{} });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
+        try std.testing.expectEqual(@as(usize, 1), outputs.len);
+        const observed = try std.fmt.allocPrint(std.testing.allocator, "globalThis.self=globalThis;globalThis.postMessage=value=>console.log(JSON.stringify(value));\n{s}", .{outputs[0].contents});
+        defer std.testing.allocator.free(observed);
+        try helpers.expectOutputRuntime(observed, if (reserved) "{\"local\":7,\"read\":41}\n" else "{\"local\":7,\"read\":7}\n");
     }
 }
