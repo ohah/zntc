@@ -1217,12 +1217,8 @@ pub const Bundler = struct {
         defer arena.deinit();
         const arena_alloc = arena.allocator();
 
-        // worker용 resolve cache (부모와 공유하지 않음)
-        //
-        // worker용 resolve cache (부모와 공유하지 않음).
-        // ⚠️ 옵션 상속은 열지 않는다 — alias/fallback/ts_paths 를 넘겨 봤지만, worker 는
-        // external/preserve_symlinks 등을 함께 물려받지 않아 부모와 게이트 판정이 갈리고,
-        // worker 진단은 버려지므로 그 어긋남이 **조용한 오번들**로 나간다 (#4603).
+        // Keep a separate worker cache. Borrow only verified policy slices
+        // from the actual parent resolver, including injected caches (#4603).
         var worker_resolve_cache = ResolveCache.init(arena_alloc, .{
             .platform = self.getResolveCache().platform,
             // Preserve the actual parent resolver's ordered replacement policy,
@@ -1230,6 +1226,9 @@ pub const Bundler = struct {
             .resolve_extensions = self.getResolveCache().resolver.custom_extensions,
             .node_paths = self.getResolveCache().resolver.node_paths,
             .block_list = self.getResolveCache().resolver.block_list,
+            .external_patterns = self.getResolveCache().external_patterns,
+            .packages_external = self.getResolveCache().packages_external,
+            .external_alias = self.getResolveCache().external_alias,
         });
 
         // A worker asset has one physical output even when its parent chunks.
@@ -1342,6 +1341,7 @@ pub const Bundler = struct {
         worker_linker.minify_whitespace = self.options.minify_whitespace;
         worker_linker.keep_names = self.options.keep_names;
         worker_linker.configurable_exports = self.options.configurable_exports;
+        worker_linker.iife_globals = worker_context.options.globals;
         worker_linker.inline_requires = self.options.platform == .react_native;
         if (self.options.mf) |*m| worker_linker.mf_remotes = m.remotes; // PR-1 (#3459) 일관
         try worker_linker.link();
@@ -3772,5 +3772,51 @@ test "worker dynamic imports use its single output layout" {
             try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "import(") == null);
             try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "42") != null);
         }
+    }
+}
+
+test "worker external policy and classic globals share parent authority" {
+    const helpers = @import("test_helpers.zig");
+    // Module, package-external, classic mapped, classic unsupported, Node CJS.
+    inline for (.{ @as(u8, 0), 1, 2, 3, 4 }) |mode| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", if (mode == 2 or mode == 3) "new Worker(new URL('./worker.mjs',import.meta.url));" else "new Worker(new URL('./worker.mjs',import.meta.url),{type:'module'});");
+        try helpers.writeFile(tmp.dir, "worker.mjs", "import {value} from 'worker-external-pkg';self.postMessage(value);");
+        try helpers.writeFile(tmp.dir, "node_modules/worker-external-pkg/package.json", "{\"name\":\"worker-external-pkg\",\"main\":\"index.js\"}");
+        try helpers.writeFile(tmp.dir, "node_modules/worker-external-pkg/index.js", "export const value='bundled-package-marker';");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const options: BundleOptions = .{ .entry_points = &.{entry}, .format = if (mode == 4) .cjs else .esm, .platform = if (mode == 4) .node else .browser, .external = if (mode == 1) &.{} else &.{"worker-external-pkg"}, .external_alias = &.{.{ .from = "worker-external-pkg", .to = "unused-options-alias" }}, .globals = if (mode == 2) &.{.{ .specifier = "worker-external-pkg", .global_name = "RuntimePackage" }} else &.{} };
+        // bundle republishes options.external for its MF lifetime contract;
+        // package policy and alias still belong to the injected live cache.
+        var cache = ResolveCache.init(std.testing.allocator, .{
+            .platform = options.platform,
+            .external_patterns = if (mode == 1) &.{} else &.{"worker-external-pkg"},
+            .packages_external = mode == 1,
+            .external_alias = &.{.{ .from = "worker-external-pkg", .to = "runtime-external-pkg" }},
+        });
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
+        try std.testing.expectEqual(@as(usize, 1), outputs.len);
+        try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "bundled-package-marker") == null);
+        if (mode == 2) {
+            try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "RuntimePackage") != null);
+        } else if (mode != 3) {
+            try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "runtime-external-pkg") != null);
+        }
+        if (mode == 4) try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "require(") != null);
+        var classic_warnings: usize = 0;
+        if (result.diagnostics) |diagnostics| for (diagnostics) |diagnostic| {
+            if (diagnostic.code == .unresolved_import and diagnostic.severity == .warning) classic_warnings += 1;
+        };
+        try std.testing.expectEqual(@as(usize, if (mode == 3) 1 else 0), classic_warnings);
     }
 }
