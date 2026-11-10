@@ -1240,6 +1240,7 @@ pub const Bundler = struct {
         worker_graph.inject_files = parent_graph.inject_files;
         // Parent automatic polyfill roots belong to its own usage plan.
         worker_graph.run_before_main_files = explicit_run_before_main;
+        worker_graph.runtime_polyfills = parent_graph.runtime_polyfills;
         worker_graph.loader_overrides = self.options.loader_overrides;
         worker_graph.public_path = self.options.public_path;
         // asset 관련 옵션이 worker graph 에 빠져 있으면 worker 번들만 ModuleGraph 의
@@ -1311,6 +1312,19 @@ pub const Bundler = struct {
         }
         if (fatal_parser) return null;
 
+        // Select automatic roots from this worker's own usage, then publish
+        // the same execution roots to linking and emission.
+        const worker_run_before_main = if (worker_graph.runtime_polyfill_roots.items.len == 0)
+            explicit_run_before_main
+        else blk: {
+            const roots = worker_graph.runtime_polyfill_roots.items;
+            const merged = try arena_alloc.alloc([]const u8, roots.len + explicit_run_before_main.len);
+            @memcpy(merged[0..roots.len], roots);
+            @memcpy(merged[roots.len..], explicit_run_before_main);
+            break :blk merged;
+        };
+        worker_graph.run_before_main_files = worker_run_before_main;
+
         // 링킹
         var worker_linker = Linker.init(arena_alloc, &worker_graph, format);
         // #1621: worker 청크도 minify 시 preamble 축약 이름 사용.
@@ -1328,7 +1342,7 @@ pub const Bundler = struct {
 
         // emit
         var emit_opts = self.makeEmitOptions(format);
-        emit_opts.run_before_main = explicit_run_before_main;
+        emit_opts.run_before_main = worker_run_before_main;
         emit_opts.polyfills = inline_polyfills;
         // Workers use this single emitter even when the parent plans chunks.
         // Do not claim a physical native module boundary from parent options.
@@ -3687,4 +3701,41 @@ test "worker emits explicit inline polyfill files" {
     try std.testing.expectEqual(@as(usize, 1), outputs.len);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "inlineCount") != null);
     try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "inlineCount") != null);
+}
+
+test "worker runtime polyfill plan selects its own usage roots" {
+    const helpers = @import("test_helpers.zig");
+    const cases = .{
+        .{ false, true, runtime_polyfills.Mode.usage, false, false, true },
+        .{ true, false, runtime_polyfills.Mode.usage, false, false, false },
+        .{ false, false, runtime_polyfills.Mode.usage, false, false, false },
+        .{ false, false, runtime_polyfills.Mode.entry, false, false, true },
+        .{ false, false, runtime_polyfills.Mode.usage, true, false, true },
+        .{ false, true, runtime_polyfills.Mode.usage, false, true, false },
+    };
+    inline for (cases) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", if (case[0]) "console.log(Array.from([1]));new Worker(new URL('./worker.mjs',import.meta.url),{type:'module'});" else "new Worker(new URL('./worker.mjs',import.meta.url),{type:'module'});");
+        try helpers.writeFile(tmp.dir, "worker.mjs", if (case[1]) "self.postMessage(Array.from([42]));" else "self.postMessage(42);");
+        try helpers.writeFile(tmp.dir, "probe.mjs", "globalThis.runtimeProbe=(globalThis.runtimeProbe||0)+1;");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const probe = try helpers.absPath(&tmp, "probe.mjs");
+        defer std.testing.allocator.free(probe);
+        var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm, .runtime_polyfills = .{
+            .mode = case[2],
+            .candidates = &.{.{ .feature = "array_from", .module = "probe", .path = probe }},
+            .entry_modules = &.{.{ .module = "probe", .path = probe }},
+            .include = if (case[3]) &.{.{ .module = "probe", .path = probe }} else &.{},
+            .exclude = if (case[4]) &.{"probe"} else &.{},
+        } });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
+        try std.testing.expectEqual(@as(usize, 1), outputs.len);
+        try std.testing.expectEqual(case[5], std.mem.indexOf(u8, outputs[0].contents, "runtimeProbe") != null);
+    }
 }
