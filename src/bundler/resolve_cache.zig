@@ -405,6 +405,23 @@ pub const ResolveCache = struct {
         return rc;
     }
 
+    /// Copy effective import/require policies into a fresh child cache. Only
+    /// the two containers are child-owned; condition strings borrow the parent
+    /// during its synchronous subbuild. Publish neither policy on OOM.
+    pub fn cloneEffectiveConditionsFrom(self: *ResolveCache, parent: *const ResolveCache) !void {
+        const import_conditions = try self.allocator.dupe([]const u8, parent.conditions_import);
+        errdefer self.allocator.free(import_conditions);
+        const require_conditions = try self.allocator.dupe([]const u8, parent.conditions_require);
+        if (self.conditions_allocated) {
+            self.allocator.free(self.conditions_import);
+            self.allocator.free(self.conditions_require);
+        }
+        self.conditions_import = import_conditions;
+        self.conditions_require = require_conditions;
+        self.conditions_allocated = true;
+        self.resolver.conditions = import_conditions;
+    }
+
     pub fn deinit(self: *ResolveCache) void {
         self.dir_cache.deinit();
         self.realpath_cache.deinit();
@@ -1344,4 +1361,37 @@ fn matchGlobNoBrace(pattern: []const u8, text: []const u8) bool {
 
     if (text.len == 0 or pattern[0] != text[0]) return false;
     return matchGlobNoBrace(pattern[1..], text[1..]);
+}
+
+fn checkWorkerEffectiveConditionClone(allocator: std.mem.Allocator) !void {
+    var parent = ResolveCache.init(std.testing.allocator, .{ .custom_conditions = &.{"worker-custom"} });
+    defer parent.deinit();
+    var child = ResolveCache.init(allocator, .{});
+    defer child.deinit();
+    const old_import = child.conditions_import;
+    const old_require = child.conditions_require;
+    child.cloneEffectiveConditionsFrom(&parent) catch |err| {
+        try std.testing.expectEqual(old_import.ptr, child.conditions_import.ptr);
+        try std.testing.expectEqual(old_require.ptr, child.conditions_require.ptr);
+        try std.testing.expect(!child.conditions_allocated);
+        try std.testing.expectEqual(old_import.ptr, child.resolver.conditions.ptr);
+        return err;
+    };
+    try std.testing.expectEqualSlices([]const u8, parent.conditions_import, child.conditions_import);
+    try std.testing.expectEqualSlices([]const u8, parent.conditions_require, child.conditions_require);
+    try std.testing.expect(parent.conditions_import.ptr != child.conditions_import.ptr);
+    try std.testing.expect(parent.conditions_require.ptr != child.conditions_require.ptr);
+    try std.testing.expectEqual(child.conditions_import.ptr, child.resolver.conditions.ptr);
+}
+
+test "worker resolver effective conditions clone is atomic and separately owned" {
+    try checkWorkerEffectiveConditionClone(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkWorkerEffectiveConditionClone, .{});
+    var parent = ResolveCache.init(std.testing.allocator, .{ .custom_conditions = &.{"new"} });
+    defer parent.deinit();
+    var child = ResolveCache.init(std.testing.allocator, .{ .custom_conditions = &.{"old"} });
+    defer child.deinit();
+    try child.cloneEffectiveConditionsFrom(&parent);
+    try std.testing.expectEqualSlices([]const u8, parent.conditions_import, child.conditions_import);
+    try std.testing.expectEqualSlices([]const u8, parent.conditions_require, child.conditions_require);
 }
