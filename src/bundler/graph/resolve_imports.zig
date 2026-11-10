@@ -37,6 +37,42 @@ fn appendResolvedDep(
     try mod_ptr.resolved_deps.append(self.allocator, dep);
 }
 
+/// Keep the original record identity until parent statement liveness is known.
+/// Scan and normal resolution can encounter the same failed URL more than once.
+fn deferWorkerResolutionFailure(module: *@import("../module.zig").Module, allocator: std.mem.Allocator, record_index: usize) !void {
+    if (record_index >= module.import_records.len) return error.InvalidWorkerResolutionFailure;
+    const record = module.import_records[record_index];
+    if (record.kind != .worker) return error.InvalidWorkerResolutionFailure;
+    for (module.resolved_deps.items) |dep| {
+        if (dep.record_index != @as(?u32, @intCast(record_index))) continue;
+        if (dep.target == .worker) return; // This build already resolved this exact edge.
+        if (dep.target == .worker_failure) {
+            if (dep.kind != .worker or !std.mem.eql(u8, dep.path.bytes(), record.specifier))
+                return error.InvalidWorkerResolutionFailure;
+            return;
+        }
+    }
+    try module.resolved_deps.append(allocator, .{
+        .record_index = @intCast(record_index),
+        .kind = .worker,
+        .target = .worker_failure,
+        .path = .{ .specifier = record.specifier },
+    });
+}
+
+/// A later successful resolve supersedes only this source record's failure.
+fn retireWorkerResolutionFailure(module: *@import("../module.zig").Module, allocator: std.mem.Allocator, record_index: usize) void {
+    var index: usize = 0;
+    while (index < module.resolved_deps.items.len) {
+        const dep = module.resolved_deps.items[index];
+        if (dep.target == .worker_failure and dep.record_index == @as(?u32, @intCast(record_index))) {
+            const removed = module.resolved_deps.orderedRemove(index);
+            removed.path.deinit(allocator);
+            if (removed.resolve_dir) |directory| directory.deinit(allocator);
+        } else index += 1;
+    }
+}
+
 pub fn replayCachedResolvedDeps(self: *ModuleGraph, io: std.Io, mod_idx: usize) !void {
     std.debug.assert(mod_idx < self.modules.count());
     const mod_index = ModuleIndex.fromUsize(mod_idx);
@@ -138,6 +174,9 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, io: std.Io, mod_idx: usize) 
                     .record_index = @intCast(rec_idx),
                 });
             },
+            // Failed importers are evicted from ModuleStore. The typed ledger
+            // is still consumed by the current build's post-shake diagnostics.
+            .worker_failure => {},
         }
     }
 }
@@ -336,13 +375,11 @@ pub fn applyResolveResult(
         return;
     }
     if (is_error) {
-        // Worker resolve 실패 → 경고만 (메인 빌드 중단하지 않음)
-        // Worker resolve 실패 → 경고만 (메인 빌드 중단하지 않음).
-        // ⚠️ `resolve_failed` 를 세우지 않는다 — 세우면 `resolveModuleImports` 가 이 record 를
-        // 건너뛰어, 스캔 단계에서 실패한 worker(플러그인 resolveId 실패 등)를 본 패스에서
-        // 다시 해석할 기회가 사라진다. 중복 경고보다 재시도 소실이 나쁘다.
+        // Parent liveness is not known during discovery. Defer this exact
+        // worker edge, without setting resolve_failed: normal resolution must
+        // still get its existing retry opportunity after a scan failure.
         if (record.kind == .worker) {
-            self.addDiag(.unresolved_import, .warning, self.modules.at(mod_idx).path, record.span, .resolve, "Cannot resolve worker module", record.specifier);
+            try deferWorkerResolutionFailure(self.modules.at(mod_idx), self.allocator, rec_i);
             return;
         }
         // ModuleNotFound — browser에서 Node 빌트인은 빈 CJS로 대체.
@@ -441,6 +478,8 @@ pub fn applyResolveResult(
         return;
     }
 
+    if (record.kind == .worker)
+        retireWorkerResolutionFailure(self.modules.at(mod_idx), self.allocator, rec_i);
     if (resolved) |m| {
         // Phase 1 의 cache 와 plugin (fromLegacy 통과) 는 file/disabled variant 만 반환.
         // virtual/dataurl/external/custom 은 PR 5 plugin layer 도입 시 처리.
@@ -449,12 +488,15 @@ pub fn applyResolveResult(
                 // PR resolve interning: f.path / f.resolve_dir 는 path_pool 소유 (borrow only).
                 // Worker: 메인 그래프에 모듈로 추가하지 않고 경로만 수집
                 if (record.kind == .worker) {
-                    const path_dupe = try self.allocator.dupe(u8, f.path);
-                    try self.worker_entries.append(self.allocator, .{
-                        .resolved_path = path_dupe,
-                        .source_module = @fromBackingInt(@intCast(mod_idx)),
-                        .record_index = @intCast(rec_i),
-                    });
+                    {
+                        const path_dupe = try self.allocator.dupe(u8, f.path);
+                        errdefer self.allocator.free(path_dupe);
+                        try self.worker_entries.append(self.allocator, .{
+                            .resolved_path = path_dupe,
+                            .source_module = @fromBackingInt(@intCast(mod_idx)),
+                            .record_index = @intCast(rec_i),
+                        });
+                    }
                     try appendResolvedDep(self, mod_idx, .{
                         .record_index = @intCast(rec_i),
                         .kind = record.kind,
@@ -742,4 +784,40 @@ pub fn resolveModuleImports(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) !v
 
     // require.context context_expansion_deps 도 resolve + addDep.
     try applyContextDepResults(self, io, mod_idx);
+}
+
+fn checkDeferredWorkerFailure(allocator: std.mem.Allocator) !void {
+    const Module = @import("../module.zig").Module;
+    var module = Module.init(@fromBackingInt(0), "/virtual/entry.js");
+    defer module.deinit(allocator);
+    var records = [_]types.ImportRecord{
+        .{ .kind = .worker, .specifier = "./first.js", .span = .{ .start = 0, .end = 10 } },
+        .{ .kind = .worker, .specifier = "./second.js", .span = .{ .start = 11, .end = 22 } },
+    };
+    module.import_records = &records;
+    deferWorkerResolutionFailure(&module, allocator, 0) catch |err| {
+        try std.testing.expectEqual(@as(usize, 0), module.resolved_deps.items.len);
+        return err;
+    };
+    try deferWorkerResolutionFailure(&module, allocator, 0);
+    try std.testing.expectEqual(@as(usize, 1), module.resolved_deps.items.len);
+    try std.testing.expectEqual(records[0].specifier.ptr, module.resolved_deps.items[0].path.specifier.ptr);
+    try std.testing.expect(!records[0].resolve_failed);
+    try deferWorkerResolutionFailure(&module, allocator, 1);
+    retireWorkerResolutionFailure(&module, allocator, 0);
+    try std.testing.expectEqual(@as(usize, 1), module.resolved_deps.items.len);
+    try std.testing.expectEqual(@as(?u32, 1), module.resolved_deps.items[0].record_index);
+    try module.resolved_deps.append(allocator, .{
+        .record_index = 0,
+        .kind = .worker,
+        .target = .worker,
+        .path = .{ .specifier = "/virtual/first.js" },
+    });
+    try deferWorkerResolutionFailure(&module, allocator, 0);
+    try std.testing.expectEqual(@as(usize, 2), module.resolved_deps.items.len);
+}
+
+test "worker failure ledger preserves exact source records across duplicates retry and allocation failures" {
+    try checkDeferredWorkerFailure(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkDeferredWorkerFailure, .{});
 }

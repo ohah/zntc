@@ -293,6 +293,10 @@ pub const CachedResolvedDep = struct {
         external,
         worker,
         virtual,
+        /// A source worker edge whose resolution must be diagnosed only after
+        /// parent statement liveness is known. path is the original specifier.
+        /// Importers carrying this failure are not reusable ModuleStore entries.
+        worker_failure,
     };
 };
 

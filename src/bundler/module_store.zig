@@ -234,6 +234,13 @@ pub const PersistentModuleStore = struct {
     /// 빌드 완료 후 모듈을 캐시에 저장.
     /// Module의 parse_arena 소유권을 store로 이전 (Module.parse_arena = null 설정).
     pub fn putModule(self: *PersistentModuleStore, path: []const u8, module: *Module, mtime: i128) void {
+        // A missing worker can appear without changing this importer. Retain
+        // its source owner in the graph, but never cache the failed resolution
+        // ledger (including an older cached copy under the same key).
+        for (module.resolved_deps.items) |dep| if (dep.target == .worker_failure) {
+            self.evict(path);
+            return;
+        };
         // import specifiers 복제 (store allocator 소유)
         const specs = self.extractImportSpecifiers(module) catch return;
         // (#4557) const_providers 복제 (store allocator 소유). 실패 시 specs 누수 차단 후 return.
@@ -784,3 +791,34 @@ test "PersistentModuleStore: putModule had_existing + OOM rollback 시 map entry
 // H2/.plugin OOM rollback test 들은 `.plugin` variant 제거 (production unused) 와 함께
 // 삭제 — `.interned` 케이스는 위 #3755 의 첫 OOM rollback test 가 이미 동일하게 커버.
 // rollbackOomCloned 는 PathRef variant 무관 (PathRef.deinit 호출 일관).
+
+test "PersistentModuleStore: worker failure evicts only its importer without taking graph ownership" {
+    const allocator = std.testing.allocator;
+    var store = PersistentModuleStore.init(allocator);
+    defer store.deinit();
+    const failed_path = "/virtual/worker-importer.js";
+    var previous = Module.init(@fromBackingInt(0), failed_path);
+    defer previous.deinit(allocator);
+    previous.parse_arena = Module_mod.createParseArena(allocator) orelse return error.OutOfMemory;
+    store.putModule(failed_path, &previous, 1);
+    try std.testing.expect(store.modules.contains(failed_path));
+    var healthy = Module.init(@fromBackingInt(1), "/virtual/healthy.js");
+    defer healthy.deinit(allocator);
+    healthy.parse_arena = Module_mod.createParseArena(allocator) orelse return error.OutOfMemory;
+    store.putModule(healthy.path, &healthy, 1);
+    var failed = Module.init(@fromBackingInt(0), failed_path);
+    defer failed.deinit(allocator);
+    failed.parse_arena = Module_mod.createParseArena(allocator) orelse return error.OutOfMemory;
+    try failed.resolved_deps.append(allocator, .{
+        .record_index = 0,
+        .kind = .worker,
+        .target = .worker_failure,
+        .path = .{ .specifier = "./late-worker.js" },
+    });
+    const arena = failed.parse_arena;
+    store.putModule(failed_path, &failed, 1);
+    try std.testing.expect(!store.modules.contains(failed_path));
+    try std.testing.expect(store.modules.contains(healthy.path));
+    try std.testing.expectEqual(arena, failed.parse_arena);
+    try std.testing.expectEqual(@as(usize, 1), failed.resolved_deps.items.len);
+}

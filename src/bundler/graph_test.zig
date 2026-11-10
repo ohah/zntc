@@ -2595,3 +2595,62 @@ test "quoted ordinary export origin survives cached metadata and rejects foreign
     try std.testing.expectEqualStrings("\"한글\"", restored_verified.?.literal_syntax);
     try std.testing.expectEqual(original.symbol, module.export_bindings[0].symbol);
 }
+
+test "worker failure retries a created file with an unchanged importer and persistent resolve cache and module store" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const source = "import {keep} from './healthy.js'; new Worker(new URL('./late-worker.js',import.meta.url)); console.log(keep);";
+    try writeFile(tmp.dir, "entry.js", source);
+    try writeFile(tmp.dir, "healthy.js", "export const keep=42;");
+    const directory = try dirPath(&tmp);
+    defer allocator.free(directory);
+    const entry = try std.fs.path.resolve(allocator, &.{ directory, "entry.js" });
+    defer allocator.free(entry);
+    const healthy = try std.fs.path.resolve(allocator, &.{ directory, "healthy.js" });
+    defer allocator.free(healthy);
+    const worker = try std.fs.path.resolve(allocator, &.{ directory, "late-worker.js" });
+    defer allocator.free(worker);
+    var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
+    defer cache.deinit();
+    var store = module_store_mod.PersistentModuleStore.init(allocator);
+    defer store.deinit();
+    {
+        var first = ModuleGraph.init(allocator, &cache);
+        defer first.deinit();
+        try first.build(std.testing.io, &.{entry});
+        const importer = first.getModule(first.path_to_module.get(entry).?).?;
+        var failures: usize = 0;
+        for (importer.resolved_deps.items) |dep| if (dep.target == .worker_failure) {
+            failures += 1;
+            const index = dep.record_index orelse return error.MissingWorkerRecord;
+            try std.testing.expectEqual(types.ImportKind.worker, importer.import_records[index].kind);
+            try std.testing.expectEqualStrings(importer.import_records[index].specifier, dep.path.bytes());
+            try std.testing.expect(!importer.import_records[index].resolve_failed);
+        };
+        try std.testing.expectEqual(@as(usize, 1), failures);
+        // Discovery retains the failure; diagnostics belong to the parent's
+        // later statement-liveness phase, not this graph's parse phase.
+        try std.testing.expectEqual(@as(usize, 0), first.diagnostics.items.len);
+        for (0..first.moduleCount()) |index| {
+            const module = first.moduleAtMut(ModuleIndex.fromUsize(index)).?;
+            if (module.parse_arena != null) store.putModule(module.path, module, module.mtime);
+        }
+        try std.testing.expect(!store.modules.contains(entry));
+        try std.testing.expect(store.modules.contains(healthy));
+    }
+    // Neither importer bytes nor its watcher change set changes.
+    try writeFile(tmp.dir, "late-worker.js", "postMessage(42);");
+    var unchanged: std.StringHashMapUnmanaged(void) = .empty;
+    defer unchanged.deinit(allocator);
+    var second = ModuleGraph.init(allocator, &cache);
+    defer second.deinit();
+    const rebuilt = try second.buildIncremental(std.testing.io, &.{entry}, &store, &unchanged);
+    defer allocator.free(rebuilt.reparsed_indices);
+    const importer = second.getModule(second.path_to_module.get(entry).?).?;
+    try std.testing.expectEqualStrings(source, importer.source);
+    for (importer.resolved_deps.items) |dep| try std.testing.expect(dep.target != .worker_failure);
+    try std.testing.expect(second.worker_entries.items.len > 0);
+    for (second.worker_entries.items) |edge| try std.testing.expectEqualStrings(worker, edge.resolved_path);
+    try std.testing.expectEqual(@as(usize, 0), second.diagnostics.items.len);
+}

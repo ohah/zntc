@@ -1187,7 +1187,65 @@ pub const Bundler = struct {
     const WorkerBuildResult = struct {
         filename: []const u8,
         contents: []const u8,
+        assets: ?[]OutputFile,
     };
+
+    fn cloneAsset(self: *Bundler, path: []const u8, bytes: []const u8) !OutputFile {
+        const owned_path = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(owned_path);
+        return .{ .path = owned_path, .contents = try self.allocator.dupe(u8, bytes) };
+    }
+
+    fn collectGraphAssets(self: *Bundler, graph: *ModuleGraph) !?[]OutputFile {
+        var files: std.ArrayList(OutputFile) = .empty;
+        errdefer {
+            for (files.items) |file| {
+                self.allocator.free(file.path);
+                self.allocator.free(file.contents);
+            }
+            files.deinit(self.allocator);
+        }
+        var it = graph.modulesIterator();
+        while (it.next()) |module| {
+            if (module.asset_data) |asset| {
+                try files.ensureUnusedCapacity(self.allocator, 1 + asset.scale_variants.len);
+                files.appendAssumeCapacity(try self.cloneAsset(asset.output_name, asset.raw_content));
+                for (asset.scale_variants) |variant|
+                    files.appendAssumeCapacity(try self.cloneAsset(variant.output_name, variant.raw_content));
+            }
+        }
+        if (files.items.len == 0) return null;
+        return try files.toOwnedSlice(self.allocator);
+    }
+
+    fn forwardWorkerDiagnostics(parent: *ModuleGraph, child: *ModuleGraph, items: []const BundlerDiagnostic) !bool {
+        var fatal = false;
+        diagnostics: for (items) |diagnostic| {
+            fatal = fatal or diagnostic.severity == .@"error";
+            for (parent.diagnostics.items) |existing| {
+                if (existing.code == diagnostic.code and existing.severity == diagnostic.severity and
+                    existing.step == diagnostic.step and std.meta.eql(existing.span, diagnostic.span) and
+                    std.mem.eql(u8, existing.file_path, diagnostic.file_path) and
+                    std.mem.eql(u8, existing.message, diagnostic.message) and
+                    ((existing.suggestion == null and diagnostic.suggestion == null) or
+                        (existing.suggestion != null and diagnostic.suggestion != null and
+                            std.mem.eql(u8, existing.suggestion.?, diagnostic.suggestion.?)))) continue :diagnostics;
+            }
+            var owned = diagnostic;
+            if (child.path_to_module.get(diagnostic.file_path)) |index| {
+                const module = child.modules.at(index.toU32());
+                if (diagnosticSpanBelongsToSource(diagnostic.span, module.source.len)) {
+                    if (module.line_offsets.len == 0)
+                        module.line_offsets = try @import("../lexer/scanner.zig").Scanner.computeLineOffsets(child.allocator, module.source);
+                    const info: @import("../rich_diagnostic.zig").SourceInfo = .{ .source = module.source, .line_offsets = module.line_offsets };
+                    const location = info.getLineColumn(diagnostic.span.start);
+                    owned.captured_location = .{ .span = diagnostic.span, .source_length = module.source.len, .line = location.line + 1, .column = location.column };
+                }
+            }
+            try parent.addOwnedDiagnostic(owned);
+        }
+        return fatal;
+    }
 
     /// Worker chunk 의 출력 포맷. Node CJS 빌드일 때만 CJS, 그 외엔 IIFE (브라우저 호환).
     fn workerFormat(self: *const Bundler) EmitOptions.Format {
@@ -1309,33 +1367,14 @@ pub const Bundler = struct {
 
         const entry_path = try arena_alloc.dupe(u8, worker_path);
         const entry_arr: [1][]const u8 = .{entry_path};
-        try worker_graph.build(io, &entry_arr);
+        worker_graph.build(io, &entry_arr) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            _ = try forwardWorkerDiagnostics(parent_graph, &worker_graph, worker_graph.diagnostics.items);
+            return err;
+        };
         try rejectUnsupportedLoopPublication(&worker_graph);
-        // Fatal parser failures return before parseModule publishes an AST.
-        // Recoverable parser errors and all resolve/linker policy stay unchanged.
-        var fatal_parser = false;
-        for (worker_graph.diagnostics.items) |diagnostic| {
-            if (diagnostic.code != .parse_error or diagnostic.step != .parse or diagnostic.severity != .@"error") continue;
-            const index = worker_graph.path_to_module.get(diagnostic.file_path) orelse continue;
-            const module = worker_graph.modules.at(index.toU32());
-            if (module.state != .ready or module.ast != null) continue;
-            var owned = diagnostic;
-            if ((diagnostic.span.start != 0 or diagnostic.span.end != 0) and
-                diagnosticSpanBelongsToSource(diagnostic.span, module.source.len))
-            {
-                if (module.line_offsets.len == 0)
-                    module.line_offsets = try @import("../lexer/scanner.zig").Scanner.computeLineOffsets(arena_alloc, module.source);
-                const info: @import("../rich_diagnostic.zig").SourceInfo = .{ .source = module.source, .line_offsets = module.line_offsets };
-                const location = info.getLineColumn(diagnostic.span.start);
-                owned.captured_location = .{ .span = diagnostic.span, .source_length = module.source.len, .line = location.line + 1, .column = location.column };
-            }
-            try parent_graph.addOwnedDiagnostic(owned);
-            fatal_parser = true;
-        }
-        if (fatal_parser) return null;
+        if (try forwardWorkerDiagnostics(parent_graph, &worker_graph, worker_graph.diagnostics.items)) return null;
 
-        // Select automatic roots from this worker's own usage, then publish
-        // the same execution roots to linking and emission.
         const worker_run_before_main = if (worker_graph.runtime_polyfill_roots.items.len == 0)
             explicit_run_before_main
         else blk: {
@@ -1356,14 +1395,26 @@ pub const Bundler = struct {
         worker_linker.iife_globals = worker_context.options.globals;
         worker_linker.shim_missing_exports = worker_context.options.shim_missing_exports or worker_context.options.platform == .react_native;
         worker_linker.strict_execution_order = worker_context.options.strict_execution_order;
+        worker_linker.verbatim_module_syntax = worker_context.options.verbatim_module_syntax;
         worker_linker.inline_requires = self.options.platform == .react_native;
         if (self.options.mf) |*m| worker_linker.mf_remotes = m.remotes; // PR-1 (#3459) 일관
-        try worker_linker.link();
-        try worker_linker.finalize(.{
+        defer worker_linker.deinit();
+        worker_linker.link() catch |err| {
+            if (err == error.OutOfMemory) return err;
+            _ = try forwardWorkerDiagnostics(parent_graph, &worker_graph, worker_linker.fatal_diagnostics.items);
+            return err;
+        };
+        worker_linker.finalize(.{
             .compute_renames = true,
             .compute_mangling = self.options.minify_identifiers,
-        });
-        defer worker_linker.deinit();
+        }) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            _ = try forwardWorkerDiagnostics(parent_graph, &worker_graph, worker_linker.fatal_diagnostics.items);
+            return err;
+        };
+        const graph_fatal = try forwardWorkerDiagnostics(parent_graph, &worker_graph, worker_graph.diagnostics.items);
+        const linker_fatal = try forwardWorkerDiagnostics(parent_graph, &worker_graph, worker_linker.fatal_diagnostics.items);
+        if (graph_fatal or linker_fatal) return null;
 
         // emit
         var emit_opts = worker_context.makeEmitOptions(format);
@@ -1375,57 +1426,101 @@ pub const Bundler = struct {
         worker_layout.code_splitting = false;
         worker_layout.preserve_modules = false;
         if (try @import("native_async_disposal_publication.zig").diagnose(&worker_graph, &worker_layout, null, null)) {
-            for (worker_graph.diagnostics.items) |diagnostic| {
-                if (diagnostic.code != .top_level_await_target or diagnostic.step != .link or diagnostic.severity != .@"error") continue;
-                var owned = diagnostic;
-                if (worker_graph.path_to_module.get(diagnostic.file_path)) |index| {
-                    const source_module = worker_graph.modules.at(index.toU32());
-                    if (diagnosticSpanBelongsToSource(diagnostic.span, source_module.source.len)) {
-                        if (source_module.line_offsets.len == 0)
-                            source_module.line_offsets = try @import("../lexer/scanner.zig").Scanner.computeLineOffsets(arena_alloc, source_module.source);
-                        const info: @import("../rich_diagnostic.zig").SourceInfo = .{ .source = source_module.source, .line_offsets = source_module.line_offsets };
-                        const location = info.getLineColumn(diagnostic.span.start);
-                        owned.captured_location = .{ .span = diagnostic.span, .source_length = source_module.source.len, .line = location.line + 1, .column = location.column };
-                    }
-                }
-                try parent_graph.addOwnedDiagnostic(owned);
-            }
+            _ = try forwardWorkerDiagnostics(parent_graph, &worker_graph, worker_graph.diagnostics.items);
             return null;
         }
-        const worker_result = try emitter.emitWithTreeShaking(
+        // No-binding runtime imports also require a representable classic host.
+        // Named imports are diagnosed by the existing metadata producer.
+        if (format == .iife) {
+            var modules = worker_graph.modulesIterator();
+            while (modules.next()) |module| {
+                for (module.import_records) |record| {
+                    if (record.kind != .side_effect or !record.is_external or record.ts_elided or
+                        types.GlobalEntry.lookup(worker_linker.iife_globals, record.specifier) != null) continue;
+                    const message = try std.fmt.allocPrint(arena_alloc, "unresolved import \"{s}\" cannot be emitted in IIFE format (no require/import available in factory scope)", .{record.specifier});
+                    try worker_graph.addOwnedDiagnostic(.{
+                        .code = .unresolved_import,
+                        .severity = .@"error",
+                        .file_path = module.path,
+                        .span = record.span,
+                        .step = .resolve,
+                        .message = message,
+                        .suggestion = null,
+                    });
+                }
+            }
+            if (try forwardWorkerDiagnostics(parent_graph, &worker_graph, worker_graph.diagnostics.items)) return null;
+        }
+        // Final worker filenames are content-derived. Generate the full map,
+        // including function maps, but attach its compiler-owned URL afterwards.
+        const worker_map_options = emit_opts.sourcemap;
+        if (emit_opts.sourcemap.enable) {
+            emit_opts.sourcemap.mode = .external;
+            emit_opts.sourcemap.lazy = false;
+        }
+        const worker_result = emitter.emitWithTreeShaking(
             io,
             arena_alloc,
             &worker_graph,
             &emit_opts,
             &worker_linker,
             null,
-        );
+        ) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            _ = try forwardWorkerDiagnostics(parent_graph, &worker_graph, worker_graph.diagnostics.items);
+            _ = try forwardWorkerDiagnostics(parent_graph, &worker_graph, worker_linker.fatal_diagnostics.items);
+            return err;
+        };
+        const emitted_graph_fatal = try forwardWorkerDiagnostics(parent_graph, &worker_graph, worker_graph.diagnostics.items);
+        const emitted_linker_fatal = try forwardWorkerDiagnostics(parent_graph, &worker_graph, worker_linker.fatal_diagnostics.items);
+        if (emitted_graph_fatal or emitted_linker_fatal) return null;
         const worker_output = worker_result.output;
 
-        // classic(IIFE) worker 는 external import 를 표현할 수 없어 linker 가 오류로 기록하지만,
-        // worker 서브빌드 진단은 부모로 올라가지 않아 import 가 조용히 사라졌다 (#4603). 이
-        // 사실만 경고로 올린다 — 서브빌드 진단 전체를 열면 아직 맞추지 않은 다른 축(resolve·
-        // linker 설정)의 거짓 실패가 쏟아진다(에픽 기록).
-        for (worker_linker.fatal_diagnostics.items) |d| {
-            if (d.code != .unresolved_import or std.mem.indexOf(u8, d.message, "cannot be emitted in IIFE format") == null) continue;
-            parent_graph.addOwnedDiag(
-                .unresolved_import,
-                .warning,
-                d.file_path,
-                d.span,
-                .resolve,
-                d.message,
-                "A classic worker cannot import an external module. Create it with `new Worker(url, { type: 'module' })` so the import is kept.",
-            ) catch {};
-        }
-
         // content hash로 파일명 생성
-        const hash = std.hash.Crc32.hash(worker_output);
+        var content_hash = std.hash.Crc32.init();
+        content_hash.update(worker_output);
+        if (worker_result.sourcemap) |json| content_hash.update(json);
+        const hash = content_hash.final();
         const basename = std.fs.path.stem(std.fs.path.basename(worker_path));
         const filename = try std.fmt.allocPrint(self.allocator, "{s}-{x:0>8}{s}", .{ basename, hash, self.workerExtension(format) });
-        const contents = try self.allocator.dupe(u8, worker_output);
-
-        return .{ .filename = filename, .contents = contents };
+        errdefer self.allocator.free(filename);
+        var finalized_output: std.ArrayList(u8) = .empty;
+        try finalized_output.appendSlice(arena_alloc, worker_output);
+        var map_json: ?[]const u8 = null;
+        if (worker_result.sourcemap) |json| {
+            var parsed = try std.json.parseFromSlice(std.json.Value, arena_alloc, json, .{});
+            defer parsed.deinit();
+            if (parsed.value != .object) return error.InvalidWorkerSourceMap;
+            try parsed.value.object.put(arena_alloc, "file", .{ .string = filename });
+            map_json = try std.json.Stringify.valueAlloc(arena_alloc, parsed.value, .{});
+            try @import("../codegen/sourcemap.zig").appendSourceMappingURLComment(
+                &finalized_output,
+                arena_alloc,
+                .{ .mode = worker_map_options.mode, .output_filename = filename, .inline_json = map_json },
+                &map_json,
+            );
+        }
+        const contents = try self.allocator.dupe(u8, finalized_output.items);
+        errdefer self.allocator.free(contents);
+        var assets = try self.collectGraphAssets(&worker_graph);
+        errdefer if (assets) |files| {
+            for (files) |file| {
+                self.allocator.free(file.path);
+                self.allocator.free(file.contents);
+            }
+            self.allocator.free(files);
+        };
+        if (map_json) |json| {
+            const map_path = try std.fmt.allocPrint(arena_alloc, "{s}.map", .{filename});
+            const old_count = if (assets) |files| files.len else 0;
+            const joined = try self.allocator.alloc(OutputFile, old_count + 1);
+            errdefer self.allocator.free(joined);
+            if (assets) |files| @memcpy(joined[0..old_count], files);
+            joined[old_count] = try self.cloneAsset(map_path, json);
+            if (assets) |files| self.allocator.free(files);
+            assets = joined;
+        }
+        return .{ .filename = filename, .contents = contents, .assets = assets };
     }
 
     /// 번들 파이프라인 실행: resolve → graph → emit.
@@ -1808,6 +1903,13 @@ pub const Bundler = struct {
         }
         var worker_output_files: std.ArrayList(OutputFile) = .empty;
         defer worker_output_files.deinit(self.allocator);
+        var worker_files_owned = true;
+        errdefer if (worker_files_owned) {
+            for (worker_output_files.items) |file| {
+                self.allocator.free(file.path);
+                self.allocator.free(file.contents);
+            }
+        };
 
         // codegen.emitNew lookup 용 per-module map. outer key = module 절대 경로 (graph 소유),
         // inner key = import_record specifier (graph 소유), value = worker chunk filename
@@ -2204,10 +2306,34 @@ pub const Bundler = struct {
         // Worker subbuilds consume the parent's retained import edges. Dead
         // classic references must not change a live module worker's format.
         {
-            errdefer for (worker_output_files.items) |output| {
-                self.allocator.free(output.path);
-                self.allocator.free(output.contents);
-            };
+            // Resolution failures retain their exact source edge until reachability
+            // is known, just like successfully resolved worker entries.
+            var failed_modules = graph.modulesIterator();
+            while (failed_modules.next()) |module| {
+                for (module.resolved_deps.items) |dependency| {
+                    if (dependency.target != .worker_failure) continue;
+                    const record_index = dependency.record_index orelse return error.InvalidWorkerResolutionFailure;
+                    if (dependency.kind != .worker or record_index >= module.import_records.len)
+                        return error.InvalidWorkerResolutionFailure;
+                    const record = module.import_records[record_index];
+                    if (record.kind != .worker or record.resolved != .none or record.is_external or
+                        !std.mem.eql(u8, dependency.path.bytes(), record.specifier))
+                        return error.InvalidWorkerResolutionFailure;
+                    if (shaker) |*active| if (!try active.isImportRecordLive(@backingInt(module.index), record_index)) continue;
+                    const message = try std.fmt.allocPrint(self.allocator, "Cannot resolve worker module \"{s}\"", .{record.specifier});
+                    defer self.allocator.free(message);
+                    const diagnostic: BundlerDiagnostic = .{
+                        .code = .unresolved_import,
+                        .severity = .@"error",
+                        .file_path = module.path,
+                        .span = record.span,
+                        .step = .resolve,
+                        .message = message,
+                        .suggestion = null,
+                    };
+                    _ = try forwardWorkerDiagnostics(graph, graph, &.{diagnostic});
+                }
+            }
             var gw_scope = profile.begin(.graph_worker);
             defer gw_scope.end();
             // 같은 worker 파일을 참조하는 `new Worker` 가 **모두** `type: 'module'` 일 때만 ESM 으로
@@ -2230,18 +2356,36 @@ pub const Bundler = struct {
                 // 같은 worker 파일이 여러 곳에서 참조되면 한 번만 빌드
                 if (!worker_output_map.contains(we.resolved_path)) {
                     const worker_format = self.workerFormatFor(!classic_workers.contains(we.resolved_path));
-                    const worker_result = self.buildWorker(io, we.resolved_path, worker_format, graph, original_rbm, polyfill_entries.items) catch |err| switch (err) {
-                        error.OutOfMemory, error.ClassHeritageEval, error.LoopDynamicScope, error.GeneratorNativeLexicalResume, error.GeneratorNativeLexicalNesting => return err,
-                        else => continue,
-                    } orelse {
+                    const worker_result = try self.buildWorker(io, we.resolved_path, worker_format, graph, original_rbm, polyfill_entries.items) orelse {
                         try failed_worker_paths.put(self.allocator, we.resolved_path, {});
                         continue;
                     };
+                    var result_owned = true;
+                    defer if (result_owned) {
+                        self.allocator.free(worker_result.filename);
+                        self.allocator.free(worker_result.contents);
+                        if (worker_result.assets) |assets| {
+                            for (assets) |file| {
+                                self.allocator.free(file.path);
+                                self.allocator.free(file.contents);
+                            }
+                            self.allocator.free(assets);
+                        }
+                    };
+                    const script_path = try self.allocator.dupe(u8, worker_result.filename);
+                    errdefer if (result_owned) self.allocator.free(script_path);
+                    const asset_count = if (worker_result.assets) |assets| assets.len else 0;
+                    try worker_output_files.ensureUnusedCapacity(self.allocator, asset_count + 1);
                     try worker_output_map.put(self.allocator, we.resolved_path, worker_result.filename);
-                    try worker_output_files.append(self.allocator, .{
-                        .path = try self.allocator.dupe(u8, worker_result.filename),
+                    if (worker_result.assets) |assets| {
+                        worker_output_files.appendSliceAssumeCapacity(assets);
+                        self.allocator.free(assets);
+                    }
+                    worker_output_files.appendAssumeCapacity(.{
+                        .path = script_path,
                         .contents = worker_result.contents,
                     });
+                    result_owned = false;
                 }
 
                 const filename = worker_output_map.get(we.resolved_path) orelse continue;
@@ -2769,37 +2913,16 @@ pub const Bundler = struct {
         // 5.5. Asset 파일 수집 (file/copy 로더 — 출력 디렉토리에 복사할 파일들).
         // scale_variants가 있으면 base + @2x/@3x 각각 별개 OutputFile로 emit해서
         // RN 런타임이 해상도별 파일을 로드할 수 있게 한다.
-        const asset_outputs: ?[]OutputFile = blk: {
-            var asset_count: usize = 0;
-            {
-                var it = graph.modulesIterator();
-                while (it.next()) |m| {
-                    if (m.asset_data) |ad| asset_count += 1 + ad.scale_variants.len;
+        const asset_outputs = try self.collectGraphAssets(graph);
+        var graph_assets_owned = true;
+        errdefer if (graph_assets_owned) {
+            if (asset_outputs) |files| {
+                for (files) |file| {
+                    self.allocator.free(file.path);
+                    self.allocator.free(file.contents);
                 }
+                self.allocator.free(files);
             }
-            if (asset_count == 0) break :blk null;
-
-            const outs = try self.allocator.alloc(OutputFile, asset_count);
-            errdefer self.allocator.free(outs);
-            var idx: usize = 0;
-            var it = graph.modulesIterator();
-            while (it.next()) |m| {
-                if (m.asset_data) |ad| {
-                    outs[idx] = .{
-                        .path = try self.allocator.dupe(u8, ad.output_name),
-                        .contents = try self.allocator.dupe(u8, ad.raw_content),
-                    };
-                    idx += 1;
-                    for (ad.scale_variants) |v| {
-                        outs[idx] = .{
-                            .path = try self.allocator.dupe(u8, v.output_name),
-                            .contents = try self.allocator.dupe(u8, v.raw_content),
-                        };
-                        idx += 1;
-                    }
-                }
-            }
-            break :blk outs;
         };
 
         // 6. Dev mode: per-module codes (동일 타입이므로 변환 불필요)
@@ -2860,6 +2983,13 @@ pub const Bundler = struct {
         defer css_scope.end();
         var css_output_files: std.ArrayList(OutputFile) = .empty;
         defer css_output_files.deinit(self.allocator);
+        var css_files_owned = true;
+        errdefer if (css_files_owned) {
+            for (css_output_files.items) |file| {
+                self.allocator.free(file.path);
+                self.allocator.free(file.contents);
+            }
+        };
         {
             const css_emit = @import("css_emitter.zig");
             if (css_chunk_files) |files| {
@@ -2896,6 +3026,13 @@ pub const Bundler = struct {
         // 자기 복사본을 소유해야 한다(OutputFile.deinit 이 path+contents 해제).
         var emit_asset_files: std.ArrayList(OutputFile) = .empty;
         defer emit_asset_files.deinit(self.allocator);
+        var emit_files_owned = true;
+        errdefer if (emit_files_owned) {
+            for (emit_asset_files.items) |file| {
+                self.allocator.free(file.path);
+                self.allocator.free(file.contents);
+            }
+        };
         for (emit_store.assets.items) |a| {
             const path = try self.allocator.dupe(u8, a.file_name);
             errdefer self.allocator.free(path);
@@ -2920,10 +3057,16 @@ pub const Bundler = struct {
             // P2-3 (#3423): + 키 지정 시 Ed25519 `.sig` 1개 (opt-in).
             const sig_n: usize = if (mf_n == 1 and self.options.mf_sign_key_path != null) 1 else 0;
             const total = existing + worker_output_files.items.len + css_output_files.items.len + emit_asset_files.items.len + mf_n * 2 + sig_n;
+            var mf_paths: [3]?[]const u8 = .{ null, null, null };
+            var mf_contents: [2]?[]const u8 = .{ null, null };
+            errdefer {
+                for (mf_paths) |path| if (path) |bytes| self.allocator.free(bytes);
+                for (mf_contents) |content| if (content) |bytes| self.allocator.free(bytes);
+            }
             const merged = try self.allocator.alloc(OutputFile, total);
+            errdefer self.allocator.free(merged);
             if (asset_outputs) |a| {
                 @memcpy(merged[0..a.len], a);
-                self.allocator.free(a);
             }
             for (worker_output_files.items, 0..) |wf, i| {
                 merged[existing + i] = wf;
@@ -2949,18 +3092,18 @@ pub const Bundler = struct {
                     m,
                     outputs orelse &.{},
                 );
-                errdefer self.allocator.free(sidecar);
+                mf_contents[0] = sidecar;
                 const pm = try self.allocator.dupe(u8, "mf-manifest.json");
-                errdefer self.allocator.free(pm);
+                mf_paths[0] = pm;
                 const ps = try self.allocator.dupe(u8, "mf-manifest.json.integrity.json");
-                errdefer self.allocator.free(ps);
+                mf_paths[1] = ps;
                 // P2-3: 키 지정 시 sidecar 를 Ed25519 서명 → 별도 `.sig`
                 // (자기참조 순환 회피 — sidecar 불변). 키 오류=fail-fast
                 // (보안 의도라 silent skip 금지). 부분실패 누수는 errdefer.
                 var sig_json: ?[]const u8 = null;
-                errdefer if (sig_json) |s| self.allocator.free(s);
+
                 var psig: ?[]const u8 = null;
-                errdefer if (psig) |p| self.allocator.free(p);
+
                 if (self.options.mf_sign_key_path) |keypath| {
                     const key_txt = std.Io.Dir.cwd().readFileAlloc(io, keypath, self.allocator, std.Io.Limit.limited(4096)) catch
                         return error.MfSignKeyRead;
@@ -2972,7 +3115,9 @@ pub const Bundler = struct {
                         return error.MfSignKeyInvalid;
                     Dec.decode(&seed, trimmed) catch return error.MfSignKeyInvalid;
                     sig_json = try @import("mf_integrity.zig").signSidecar(self.allocator, sidecar, seed);
+                    mf_contents[1] = sig_json;
                     psig = try self.allocator.dupe(u8, "mf-manifest.json.integrity.json.sig");
+                    mf_paths[2] = psig;
                 }
                 merged[slot] = .{ .path = pm, .contents = m };
                 merged[slot + 1] = .{ .path = ps, .contents = sidecar };
@@ -2981,9 +3126,48 @@ pub const Bundler = struct {
                     sig_json = null; // 소유권 이전
                     psig = null;
                 }
-                mf_manifest = null; // 소유권 이전 — errdefer(:1356) 이중해제 방지
             }
-            break :blk merged;
+            // Additional artifacts must never overwrite executable parent outputs.
+            var executable_paths: std.StringHashMapUnmanaged(void) = .empty;
+            defer executable_paths.deinit(self.allocator);
+            if (outputs) |chunks| {
+                for (chunks) |chunk| try executable_paths.put(self.allocator, chunk.path, {});
+            } else {
+                try executable_paths.put(self.allocator, std.fs.path.basename(self.options.output_filename), {});
+            }
+            for (merged) |file| {
+                if (executable_paths.contains(file.path)) return error.OutputPathCollision;
+            }
+            // The index borrows paths until all validation and allocation succeeds.
+            var first_by_path: std.StringHashMapUnmanaged(usize) = .empty;
+            defer first_by_path.deinit(self.allocator);
+            for (merged, 0..) |file, i| {
+                const slot = try first_by_path.getOrPut(self.allocator, file.path);
+                if (slot.found_existing) {
+                    if (!std.mem.eql(u8, merged[slot.value_ptr.*].contents, file.contents))
+                        return error.OutputPathCollision;
+                } else slot.value_ptr.* = i;
+            }
+            const compact = try self.allocator.alloc(OutputFile, first_by_path.count());
+            var unique: usize = 0;
+            for (merged, 0..) |file, i| {
+                if (first_by_path.get(file.path).? != i) {
+                    self.allocator.free(file.path);
+                    self.allocator.free(file.contents);
+                } else {
+                    compact[unique] = file;
+                    unique += 1;
+                }
+            }
+            self.allocator.free(merged);
+            if (asset_outputs) |files| self.allocator.free(files);
+            graph_assets_owned = false;
+            worker_files_owned = false;
+            css_files_owned = false;
+            emit_files_owned = false;
+            mf_manifest = null;
+            std.debug.assert(unique == compact.len);
+            break :blk compact;
         } else asset_outputs;
 
         // --mangle-report (#1760): 번들 크기 집계 후 JSON 파일 기록.
@@ -3364,7 +3548,7 @@ test "fatal worker parser publication preserves isolated source diagnostics and 
     }
 }
 
-test "valid and recoverable worker parser policy remains unchanged" {
+test "worker parser diagnostics match ordinary source policy" {
     const helpers = @import("test_helpers.zig");
     inline for (.{ false, true }) |recoverable| {
         var tmp = std.testing.tmpDir(.{});
@@ -3377,7 +3561,27 @@ test "valid and recoverable worker parser policy remains unchanged" {
         defer bundler.deinit();
         const result = try bundler.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
-        try std.testing.expect(!result.hasErrors());
+        const worker_entry = try helpers.absPath(&tmp, "worker.mjs");
+        defer std.testing.allocator.free(worker_entry);
+        var ordinary = Bundler.init(std.testing.allocator, .{ .entry_points = &.{worker_entry}, .format = .esm });
+        defer ordinary.deinit();
+        const ordinary_result = try ordinary.bundle(std.testing.io);
+        defer ordinary_result.deinit(std.testing.allocator);
+        try std.testing.expectEqual(recoverable, ordinary_result.hasErrors());
+        try std.testing.expectEqual(ordinary_result.hasErrors(), result.hasErrors());
+        const parsed = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "--check", worker_entry } });
+        defer std.testing.allocator.free(parsed.stdout);
+        defer std.testing.allocator.free(parsed.stderr);
+        try std.testing.expect(parsed.term == .exited);
+        try std.testing.expectEqual(!recoverable, parsed.term.exited == 0);
+        if (recoverable) {
+            try std.testing.expect(result.asset_outputs == null);
+            const diagnostics = result.diagnostics orelse return error.MissingWorkerParserDiagnostic;
+            try std.testing.expectEqual(@as(usize, 1), diagnostics.len);
+            try std.testing.expectEqual(BundlerDiagnostic.ErrorCode.parse_error, diagnostics[0].code);
+            try std.testing.expect(std.mem.endsWith(u8, diagnostics[0].file_path, "worker.mjs"));
+            continue;
+        }
         const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
         try std.testing.expectEqual(@as(usize, 1), outputs.len);
         try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "42") != null);
@@ -3678,6 +3882,17 @@ test "worker node paths retain actual parent block list veto" {
         defer bundler.deinit();
         const result = try bundler.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
+        if (blocked) {
+            try std.testing.expect(result.hasErrors());
+            try std.testing.expect(result.asset_outputs == null);
+            const diagnostics = result.diagnostics orelse return error.MissingWorkerResolveDiagnostic;
+            try std.testing.expectEqual(@as(usize, 1), diagnostics.len);
+            try std.testing.expectEqual(BundlerDiagnostic.ErrorCode.unresolved_import, diagnostics[0].code);
+            try std.testing.expectEqualStrings("worker-parity-pkg", diagnostics[0].suggestion.?);
+            try std.testing.expect(std.mem.endsWith(u8, diagnostics[0].file_path, "worker.mjs"));
+            continue;
+        }
+        try std.testing.expect(!result.hasErrors());
         const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
         try std.testing.expectEqual(@as(usize, 1), outputs.len);
         try std.testing.expectEqual(!blocked, std.mem.indexOf(u8, outputs[0].contents, "custom-package-marker") != null);
@@ -3817,6 +4032,16 @@ test "worker external policy and classic globals share parent authority" {
         defer bundler.deinit();
         const result = try bundler.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
+        if (mode == 3) {
+            try std.testing.expect(result.hasErrors());
+            try std.testing.expect(result.asset_outputs == null);
+            var errors: usize = 0;
+            for (result.diagnostics orelse return error.MissingClassicWorkerDiagnostic) |diagnostic| {
+                if (diagnostic.code == .unresolved_import and diagnostic.severity == .@"error") errors += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), errors);
+            continue;
+        }
         try std.testing.expect(!result.hasErrors());
         const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
         try std.testing.expectEqual(@as(usize, 1), outputs.len);
@@ -3831,7 +4056,7 @@ test "worker external policy and classic globals share parent authority" {
         if (result.diagnostics) |diagnostics| for (diagnostics) |diagnostic| {
             if (diagnostic.code == .unresolved_import and diagnostic.severity == .warning) classic_warnings += 1;
         };
-        try std.testing.expectEqual(@as(usize, if (mode == 3) 1 else 0), classic_warnings);
+        try std.testing.expectEqual(@as(usize, 0), classic_warnings);
     }
 }
 
@@ -3896,6 +4121,17 @@ test "worker resolver injected hierarchy boundary is retained" {
         defer bundler.deinit();
         const result = try bundler.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
+        if (disabled) {
+            try std.testing.expect(result.hasErrors());
+            try std.testing.expect(result.asset_outputs == null);
+            const diagnostics = result.diagnostics orelse return error.MissingWorkerResolveDiagnostic;
+            try std.testing.expectEqual(@as(usize, 1), diagnostics.len);
+            try std.testing.expectEqual(BundlerDiagnostic.ErrorCode.unresolved_import, diagnostics[0].code);
+            try std.testing.expectEqualStrings("hierarchy-pkg", diagnostics[0].suggestion.?);
+            try std.testing.expect(std.mem.endsWith(u8, diagnostics[0].file_path, "worker.mjs"));
+            continue;
+        }
+        try std.testing.expect(!result.hasErrors());
         const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
         try std.testing.expectEqual(@as(usize, 1), outputs.len);
         try std.testing.expectEqual(!disabled, std.mem.indexOf(u8, outputs[0].contents, "hierarchy-marker") != null);
@@ -4018,4 +4254,128 @@ test "node worker physical format runs independently of package and browser type
             }
         }
     }
+}
+
+test "worker verbatim imports retain external type use side effects" {
+    const helpers = @import("test_helpers.zig");
+    inline for (.{ false, true }) |verbatim| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "new Worker(new URL('./worker.ts',import.meta.url),{type:'module'});");
+        try helpers.writeFile(tmp.dir, "worker.ts", "import {TypeFoo} from 'verbatim-pkg';type Shape=TypeFoo;const unused:Shape={};postMessage({hits:globalThis.__verbatimHits??0});");
+        try helpers.writeFile(tmp.dir, "node_modules/verbatim-pkg/package.json", "{\"name\":\"verbatim-pkg\",\"type\":\"module\",\"main\":\"index.js\"}");
+        try helpers.writeFile(tmp.dir, "node_modules/verbatim-pkg/index.js", "export class TypeFoo{}");
+        try helpers.writeFile(tmp.dir, "runtime.mjs", "globalThis.__verbatimHits=(globalThis.__verbatimHits||0)+1;export class TypeFoo{}");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const runtime = try helpers.absPath(&tmp, "runtime.mjs");
+        defer std.testing.allocator.free(runtime);
+        const uri = try std.fmt.allocPrint(std.testing.allocator, "file://{s}", .{runtime});
+        defer std.testing.allocator.free(uri);
+        var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm, .verbatim_module_syntax = verbatim, .external = &.{"verbatim-pkg"}, .external_alias = &.{.{ .from = "verbatim-pkg", .to = uri }} });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        const assets = result.asset_outputs orelse return error.MissingWorkerOutput;
+        try std.testing.expectEqual(@as(usize, 1), assets.len);
+        const source = try std.fmt.allocPrint(std.testing.allocator, "globalThis.self=globalThis;globalThis.postMessage=value=>console.log(JSON.stringify(value));\n{s}", .{assets[0].contents});
+        defer std.testing.allocator.free(source);
+        try helpers.writeFile(tmp.dir, "observed.mjs", source);
+        const path = try helpers.absPath(&tmp, "observed.mjs");
+        defer std.testing.allocator.free(path);
+        const observed = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", path } });
+        defer std.testing.allocator.free(observed.stdout);
+        defer std.testing.allocator.free(observed.stderr);
+        try std.testing.expect(observed.term == .exited and observed.term.exited == 0);
+        try std.testing.expectEqualStrings(if (verbatim) "{\"hits\":1}\n" else "{\"hits\":0}\n", observed.stdout);
+        try std.testing.expectEqualStrings("", observed.stderr);
+    }
+}
+
+test "worker file assets are returned independently and deduplicated" {
+    const helpers = @import("test_helpers.zig");
+    inline for (.{ false, true }) |parent_import| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", if (parent_import)
+            "import p from './payload.txt';console.log(p);new Worker(new URL('./worker.mjs',import.meta.url),{type:'module'});"
+        else
+            "new Worker(new URL('./worker.mjs',import.meta.url),{type:'module'});");
+        try helpers.writeFile(tmp.dir, "worker.mjs", "import p from './payload.txt';postMessage(p);");
+        try helpers.writeFile(tmp.dir, "payload.txt", "worker-asset-42");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        var bundler = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .format = .esm,
+            .asset_inline_limit = 0,
+            .loader_overrides = &.{.{ .ext = ".txt", .loader = .file }},
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        var payloads: usize = 0;
+        var workers: usize = 0;
+        for (result.asset_outputs orelse return error.MissingWorkerAssets) |file| {
+            if (std.mem.eql(u8, file.contents, "worker-asset-42")) {
+                payloads += 1;
+                try std.testing.expect(std.mem.endsWith(u8, file.path, ".txt"));
+            }
+            if (std.mem.endsWith(u8, file.path, ".js")) workers += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), payloads);
+        try std.testing.expectEqual(@as(usize, 1), workers);
+    }
+}
+
+test "worker child diagnostics retain source ownership and deduplicate shared failures" {
+    const helpers = @import("test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.mjs", "new Worker(new URL('./a.mjs',import.meta.url),{type:'module'});new Worker(new URL('./b.mjs',import.meta.url),{type:'module'});");
+    try helpers.writeFile(tmp.dir, "a.mjs", "import './shared.mjs';postMessage(42);");
+    try helpers.writeFile(tmp.dir, "b.mjs", "import './shared.mjs';postMessage(43);");
+    try helpers.writeFile(tmp.dir, "shared.mjs", "import {value} from './absent.mjs';console.log(value);");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer bundler.deinit();
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result.hasErrors());
+    try std.testing.expect(result.asset_outputs == null);
+    const diagnostics = result.diagnostics orelse return error.MissingWorkerDiagnostic;
+    try std.testing.expectEqual(@as(usize, 1), diagnostics.len);
+    try std.testing.expectEqual(BundlerDiagnostic.ErrorCode.unresolved_import, diagnostics[0].code);
+    try std.testing.expect(std.mem.endsWith(u8, diagnostics[0].file_path, "shared.mjs"));
+    try std.testing.expectEqualStrings("./absent.mjs", diagnostics[0].suggestion.?);
+    try std.testing.expectEqual(@as(?u32, 1), diagnostics[0].line);
+}
+
+test "worker diagnostic ownership is atomic on allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var cache = ResolveCache.init(allocator, .{});
+            defer cache.deinit();
+            var parent = ModuleGraph.init(allocator, &cache);
+            defer parent.deinit();
+            var child = ModuleGraph.init(allocator, &cache);
+            defer child.deinit();
+            const diagnostic: BundlerDiagnostic = .{
+                .code = .unresolved_import,
+                .severity = .@"error",
+                .file_path = "worker.mjs",
+                .span = .{ .start = 0, .end = 0 },
+                .step = .resolve,
+                .message = "Cannot resolve module",
+                .suggestion = "./absent.mjs",
+            };
+            try std.testing.expect(try Bundler.forwardWorkerDiagnostics(&parent, &child, &.{diagnostic}));
+            try std.testing.expect(try Bundler.forwardWorkerDiagnostics(&parent, &child, &.{diagnostic}));
+            try std.testing.expectEqual(@as(usize, 1), parent.diagnostics.items.len);
+            try std.testing.expectEqualStrings("./absent.mjs", parent.diagnostics.items[0].suggestion.?);
+        }
+    }.run, .{});
 }
