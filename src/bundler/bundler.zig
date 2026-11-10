@@ -1212,7 +1212,7 @@ pub const Bundler = struct {
     }
 
     /// Worker 파일을 별도 번들로 빌드한다.
-    fn buildWorker(self: *Bundler, io: std.Io, worker_path: []const u8, format: EmitOptions.Format, parent_graph: *ModuleGraph, explicit_run_before_main: []const []const u8) !?WorkerBuildResult {
+    fn buildWorker(self: *Bundler, io: std.Io, worker_path: []const u8, format: EmitOptions.Format, parent_graph: *ModuleGraph, explicit_run_before_main: []const []const u8, inline_polyfills: []const EmitOptions.PolyfillEntry) !?WorkerBuildResult {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const arena_alloc = arena.allocator();
@@ -1329,6 +1329,7 @@ pub const Bundler = struct {
         // emit
         var emit_opts = self.makeEmitOptions(format);
         emit_opts.run_before_main = explicit_run_before_main;
+        emit_opts.polyfills = inline_polyfills;
         // Workers use this single emitter even when the parent plans chunks.
         // Do not claim a physical native module boundary from parent options.
         var worker_layout = emit_opts;
@@ -2073,60 +2074,6 @@ pub const Bundler = struct {
         }
         shake_scope.end();
 
-        // Worker subbuilds consume the parent's retained import edges. Dead
-        // classic references must not change a live module worker's format.
-        {
-            errdefer for (worker_output_files.items) |output| {
-                self.allocator.free(output.path);
-                self.allocator.free(output.contents);
-            };
-            var gw_scope = profile.begin(.graph_worker);
-            defer gw_scope.end();
-            // 같은 worker 파일을 참조하는 `new Worker` 가 **모두** `type: 'module'` 일 때만 ESM 으로
-            // 빌드한다 — classic 으로 로드하는 곳이 하나라도 있으면 ESM 은 거기서 SyntaxError.
-            var classic_workers: std.StringHashMapUnmanaged(void) = .empty;
-            defer classic_workers.deinit(self.allocator);
-            for (graph.worker_entries.items) |we| {
-                if (shaker) |*active| if (!try active.isImportRecordLive(@backingInt(we.source_module), we.record_index)) continue;
-                const mod = graph.getModule(we.source_module) orelse continue;
-                if (we.record_index >= mod.import_records.len or !mod.import_records[we.record_index].worker_module)
-                    try classic_workers.put(self.allocator, we.resolved_path, {});
-            }
-            var failed_worker_paths: std.StringHashMapUnmanaged(void) = .empty;
-            defer failed_worker_paths.deinit(self.allocator);
-            for (graph.worker_entries.items) |we| {
-                if (shaker) |*active| if (!try active.isImportRecordLive(@backingInt(we.source_module), we.record_index)) continue;
-                // Failed paths also have one diagnostic publication despite
-                // discovery/prepass replaying the same worker edge.
-                if (failed_worker_paths.contains(we.resolved_path)) continue;
-                // 같은 worker 파일이 여러 곳에서 참조되면 한 번만 빌드
-                if (!worker_output_map.contains(we.resolved_path)) {
-                    const worker_format = self.workerFormatFor(!classic_workers.contains(we.resolved_path));
-                    const worker_result = self.buildWorker(io, we.resolved_path, worker_format, graph, original_rbm) catch |err| switch (err) {
-                        error.OutOfMemory, error.ClassHeritageEval, error.LoopDynamicScope, error.GeneratorNativeLexicalResume, error.GeneratorNativeLexicalNesting => return err,
-                        else => continue,
-                    } orelse {
-                        try failed_worker_paths.put(self.allocator, we.resolved_path, {});
-                        continue;
-                    };
-                    try worker_output_map.put(self.allocator, we.resolved_path, worker_result.filename);
-                    try worker_output_files.append(self.allocator, .{
-                        .path = try self.allocator.dupe(u8, worker_result.filename),
-                        .contents = worker_result.contents,
-                    });
-                }
-
-                const filename = worker_output_map.get(we.resolved_path) orelse continue;
-                const mod = graph.getModule(we.source_module) orelse continue;
-                if (we.record_index >= mod.import_records.len) continue;
-                const spec = mod.import_records[we.record_index].specifier;
-
-                const entry = try worker_map_per_module.getOrPut(self.allocator, mod.path);
-                if (!entry.found_existing) entry.value_ptr.* = .empty;
-                try entry.value_ptr.put(self.allocator, spec, filename);
-            }
-        }
-
         // Only the post-shake selected, retained initializer can require a
         // waiter. Preserve the normal diagnostic result and emit no partial JS.
         var tla_publication_options = self.makeEmitOptions(self.options.format);
@@ -2214,6 +2161,60 @@ pub const Bundler = struct {
             });
         }
         polyfill_scope.end();
+
+        // Worker subbuilds consume the parent's retained import edges. Dead
+        // classic references must not change a live module worker's format.
+        {
+            errdefer for (worker_output_files.items) |output| {
+                self.allocator.free(output.path);
+                self.allocator.free(output.contents);
+            };
+            var gw_scope = profile.begin(.graph_worker);
+            defer gw_scope.end();
+            // 같은 worker 파일을 참조하는 `new Worker` 가 **모두** `type: 'module'` 일 때만 ESM 으로
+            // 빌드한다 — classic 으로 로드하는 곳이 하나라도 있으면 ESM 은 거기서 SyntaxError.
+            var classic_workers: std.StringHashMapUnmanaged(void) = .empty;
+            defer classic_workers.deinit(self.allocator);
+            for (graph.worker_entries.items) |we| {
+                if (shaker) |*active| if (!try active.isImportRecordLive(@backingInt(we.source_module), we.record_index)) continue;
+                const mod = graph.getModule(we.source_module) orelse continue;
+                if (we.record_index >= mod.import_records.len or !mod.import_records[we.record_index].worker_module)
+                    try classic_workers.put(self.allocator, we.resolved_path, {});
+            }
+            var failed_worker_paths: std.StringHashMapUnmanaged(void) = .empty;
+            defer failed_worker_paths.deinit(self.allocator);
+            for (graph.worker_entries.items) |we| {
+                if (shaker) |*active| if (!try active.isImportRecordLive(@backingInt(we.source_module), we.record_index)) continue;
+                // Failed paths also have one diagnostic publication despite
+                // discovery/prepass replaying the same worker edge.
+                if (failed_worker_paths.contains(we.resolved_path)) continue;
+                // 같은 worker 파일이 여러 곳에서 참조되면 한 번만 빌드
+                if (!worker_output_map.contains(we.resolved_path)) {
+                    const worker_format = self.workerFormatFor(!classic_workers.contains(we.resolved_path));
+                    const worker_result = self.buildWorker(io, we.resolved_path, worker_format, graph, original_rbm, polyfill_entries.items) catch |err| switch (err) {
+                        error.OutOfMemory, error.ClassHeritageEval, error.LoopDynamicScope, error.GeneratorNativeLexicalResume, error.GeneratorNativeLexicalNesting => return err,
+                        else => continue,
+                    } orelse {
+                        try failed_worker_paths.put(self.allocator, we.resolved_path, {});
+                        continue;
+                    };
+                    try worker_output_map.put(self.allocator, we.resolved_path, worker_result.filename);
+                    try worker_output_files.append(self.allocator, .{
+                        .path = try self.allocator.dupe(u8, worker_result.filename),
+                        .contents = worker_result.contents,
+                    });
+                }
+
+                const filename = worker_output_map.get(we.resolved_path) orelse continue;
+                const mod = graph.getModule(we.source_module) orelse continue;
+                if (we.record_index >= mod.import_records.len) continue;
+                const spec = mod.import_records[we.record_index].specifier;
+
+                const entry = try worker_map_per_module.getOrPut(self.allocator, mod.path);
+                if (!entry.found_existing) entry.value_ptr.* = .empty;
+                try entry.value_ptr.put(self.allocator, spec, filename);
+            }
+        }
 
         // 2.8. React Refresh 런타임 주입 (dev mode, 브라우저만)
         var refresh_scope = profile.begin(.emit_refresh);
@@ -3664,4 +3665,26 @@ test "worker registers explicit run before main roots" {
     try std.testing.expectEqual(@as(usize, 1), outputs.len);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "beforeCount") != null);
     try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "beforeCount") != null);
+}
+
+test "worker emits explicit inline polyfill files" {
+    const helpers = @import("test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.mjs", "new Worker(new URL('./worker.mjs',import.meta.url),{type:'module'});");
+    try helpers.writeFile(tmp.dir, "worker.mjs", "self.postMessage(globalThis.inlineToken);");
+    try helpers.writeFile(tmp.dir, "polyfill.js", "globalThis.inlineToken=41;globalThis.inlineCount=(globalThis.inlineCount||0)+1;");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    const polyfill = try helpers.absPath(&tmp, "polyfill.js");
+    defer std.testing.allocator.free(polyfill);
+    var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm, .polyfills = &.{polyfill} });
+    defer bundler.deinit();
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "inlineCount") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "inlineCount") != null);
 }
