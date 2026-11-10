@@ -1223,12 +1223,19 @@ pub const Bundler = struct {
         // ⚠️ 옵션 상속은 열지 않는다 — alias/fallback/ts_paths 를 넘겨 봤지만, worker 는
         // external/preserve_symlinks 등을 함께 물려받지 않아 부모와 게이트 판정이 갈리고,
         // worker 진단은 버려지므로 그 어긋남이 **조용한 오번들**로 나간다 (#4603).
-        var worker_resolve_cache = ResolveCache.init(arena_alloc, .{ .platform = self.getResolveCache().platform });
+        var worker_resolve_cache = ResolveCache.init(arena_alloc, .{
+            .platform = self.getResolveCache().platform,
+            // Preserve the actual parent resolver's ordered replacement policy,
+            // including caches supplied through initWithGraph (#4603).
+            .resolve_extensions = self.getResolveCache().resolver.custom_extensions,
+        });
 
         var worker_graph = ModuleGraph.init(arena_alloc, &worker_resolve_cache);
         // Dependency scanning evaluates require.context arguments and dead branches
         // before the transform applies defines (#4603).
         worker_graph.defines = self.options.define;
+        // Inject roots execute independently in each worker realm (#4603).
+        worker_graph.inject_files = parent_graph.inject_files;
         worker_graph.loader_overrides = self.options.loader_overrides;
         worker_graph.public_path = self.options.public_path;
         // asset 관련 옵션이 worker graph 에 빠져 있으면 worker 번들만 ModuleGraph 의
@@ -3494,4 +3501,63 @@ test "legacy lexical TDZ module identity rejects ten crossed receipts and cleans
     try Identity.validate(module);
     var restored = try linkGraphAndLegacy(Linker.initWithGlobalIdentifiers(std.testing.allocator, &graph, .esm, &.{}), &graph);
     defer restored.deinit();
+}
+
+test "worker uses actual parent resolver extension priority" {
+    const helpers = @import("test_helpers.zig");
+    const cases = .{
+        .{ @as([]const []const u8, &.{ ".js", ".ts" }), "selected-js" },
+        .{ @as([]const []const u8, &.{ ".ts", ".js" }), "selected-ts" },
+        .{ @as([]const []const u8, &.{}), "selected-ts" },
+        .{ @as([]const []const u8, &.{".js"}), "selected-js" },
+        .{ @as([]const []const u8, &.{ ".native.js", ".js" }), "selected-native" },
+    };
+    inline for (cases) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "new Worker(new URL('./worker.mjs',import.meta.url),{type:'module'});");
+        try helpers.writeFile(tmp.dir, "worker.mjs", "import {value} from './select';self.postMessage(value);");
+        try helpers.writeFile(tmp.dir, "select.js", "export const value='selected-js';");
+        try helpers.writeFile(tmp.dir, "select.ts", "export const value='selected-ts';");
+        try helpers.writeFile(tmp.dir, "select.native.js", "export const value='selected-native';");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        // Deliberately differ from BundleOptions: the injected live cache owns
+        // resolution, not a reconstructed copy of the options.
+        const options: BundleOptions = .{ .entry_points = &.{entry}, .format = .esm, .resolve_extensions = &.{".ts"} };
+        var cache = ResolveCache.init(std.testing.allocator, .{ .resolve_extensions = case[0] });
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
+        try std.testing.expectEqual(@as(usize, 1), outputs.len);
+        try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, case[1]) != null);
+    }
+}
+
+test "worker includes inject side effect root in its own graph" {
+    const helpers = @import("test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.mjs", "new Worker(new URL('./worker.mjs',import.meta.url),{type:'module'});");
+    try helpers.writeFile(tmp.dir, "worker.mjs", "self.postMessage(globalThis.injectToken);");
+    try helpers.writeFile(tmp.dir, "inject.mjs", "globalThis.injectToken=41;globalThis.injectCount=(globalThis.injectCount||0)+1;");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    const inject = try helpers.absPath(&tmp, "inject.mjs");
+    defer std.testing.allocator.free(inject);
+    var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm, .inject = &.{inject} });
+    defer bundler.deinit();
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "injectCount") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "injectCount") != null);
 }
