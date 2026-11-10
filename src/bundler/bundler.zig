@@ -1351,6 +1351,7 @@ pub const Bundler = struct {
         worker_linker.keep_names = self.options.keep_names;
         worker_linker.configurable_exports = self.options.configurable_exports;
         worker_linker.iife_globals = worker_context.options.globals;
+        worker_linker.shim_missing_exports = worker_context.options.shim_missing_exports or worker_context.options.platform == .react_native;
         worker_linker.inline_requires = self.options.platform == .react_native;
         if (self.options.mf) |*m| worker_linker.mf_remotes = m.remotes; // PR-1 (#3459) 일관
         try worker_linker.link();
@@ -3894,5 +3895,28 @@ test "worker resolver injected hierarchy boundary is retained" {
         const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
         try std.testing.expectEqual(@as(usize, 1), outputs.len);
         try std.testing.expectEqual(!disabled, std.mem.indexOf(u8, outputs[0].contents, "hierarchy-marker") != null);
+    }
+}
+
+test "worker missing export shim follows explicit and RN policy" {
+    const helpers = @import("test_helpers.zig");
+    inline for (.{ false, true }) |rn| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "new Worker(new URL('./worker.mjs',import.meta.url),{type:'module'});");
+        try helpers.writeFile(tmp.dir, "worker.mjs", "import {missing} from './dep.mjs';postMessage({shimmed:missing===undefined});");
+        try helpers.writeFile(tmp.dir, "dep.mjs", "export const present=42;");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm, .shim_missing_exports = !rn, .platform = if (rn) .react_native else .browser });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
+        try std.testing.expectEqual(@as(usize, 1), outputs.len);
+        const observed = try std.fmt.allocPrint(std.testing.allocator, "globalThis.self=globalThis;globalThis.postMessage=value=>console.log(JSON.stringify(value));\n{s}", .{outputs[0].contents});
+        defer std.testing.allocator.free(observed);
+        try helpers.expectOutputRuntime(observed, "{\"shimmed\":true}\n");
     }
 }
