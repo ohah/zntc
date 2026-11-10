@@ -1232,6 +1232,16 @@ pub const Bundler = struct {
             .block_list = self.getResolveCache().resolver.block_list,
         });
 
+        // A worker asset has one physical output even when its parent chunks.
+        // Reuse the ordinary options/base producers for that actual layout.
+        var worker_options = self.options;
+        worker_options.format = format;
+        worker_options.code_splitting = false;
+        worker_options.preserve_modules = false;
+        worker_options.inline_dynamic_imports = true;
+        var worker_context = Bundler.initWithResolveCache(arena_alloc, worker_options, &worker_resolve_cache);
+        defer worker_context.deinit();
+
         var worker_graph = ModuleGraph.init(arena_alloc, &worker_resolve_cache);
         // Dependency scanning evaluates require.context arguments and dead branches
         // before the transform applies defines (#4603).
@@ -1278,11 +1288,12 @@ pub const Bundler = struct {
         worker_graph.emotion_label_format = self.options.emotion_label_format;
         worker_graph.emotion_extra_css_sources = self.options.emotion_extra_css_sources;
         worker_graph.emotion_extra_styled_sources = self.options.emotion_extra_styled_sources;
-        worker_graph.code_splitting = self.options.code_splitting;
-        worker_graph.preserve_modules = self.options.preserve_modules;
+        worker_graph.code_splitting = worker_context.options.code_splitting;
+        worker_graph.preserve_modules = worker_context.options.preserve_modules;
+        worker_graph.inline_dynamic_imports = worker_context.options.inline_dynamic_imports;
         worker_graph.minify_identifiers = self.options.minify_identifiers;
         // #4598: worker 는 자기 자신의 방출 format(`workerFormat()`) 으로 판정해야 한다.
-        worker_graph.transform_options_base = self.buildTransformOptionsBase(format);
+        worker_graph.transform_options_base = worker_context.buildTransformOptionsBase(format);
         defer worker_graph.deinit();
 
         const entry_path = try arena_alloc.dupe(u8, worker_path);
@@ -1341,7 +1352,7 @@ pub const Bundler = struct {
         defer worker_linker.deinit();
 
         // emit
-        var emit_opts = self.makeEmitOptions(format);
+        var emit_opts = worker_context.makeEmitOptions(format);
         emit_opts.run_before_main = worker_run_before_main;
         emit_opts.polyfills = inline_polyfills;
         // Workers use this single emitter even when the parent plans chunks.
@@ -3737,5 +3748,29 @@ test "worker runtime polyfill plan selects its own usage roots" {
         const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
         try std.testing.expectEqual(@as(usize, 1), outputs.len);
         try std.testing.expectEqual(case[5], std.mem.indexOf(u8, outputs[0].contents, "runtimeProbe") != null);
+    }
+}
+
+test "worker dynamic imports use its single output layout" {
+    const helpers = @import("test_helpers.zig");
+    inline for (.{ false, true }) |inline_parent| {
+        inline for (.{ @as(u8, 0), 1, 2 }) |layout| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try helpers.writeFile(tmp.dir, "entry.mjs", "new Worker(new URL('./worker.mjs',import.meta.url),{type:'module'});");
+            try helpers.writeFile(tmp.dir, "worker.mjs", "globalThis.workerRuns=0;Promise.all([import('./lazy.mjs'),import('./lazy.mjs')]).then(([a,b])=>self.postMessage([a.value,a===b,globalThis.workerRuns]));");
+            try helpers.writeFile(tmp.dir, "lazy.mjs", "globalThis.workerRuns++;export const value=42;");
+            const entry = try helpers.absPath(&tmp, "entry.mjs");
+            defer std.testing.allocator.free(entry);
+            var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm, .inline_dynamic_imports = inline_parent, .code_splitting = layout == 1, .preserve_modules = layout == 2 });
+            defer bundler.deinit();
+            const result = try bundler.bundle(std.testing.io);
+            defer result.deinit(std.testing.allocator);
+            try std.testing.expect(!result.hasErrors());
+            const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
+            try std.testing.expectEqual(@as(usize, 1), outputs.len);
+            try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "import(") == null);
+            try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "42") != null);
+        }
     }
 }
