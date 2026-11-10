@@ -541,6 +541,9 @@ pub const ResolveCache = struct {
         // 이 키가 속한 캐시 샤드 — lookup/store/putCache 모두 이 샤드의 mutex 로 보호.
         const cache_shard = self.cacheShardFor(cache_key);
 
+        // Only a failed worker URL is retried: its file may have been created
+        // while the importer and this persistent cache remain unchanged.
+        var retry_worker_negative = false;
         // 캐시 조회
         {
             var lookup_scope = profile.begin(.resolve_cache_lookup);
@@ -548,17 +551,21 @@ pub const ResolveCache = struct {
             if (thread_safe) cache_shard.mutex.lock();
             defer if (thread_safe) cache_shard.mutex.unlock();
             if (cache_shard.map.get(cache_key)) |cached| {
-                return switch (cached) {
+                switch (cached) {
                     // PR resolve interning: cache 의 path/resolve_dir 는 *interned* — caller 가
                     // borrow only. dupe 회피.
-                    .resolved => |m| switch (m) {
+                    .resolved => |m| return switch (m) {
                         .file => |f| fileResult(f.path, f.resolve_dir, f.module_type, f.is_module_field),
                         .disabled => |d| disabledResult(d.path, d.module_type),
                         .virtual, .dataurl, .external, .custom => unreachable,
                     },
-                    .not_found => error.ModuleNotFound,
-                    .mapped_not_found => error.MappedTargetNotFound,
-                };
+                    .not_found => if (kind == .worker) {
+                        retry_worker_negative = true;
+                    } else return error.ModuleNotFound,
+                    .mapped_not_found => if (kind == .worker) {
+                        retry_worker_negative = true;
+                    } else return error.MappedTargetNotFound,
+                }
             }
         }
 
@@ -618,6 +625,10 @@ pub const ResolveCache = struct {
         local_resolver.dir_cache = &self.dir_cache;
         local_resolver.realpath_cache = &self.realpath_cache;
         local_resolver.pkg_json_cache = &self.pkg_json_cache;
+        // Never clear the shared directory cache: concurrent resolutions may
+        // still borrow its entries. This retry alone observes fresh filesystem
+        // metadata; successful workers and ordinary negative hits are intact.
+        if (retry_worker_negative) local_resolver.dir_cache = null;
         if (!thread_safe) {
             // 단일 스레드: self.resolver의 conditions를 직접 교체 후 복원.
             // ⚠️ dir_cache/pkg_json_cache 는 주입하지 않는다 — 이 경로(link 단계 재해석)가
@@ -638,7 +649,7 @@ pub const ResolveCache = struct {
             self.resolver.url_relative = false;
             self.resolver.url_kind = false;
         };
-        const resolve_ptr = if (thread_safe) &local_resolver else &self.resolver;
+        const resolve_ptr = if (thread_safe or retry_worker_negative) &local_resolver else &self.resolver;
 
         const result = blk: {
             var resolver_scope = profile.begin(.resolve_resolver);
@@ -1394,4 +1405,33 @@ test "worker resolver effective conditions clone is atomic and separately owned"
     try child.cloneEffectiveConditionsFrom(&parent);
     try std.testing.expectEqualSlices([]const u8, parent.conditions_import, child.conditions_import);
     try std.testing.expectEqualSlices([]const u8, parent.conditions_require, child.conditions_require);
+}
+
+test "worker negative resolution retries a newly created file without changing ordinary cache entries" {
+    const allocator = std.testing.allocator;
+    for ([_]bool{ false, true }) |mapped| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        // Populate the shared directory snapshot before the file appears.
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "present.js", .data = "" });
+        const directory = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+        defer allocator.free(directory);
+        const aliases = [_]resolver_mod.AliasEntry{.{ .from = "late-worker", .to = "./late.js" }};
+        var cache = ResolveCache.init(allocator, .{ .alias = if (mapped) &aliases else &.{} });
+        defer cache.deinit();
+        const specifier = if (mapped) "late-worker" else "./late.js";
+        const missing = if (mapped) error.MappedTargetNotFound else error.ModuleNotFound;
+        try std.testing.expectError(missing, cache.resolveThreadSafe(std.testing.io, directory, specifier, .worker));
+        try std.testing.expectError(missing, cache.resolveThreadSafe(std.testing.io, directory, specifier, .static_import));
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "late.js", .data = "postMessage(42);" });
+        const resolved = (try cache.resolveThreadSafe(std.testing.io, directory, specifier, .worker)) orelse return error.MissingWorkerResolution;
+        try std.testing.expect(resolved == .file);
+        try std.testing.expect(std.mem.endsWith(u8, resolved.file.path, "late.js"));
+        // A positive worker hit retains the same cache-owned path identity.
+        const positive = (try cache.resolveThreadSafe(std.testing.io, directory, specifier, .worker)).?;
+        try std.testing.expectEqual(resolved.file.path.ptr, positive.file.path.ptr);
+        // The source-kind key is independent: ordinary negative results keep
+        // their existing persistent-cache policy.
+        try std.testing.expectError(missing, cache.resolveThreadSafe(std.testing.io, directory, specifier, .static_import));
+    }
 }
