@@ -4379,3 +4379,39 @@ test "worker diagnostic ownership is atomic on allocation failure" {
         }
     }.run, .{});
 }
+
+test "worker absolute failure diagnostics follow the actual injected resolver host" {
+    const helpers = @import("test_helpers.zig");
+    inline for (.{ false, true }) |node_resolver| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const missing = try helpers.absPath(&tmp, "missing-worker.mjs");
+        defer std.testing.allocator.free(missing);
+        const quoted = try std.json.Stringify.valueAlloc(std.testing.allocator, missing, .{});
+        defer std.testing.allocator.free(quoted);
+        const source = try std.fmt.allocPrint(std.testing.allocator, "new Worker(new URL({s},import.meta.url),{{type:'module'}});", .{quoted});
+        defer std.testing.allocator.free(source);
+        try helpers.writeFile(tmp.dir, "entry.mjs", source);
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        var cache = ResolveCache.init(std.testing.allocator, .{ .platform = if (node_resolver) .node else .browser });
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        // Deliberately conflicting options: the actual resolver owns lookup.
+        var bundler = Bundler.initWithGraph(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm, .platform = if (node_resolver) .browser else .node }, &cache, &graph);
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expectEqual(node_resolver, result.hasErrors());
+        try std.testing.expect(result.asset_outputs == null);
+        if (node_resolver) {
+            const diagnostics = result.diagnostics orelse return error.MissingWorkerDiagnostic;
+            try std.testing.expectEqual(@as(usize, 1), diagnostics.len);
+            try std.testing.expectEqual(BundlerDiagnostic.ErrorCode.unresolved_import, diagnostics[0].code);
+        } else {
+            try std.testing.expect(result.diagnostics == null);
+            try std.testing.expect(std.mem.indexOf(u8, result.output, missing) != null);
+        }
+    }
+}

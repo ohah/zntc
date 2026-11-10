@@ -1205,6 +1205,16 @@ pub fn findPackageDirPath(path: []const u8) ?[]const u8 {
     return path[0 .. nm_pos + nm.len + pkg_end];
 }
 
+/// Failed runtime URL references are not missing local worker files.
+/// This is separate from urlRelativeFor, which only selects bare sibling lookup.
+/// Node absolute paths retain the resolver's existing filesystem contract.
+pub fn workerFailureIsLocal(platform: Platform, specifier: []const u8) bool {
+    if (css_scanner.hasUriScheme(specifier)) return false;
+    if (std.mem.startsWith(u8, specifier, "//")) return false;
+    if (std.mem.startsWith(u8, specifier, "/") and platform != .node) return false;
+    return true;
+}
+
 /// resolver 의 형제-우선 탐색을 켤지 — kind 와 지정자 철자를 함께 본다 (#4604).
 /// 테스트도 이 함수를 그대로 써야 프로덕션 게이트가 바뀔 때 같이 깨진다.
 pub fn urlRelativeFor(kind: ImportKind, specifier: []const u8) bool {
@@ -1433,5 +1443,15 @@ test "worker negative resolution retries a newly created file without changing o
         // The source-kind key is independent: ordinary negative results keep
         // their existing persistent-cache policy.
         try std.testing.expectError(missing, cache.resolveThreadSafe(std.testing.io, directory, specifier, .static_import));
+    }
+}
+
+test "worker failure classification separates runtime URLs from local filesystem paths" {
+    inline for (.{ Platform.browser, Platform.node, Platform.neutral, Platform.react_native }) |platform| {
+        for ([_][]const u8{ "https://cdn.example/w.js", "data:text/javascript,0", "blob:https://example/id", "file:///tmp/w.js", "//cdn.example/w.js" }) |url|
+            try std.testing.expect(!workerFailureIsLocal(platform, url));
+        for ([_][]const u8{ "worker.js", "./worker.js", "../worker.js" }) |path|
+            try std.testing.expect(workerFailureIsLocal(platform, path));
+        try std.testing.expectEqual(platform == .node, workerFailureIsLocal(platform, "/absolute/worker.js"));
     }
 }

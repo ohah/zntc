@@ -379,6 +379,7 @@ pub fn applyResolveResult(
         // worker edge, without setting resolve_failed: normal resolution must
         // still get its existing retry opportunity after a scan failure.
         if (record.kind == .worker) {
+            if (!resolve_cache_mod.workerFailureIsLocal(self.resolve_cache.platform, record.specifier)) return;
             try deferWorkerResolutionFailure(self.modules.at(mod_idx), self.allocator, rec_i);
             return;
         }
