@@ -1199,14 +1199,17 @@ pub const Bundler = struct {
     /// 남았다. module worker 는 브라우저가 `import` 를 지원하므로 그대로 보존한다 — Vite 도 worker
     /// 출력이 `es` 일 때 `type: 'module'` 과 짝을 맞춘다.
     fn workerFormatFor(self: *const Bundler, module_worker: bool) EmitOptions.Format {
+        // Node selects its loader from the output file, not WorkerOptions.type.
+        if (self.options.platform == .node and self.options.format == .esm) return .esm;
         const classic = self.workerFormat();
         if (classic == .cjs) return classic;
         return if (module_worker) .esm else classic;
     }
 
-    fn workerExtension(format: EmitOptions.Format) []const u8 {
+    fn workerExtension(self: *const Bundler, format: EmitOptions.Format) []const u8 {
         return switch (format) {
             .cjs => ".cjs",
+            .esm => if (self.options.platform == .node) ".mjs" else ".js",
             else => ".js",
         };
     }
@@ -1419,7 +1422,7 @@ pub const Bundler = struct {
         // content hash로 파일명 생성
         const hash = std.hash.Crc32.hash(worker_output);
         const basename = std.fs.path.stem(std.fs.path.basename(worker_path));
-        const filename = try std.fmt.allocPrint(self.allocator, "{s}-{x:0>8}{s}", .{ basename, hash, workerExtension(format) });
+        const filename = try std.fmt.allocPrint(self.allocator, "{s}-{x:0>8}{s}", .{ basename, hash, self.workerExtension(format) });
         const contents = try self.allocator.dupe(u8, worker_output);
 
         return .{ .filename = filename, .contents = contents };
@@ -3969,5 +3972,50 @@ test "worker strict execution order follows ordinary wrapped imports" {
         const observed = try std.fmt.allocPrint(std.testing.allocator, "globalThis.self=globalThis;globalThis.postMessage=value=>console.log(JSON.stringify(value));\n{s}", .{outputs[0].contents});
         defer std.testing.allocator.free(observed);
         try helpers.expectOutputRuntime(observed, if (strict) "[42,[\"a\",\"b\",\"c\",\"body\"]]\n" else "[42,[\"b\",\"a\",\"c\",\"body\"]]\n");
+    }
+}
+
+test "node worker physical format runs independently of package and browser type option" {
+    const helpers = @import("test_helpers.zig");
+    inline for (.{ false, true }) |module_package| {
+        inline for (.{ EmitOptions.Format.esm, .cjs }) |format| {
+            inline for (.{ false, true }) |cjs_source| {
+                inline for (.{ false, true }) |module_option| {
+                    var tmp = std.testing.tmpDir(.{});
+                    defer tmp.cleanup();
+                    try helpers.writeFile(tmp.dir, "package.json", if (module_package) "{\"type\":\"module\"}" else "{\"type\":\"commonjs\"}");
+                    const source_name = if (cjs_source) "worker.cjs" else "worker.mjs";
+                    const source = try std.fmt.allocPrint(std.testing.allocator, "import{{Worker}}from'node:worker_threads';const worker=new Worker(new URL('./{s}',import.meta.url){s});worker.on('message',value=>console.log(value));worker.on('error',error=>{{console.error(error);process.exitCode=1;}});", .{ source_name, if (module_option) ",{type:'module'}" else "" });
+                    defer std.testing.allocator.free(source);
+                    try helpers.writeFile(tmp.dir, "entry.mjs", source);
+                    try helpers.writeFile(tmp.dir, source_name, if (cjs_source) "const{parentPort}=require('node:worker_threads');parentPort.postMessage(42);parentPort.close();" else "import{parentPort}from'node:worker_threads';parentPort.postMessage(42);parentPort.close();");
+                    const entry = try helpers.absPath(&tmp, "entry.mjs");
+                    defer std.testing.allocator.free(entry);
+                    var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .node, .format = format });
+                    defer bundler.deinit();
+                    const result = try bundler.bundle(std.testing.io);
+                    defer result.deinit(std.testing.allocator);
+                    try std.testing.expect(!result.hasErrors());
+                    const assets = result.asset_outputs orelse return error.MissingWorkerOutput;
+                    try std.testing.expectEqual(@as(usize, 1), assets.len);
+                    try std.testing.expect(std.mem.endsWith(u8, assets[0].path, if (format == .esm) ".mjs" else ".cjs"));
+                    try std.testing.expect(std.mem.indexOf(u8, result.output, assets[0].path) != null);
+                    try helpers.writeFile(tmp.dir, assets[0].path, assets[0].contents);
+                    const output_name = if (format == .esm) "parent-output.mjs" else "parent-output.cjs";
+                    try helpers.writeFile(tmp.dir, output_name, result.output);
+                    // The original URL cannot accidentally make this test pass.
+                    try tmp.dir.deleteFile(std.testing.io, source_name);
+                    const path = try helpers.absPath(&tmp, output_name);
+                    defer std.testing.allocator.free(path);
+                    const observed = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", path } });
+                    defer std.testing.allocator.free(observed.stdout);
+                    defer std.testing.allocator.free(observed.stderr);
+                    if (observed.term != .exited or observed.term.exited != 0) std.debug.print("NODE_WORKER package_module={} format={s} source_cjs={} module_option={} term={any} stdout={s} stderr={s}\n", .{ module_package, @tagName(format), cjs_source, module_option, observed.term, observed.stdout, observed.stderr });
+                    try std.testing.expect(observed.term == .exited and observed.term.exited == 0);
+                    try std.testing.expectEqualStrings("42\n", observed.stdout);
+                    try std.testing.expectEqualStrings("", observed.stderr);
+                }
+            }
+        }
     }
 }

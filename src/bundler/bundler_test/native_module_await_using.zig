@@ -261,63 +261,68 @@ test "native await using lowered ESM preserved layout publishes diagnostics with
     }
 }
 
-test "native await using module worker runs emitted assets and classic worker retains diagnostics" {
-    for ([_]bool{ false, true }) |module_worker| {
-        var tmp = std.testing.tmpDir(.{});
-        defer tmp.cleanup();
-        const source = try std.fmt.allocPrint(std.testing.allocator, "new Worker(new URL('./worker.mjs',import.meta.url){s});", .{if (module_worker) ",{type:'module'}" else ""});
-        defer std.testing.allocator.free(source);
-        try helpers.writeFile(tmp.dir, "entry.mjs", source);
-        try helpers.writeFile(tmp.dir, "worker.mjs", "import{answer}from './resource.mjs';console.log(answer);");
-        try helpers.writeFile(tmp.dir, "resource.mjs", "// isolated resource module\nawait using resource={async[Symbol.asyncDispose](){await 0}};export const answer=42;");
-        const entry = try helpers.absPath(&tmp, "entry.mjs");
-        defer std.testing.allocator.free(entry);
-        var bundler = Bundler.init(std.testing.allocator, .{
-            .entry_points = &.{entry},
-            .format = .esm,
-            .platform = .node,
-            .unsupported = compat.fromESTarget(.esnext),
-        });
-        defer bundler.deinit();
-        const result = try bundler.bundle(std.testing.io);
-        defer result.deinit(std.testing.allocator);
-        if (module_worker) {
-            try std.testing.expect(!result.hasErrors());
-            const assets = result.asset_outputs orelse return error.TestUnexpectedResult;
-            var found_worker = false;
-            for (assets) |asset| {
-                if (std.mem.startsWith(u8, asset.path, "worker-")) found_worker = true;
-                try helpers.writeFile(tmp.dir, asset.path, asset.contents);
+test "native await using Node workers and browser module workers run assets while browser classic rejects" {
+    for ([_]bool{ false, true }) |node_platform| {
+        for ([_]bool{ false, true }) |module_worker| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            const source = try std.fmt.allocPrint(std.testing.allocator, "new Worker(new URL('./worker.mjs',import.meta.url){s});", .{if (module_worker) ",{type:'module'}" else ""});
+            defer std.testing.allocator.free(source);
+            try helpers.writeFile(tmp.dir, "entry.mjs", source);
+            try helpers.writeFile(tmp.dir, "worker.mjs", "import{answer}from './resource.mjs';console.log(answer);");
+            try helpers.writeFile(tmp.dir, "resource.mjs", "// isolated resource module\nawait using resource={async[Symbol.asyncDispose](){await 0}};export const answer=42;");
+            const entry = try helpers.absPath(&tmp, "entry.mjs");
+            defer std.testing.allocator.free(entry);
+            var bundler = Bundler.init(std.testing.allocator, .{
+                .entry_points = &.{entry},
+                .format = .esm,
+                .platform = if (node_platform) .node else .browser,
+                .unsupported = compat.fromESTarget(.esnext),
+            });
+            defer bundler.deinit();
+            const result = try bundler.bundle(std.testing.io);
+            defer result.deinit(std.testing.allocator);
+            if (node_platform or module_worker) {
+                try std.testing.expect(!result.hasErrors());
+                const assets = result.asset_outputs orelse return error.TestUnexpectedResult;
+                var found_worker = false;
+                for (assets) |asset| {
+                    if (std.mem.startsWith(u8, asset.path, "worker-")) found_worker = true;
+                    try helpers.writeFile(tmp.dir, asset.path, asset.contents);
+                }
+                try std.testing.expect(found_worker);
+                try helpers.writeFile(tmp.dir, "output.mjs", result.output);
+                try helpers.writeFile(tmp.dir, "package.json", "{\"type\":\"module\"}");
+                try helpers.writeFile(tmp.dir, "worker-harness.mjs", "import{Worker as NativeWorker}from'node:worker_threads';globalThis.Worker=class extends NativeWorker{constructor(url,options){super(url,options);this.on('error',error=>{console.error(error);process.exitCode=1})}};await import('./output.mjs');");
+                // Prove the emitted asset is self-contained, not the input files.
+                try tmp.dir.deleteFile(std.testing.io, "worker.mjs");
+                try tmp.dir.deleteFile(std.testing.io, "resource.mjs");
+                const harness = try helpers.absPath(&tmp, "worker-harness.mjs");
+                defer std.testing.allocator.free(harness);
+                const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", harness } });
+                defer std.testing.allocator.free(actual.stdout);
+                defer std.testing.allocator.free(actual.stderr);
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings("42\n", actual.stdout);
+                try std.testing.expectEqualStrings("", actual.stderr);
+                continue;
             }
-            try std.testing.expect(found_worker);
-            try helpers.writeFile(tmp.dir, "output.mjs", result.output);
-            try helpers.writeFile(tmp.dir, "package.json", "{\"type\":\"module\"}");
-            try helpers.writeFile(tmp.dir, "worker-harness.mjs", "import{Worker as NativeWorker}from'node:worker_threads';globalThis.Worker=class extends NativeWorker{constructor(url,options){super(url,options);this.on('error',error=>{console.error(error);process.exitCode=1})}};await import('./output.mjs');");
-            const harness = try helpers.absPath(&tmp, "worker-harness.mjs");
-            defer std.testing.allocator.free(harness);
-            const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", harness } });
-            defer std.testing.allocator.free(actual.stdout);
-            defer std.testing.allocator.free(actual.stderr);
-            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
-            try std.testing.expectEqualStrings("42\n", actual.stdout);
-            try std.testing.expectEqualStrings("", actual.stderr);
-            continue;
+            try std.testing.expect(result.hasErrors());
+            if (result.asset_outputs) |outputs| try std.testing.expectEqual(@as(usize, 0), outputs.len);
+            var found = false;
+            for (result.diagnostics orelse &.{}) |diagnostic| {
+                if (diagnostic.code != .top_level_await_target or diagnostic.severity != .@"error") continue;
+                try std.testing.expect(std.mem.endsWith(u8, diagnostic.file_path, "resource.mjs"));
+                try std.testing.expectEqual(@as(?u32, 2), diagnostic.line);
+                // The parser consumes `await` before the declaration span starts
+                // at `using`, six bytes into the second source line.
+                try std.testing.expectEqual(@as(?u32, 6), diagnostic.column);
+                const span = diagnostic.span orelse return error.TestUnexpectedResult;
+                try std.testing.expect(span.end > span.start);
+                found = true;
+            }
+            try std.testing.expect(found);
         }
-        try std.testing.expect(result.hasErrors());
-        if (result.asset_outputs) |outputs| try std.testing.expectEqual(@as(usize, 0), outputs.len);
-        var found = false;
-        for (result.diagnostics orelse &.{}) |diagnostic| {
-            if (diagnostic.code != .top_level_await_target or diagnostic.severity != .@"error") continue;
-            try std.testing.expect(std.mem.endsWith(u8, diagnostic.file_path, "resource.mjs"));
-            try std.testing.expectEqual(@as(?u32, 2), diagnostic.line);
-            // The parser consumes `await` before the declaration span starts
-            // at `using`, six bytes into the second source line.
-            try std.testing.expectEqual(@as(?u32, 6), diagnostic.column);
-            const span = diagnostic.span orelse return error.TestUnexpectedResult;
-            try std.testing.expect(span.end > span.start);
-            found = true;
-        }
-        try std.testing.expect(found);
     }
 }
 
