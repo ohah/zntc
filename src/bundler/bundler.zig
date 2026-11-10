@@ -1228,6 +1228,8 @@ pub const Bundler = struct {
             // Preserve the actual parent resolver's ordered replacement policy,
             // including caches supplied through initWithGraph (#4603).
             .resolve_extensions = self.getResolveCache().resolver.custom_extensions,
+            .node_paths = self.getResolveCache().resolver.node_paths,
+            .block_list = self.getResolveCache().resolver.block_list,
         });
 
         var worker_graph = ModuleGraph.init(arena_alloc, &worker_resolve_cache);
@@ -3607,4 +3609,34 @@ test "dead classic worker does not downgrade live module worker" {
     const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
     try std.testing.expectEqual(@as(usize, 1), outputs.len);
     try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "export") != null);
+}
+
+test "worker node paths retain actual parent block list veto" {
+    const helpers = @import("test_helpers.zig");
+    inline for (.{ false, true }) |blocked| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "new Worker(new URL('./worker.mjs',import.meta.url),{type:'module'});");
+        try helpers.writeFile(tmp.dir, "worker.mjs", "import {value} from 'worker-parity-pkg';self.postMessage(value);");
+        try helpers.writeFile(tmp.dir, "custom_modules/worker-parity-pkg/package.json", "{\"name\":\"worker-parity-pkg\",\"main\":\"index.js\"}");
+        try helpers.writeFile(tmp.dir, "custom_modules/worker-parity-pkg/index.js", "export const value='custom-package-marker';");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const node_path = try helpers.absPath(&tmp, "custom_modules");
+        defer std.testing.allocator.free(node_path);
+        // The injected parent cache, not these deliberately empty options,
+        // owns both fallback search and the final canonical-path veto.
+        const options: BundleOptions = .{ .entry_points = &.{entry}, .format = .esm };
+        var cache = ResolveCache.init(std.testing.allocator, .{ .node_paths = &.{node_path}, .block_list = if (blocked) &.{"worker-parity-pkg"} else &.{} });
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
+        try std.testing.expectEqual(@as(usize, 1), outputs.len);
+        try std.testing.expectEqual(!blocked, std.mem.indexOf(u8, outputs[0].contents, "custom-package-marker") != null);
+    }
 }
