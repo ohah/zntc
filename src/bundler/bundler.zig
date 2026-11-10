@@ -1352,6 +1352,7 @@ pub const Bundler = struct {
         worker_linker.configurable_exports = self.options.configurable_exports;
         worker_linker.iife_globals = worker_context.options.globals;
         worker_linker.shim_missing_exports = worker_context.options.shim_missing_exports or worker_context.options.platform == .react_native;
+        worker_linker.strict_execution_order = worker_context.options.strict_execution_order;
         worker_linker.inline_requires = self.options.platform == .react_native;
         if (self.options.mf) |*m| worker_linker.mf_remotes = m.remotes; // PR-1 (#3459) 일관
         try worker_linker.link();
@@ -3941,5 +3942,32 @@ test "worker linker preserves explicit global identifier reservations" {
         const observed = try std.fmt.allocPrint(std.testing.allocator, "globalThis.self=globalThis;globalThis.postMessage=value=>console.log(JSON.stringify(value));\n{s}", .{outputs[0].contents});
         defer std.testing.allocator.free(observed);
         try helpers.expectOutputRuntime(observed, if (reserved) "{\"local\":7,\"read\":41}\n" else "{\"local\":7,\"read\":7}\n");
+    }
+}
+
+test "worker strict execution order follows ordinary wrapped imports" {
+    const helpers = @import("test_helpers.zig");
+    inline for (.{ false, true }) |strict| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "new Worker(new URL('./worker.mjs',import.meta.url),{type:'module'});");
+        try helpers.writeFile(tmp.dir, "worker.mjs", "import './driver.cjs';postMessage(globalThis.__driverResult);");
+        try helpers.writeFile(tmp.dir, "driver.cjs", "globalThis.__driverResult=require('./middle.mjs').snapshot;");
+        try helpers.writeFile(tmp.dir, "middle.mjs", "import './a.mjs';import {value} from './b.mjs';import './c.mjs';globalThis.__order.push('body');export const snapshot=[value,globalThis.__order];");
+        try helpers.writeFile(tmp.dir, "a.mjs", "(globalThis.__order??=[]).push('a');");
+        try helpers.writeFile(tmp.dir, "b.mjs", "(globalThis.__order??=[]).push('b');export const value=42;");
+        try helpers.writeFile(tmp.dir, "c.mjs", "(globalThis.__order??=[]).push('c');");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm, .strict_execution_order = strict });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        const outputs = result.asset_outputs orelse return error.MissingWorkerOutput;
+        try std.testing.expectEqual(@as(usize, 1), outputs.len);
+        const observed = try std.fmt.allocPrint(std.testing.allocator, "globalThis.self=globalThis;globalThis.postMessage=value=>console.log(JSON.stringify(value));\n{s}", .{outputs[0].contents});
+        defer std.testing.allocator.free(observed);
+        try helpers.expectOutputRuntime(observed, if (strict) "[42,[\"a\",\"b\",\"c\",\"body\"]]\n" else "[42,[\"b\",\"a\",\"c\",\"body\"]]\n");
     }
 }
