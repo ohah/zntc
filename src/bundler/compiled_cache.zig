@@ -373,7 +373,7 @@ pub fn computeInputHash(
     options_hash: u64,
     used_export_names: ?[]const []const u8,
     graph: *const ModuleGraph,
-    /// #4535: ModuleIndex → provider 의 `Linker.emitDeepFingerprint`(local + Σ dep.deep, Merkle).
+    /// #4535: ModuleIndex → provider 의 `Linker.computeEmitFingerprints` (completed SCC dependency table).
     /// 소비자 emit 바이트가 관측하는 provider 의 post-link 상태(wrap_kind/상수값/canonical 이름 등)를
     /// **re-export barrel 통한 전이까지** 키에 접는다. 빈 slice = folding 비활성(non-incremental /
     /// dev / linker 없음 — 종전 동작). ⚠️ **deep** 값이라 아래 per-record fold 와 own-index fold

@@ -12531,3 +12531,101 @@ fn expectOnlyInteropRolePublication(
     }
     for (selected[0..appended]) |present| try std.testing.expect(present);
 }
+
+// A/B is a re-export cycle, E is an outgoing leaf, and X is an external
+// consumer. E used to be omitted when B was memoized on the A backedge.
+const Scc4545FingerprintFixture = struct {
+    const names = [_][]const u8{ "entry.mjs", "a.mjs", "b.mjs", "e.mjs", "x.mjs" };
+    const entry_a_first = "import './a.mjs'; import {run} from './x.mjs'; console.log(run());\n";
+    const entry_x_first = "import {run} from './x.mjs'; import './a.mjs'; console.log(run());\n";
+    const Snapshot = struct {
+        indices: [names.len]u32,
+        local: [names.len]u64,
+        deep: [names.len]u64,
+        source: [names.len]u64,
+        mtime: [names.len]i128,
+        key_x: u64,
+    };
+
+    fn capture(tmp: *std.testing.TmpDir) !Snapshot {
+        const allocator = std.testing.allocator;
+        var actual = try buildLinkAndRename(allocator, tmp, "entry.mjs");
+        defer {
+            actual.linker.deinit();
+            actual.destroyGraph();
+            actual.cache.deinit();
+        }
+        const deep = try actual.linker.computeEmitFingerprints(allocator);
+        defer allocator.free(deep);
+        try std.testing.expectEqual(actual.graph.moduleCount(), deep.len);
+        // The public producer owns all traversal state; repeated calls cannot
+        // retain a partially computed component from the previous call.
+        const repeated = try actual.linker.computeEmitFingerprints(allocator);
+        defer allocator.free(repeated);
+        try std.testing.expectEqualSlices(u64, deep, repeated);
+        var snapshot: Snapshot = undefined;
+        for (names, 0..) |name, role| {
+            const index = findModuleIdx(actual.graph, name) orelse return error.MissingFingerprintFixtureModule;
+            const module = actual.graph.getModule(index).?;
+            snapshot.indices[role] = index.toU32();
+            snapshot.local[role] = actual.linker.emitFingerprint(module);
+            snapshot.deep[role] = deep[index.toUsize()];
+            snapshot.source[role] = std.hash.Wyhash.hash(0, module.source);
+            snapshot.mtime[role] = module.mtime;
+        }
+        const x = actual.graph.getModule(findModuleIdx(actual.graph, "x.mjs").?).?;
+        snapshot.key_x = @import("compiled_cache.zig").computeInputHash(x, 0x4545534343444941, null, actual.graph, deep);
+        return snapshot;
+    }
+
+    fn run(acyclic: bool) !void {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.mjs", entry_a_first);
+        try writeFile(tmp.dir, "a.mjs", if (acyclic) "export * from './b.mjs';\n" else "export * from './b.mjs'; export * from './e.mjs';\n");
+        try writeFile(tmp.dir, "b.mjs", if (acyclic) "export const sentinel=0;\n" else "export * from './a.mjs';\n");
+        try writeFile(tmp.dir, "x.mjs", if (acyclic) "import {value} from './e.mjs'; export function run(){return value;}\n" else "import {value} from './b.mjs'; export function run(){return value;}\n");
+        try writeFile(tmp.dir, "e.mjs", "export const value=41;\n");
+        const before = try capture(&tmp);
+        if (!acyclic) {
+            try std.testing.expectEqual(before.deep[1], before.deep[2]);
+            // Reorder only the entry imports. This changes actual BFS indices
+            // while all provider sources, local fingerprints, and X's key
+            // inputs stay fixed. Component output must follow paths, not IDs.
+            try writeFile(tmp.dir, "entry.mjs", entry_x_first);
+            const reordered = try capture(&tmp);
+            try std.testing.expect(before.indices[4] != reordered.indices[4]);
+            for (1..names.len) |role| {
+                try std.testing.expectEqual(before.local[role], reordered.local[role]);
+                try std.testing.expectEqual(before.deep[role], reordered.deep[role]);
+            }
+            try std.testing.expectEqual(before.source[4], reordered.source[4]);
+            try std.testing.expectEqual(before.mtime[4], reordered.mtime[4]);
+            try std.testing.expectEqual(before.key_x, reordered.key_x);
+            try writeFile(tmp.dir, "entry.mjs", entry_a_first);
+        }
+        try writeFile(tmp.dir, "e.mjs", "export const value=42;\n");
+        const after = try capture(&tmp);
+        for (0..names.len) |role| {
+            if (role == 3 or role == 0) continue;
+            try std.testing.expectEqual(before.source[role], after.source[role]);
+            try std.testing.expectEqual(before.mtime[role], after.mtime[role]);
+            try std.testing.expectEqual(before.local[role], after.local[role]);
+        }
+        try std.testing.expect(before.source[3] != after.source[3]);
+        try std.testing.expect(before.local[3] != after.local[3]);
+        try std.testing.expect(before.key_x != after.key_x);
+        if (!acyclic) {
+            try std.testing.expectEqual(after.deep[1], after.deep[2]);
+            try std.testing.expect(before.deep[2] != after.deep[2]);
+        }
+    }
+};
+
+test "reuse #4545: SCC leaf changes invalidate the external consumer key independent of BFS indices" {
+    try Scc4545FingerprintFixture.run(false);
+}
+
+test "reuse #4545: acyclic direct provider changes invalidate the consumer key" {
+    try Scc4545FingerprintFixture.run(true);
+}

@@ -1030,9 +1030,16 @@ fn ensureNsTargetSet(self: *Linker) std.mem.Allocator.Error!void {
     self.ns_target_set_built = true;
 }
 
+/// The fallible complete-table producer must not turn metadata-index OOM
+/// into a valid fingerprint with missing namespace collision facts.
+pub fn prepareFingerprintInputs(self: *Linker) std.mem.Allocator.Error!void {
+    try ensureNsTargetSet(self);
+    if (self.ns_target_set.count() != 0) try ensureNsBaseRank(self);
+}
+
 /// (#4545 hole 3) `import * as ns` target 모듈의 합성 shared-ns var 이름을 결정하는 **build-variable
 /// 입력** = 전-모듈 동명-base 충돌 rank 를 해시한다. 이름(`t_ns`→`t_ns_2`)이 collision 구성 변화
-/// (동명 base 모듈 추가/삭제)로 바뀌면 이 값이 바뀌어 target 의 `emitFingerprint`→deep-fold 로
+/// (동명 base 모듈 추가/삭제)로 바뀌면 이 값이 바뀌어 target 의 `emitFingerprint`→completed SCC dependency fold 로
 /// `ns.member` 참조 소비자를 invalidation 한다(증분 emit stale 방지).
 ///
 /// - **rank 만** 접는다(code-review [5]): 이름은 `{base}_{rank}` 인데 base 는 모듈 path(identity)
@@ -1045,7 +1052,7 @@ fn ensureNsTargetSet(self: *Linker) std.mem.Allocator.Error!void {
 /// - rank build(ensureNsBaseRank) OOM 시엔 rank 를 못 구하므로 접지 않고(=이 build 에선 미반영),
 ///   실제 이름을 정하는 emit 경로가 같은 OOM 이면 abort(fail-safe, [2]). 단조 안전.
 ///
-/// fp 는 병렬 emit 진입 *전* 단일 스레드(emitter.zig 의 emitDeepFingerprint 루프)에서만 계산되므로
+/// fp 는 병렬 emit 진입 *전* 단일 스레드(emitter.zig 의 computeEmitFingerprints 호출)에서만 계산되므로
 /// (`use_shared_ns_preamble`=false 라 emit 경로 미개시) 별도 락 없이 lazy build 안전 — emit 경로의
 /// `ensureNsBaseRank`(락 하) 는 built=true 를 보고 즉시 반환(무변이 read)한다.
 pub fn sharedNsRankHash(self: *const Linker, target_mod_idx: u32) u64 {
