@@ -4562,3 +4562,85 @@ test "reuse owner token HMR reparsing recomputes while untouched semantic owners
     try std.testing.expect(ib.preserved_renames.?.fingerprint[@backingInt(dep_index)].owner_token.? != dep_token);
     try std.testing.expectEqual(entry_token, ib.preserved_renames.?.fingerprint[@backingInt(entry_index)].owner_token.?);
 }
+
+fn expect4545ModuleRuntime(tmp: *std.testing.TmpDir, name: []const u8, source: []const u8, expected: []const u8) !void {
+    try writeFile(tmp.dir, name, source);
+    const path = try absPath(tmp, name);
+    defer std.testing.allocator.free(path);
+    const result = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", path } });
+    defer std.testing.allocator.free(result.stdout);
+    defer std.testing.allocator.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0)
+        std.debug.print("SCC warm/cold runtime failed: {s}\n", .{result.stderr});
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
+    try std.testing.expectEqualStrings("", result.stderr);
+    try std.testing.expectEqualStrings(expected, result.stdout);
+}
+
+test "reuse #4545: cyclic re-export leaf edit warm equals cold and executes the new value" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import './a.mjs'; import {run} from './x.mjs'; console.log(run());\n");
+    try writeFile(tmp.dir, "a.mjs", "export * from './b.mjs'; export * from './e.mjs';\n");
+    try writeFile(tmp.dir, "b.mjs", "export * from './a.mjs';\n");
+    const x_source = "import {value} from './b.mjs'; export function run(){return value;}\n";
+    try writeFile(tmp.dir, "x.mjs", x_source);
+    try writeFile(tmp.dir, "e.mjs", "export const value=41;\n");
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer allocator.free(entry);
+    const x_path = try absPath(&tmp, "x.mjs");
+    defer allocator.free(x_path);
+    const e_path = try absPath(&tmp, "e.mjs");
+    defer allocator.free(e_path);
+    const x_mtime = try @import("graph/build_flow.zig").getMtime(std.testing.io, x_path);
+    try expect4545ModuleRuntime(&tmp, "observed-native.mjs", "import './entry.mjs';\n", "41\n");
+    var store = module_store.PersistentModuleStore.init(allocator);
+    defer store.deinit();
+    var cache = CompiledOutputCache.init(allocator);
+    defer cache.deinit();
+    const options: @import("bundler.zig").BundleOptions = .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .dev_mode = false,
+        .module_store = &store,
+        .compiled_cache = &cache,
+    };
+    for (0..2) |_| {
+        var bundler = Bundler.init(allocator, options);
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(allocator);
+        try std.testing.expect(!result.hasErrors());
+        try expect4545ModuleRuntime(&tmp, "observed-before.mjs", result.output, "41\n");
+    }
+    const old_x_key = (cache.peekEntry(x_path) orelse return error.MissingCyclicConsumerCacheEntry).input_hash;
+    try std.testing.expect(cache.hits > 0);
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "e.mjs", "export const value=42;\n");
+    try expect4545ModuleRuntime(&tmp, "observed-native.mjs", "import './entry.mjs';\n", "42\n");
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(allocator);
+    try touched.put(allocator, e_path, {});
+    var warm_options = options;
+    warm_options.changed_files = &touched;
+    var warm = Bundler.init(allocator, warm_options);
+    defer warm.deinit();
+    const warm_result = try warm.bundle(std.testing.io);
+    defer warm_result.deinit(allocator);
+    try std.testing.expect(!warm_result.hasErrors());
+    const new_x_key = (cache.peekEntry(x_path) orelse return error.MissingCyclicConsumerCacheEntry).input_hash;
+    try std.testing.expect(old_x_key != new_x_key);
+    try std.testing.expectEqual(x_mtime, try @import("graph/build_flow.zig").getMtime(std.testing.io, x_path));
+    const actual_x = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, x_path, allocator, std.Io.Limit.limited(1024 * 1024));
+    defer allocator.free(actual_x);
+    try std.testing.expectEqualStrings(x_source, actual_x);
+    var cold = Bundler.init(allocator, .{ .entry_points = &.{entry}, .format = .esm, .dev_mode = false });
+    defer cold.deinit();
+    const cold_result = try cold.bundle(std.testing.io);
+    defer cold_result.deinit(allocator);
+    try std.testing.expect(!cold_result.hasErrors());
+    try std.testing.expectEqualStrings(cold_result.output, warm_result.output);
+    try expect4545ModuleRuntime(&tmp, "observed-warm.mjs", warm_result.output, "42\n");
+    try expect4545ModuleRuntime(&tmp, "observed-cold.mjs", cold_result.output, "42\n");
+}

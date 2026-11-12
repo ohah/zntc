@@ -5624,7 +5624,7 @@ pub const Linker = struct {
     }
 
     /// #4535: 한 모듈의 **local** emit-영향 상태를 해시한다(자기 자신만; 전이성은 아래 deep-fold 가
-    /// 담당). `emitDeepFingerprint` 가 `local + Σ dep.deep` (Merkle) 로 합성하고, 그 deep 값을
+    /// 담당). `computeEmitFingerprints` 가 완성된 SCC dependency table 로 합성하고, 그 값을
     /// `compiled_cache.computeInputHash` 가 각 resolved import 대상마다 접어, provider 의 wrap_kind
     /// flip / 인라인 상수값 변경 / canonical 이름 변경이 **re-export barrel 을 통해서도** 소비자
     /// 캐시 키에 반영되게 한다(증분 emit 캐시 stale 방지).
@@ -5699,52 +5699,11 @@ pub const Linker = struct {
         return h;
     }
 
-    /// #4535 Merkle deep-fold: `deep(M) = local(M) *31 +% Σ deep(dep)`. 소비자 emit 바이트가
-    /// **re-export barrel 을 통해** 관측하는 origin 의 전이 상태(이름·상수값·wrap_kind·star)를
-    /// 자동 흡수한다 — single-hop `emitFingerprint` 만으론 barrel 의 local fp 가 origin 을 안 담아
-    /// stale-hit(ReferenceError/잘못된 값)이 났다.
-    ///
-    /// `out`(ModuleIndex→deep fp)/`state`(0=미방문·1=on-stack·2=완료)는 emitter 가 소유. 사이클은
-    /// on-stack 재방문 시 local 만 반환해 무한재귀를 끊는다(사이클 멤버의 deep 은 서로의 local 을
-    /// 포함 — 대부분의 사이클 내 변경을 감지). 방문 순서는 결정적 acyclic 부분엔 무영향; 사이클
-    /// 부분은 진입순(ModuleIndex)에 의존한다. ⚠️ 사이클 back-edge 로만 도달하는 전이 provider 를
-    /// 놓치는 좁은 topology 잔여가 있으나(완전 정확엔 SCC 축약 필요, 후속) **비-회귀**(fp 미도입
-    /// 시보다 항상 더 많이 감지). `depth` 는 매우 깊은 선형 체인의 native stack overflow 방어 —
-    /// 상한 초과 시 local 만(그 지점 이하 전이 미반영, 크래시보다 안전).
-    pub fn emitDeepFingerprint(self: *const Linker, idx: u32, out: []u64, state: []u8, depth: u32) u64 {
-        if (idx >= out.len) return 0;
-        if (state[idx] == 2) return out[idx];
-        const m = self.graph.getModule(@fromBackingInt(@intCast(idx))) orelse {
-            state[idx] = 2;
-            out[idx] = 0;
-            return 0;
-        };
-        if (state[idx] == 1) return self.emitFingerprint(m); // 사이클 차단: local 만.
-        if (depth >= 4096) return self.emitFingerprint(m); // stack overflow 방어(비-memoize).
-        state[idx] = 1;
-        var h = self.emitFingerprint(m);
-        for (m.import_records) |rec| {
-            if (rec.is_external) continue;
-            // #4535: require.context 대상은 `rec.resolved`(=.none)가 아니라 `context_resolved_paths`
-            // →`path_to_module` 로 해석해야 접힌다. 안 접으면 context 대상의 wrap flip/이름 변경이
-            // 소비자 키에 반영 안 돼 stale-hit(초기 구현이 context_expansion_deps 를 봐 dead 였던 버그).
-            // ⚠️ `forEachWrapperImportTarget`(위)와 **동일 해석 경로**지만 그건 wrapped-only 로 필터해
-            // 여기선 재사용 불가(fingerprint 는 전 대상 필요) — require.context resolution 변경 시 양쪽
-            // 동반 수정(이 walk 가 4번째 사본 — 드리프트 주의).
-            if (rec.kind == .require_context) {
-                for (rec.context_resolved_paths) |abs_opt| {
-                    const abs = abs_opt orelse continue;
-                    const wi = self.graph.path_to_module.get(abs) orelse continue;
-                    h = h *% 31 +% self.emitDeepFingerprint(wi.toU32(), out, state, depth + 1);
-                }
-                continue;
-            }
-            if (rec.resolved.isNone()) continue;
-            h = h *% 31 +% self.emitDeepFingerprint(rec.resolved.toU32(), out, state, depth + 1);
-        }
-        state[idx] = 2;
-        out[idx] = h;
-        return h;
+    /// Caller-owned complete ModuleIndex table. Acyclic folds retain their
+    /// existing values; cyclic members consume a complete SCC digest, never
+    /// an on-stack local fallback. Allocation failure publishes no table.
+    pub fn computeEmitFingerprints(self: *const Linker, allocator: std.mem.Allocator) ![]u64 {
+        return @import("linker/emit_fingerprints.zig").compute(self, allocator);
     }
 
     /// Consume the export-map producer's actual source binding or alias receipt.

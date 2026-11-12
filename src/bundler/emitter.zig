@@ -1054,16 +1054,7 @@ pub fn emitWithTreeShaking(
     defer if (emit_fps.len > 0) allocator.free(emit_fps);
     if (active_compiled_cache != null and !options.dev_mode) {
         if (linker) |l| {
-            const n = graph.moduleCount();
-            emit_fps = try allocator.alloc(u64, n);
-            // Merkle deep-fold: deep(M)=local(M)+Σ deep(dep). re-export barrel 통한 전이 상태까지
-            // 소비자 키에 반영. state = 방문 마킹(사이클 차단).
-            const fp_state = try allocator.alloc(u8, n);
-            defer allocator.free(fp_state);
-            @memset(fp_state, 0);
-            for (0..n) |k| {
-                _ = l.emitDeepFingerprint(@intCast(k), emit_fps, fp_state, 0);
-            }
+            emit_fps = try l.computeEmitFingerprints(allocator);
         }
     }
 
