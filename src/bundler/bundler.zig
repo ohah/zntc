@@ -1359,6 +1359,9 @@ pub const Bundler = struct {
         worker_graph.emotion_extra_styled_sources = self.options.emotion_extra_styled_sources;
         worker_graph.code_splitting = worker_context.options.code_splitting;
         worker_graph.preserve_modules = worker_context.options.preserve_modules;
+        worker_graph.pm_cjs_module_environments = worker_context.options.preserve_modules and format == .cjs;
+        worker_graph.pm_cjs_default_bindings = worker_context.options.preserve_modules and format == .cjs and
+            (worker_context.options.output_exports == .auto or worker_context.options.output_exports == .default_);
         worker_graph.inline_dynamic_imports = worker_context.options.inline_dynamic_imports;
         worker_graph.minify_identifiers = self.options.minify_identifiers;
         // #4598: worker 는 자기 자신의 방출 format(`workerFormat()`) 으로 판정해야 한다.
@@ -1791,6 +1794,12 @@ pub const Bundler = struct {
         graph.emotion_extra_styled_sources = self.options.emotion_extra_styled_sources;
         graph.code_splitting = self.options.code_splitting;
         graph.preserve_modules = self.options.preserve_modules;
+        graph.pm_cjs_module_environments = self.options.preserve_modules and self.options.format == .cjs;
+        if (self.options.module_store) |store| {
+            store.pm_cjs_module_environments = graph.pm_cjs_module_environments;
+        }
+        graph.pm_cjs_default_bindings = self.options.preserve_modules and self.options.format == .cjs and
+            (self.options.output_exports == .auto or self.options.output_exports == .default_);
         graph.minify_identifiers = self.options.minify_identifiers;
         // PR-3a: dev lazy compilation — discovery 가 동적 import 경계 정지(seed 등록).
         graph.lazy_compilation = self.options.lazy_compilation;

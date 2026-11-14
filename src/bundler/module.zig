@@ -607,6 +607,7 @@ pub const Module = struct {
     source: []const u8,
     /// Borrowed from this module's actual winning builtin load constructor.
     runtime_helper_source: ?@import("../runtime_helper_source_origin.zig").Origin = null,
+    runtime_helper_constructor: ?@import("../runtime_helper_source_origin.zig").ModuleConstructor = null,
     /// Actual legacy imported-read guards, owned by this module's arena.
     legacy_lexical_reads: []const @import("graph/legacy_lexical_reads.zig").Receipt = &.{},
     legacy_module_identity: ?@import("graph/legacy_module_identity.zig").Identity = null,

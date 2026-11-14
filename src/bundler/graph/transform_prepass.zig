@@ -156,14 +156,15 @@ pub fn shouldRun(
     }
 
     const ast = &module.ast.?;
-    // Lowered module lexicals publish initialization roles before linking,
-    // including plain builds whose syntax can otherwise be lowered at emit.
+    // Lowered module lexicals publish initialization roles before linking.
+    // Synchronous PM instantiation exposes hoisted functions before Source
+    // evaluation, so their private root cells need the same semantic TDZ pass.
     if (self.transform_options_base.unsupported.block_scoping) {
         if (module.semantic) |semantic| {
             for (semantic.symbols.items) |symbol| {
                 if ((symbol.kind == .variable_let or symbol.kind == .variable_const or
                     (self.transform_options_base.unsupported.class and symbol.kind == .class_decl)) and
-                    symbol.isExported() and !symbol.scope_id.isNone() and
+                    (symbol.isExported() or self.pm_cjs_module_environments) and !symbol.scope_id.isNone() and
                     symbol.scope_id.toIndex() < semantic.scopes.len and
                     (semantic.scopes[symbol.scope_id.toIndex()].kind == .global or semantic.scopes[symbol.scope_id.toIndex()].kind == .module) and
                     semantic.scopes[symbol.scope_id.toIndex()].parent.isNone()) return true;
@@ -312,6 +313,7 @@ fn prepassDecisionForPluginTest(source: []const u8, plugin: plugin_mod.Plugin) !
     const plugins = [_]plugin_mod.Plugin{plugin};
     var context = .{
         .plugins = &plugins,
+        .pm_cjs_module_environments = false,
         .minify_identifiers = false,
         .react_refresh = false,
         .styled_components = false,

@@ -107,6 +107,12 @@ pub const ModuleGraph = struct {
     /// Exact winning TDZ builtin export, captured before final linker naming.
     lexical_tdz_builtin: ?TlaReadinessAll = null,
     legacy_name_builtin: ?TlaReadinessAll = null,
+    /// Preserve the public default-only CJS value while retaining cyclic reads.
+    pm_cjs_default_bindings: bool = false,
+    pm_cjs_module_environments: bool = false,
+    pm_cjs_module_environment_admitted: bool = false,
+    pm_module_builtin: ?TlaReadinessAll = null,
+    pm_default_builtin: ?TlaReadinessAll = null,
     /// Actual installed runtime/source domains; refreshed only at graph
     /// handoff or prepared same-graph publication, never by witness capture.
     output_runtime_registry: @import("../semantic/output_runtime_registration.zig").Registry = .{},

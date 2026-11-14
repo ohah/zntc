@@ -332,7 +332,7 @@ pub fn emitCjsEntryExports(
 
     const skip = struct {
         fn f(s: ?*const std.StringHashMapUnmanaged(void), e: FinalExportEntry) bool {
-            return if (s) |set| (!e.isDefault() and set.contains(e.exported)) else false;
+            return if (s) |set| set.contains(e.exported) else false;
         }
     }.f;
 

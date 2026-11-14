@@ -233,6 +233,11 @@ pub const DeferredAsyncEntryExports = struct {
 };
 
 pub const EmitOptions = struct {
+    synchronous_module_environment: ?struct {
+        environment_name: []const u8,
+        dependencies: []const ModuleIndex,
+        prefix: []const u8,
+    } = null,
     /// Borrowed from the actual typed provider after this output proves inclusion.
     entry_guard_runtime_name: ?[]const u8 = null,
 
@@ -2266,6 +2271,11 @@ pub fn emitModuleWithHolderReservations(
     holder_reservations: ?*@import("namespace_holder_reservations.zig").NamespaceHolderReservations,
 ) !?[]const u8 {
     var selected_options = input_options.*;
+    if (input_options.format == .cjs) if (linker) |active| {
+        if (try emitter_runtime.pmInternalNamedProvider(active.graph, module))
+            selected_options.output_exports = .named;
+    };
+
     if (input_options.deferred_module_exports) |contexts| {
         const index = module.index.toU32();
         if (index >= contexts.len or contexts[index].module_index != index) return error.InvalidAsyncEntryExportContext;
@@ -2513,7 +2523,8 @@ pub fn emitModuleWithHolderReservations(
             l.format,
             // (#4587 [3]) storage rename 은 output.exports 가 named 모드일 때만 — codegen
             // `.pm_cjs_storage`·끝-skip·소비자 게이트와 동일 값.
-            options.output_exports == .auto or options.output_exports == .named,
+            (options.output_exports == .auto or options.output_exports == .named) and
+                !(options.preserve_modules and options.format == .cjs),
             holder_reservations,
         );
         // transformer가 전파한 symbol_ids를 메타데이터에 설정
@@ -2719,7 +2730,7 @@ pub fn emitModuleWithHolderReservations(
     const native_module_environment = if (linker) |l| @import("native_async_module_plan.zig").contains(l.graph, module) else false;
     const native_esm_module = options.preserve_modules and options.format == .esm and module.wrap_kind == .none and
         !options.unsupported.using and !options.unsupported.top_level_await;
-    if (linker != null and options.minify_syntax and !native_esm_module and !native_module_environment) {
+    if (linker != null and options.minify_syntax and !native_esm_module and !native_module_environment and options.synchronous_module_environment == null) {
         @import("../transformer/minify.zig").downgradeToVar(transformer.ast);
     }
 
@@ -2727,7 +2738,7 @@ pub fn emitModuleWithHolderReservations(
     // *섞인 const/let 시퀀스* 도 mergeDecls 가 *let 단일 kind* 로 합칠 수 있게 한다.
     // 재할당 의미 변경 (TypeError → silent) 은 minify-only 모드라 정상 — terser/esbuild/
     // rolldown/rspack 동일.
-    if (options.minify_syntax and !native_module_environment) {
+    if (options.minify_syntax and !native_module_environment and options.synchronous_module_environment == null) {
         try @import("../transformer/minify.zig").convertConstToLetPreservingFromRoot(
             transformer.ast,
             root,
@@ -2748,7 +2759,7 @@ pub fn emitModuleWithHolderReservations(
     // statement는 A가 사용되므로 제거 불가 → B의 초기화식이 살아남아 죽은 심볼을 참조.
     // 순서: transform → minify(fold) → tree-shake → downgradeToVar → mergeDecls → codegen.
     // dev_mode 에선 skip — 병합은 출력 크기 최적화용이라 런타임 의미 불변. HMR 체감 우선.
-    if (!options.dev_mode) {
+    if (!options.dev_mode and options.synchronous_module_environment == null) {
         const merge_skip = if (metadata) |*m| @as(?*const std.DynamicBitSet, &m.skip_nodes) else null;
         if (module.semantic) |semantic| {
             try @import("strict_function_context.zig").mergeOutputDeclarations(transformer.ast, semantic, root, merge_skip, arena_alloc);
@@ -3000,6 +3011,56 @@ pub fn emitModuleWithHolderReservations(
         break :blk .{};
     } else .{};
 
+    var synchronous_imports: ?@import("../codegen/native_module_import_projection.zig").Context = null;
+    var synchronous_metadata: ?LinkingMetadata = null;
+    if (options.synchronous_module_environment) |environment| {
+        const active = linker orelse return error.InvalidSynchronousModuleOwner;
+        if (!try @import("pm_cjs_module_plan.zig").contains(active.graph, module)) return error.InvalidSynchronousModuleOwner;
+        const owners = try arena_alloc.create(std.AutoHashMapUnmanaged(u32, u32));
+        owners.* = try (if (transformer.semantic_editor) |*editor| editor.scope_owner_map else transformer.scope_owner_map).clone(arena_alloc);
+        var generated_owners = transformer.transformed_scope_owner_map.iterator();
+        while (generated_owners.next()) |owner| try owners.put(arena_alloc, owner.key_ptr.*, owner.value_ptr.*);
+        const view: @import("../codegen/native_module_using.zig").SourceView = .{
+            .domain = transformer.ast,
+            .symbol_ids = transformer.symbol_ids.items,
+            .symbols = if (transformer.semantic_editor) |*editor| editor.symbols.items else transformer.symbols,
+            .scopes = if (transformer.semantic_editor) |*editor| editor.scopes.items else transformer.scopes,
+            .scope_owner_map = owners,
+            .references = if (transformer.semantic_editor) |*editor| editor.references.items else transformer.references,
+        };
+        var entries: std.ArrayList(@import("../codegen/native_module_import_projection.zig").Entry) = .empty;
+        for (module.import_bindings) |binding| {
+            if (binding.callsite_target != null) continue;
+            if (binding.import_record_index >= module.import_records.len) return error.InvalidSynchronousModuleOwner;
+            const target = module.import_records[binding.import_record_index].resolved;
+            var slot: ?usize = null;
+            for (environment.dependencies, 0..) |dependency, i| if (dependency == target) {
+                slot = i;
+                break;
+            };
+            const ordinal = slot orelse continue;
+            const local = try module.checkedImportBindingSourceSymbol(binding);
+            try entries.append(arena_alloc, .{
+                .binding = binding.source_local_symbol_node orelse return error.InvalidSynchronousModuleOwner,
+                .symbol = local.semanticIndex() orelse return error.InvalidSynchronousModuleOwner,
+                .namespace_name = try std.fmt.allocPrint(arena_alloc, "{s}[{d}]", .{ environment.environment_name, ordinal }),
+                .property = if (binding.kind == .namespace) null else binding.imported_name,
+            });
+        }
+        synchronous_imports = try @import("../codegen/native_module_import_projection.zig").Context.create(arena_alloc, transformer.ast, root, view, entries.items);
+        if (metadata) |md| {
+            // The original metadata keeps ownership of all allocations. This
+            // borrowed Codegen view suppresses eager CJS materialization only.
+            synchronous_metadata = md;
+            if (synchronous_metadata) |*view_metadata| {
+                view_metadata.ns_member_rewrites = .{};
+                view_metadata.ns_inline_objects = .{};
+                view_metadata.final_exports = null;
+                view_metadata.final_export_entries = null;
+                view_metadata.cjs_import_preamble = null;
+            }
+        }
+    }
     var cg = Codegen.initWithOptions(arena_alloc, transformer.ast, .{
         .compiler_literal_overrides = options.compiler_literal_overrides,
         .minify_whitespace = options.minify_whitespace,
@@ -3010,9 +3071,10 @@ pub fn emitModuleWithHolderReservations(
         // scope-hoisted 모듈은 항상 ESM codegen 사용 (bare declarations).
         // __commonJS 래핑 모듈만 CJS codegen (module.exports = ...).
         // 래핑 모듈(CJS/ESM)은 CJS codegen: import→require 변환
-        .module_format = if (module.wrap_kind.isWrapped()) .cjs else .esm,
+        .module_format = if (module.wrap_kind.isWrapped() or options.synchronous_module_environment != null) .cjs else .esm,
         // __esm 모듈: exports.x/module.exports 생성 억제 (__export()가 대신 처리)
-        .skip_cjs_exports = module.wrap_kind == .esm,
+        .skip_cjs_exports = module.wrap_kind == .esm or options.synchronous_module_environment != null,
+        .native_module_import_projection = if (synchronous_imports) |*imports| imports else null,
         .skip_cjs_named_export_decls = module.module_type == .json and module.wrap_kind == .cjs,
         // __esm 모듈: const → var (TDZ 방지)
         .use_var_for_imports = module.wrap_kind == .esm,
@@ -3023,15 +3085,19 @@ pub fn emitModuleWithHolderReservations(
         // wrap_kind != .none (`__esm`/`__commonJS` wrap) 인 cycle 모듈은 이미 별도
         // 변환 path (`esm_var_assign_only`, `use_var_for_imports`) 가 동일 효과를
         // 만들어주므로 이중 처리 → 호이스팅 충돌 회피하기 위해 .none 만 대상.
-        .force_var_for_cycle = module.cycle_group != 0 and module.wrap_kind == .none and !native_esm_module,
+        .force_var_for_cycle = module.cycle_group != 0 and module.wrap_kind == .none and !native_esm_module and
+            !(options.preserve_modules and options.format == .cjs),
         // (#4587 target a) preserve-modules + CJS unwrapped: 재할당 export 선언을 `exports.X = init;`
         // 저장소로 낮춘다(bindings.zig). renames 는 metadata 가 pm-cjs 게이트로만 등록하므로 여기
         // 게이트와 정확히 일치해야 storage rename 이 선언 변환과 짝을 이룬다. output_exports 가
         // named export 를 내는 모드(auto/named)일 때만 — 끝-skip(아래)·metadata rename·fn-hoist 와
         // 동일 게이트라 `none`/`default_` 에서 `exports.X` 누출을 막는다(#4587 [3]).
-        .pm_cjs_storage = options.preserve_modules and options.format == .cjs and module.wrap_kind == .none and
-            (options.output_exports == .auto or options.output_exports == .named),
-        .linking_metadata = if (metadata) |*m| m else null,
+        .pm_cjs_storage = false,
+        .pm_cjs_early_default_name = options.synchronous_module_environment != null or
+            (options.preserve_modules and options.format == .cjs and module.wrap_kind == .none and options.output_exports != .none),
+        .pm_cjs_native_default = options.synchronous_module_environment != null or
+            (options.preserve_modules and options.format == .cjs and module.wrap_kind == .none and !options.unsupported.block_scoping),
+        .linking_metadata = if (synchronous_metadata) |*m| m else if (metadata) |*m| m else null,
         .semantic_symbol_ids = transformer.symbol_ids.items,
         .semantic_symbols = if (module.semantic) |sem| sem.symbols.items else &.{},
         .semantic_scope_maps = if (module.semantic) |sem| sem.scope_maps else &.{},
@@ -3073,6 +3139,10 @@ pub fn emitModuleWithHolderReservations(
     if (options.sourcemap.enable) {
         cg.line_offsets = module.line_offsets;
         try cg.addSourceFile(sourcemapSourcePath(module.path, options));
+    }
+    if (options.synchronous_module_environment) |environment| {
+        try @import("emitter/synchronous_instantiation.zig").append(&cg, module, linker orelse return error.InvalidSynchronousModuleOwner, root);
+        try cg.write(environment.prefix);
     }
     var code = try cg.generate(root);
 
@@ -3136,6 +3206,7 @@ pub fn emitModuleWithHolderReservations(
     if (cg.keep_names_used) {
         if (helpers_out) |h| h.keep_names = true;
     }
+    if (options.synchronous_module_environment != null) return try allocator.dupe(u8, code);
 
     // CJS 래핑: __commonJS 팩토리 함수로 감싸기
     if (module.wrap_kind == .cjs) {
@@ -3278,15 +3349,9 @@ pub fn emitModuleWithHolderReservations(
             if (options.preserve_modules and options.format == .cjs and module.wrap_kind == .none and
                 (options.output_exports == .auto or options.output_exports == .named))
             {
-                for (module.export_bindings) |eb| {
-                    if (chunks.exportBindingIsHoistableFn(module, eb)) {
-                        try hoisted_fn_names.put(allocator, eb.exported_name, {});
-                    }
-                    // (#4587 target a) storage export 는 본문에서 이미 `exports.X = ...` 로 저장했으므로
-                    // bottom 방출(`exports.X = X`)을 skip — 안 하면 `exports.X = X` 우변 X 가 미정의다.
-                    // provider rename(metadata) 과 **같은 술어**라 정합.
-                    if (module.exportBindingIsCjsStorage(eb)) {
-                        try hoisted_fn_names.put(allocator, eb.exported_name, {});
+                if (@import("emitter/pm_cjs_exports.zig").publishes(module, options)) {
+                    for (entries) |entry| {
+                        if (entry.materialize == null) try hoisted_fn_names.put(allocator, entry.exported, {});
                     }
                 }
             }

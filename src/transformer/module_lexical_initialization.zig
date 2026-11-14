@@ -98,6 +98,9 @@ pub fn prepareClasses(self: anytype, plan: anytype) !void {
         const binding = self.ast.readExtraNode(statement.data.extra, 0);
         if (binding.isNone()) continue;
         const source = self.getSymbolIdAt(binding) orelse continue;
+        // The general TDZ cell producer may already have registered this exact
+        // class outer binding. It owns the same initialization flag pair.
+        if (plan.module_flags.contains(source)) continue;
         if (try prepare(self, binding)) |flag| {
             try plan.module_flags.put(plan.arena.allocator(), source, flag);
             self.runtime_helpers.tdz = true;

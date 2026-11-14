@@ -60,27 +60,39 @@ describe('#4587(a): preserve-modules cjs 재할당 export live-binding', () => {
     });
   }
 
-  // provider codegen: 재할당 let → exports.A 저장소(로컬 var 없음·끝-할당 없음).
-  test('provider 가 재할당 바인딩을 exports.X 저장소로 방출', async () => {
+  // Public getters retain the actual binding across later Source writes.
+  test('provider 공개 getter가 Source 재할당 값을 계속 읽는다', async () => {
     const { outDir, cleanup } = await build(
       {
-        'a.mjs': 'export let A = 1;\nA = 2;\nexport const S = "s";',
+        'a.mjs':
+          'export let A = 1;\nA = 2;\nexport const S = "s";\nexport function change(value){A=value}',
         'e.mjs': 'import { A, S } from "./a.mjs";\nconsole.log("R:" + A + S);',
       },
       ['e.mjs'],
     );
     try {
-      const a = readFileSync(join(outDir, 'a.js'), 'utf8');
-      // 재할당 A: exports.A = 1; exports.A = 2; (로컬 `let A`/`var A` 없음)
-      expect(a).toMatch(/exports\.A\s*=\s*1/);
-      expect(a).toMatch(/exports\.A\s*=\s*2/);
-      expect(a).not.toMatch(/\b(let|var|const)\s+A\b/);
-      // const S 는 저장소화 안 함(로컬 유지) — 사이드이펙트 회피 스코프 가드
-      expect(a).toMatch(/const\s+S\s*=/);
-      // consumer 는 재할당 A 를 ns 접근, const S 는 구조분해
-      const e = readFileSync(join(outDir, 'e.js'), 'utf8');
-      expect(e).toMatch(/=\s*require\("\.\/a\.js"\)/);
       expect((await runNode(join(outDir, 'e.js'))).stdout.trim()).toBe('R:2s');
+      const probe = join(outDir, 'live-getter.cjs');
+      writeFileSync(
+        probe,
+        `
+        const assert=require('node:assert/strict'),provider=require('./a.js');
+        const descriptor=Object.getOwnPropertyDescriptor(provider,'A');
+        assert.equal(typeof descriptor.get,'function');
+        assert.equal(descriptor.enumerable,true);
+        assert.equal(descriptor.set,undefined);
+        assert.equal(descriptor.get(),2);
+        assert.equal(provider.S,'s');
+        provider.change(3);
+        assert.equal(descriptor.get(),3);
+        assert.equal(provider.A,3);
+        assert.equal(Object.getOwnPropertyDescriptor(provider,'S').get(),'s');
+        console.log('3s');
+      `,
+      );
+      const actual = await runNode(probe);
+      expect(actual.stderr).toBe('');
+      expect(actual.stdout.trim()).toBe('3s');
     } finally {
       await cleanup();
     }

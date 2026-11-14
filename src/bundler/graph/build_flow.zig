@@ -167,6 +167,8 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
     defer runtime_indices.deinit(self.allocator);
     try applyRuntimePolyfills(self, io, &runtime_indices);
     try demandTlaReadinessAll(self, io, &runtime_indices);
+    try demandPmDefault(self, io, &runtime_indices);
+    try demandPmModule(self, io, &runtime_indices);
     try demandNativeAsyncModuleFactory(self, io, &runtime_indices);
     try injectEmittedChunks(self, io);
     try linkExecutionRoots(self, entry_points, inject_indices.items, runtime_indices.items, run_before_main_indices.items);
@@ -672,6 +674,42 @@ fn keepNativeAsyncModuleFactorySynchronous(self: *ModuleGraph) !void {
     module.wrap_kind = .none;
 }
 
+fn demandPmDefault(self: *ModuleGraph, io: std.Io, runtime_indices: *std.ArrayList(ModuleIndex)) !void {
+    self.pm_default_builtin = null;
+    if (!self.pm_cjs_default_bindings) return;
+    var demanded = false;
+    for (0..self.modules.count()) |i| {
+        const module = self.modules.at(i);
+        if (module.is_external or module.is_disabled or module.runtime_helper_source != null) continue;
+        var has_default = false;
+        var has_named = false;
+        for (module.export_bindings) |binding| {
+            if (std.mem.eql(u8, binding.exported_name, "default")) has_default = true else has_named = true;
+        }
+        if (has_default and !has_named) {
+            demanded = true;
+            break;
+        }
+    }
+    if (!demanded) return;
+    const start = self.modules.count();
+    const helper = try self.addModule(io, @import("../pm_default_builtin.zig").id);
+    _ = try graph_requested_exports.requestAll(self, helper);
+    try runtime_indices.append(self.allocator, helper);
+    try discoverPendingModulesSequential(self, io, start);
+}
+
+fn demandPmModule(self: *ModuleGraph, io: std.Io, runtime_indices: *std.ArrayList(ModuleIndex)) !void {
+    self.pm_module_builtin = null;
+    self.pm_cjs_module_environment_admitted = false;
+    if (!try @import("../pm_cjs_module_plan.zig").admitted(self)) return;
+    const start = self.modules.count();
+    const helper = try self.addModule(io, @import("../pm_module_builtin.zig").id);
+    _ = try graph_requested_exports.requestAll(self, helper);
+    try runtime_indices.append(self.allocator, helper);
+    try discoverPendingModulesSequential(self, io, start);
+}
+
 fn demandTlaReadinessAll(self: *ModuleGraph, io: std.Io, runtime_indices: *std.ArrayList(ModuleIndex)) !void {
     self.tla_readiness_all = null;
     if (!(self.code_splitting or self.preserve_modules) or !self.transform_options_base.tla_entry_exports_awaited) return;
@@ -967,11 +1005,17 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
     graph_finalize.promoteAsyncConeToEsmWrap(self);
     try @import("../native_async_module_plan.zig").promote(self);
     try keepTlaReadinessAllSynchronous(self);
+    try @import("../pm_default_builtin.zig").keepSynchronous(self);
+    try @import("../pm_module_builtin.zig").keepSynchronous(self);
     try keepNativeAsyncModuleFactorySynchronous(self);
     try keepLexicalTdzSynchronous(self);
     try keepLegacyNameSynchronous(self);
     try graph_finalize.registerWrapperSymbols(self);
     try captureTlaReadinessAll(self);
+    self.pm_default_builtin = try @import("../pm_default_builtin.zig").capture(self);
+    self.pm_module_builtin = try @import("../pm_module_builtin.zig").capture(self);
+    self.pm_cjs_module_environment_admitted = self.pm_module_builtin != null and
+        try @import("../pm_cjs_module_plan.zig").admitted(self);
     try captureNativeAsyncModuleFactory(self);
     self.lexical_tdz_builtin = try @import("../lexical_initialization_builtin.zig").capture(self);
     self.legacy_name_builtin = try @import("../lexical_initialization_builtin.zig").captureNames(self);
@@ -1379,6 +1423,8 @@ pub fn buildIncremental(
     const before_runtime_count = self.modules.count();
     try applyRuntimePolyfills(self, io, &runtime_indices);
     try demandTlaReadinessAll(self, io, &runtime_indices);
+    try demandPmDefault(self, io, &runtime_indices);
+    try demandPmModule(self, io, &runtime_indices);
     try demandNativeAsyncModuleFactory(self, io, &runtime_indices);
     if (self.modules.count() > before_runtime_count) graph_changed = true;
     // watch/incremental 에서도 emit chunk 플래그를 이번 emit_store.chunks 기준으로 set

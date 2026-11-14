@@ -120,6 +120,7 @@ pub const HookContext = struct {
     /// Only the actual winning load return may consume this constructor
     /// witness. A null hook cannot leave it for a later provider.
     runtime_helper_source: ?@import("../runtime_helper_source_origin.zig").Origin = null,
+    runtime_helper_constructor: ?@import("../runtime_helper_source_origin.zig").ModuleConstructor = null,
     /// hook 이 `error.PluginFailed` 를 반환할 때 metadata 가 들어간다.
     /// 성공 path 에서는 null. caller 가 consume (addPluginFailureDiag) 또는
     /// `deinit()` 으로 해제 책임.
@@ -536,6 +537,7 @@ pub const PluginRunner = struct {
         winning_plugin: Plugin,
         plugin_index: usize,
         runtime_helper_source: ?@import("../runtime_helper_source_origin.zig").Origin,
+        runtime_helper_constructor: ?@import("../runtime_helper_source_origin.zig").ModuleConstructor = null,
     };
 
     pub fn runLoad(
@@ -558,8 +560,9 @@ pub const PluginRunner = struct {
         for (self.plugins, 0..) |p, index| {
             if (p.load) |hook| {
                 hook_ctx.runtime_helper_source = null;
+                hook_ctx.runtime_helper_constructor = null;
                 if (try hook(p.context, path, allocator, hook_ctx)) |result| {
-                    return .{ .result = result, .winning_plugin = p, .plugin_index = index, .runtime_helper_source = hook_ctx.runtime_helper_source };
+                    return .{ .result = result, .winning_plugin = p, .plugin_index = index, .runtime_helper_source = hook_ctx.runtime_helper_source, .runtime_helper_constructor = hook_ctx.runtime_helper_constructor };
                 }
             }
         }

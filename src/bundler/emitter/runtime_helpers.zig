@@ -35,6 +35,17 @@ pub fn asyncReadyMarkerCandidate(graph: *const ModuleGraph, module: *const Modul
     return has_default;
 }
 
+/// Constructor-owned runtime modules publish their internal named ABI even
+/// when the user's library entry requests a scalar or no public result.
+pub fn pmInternalNamedProvider(graph: *const ModuleGraph, module: *const Module) !bool {
+    if (!graph.preserve_modules) return false;
+    const constructor = module.runtime_helper_constructor orelse return false;
+    if (graph.getModule(module.index) != module or module.codegen_output_owner == .unassigned or
+        !@import("../../runtime_helper_modules.zig").matchesModuleConstructor(constructor, graph.helper_plugin_opts, module.source))
+        return error.InvalidRuntimeHelperExportProvider;
+    return true;
+}
+
 /// Public ESM-backed named namespaces need own live properties even when
 /// there is no import interop or async wrapper in the output.
 pub fn cjsEntryDescriptorCandidate(graph: *const ModuleGraph, module: *const Module, format: @import("../types.zig").Format, mode: @import("../bundler.zig").OutputExports) !bool {
@@ -63,6 +74,21 @@ pub fn cjsEntryDescriptorCandidate(graph: *const ModuleGraph, module: *const Mod
             return true;
         }
     };
+    if (format == .cjs) {
+        if (try pmInternalNamedProvider(graph, module)) return true;
+        if (graph.pm_default_builtin) |known| {
+            if (module.index == known.module_index) {
+                const actual = try @import("../pm_default_builtin.zig").exact(graph);
+                if (graph.getModule(actual.module) != module) return error.InvalidPmDefaultBuiltin;
+                return true;
+            }
+        }
+        // Hoisted named functions can be minified before cyclic evaluation too.
+        // Keep the descriptor intrinsic ready for their instantiation-time names.
+        if (graph.preserve_modules and mode != .none and module.wrap_kind == .none and
+            graph.transform_options_base.keep_names)
+            return true;
+    }
     if (format != .cjs or mode == .none or mode == .default_ or module.wrap_kind == .cjs or
         (!module.is_entry_point and !graph.preserve_modules) or module.export_bindings.len == 0) return false;
     if (mode == .named) return true;

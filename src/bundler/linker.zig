@@ -236,7 +236,8 @@ const HMR_RUNTIME_INTERNAL_ROWS = @import("module.zig").HMR_RUNTIME_INTERNAL_ROW
 
 pub const Linker = struct {
     pub const ConsumerImportRole = enum { binding, namespace_member_expression };
-    pub const ConsumerImportTarget = struct { text: []const u8, role: ConsumerImportRole };
+    pub const ConsumerImportProducer = enum { pm_require_member, pm_require_default };
+    pub const ConsumerImportTarget = struct { text: []const u8, role: ConsumerImportRole, producer: ?ConsumerImportProducer = null };
 
     allocator: std.mem.Allocator,
     /// Canonical receipt storage belongs to the initial Linker allocation
@@ -5301,7 +5302,7 @@ pub const Linker = struct {
     /// key 는 `(canonical_module, export_name)` — import 블록이 그 sym 을 소비자-로컬로 deconflict
     /// 한 이름(예 `tag$3`). `export_name` 키는 borrow(sym.name, bundle 수명).
     pub fn putConsumerImportLocal(self: *Linker, module_index: u32, export_name: []const u8, local_name: []const u8) !void {
-        try self.putConsumerImportTarget(module_index, export_name, local_name, .binding);
+        try self.putConsumerImportTarget(module_index, export_name, local_name, .binding, null);
     }
 
     /// Only the live-import producer builds this expression from its actual
@@ -5322,10 +5323,31 @@ pub const Linker = struct {
         defer self.allocator.free(access);
         const expression = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ namespace_name, access });
         defer self.allocator.free(expression);
-        try self.putConsumerImportTarget(module_index, export_name, expression, .namespace_member_expression);
+        try self.putConsumerImportTarget(module_index, export_name, expression, .namespace_member_expression, null);
     }
 
-    fn putConsumerImportTarget(self: *Linker, module_index: u32, export_name: []const u8, text: []const u8, role: ConsumerImportRole) !void {
+    /// The synchronous PM producer owns the physical require path and public
+    /// StringValue key. Read at reference time, even during importer reentry.
+    /// The comma removes the namespace receiver for imported calls and tags.
+    pub fn putConsumerImportRequireMember(self: *Linker, module_index: u32, export_name: []const u8, accessor: []const u8, key: []const u8, namespace: []const u8) !void {
+        const identifiers = @import("linker/identifier_name.zig");
+        if (!try identifiers.isBindingName(self.allocator, accessor, isReservedName) or
+            !try identifiers.isBindingName(self.allocator, namespace, isReservedName)) return error.InvalidConsumerImportMember;
+        const quoted_key = try std.json.Stringify.valueAlloc(self.allocator, key, .{});
+        defer self.allocator.free(quoted_key);
+        const expression = try std.fmt.allocPrint(self.allocator, "(0,({s}||{s}())[{s}])", .{ namespace, accessor, quoted_key });
+        defer self.allocator.free(expression);
+        try self.putConsumerImportTarget(module_index, export_name, expression, .namespace_member_expression, .pm_require_member);
+    }
+
+    pub fn putConsumerImportRequireDefault(self: *Linker, module_index: u32, export_name: []const u8, accessor: []const u8) !void {
+        if (!try @import("linker/identifier_name.zig").isBindingName(self.allocator, accessor, isReservedName)) return error.InvalidConsumerImportMember;
+        const expression = try std.fmt.allocPrint(self.allocator, "{s}()", .{accessor});
+        defer self.allocator.free(expression);
+        try self.putConsumerImportTarget(module_index, export_name, expression, .namespace_member_expression, .pm_require_default);
+    }
+
+    fn putConsumerImportTarget(self: *Linker, module_index: u32, export_name: []const u8, text: []const u8, role: ConsumerImportRole, producer: ?ConsumerImportProducer) !void {
         const dup = try self.allocator.dupe(u8, text);
         errdefer self.allocator.free(dup);
         const gop = try self.consumer_import_local.getOrPut(self.allocator, module_index);
@@ -5334,7 +5356,7 @@ pub const Linker = struct {
             gop.value_ptr.deinit(self.allocator);
             _ = self.consumer_import_local.remove(module_index);
         };
-        if (try gop.value_ptr.fetchPut(self.allocator, export_name, .{ .text = dup, .role = role })) |old| {
+        if (try gop.value_ptr.fetchPut(self.allocator, export_name, .{ .text = dup, .role = role, .producer = producer })) |old| {
             self.allocator.free(old.value.text);
         }
     }

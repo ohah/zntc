@@ -106,6 +106,7 @@ pub fn shouldRunLoad(self: anytype, path: []const u8) bool {
 
 pub fn runLoadForModule(self: anytype, module: *Module, runner: ?plugin_mod.PluginRunner) LoadHookResult {
     module.runtime_helper_source = null;
+    module.runtime_helper_constructor = null;
     module.runtime_helper_cache_source = null;
     const plugin_runner = runner orelse return .skipped;
     if (!shouldRunLoad(self, module.path)) return .skipped;
@@ -134,8 +135,10 @@ pub fn runLoadForModule(self: anytype, module: *Module, runner: ?plugin_mod.Plug
 
     if (load_result) |outcome| {
         const plugin_result = outcome.result;
-        if (hook_ctx.source_maps == null or hook_ctx.source_maps.?.len == 0)
+        if (hook_ctx.source_maps == null or hook_ctx.source_maps.?.len == 0) {
             module.runtime_helper_source = runtime_helper_modules.acceptWinningLoad(outcome, &self.helper_plugin_opts);
+            module.runtime_helper_constructor = runtime_helper_modules.acceptWinningModuleConstructor(outcome, &self.helper_plugin_opts);
+        }
         module.parse_arena = tmp_arena;
         const arena_alloc = tmp_arena.allocator();
         const load_source_maps = hook_ctx.source_maps orelse &.{};
@@ -251,6 +254,7 @@ pub fn runTransformForModule(
         // Even an equal-byte or in-place user transform is a new source
         // producer, not the winning builtin constructor.
         module.runtime_helper_source = null;
+        module.runtime_helper_constructor = null;
         module.runtime_helper_cache_source = null;
         return .applied;
     }

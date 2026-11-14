@@ -3399,3 +3399,8 @@ test "private field set requires its existing brand before updating the value" {
         try std.testing.expectEqualStrings("42 42\nTypeError\nTypeError\n", actual.stdout);
     }
 }
+
+/// Private artifact-keyed PM default getter registry.
+pub const PM_DEFAULT_RUNTIME = @import("pm_cjs_default_runtime.zig").source;
+pub const PM_DEFAULT_RUNTIME_MIN = PM_DEFAULT_RUNTIME;
+pub const PM_MODULE_RUNTIME = @import("pm_cjs_module_runtime.zig").source;

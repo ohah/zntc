@@ -90,6 +90,25 @@ pub const Plan = struct {
     }
 
     fn registerDeclaration(plan: *Plan, self: anytype, statement: ast.Node, owner: u32, body: NodeIndex, bypassable: bool) !void {
+        if (statement.tag == .class_declaration) {
+            if (!self.options.unsupported.class) return;
+            const binding = self.ast.readExtraNode(statement.data.extra, ast.ClassExtra.name);
+            if (binding.isNone() or self.ast.getNode(binding).tag != .binding_identifier) return;
+            const sid = self.getSymbolIdAt(binding) orelse return;
+            if (sid >= self.symbols.len) return;
+            const symbol = self.symbols[sid];
+            // The outer declaration is mutable; the class's inner self-name
+            // has a separate SymbolId and is not this lexical cell.
+            if (symbol.kind != .class_decl or symbol.scope_id.toIndex() != owner) return;
+            try plan.cells.put(plan.arena.allocator(), sid, .{
+                .binding = binding,
+                .body = body,
+                .scope = symbol.scope_id,
+                .initialization_end = if (bypassable) std.math.maxInt(u32) else statement.span.end,
+                .readonly = false,
+            });
+            return;
+        }
         if (statement.tag != .variable_declaration or !self.ast.variableDeclarationKind(statement).isLexical()) return;
         const start = self.readU32(statement.data.extra, 1);
         const len = self.readU32(statement.data.extra, 2);
@@ -129,6 +148,10 @@ pub const Plan = struct {
             var declaration = self.ast.getNode(self.ast.readExtraNode(node.data.list.start, @intCast(offset)));
             if (declaration.tag == .export_named_declaration) {
                 const child = self.ast.readExtraNode(declaration.data.extra, 0);
+                if (child.isNone()) continue;
+                declaration = self.ast.getNode(child);
+            } else if (declaration.tag == .export_default_declaration) {
+                const child = declaration.data.unary.operand;
                 if (child.isNone()) continue;
                 declaration = self.ast.getNode(child);
             }
@@ -1851,5 +1874,29 @@ test "legacy lexical TDZ iteration pattern initialization separates outer value 
             try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
             try std.testing.expectEqualStrings(native.stdout, actual.stdout);
         }
+    }
+}
+
+test "legacy lexical TDZ retains native class cells when only block scoping is unsupported" {
+    const source =
+        "function probe(){var out=[];function read(){return typeof C}try{out.push(read())}catch(e){out.push(e.name)}class C{}out.push(read());C=42;out.push(C);return out}console.log(JSON.stringify(probe()))";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const native = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("[\"ReferenceError\",\"function\",42]\n", native.stdout);
+    for ([_]bool{ false, true }) |full| {
+        const output = try @import("../transpile.zig").transpile(allocator, source, "input.cjs", .{
+            .unsupported = .{ .block_scoping = true },
+            .minify_syntax = full,
+            .minify_identifiers = full,
+            .minify_whitespace = full,
+        });
+        const actual = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", output.code } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+            std.debug.print("retained native class full={} output={s} stderr={s} actual={s}\n", .{ full, output.code, actual.stderr, actual.stdout });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
     }
 }

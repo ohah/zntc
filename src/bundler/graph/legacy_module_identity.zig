@@ -66,7 +66,31 @@ pub fn ensure(b: *Builder, root: NodeIndex) !void {
     var ordinal: u32 = 0;
     const name = while (true) : (ordinal += 1) {
         const text = try std.fmt.allocPrint(b.allocator, "__moduleURL{d}", .{ordinal});
-        if (!b.editor.scope_maps.items[scope.toIndex()].contains(text)) break try b.ast.addString(text);
+        // This newly declared root SID is referenced from Source functions.
+        // Reserve their binding spellings as well: a root-only freshness check
+        // would let an existing parameter capture the emitted storage name.
+        var occupied = false;
+        for (b.editor.scope_maps.items) |names| {
+            var keys = names.keyIterator();
+            while (keys.next()) |key| {
+                if (@import("../../lexer/scanner.zig").Scanner.identifierValueEquals(key.*, text)) {
+                    occupied = true;
+                    break;
+                }
+            }
+            if (occupied) break;
+        }
+        if (!occupied) {
+            const semantic = b.module.semantic orelse return error.InvalidLexicalModuleIdentity;
+            var unresolved = semantic.unresolved_references.keyIterator();
+            while (unresolved.next()) |key| {
+                if (@import("../../lexer/scanner.zig").Scanner.identifierValueEquals(key.*, text)) {
+                    occupied = true;
+                    break;
+                }
+            }
+        }
+        if (!occupied) break try b.ast.addString(text);
     };
     const binding = try b.ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
     const symbol = try b.editor.declare(binding, name, name, scope, .variable_var, Reference.NO_STMT, Reference.NO_STMT);
