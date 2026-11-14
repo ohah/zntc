@@ -198,6 +198,14 @@ fn transpileFile(
 
 /// 디렉토리를 재귀 순회하며 .ts/.tsx 파일을 찾아 트랜스파일한다.
 /// Asset 파일(file/copy 로더)을 출력 디렉토리에 쓴다.
+fn writeChunkSourceMap(allocator: std.mem.Allocator, io: std.Io, output: emitter.OutputFile, full_path: []const u8) !void {
+    const json = try output.getSourceMapJSON(allocator) orelse return;
+    defer allocator.free(json);
+    const map_path = try std.fmt.allocPrint(allocator, "{s}.map", .{full_path});
+    defer allocator.free(map_path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = map_path, .data = json });
+}
+
 fn writeAssetOutputs(allocator: std.mem.Allocator, io: std.Io, asset_outputs: ?[]const emitter.OutputFile, base_dir: []const u8) !void {
     const assets = asset_outputs orelse return;
     for (assets) |a| {
@@ -974,6 +982,7 @@ pub fn main(init: std.process.Init) !void {
                 const file = try std.Io.Dir.cwd().createFile(io, full_path, .{});
                 defer file.close(io);
                 try file.writeStreamingAll(io, o.contents);
+                try writeChunkSourceMap(allocator, io, o, full_path);
                 if (!opts.watch_json) {
                     try stdout.print("  {s} ({d} bytes)\n", .{ full_path, o.contents.len });
                 }
@@ -1163,6 +1172,7 @@ pub fn main(init: std.process.Init) !void {
                         const file = std.Io.Dir.cwd().createFile(io, full_path, .{}) catch continue;
                         defer file.close(io);
                         file.writeStreamingAll(io, o.contents) catch continue;
+                        writeChunkSourceMap(allocator, io, o, full_path) catch continue;
                     }
                     if (!opts.watch_json) {
                         try stderr.print("[watch] Rebuilt → {d} chunks\n", .{outputs.len});

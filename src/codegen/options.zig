@@ -196,6 +196,9 @@ pub const CodegenOptions = struct {
     /// 회피). 이 flag 는 top-level 선언 emit 의 renames 조회를 흔한 ESM 경로에서 건너뛰게 하는
     /// cheap 게이트 — pm-cjs 아닌 경로엔 오버헤드 0.
     pm_cjs_storage: bool = false,
+    /// Native PM CJS default-expression carrier keeps its lexical TDZ.
+    pm_cjs_native_default: bool = false,
+    pm_cjs_early_default_name: bool = false,
     /// circular 모듈 (cycle_group > 0) 의 top-level `const`/`let` 을 `var` 로 강등 (#2198).
     /// 같은 IIFE/scope 안에 hoisted IL 이 그대로 emit 되면 cycle 모듈끼리 정의 전 참조가
     /// 발생해 TDZ ReferenceError 가 throw됨 (esbuild 와 동일 패턴 - var 호이스팅으로

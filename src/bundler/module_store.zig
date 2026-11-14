@@ -47,7 +47,11 @@ pub const PersistentModuleStore = struct {
     /// 절대 경로 → 캐시된 모듈. 경로 키는 store allocator 소유.
     modules: std.StringHashMapUnmanaged(CachedModule) = .empty,
 
+    /// Current semantic prepass contract; null preserves standalone store callers.
+    pm_cjs_module_environments: ?bool = null,
+
     pub const CachedModule = struct {
+        pm_cjs_module_environments: ?bool = null,
         /// 캐싱 시점의 파일 mtime (i128 나노초)
         mtime: i128,
         /// Module 구조체. parse_arena 포함.
@@ -114,6 +118,10 @@ pub const PersistentModuleStore = struct {
     /// 캐시에서 모듈을 조회. mtime이 일치하면 캐시 히트.
     pub fn getIfFresh(self: *PersistentModuleStore, path: []const u8, current_mtime: i128) ?*CachedModule {
         const cached = self.modules.getPtr(path) orelse return null;
+        if (cached.pm_cjs_module_environments != self.pm_cjs_module_environments) {
+            self.evict(path);
+            return null;
+        }
         if (cached.mtime != current_mtime) return null;
         return cached;
     }
@@ -339,30 +347,32 @@ pub const PersistentModuleStore = struct {
             // 기존 키 재사용 — put은 값만 업데이트
             cached_module.path = self.modules.getKey(path).?;
             self.modules.put(self.allocator, path, .{
+                .pm_cjs_module_environments = self.pm_cjs_module_environments,
                 .mtime = mtime,
                 .module = cached_module,
                 .import_specifiers = specs,
                 .const_providers = providers,
             }) catch {
-                var orphan: CachedModule = .{ .mtime = mtime, .module = cached_module, .import_specifiers = specs, .const_providers = providers };
+                var orphan: CachedModule = .{ .pm_cjs_module_environments = self.pm_cjs_module_environments, .mtime = mtime, .module = cached_module, .import_specifiers = specs, .const_providers = providers };
                 self.freeCachedModule(&orphan);
             };
         } else {
             const key = self.allocator.dupe(u8, path) catch {
-                var orphan: CachedModule = .{ .mtime = mtime, .module = cached_module, .import_specifiers = specs, .const_providers = providers };
+                var orphan: CachedModule = .{ .pm_cjs_module_environments = self.pm_cjs_module_environments, .mtime = mtime, .module = cached_module, .import_specifiers = specs, .const_providers = providers };
                 self.freeCachedModule(&orphan);
                 return;
             };
             cached_module.path = key;
 
             self.modules.put(self.allocator, key, .{
+                .pm_cjs_module_environments = self.pm_cjs_module_environments,
                 .mtime = mtime,
                 .module = cached_module,
                 .import_specifiers = specs,
                 .const_providers = providers,
             }) catch {
                 self.allocator.free(key);
-                var orphan: CachedModule = .{ .mtime = mtime, .module = cached_module, .import_specifiers = specs, .const_providers = providers };
+                var orphan: CachedModule = .{ .pm_cjs_module_environments = self.pm_cjs_module_environments, .mtime = mtime, .module = cached_module, .import_specifiers = specs, .const_providers = providers };
                 self.freeCachedModule(&orphan);
             };
         }

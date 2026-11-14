@@ -127,6 +127,15 @@ pub fn addModuleMappings(args: ModuleMappingArgs) !void {
     }
 }
 
+/// Preserve only real codegen points for independently emitted compiler shells.
+/// Reuse plugin-chain and name-index resolution without inventing gap mappings.
+pub fn addModuleMappingPoints(args: ModuleMappingArgs) !void {
+    if (args.maps.len == 0) return;
+    var resolver = try MappingResolver.init(args.sm, args.module_id, args.source, args.plugin_source_maps, args.sources_content);
+    defer resolver.deinit();
+    for (args.maps) |mapping| _ = try emitResolvedMapping(args, &resolver, mapping);
+}
+
 /// codegen mapping 한 개를 resolve → addMapping 로 emit. body 와 tail loop 에서 공유.
 inline fn emitResolvedMapping(
     args: ModuleMappingArgs,

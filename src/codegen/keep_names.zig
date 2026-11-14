@@ -105,6 +105,7 @@ pub fn isFunctionDeclaration(self: anytype, raw: u32) ?NodeIndex {
 /// and its source name.
 pub fn hoistedFunctionName(self: anytype, raw: u32) ?struct { name: NodeIndex, original: []const u8 } {
     if (!self.options.keep_names) return null;
+    if (self.options.pm_cjs_early_default_name and self.indent_level == 0 and self.namespace_body_depth == 0) return null;
     const decl = isFunctionDeclaration(self, raw) orelse return null;
     const node = self.ast.getNode(decl);
     const flags = self.ast.extra_data.items[node.data.extra + ast_mod.FunctionExtra.flags];

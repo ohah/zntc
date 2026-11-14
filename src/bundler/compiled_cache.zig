@@ -100,7 +100,7 @@ pub const InputHasher = struct {
 ///   emit_module_pass 의 per-module 결과 (dev_codes / compiled_cache entry) 는 동일하므로
 ///   module-level cache key 에 영향 없음. dev_mode incremental rebuild 가 first=false 만
 ///   set 해도 first build 의 entry 와 동일 input_hash → cache hit.
-const expected_emit_options_field_count: usize = 66;
+const expected_emit_options_field_count: usize = 67;
 const intentionally_unhashed_fields = [_][]const u8{
     "skip_bundle_output",
     // PR-3b-i: 어느 청크를 outputs 로 쓸지(chunk 선택)만 거르고 per-module 컴파일 결과는
@@ -121,6 +121,13 @@ comptime {
 
 /// EmitOptions 의 emit 결과에 영향을 주는 모든 필드를 순차 hash.
 pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
+    h.addBool(options.synchronous_module_environment != null);
+    if (options.synchronous_module_environment) |environment| {
+        h.addStr(environment.environment_name);
+        h.addStr(environment.prefix);
+        h.addU64(@intCast(environment.dependencies.len));
+        for (environment.dependencies) |dependency| h.addU32(dependency.toU32());
+    }
     // The actual selected guard binding changes raw per-module call bytes.
     h.addOptStr(options.entry_guard_runtime_name);
     // This pointer is process-local; cache the actual public cell/source
@@ -324,7 +331,8 @@ pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
 /// Cached code cannot replay an owned deferred writer or a current output
 /// artifact's exact literal projection. This gate precedes cache lookup/write.
 pub fn canCacheModule(options: *const EmitOptions) bool {
-    return options.defer_async_entry_exports == null and options.deferred_module_exports == null and options.compiler_literal_overrides == null;
+    return options.defer_async_entry_exports == null and options.deferred_module_exports == null and
+        options.compiler_literal_overrides == null and options.synchronous_module_environment == null;
 }
 
 /// 전체 emit 에 1회만 계산하면 되는 options_hash 를 캐싱용으로 반환.

@@ -716,6 +716,7 @@ pub fn buildMetadataForAstWithHolderReservations(
     output_produces_named: bool,
     reservations: ?*@import("../namespace_holder_reservations.zig").NamespaceHolderReservations,
 ) !LinkingMetadata {
+    _ = output_produces_named; // Retained caller ABI; storage lowering is no longer used.
     var local_reservations = @import("../namespace_holder_reservations.zig").NamespaceHolderReservations.init(self.allocator);
     defer local_reservations.deinit();
     const holder_reservations = reservations orelse &local_reservations;
@@ -1911,23 +1912,9 @@ pub fn buildMetadataForAstWithHolderReservations(
             mergeUnifiedPhaseB(self, module_index, &renames, &owned_nested_renames) catch {};
         }
 
-        // (#4587 target a) preserve-modules CJS "exports-as-storage": 재할당되는 export
-        // 바인딩(`export let A = 0; A = 100`)의 로컬 심볼을 `exports.<name>` 로 rename 한다.
-        // codegen 의 identifier dispatch(node_dispatch.zig:226)가 tag-비게이트라 read(`A`)·
-        // write(`A = v`)·compound(`A += 1`)·update(`A++`)·shorthand(`{A}`)를 전부 `exports.A`
-        // 로 자동 처리 — 유일한 예외인 **선언 위치**(`let exports.A` = SyntaxError)만 codegen
-        // bindings.zig 가 `exports.A = init;` 할당으로 별도 변환한다. 섹션4의 mangled rename 을
-        // **덮어써야** 하므로 모든 name-based rename 이 끝난 이 지점에 둔다. const/class/function
-        // 은 exportBindingIsCjsStorage 술어가 제외(현행·#4584 유지).
-        if (self.graph.preserve_modules and format == .cjs and output_produces_named) {
-            for (m.export_bindings) |eb| {
-                if (!m.exportBindingIsCjsStorage(eb)) continue;
-                const sym_idx = m.exportBindingSemanticIndex(eb) orelse continue;
-                const storage = try std.fmt.allocPrint(self.allocator, "exports.{s}", .{eb.exported_name});
-                defer self.allocator.free(storage);
-                try putOwnedRename(self, &renames, &owned_nested_renames, sym_idx, storage);
-            }
-        }
+        // PM CJS publishes local-binding getters before dependency execution.
+        // Never rewrite source storage into an exports property.
+
     }
     // The callback emitter and body references consume the same registered
     // parameter SID. Its virtual scope is outside the program scope above.
@@ -2326,7 +2313,14 @@ pub fn selectedFinalImportLocal(self: *const Linker, module_index: u32, pair: Ns
     };
     if (!@import("../symbol.zig").SymbolRef.eql(actual_ref, handle.provider_symbol)) return null;
     const target = self.getConsumerImportTarget(canonical.module_index.toU32(), canonical.export_name) orelse return null;
-    if (target.role != .binding or !try @import("identifier_name.zig").isBindingName(self.allocator, target.text, isReservedName)) return null;
+    if (target.role == .namespace_member_expression) {
+        // Only the physical PM require producer authorizes a getter value;
+        // ordinary namespace expressions and a retagged binding do not.
+        if (target.producer == null) return null;
+        if (self.format != .cjs or !self.graph.preserve_modules or target.text.len == 0 or !std.unicode.utf8ValidateSlice(target.text)) return null;
+        return target.text;
+    }
+    if (!try @import("identifier_name.zig").isBindingName(self.allocator, target.text, isReservedName)) return null;
     return target.text;
 }
 

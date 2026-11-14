@@ -129,7 +129,7 @@ describe('#4576: preserve-modules 동명 export default deconflict (esm)', () =>
  * #4580 interop 버그로 런타임 실패라 emit 만 검증했다 — #4580 머지로 런타임 검증으로 승격.)
  */
 describe('#4576+#4580: cjs 동명 default 는 deconflict + 전체바인딩으로 실행된다', () => {
-  test('두 default → const foo / const foo$2 = require, 실행 D1D2', async () => {
+  test('두 default require 함수 값이 분리되고 실행 D1D2', async () => {
     const { dir, cleanup } = await createFixture({
       'm1.js': 'export default function foo(){ return "D1"; }',
       'm2.js': 'export default function foo(){ return "D2"; }',
@@ -148,10 +148,25 @@ describe('#4576+#4580: cjs 동명 default 는 deconflict + 전체바인딩으로
       ]);
       expect(res.exitCode).toBe(0);
       writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'commonjs' }));
-      const entry = readFileSync(join(outDir, 'entry.js'), 'utf8');
-      // #4580: default-only 는 전체 바인딩. #4576: 2번째는 deconflict.
-      expect(entry).toMatch(/const foo = require\("\.\/m1\.js"\)/);
-      expect(entry).toMatch(/const foo\$2 = require\("\.\/m2\.js"\)/);
+      const probe = join(outDir, 'default-abi.cjs');
+      writeFileSync(
+        probe,
+        `
+        const assert=require('node:assert/strict');
+        const first=require('./m1.js'),second=require('./m2.js');
+        assert.equal(typeof first,'function');
+        assert.equal(typeof second,'function');
+        assert.notEqual(first,second);
+        assert.equal(require('./m1.js'),first);
+        assert.equal(require('./m2.js'),second);
+        assert.equal(Object.hasOwn(first,'default'),false);
+        assert.equal(Object.hasOwn(second,'default'),false);
+        console.log(first()+second());
+      `,
+      );
+      const abi = await runNode(probe);
+      expect(abi.stderr).toBe('');
+      expect(abi.stdout.trim()).toBe('D1D2');
       const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
       expect(stderr).not.toContain('SyntaxError');
       expect(stderr).not.toContain('TypeError');

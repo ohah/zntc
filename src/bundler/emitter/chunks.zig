@@ -131,6 +131,406 @@ fn readinessHelperExpression(
     return try std.fmt.allocPrint(allocator, "{s}({s})[{s}]", .{ if (registry) "__zntc_require" else "require", quoted_path, quoted_key });
 }
 
+fn pmDefaultHelperExpression(allocator: std.mem.Allocator, graph: *const ModuleGraph, chunk_graph: *const ChunkGraph, chunk: *const Chunk, options: *const EmitOptions, linker: *const Linker) ![]const u8 {
+    const known = graph.pm_default_builtin orelse return error.InvalidPmDefaultBuiltin;
+    const actual = try @import("../pm_default_builtin.zig").exact(graph);
+    const provider = graph.getModule(actual.module) orelse return error.InvalidPmDefaultBuiltin;
+    if (known.export_index >= provider.export_bindings.len) return error.InvalidPmDefaultBuiltin;
+    const binding = provider.export_bindings[known.export_index];
+    const helper_index = chunk_graph.getModuleChunk(actual.module);
+    if (helper_index.isNone()) return error.InvalidPmDefaultBuiltin;
+    if (helper_index == chunk.index) return try allocator.dupe(u8, linker.getCanonicalForExport(binding, provider.index.toU32()) orelse return error.InvalidPmDefaultBuiltin);
+    const helper_chunk = chunk_graph.getChunk(helper_index);
+    var importer: std.ArrayListUnmanaged(u8) = .empty;
+    defer importer.deinit(allocator);
+    var helper: std.ArrayListUnmanaged(u8) = .empty;
+    defer helper.deinit(allocator);
+    try appendChunkOutputPath(chunk, &importer, allocator, options);
+    try chunkPlaceholderStem(helper_chunk, &helper, allocator, options);
+    const ext = options.out_extension_js orelse ".js";
+    const path = if (helper_chunk.explicit_file_name) |file|
+        try computeRelativePath(allocator, std.fs.path.dirname(importer.items) orelse "", file, "")
+    else if (options.preserve_modules and helper_chunk.rel_dir != null) path: {
+        const target = try computePreserveModulesPath(allocator, helper_chunk.rel_dir.?, ext, options.preserve_modules_root);
+        defer allocator.free(target);
+        break :path try computeRelativePath(allocator, std.fs.path.dirname(importer.items) orelse "", target, "");
+    } else try computeRelativePath(allocator, std.fs.path.dirname(importer.items) orelse "", helper.items, ext);
+    defer allocator.free(path);
+    const quoted_path = try quoteChunkPath(allocator, path);
+    defer allocator.free(quoted_path);
+    const key = try @import("../public_export_key.zig").fromSyntax(allocator, binding.exported_name);
+    defer key.deinit(allocator);
+    const quoted_key = try std.json.Stringify.valueAlloc(allocator, key.text, .{});
+    defer allocator.free(quoted_key);
+    return try std.fmt.allocPrint(allocator, "(0,require({s})[{s}])", .{ quoted_path, quoted_key });
+}
+
+/// Both registration and lookup use the same physical output-path producer.
+/// The helper artifact instance supplies the domain; graph-local IDs never do.
+fn pmDefaultArtifactKey(allocator: std.mem.Allocator, graph: *const ModuleGraph, chunk_graph: *const ChunkGraph, target: *const Chunk, options: *const EmitOptions) ![]const u8 {
+    const actual = try @import("../pm_default_builtin.zig").exact(graph);
+    return helperRelativeArtifactKey(allocator, chunk_graph, actual.module, target, options);
+}
+
+fn helperRelativeArtifactKey(allocator: std.mem.Allocator, chunk_graph: *const ChunkGraph, helper_module: ModuleIndex, target: *const Chunk, options: *const EmitOptions) ![]const u8 {
+    const helper_index = chunk_graph.getModuleChunk(helper_module);
+    if (helper_index.isNone()) return error.InvalidPmDefaultBuiltin;
+    const helper = chunk_graph.getChunk(helper_index);
+    var helper_path: std.ArrayListUnmanaged(u8) = .empty;
+    defer helper_path.deinit(allocator);
+    var target_path: std.ArrayListUnmanaged(u8) = .empty;
+    defer target_path.deinit(allocator);
+    try appendChunkOutputPath(helper, &helper_path, allocator, options);
+    try appendChunkOutputPath(target, &target_path, allocator, options);
+    return computeRelativePath(allocator, std.fs.path.dirname(helper_path.items) orelse "", target_path.items, "");
+}
+
+fn synchronousChunkEmitEligible(options: *const EmitOptions) bool {
+    for (options.plugins) |plugin| if (plugin.renderChunk != null) return false;
+    return options.preserve_modules and options.format == .cjs and
+        options.banner_js == null and options.intro_js == null and options.outro_js == null and options.footer_js == null and
+        !options.dev_mode and options.run_before_main.len == 0;
+}
+
+fn relativeChunkImportPath(allocator: std.mem.Allocator, importer: *const Chunk, provider: *const Chunk, options: *const EmitOptions) ![]const u8 {
+    var source: std.ArrayListUnmanaged(u8) = .empty;
+    defer source.deinit(allocator);
+    var target: std.ArrayListUnmanaged(u8) = .empty;
+    defer target.deinit(allocator);
+    try appendChunkOutputPath(importer, &source, allocator, options);
+    try appendChunkOutputPath(provider, &target, allocator, options);
+    return computeRelativePath(allocator, std.fs.path.dirname(source.items) orelse "", target.items, "");
+}
+
+fn synchronousSlot(dependencies: []const ModuleIndex, target: ModuleIndex) !usize {
+    for (dependencies, 0..) |dependency, slot| if (dependency == target) return slot;
+    return error.InvalidSynchronousModuleDependency;
+}
+
+fn synchronousMember(a: std.mem.Allocator, environment: []const u8, dependencies: []const ModuleIndex, target: ModuleIndex, key: ?[]const u8) ![]const u8 {
+    const slot = try synchronousSlot(dependencies, target);
+    if (key) |syntax| {
+        const decoded = try @import("../public_export_key.zig").fromSyntax(a, syntax);
+        defer decoded.deinit(a);
+        const quoted = try std.json.Stringify.valueAlloc(a, decoded.text, .{});
+        defer a.free(quoted);
+        return std.fmt.allocPrint(a, "{s}[{d}][{s}]", .{ environment, slot, quoted });
+    }
+    return std.fmt.allocPrint(a, "{s}[{d}]", .{ environment, slot });
+}
+
+fn synchronousExportRead(a: std.mem.Allocator, l: *const Linker, module: *const Module, exported: []const u8, environment: []const u8, dependencies: []const ModuleIndex) ![]const u8 {
+    if (module.findExportBinding(exported)) |binding| {
+        if (binding.kind == .local) {
+            const sid = module.exportBindingSemanticIndex(binding.*) orelse return error.InvalidSynchronousModuleExport;
+            for (module.import_bindings) |imported| {
+                const identity = try module.checkedImportBindingIdentity(imported);
+                if (identity.symbol.semanticIndex() != sid or identity.symbol.moduleIndex() != module.index) continue;
+                if (imported.import_record_index >= module.import_records.len) return error.InvalidSynchronousModuleExport;
+                const record = module.import_records[imported.import_record_index];
+                return synchronousMember(a, environment, dependencies, record.resolved, if (imported.kind == .namespace) null else imported.imported_name);
+            }
+            const local = l.getCanonicalForExport(binding.*, module.index.toU32()) orelse return error.InvalidSynchronousModuleExport;
+            return @import("pm_cjs_exports.zig").localReadExpression(l, module, binding.*, local, a);
+        }
+        if (binding.kind == .re_export or binding.kind == .re_export_namespace) {
+            const record_index = binding.import_record_index orelse return error.InvalidSynchronousModuleExport;
+            if (record_index >= module.import_records.len) return error.InvalidSynchronousModuleExport;
+            return synchronousMember(a, environment, dependencies, module.import_records[record_index].resolved, if (binding.kind == .re_export_namespace) null else binding.local_name);
+        }
+    }
+    // FinalExports resolves ambiguity. Match the exact resolved binding through
+    // a real direct star edge; do not fabricate an edge to a transitive owner.
+    const wanted = l.resolveExportChainUncached(module.index, exported) orelse return error.InvalidSynchronousModuleExport;
+    for (module.export_bindings) |binding| {
+        if (binding.kind != .re_export_star) continue;
+        const record_index = binding.import_record_index orelse return error.InvalidSynchronousModuleExport;
+        if (record_index >= module.import_records.len) return error.InvalidSynchronousModuleExport;
+        const target = module.import_records[record_index].resolved;
+        const candidate = l.resolveExportChainUncached(target, exported) orelse continue;
+        if (candidate.module_index == wanted.module_index and std.mem.eql(u8, candidate.export_name, wanted.export_name))
+            return synchronousMember(a, environment, dependencies, target, exported);
+    }
+    return error.InvalidSynchronousModuleExport;
+}
+
+const PhysicalChunkImports = struct {
+    order: std.ArrayList(ChunkIndex) = .empty,
+    seen: std.AutoHashMapUnmanaged(ChunkIndex, void) = .empty,
+
+    fn record(self: *PhysicalChunkImports, allocator: std.mem.Allocator, target: ChunkIndex) !void {
+        if (self.seen.contains(target)) return;
+        try self.order.ensureUnusedCapacity(allocator, 1);
+        try self.seen.put(allocator, target, {});
+        self.order.appendAssumeCapacity(target);
+    }
+
+    fn deinit(self: *PhysicalChunkImports, allocator: std.mem.Allocator) void {
+        self.order.deinit(allocator);
+        self.seen.deinit(allocator);
+    }
+};
+
+const PhysicalImportsByChunk = std.AutoHashMapUnmanaged(usize, []const ChunkIndex);
+
+fn emitSynchronousPmChunk(allocator: std.mem.Allocator, graph: *const ModuleGraph, chunk_graph: *const ChunkGraph, chunk: *const Chunk, options: *const EmitOptions, l: *Linker, physical_imports: *PhysicalChunkImports) !OutputFile {
+    if (chunk.modules.items.len != 1) return error.InvalidSynchronousModuleChunk;
+    const module = graph.getModule(chunk.modules.items[0]) orelse return error.InvalidSynchronousModuleChunk;
+    const plan = @import("../pm_cjs_module_plan.zig");
+    if (!try plan.contains(graph, module)) return error.InvalidSynchronousModuleChunk;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const dependencies = try plan.dependencies(a, graph, module, l.tree_shaker_active);
+    const helper = try @import("../pm_module_builtin.zig").exact(graph);
+    const helper_chunk_index = chunk_graph.getModuleChunk(helper.module);
+    if (helper_chunk_index.isNone()) return error.InvalidSynchronousModuleChunk;
+    const helper_chunk = chunk_graph.getChunk(helper_chunk_index);
+    var holders = @import("../namespace_holder_reservations.zig").NamespaceHolderReservations.init(allocator);
+    defer holders.deinit();
+    try holders.seed(l);
+    var foreign: std.ArrayList([]const u8) = .empty;
+    var foreign_keys = holders.names.keyIterator();
+    while (foreign_keys.next()) |name| try foreign.append(a, name.*);
+    const wrapper = try @import("../synchronous_module_wrapper_program.zig").Program.create(allocator, foreign.items);
+    defer wrapper.destroy();
+    const environment = try wrapper.environmentLocal();
+    // These are local compiler spellings, not namespace or runtime identities.
+    // Keep the ordinary path-derived holder API unchanged for other outputs.
+    var short_names: @import("../../transformer/es_helpers.zig").PrivateNameAllocator = .{ .allocator = a };
+    var reserved_names = holders.names.keyIterator();
+    while (reserved_names.next()) |name| try short_names.reserved.put(a, name.*, {});
+    try short_names.reserved.put(a, environment.final_name, {});
+    const runtime_name = try short_names.makeUniqueName("__pm");
+    const namespace_name = try short_names.makeUniqueName("__ns");
+    const done_name = try short_names.makeUniqueName("__done");
+    for ([_][]const u8{ runtime_name, namespace_name, done_name }) |name| try holders.reserveDerived(name);
+    var occupied: std.ArrayList([]const u8) = .empty;
+    try occupied.appendSlice(a, &.{ environment.final_name, runtime_name, namespace_name, done_name });
+    var helper_imports: std.ArrayList(u8) = .empty;
+    var used: std.StringHashMapUnmanaged(void) = .empty;
+    var natural: std.StringHashMapUnmanaged(void) = .empty;
+    for (occupied.items) |name| try used.put(a, name, {});
+    var aliases: std.ArrayList([]const u8) = .empty;
+    for (chunk.cross_chunk_imports.items) |dependency| {
+        const provider_chunk = chunk_graph.getChunk(dependency);
+        const provider_module = graph.getModule(depChunkModuleIndex(provider_chunk) orelse return error.InvalidSynchronousModuleChunk) orelse return error.InvalidSynchronousModuleChunk;
+        if (!try plan.helper(graph, provider_module)) continue;
+        const path = try relativeChunkImportPath(a, chunk, provider_chunk, options);
+        const quoted_path = try quoteChunkPath(a, path);
+        const symbols = chunk.imports_from.get(@backingInt(dependency)) orelse continue;
+        for (symbols.items) |symbol| {
+            const binding = try crossChunkBindingName(l, symbol);
+            const has_global = l.getCrossChunkGlobalName(symbol.canonical_module, symbol.name) != null;
+            const local = try deconflictedConsumerLocal(l, symbol, binding, has_global, module.index.toU32(), a, &used, &natural, &aliases);
+            const property = try ordinaryConsumerPropertyKey(a, l, symbol, if (has_global) binding else symbol.name, if (has_global) .binding_spelling else .module_export_name);
+            const quoted_key = try std.json.Stringify.valueAlloc(a, property.text, .{});
+            try helper_imports.print(a, "var {s}=require({s})[{s}];\n", .{ local, quoted_path, quoted_key });
+            try physical_imports.record(allocator, dependency);
+            try occupied.append(a, local);
+        }
+    }
+    try l.computeRenamesForModules(chunk.modules.items, occupied.items);
+    const helper_module = graph.getModule(helper.module) orelse return error.InvalidSynchronousModuleChunk;
+    var helper_key: ?[]const u8 = null;
+    for (helper_module.export_bindings) |binding| if (helper_module.exportBindingSemanticIndex(binding) == @as(?u32, @backingInt(helper.inner))) {
+        if (helper_key != null) return error.InvalidSynchronousModuleChunk;
+        helper_key = binding.exported_name;
+    };
+    const decoded_helper_key = try @import("../public_export_key.zig").fromSyntax(a, helper_key orelse return error.InvalidSynchronousModuleChunk);
+    const quoted_helper_key = try std.json.Stringify.valueAlloc(a, decoded_helper_key.text, .{});
+    const helper_path = try relativeChunkImportPath(a, chunk, helper_chunk, options);
+    const quoted_helper_path = try quoteChunkPath(a, helper_path);
+    var output: std.ArrayList(u8) = .empty;
+    try output.appendSlice(a, "\"use strict\";\n");
+    var interop_emitted = false;
+    try emitChunkRuntimeHelpers(&output, a, chunk, graph, l, options, null, &interop_emitted);
+    try output.appendSlice(a, helper_imports.items);
+    try output.print(a, "var {s}=require({s})[{s}];\n", .{ runtime_name, quoted_helper_path, quoted_helper_key });
+    try physical_imports.record(allocator, helper_chunk_index);
+    var owned: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (owned.items) |value| l.allocator.free(value);
+        owned.deinit(l.allocator);
+    }
+    const final_entries = try l.buildFinalExports(true, module.index.toU32(), module.export_bindings, &owned);
+    defer if (final_entries) |values| l.allocator.free(values);
+    const entries = final_entries orelse &.{};
+    var prefix: std.ArrayList(u8) = .empty;
+    try @import("pm_cjs_exports.zig").appendEarlyNames(l, module, &prefix, a, options);
+    try prefix.print(a, "yield {s}.namespace([", .{runtime_name});
+    var public_keys: std.ArrayList([]const u8) = .empty;
+    for (entries, 0..) |entry, i| {
+        if (entry.materialize != null) return error.InvalidSynchronousModuleExport;
+        const decoded = if (entry.public_key_literal) |literal| try @import("../public_export_key.zig").fromLiteralSyntax(a, literal) else try @import("../public_export_key.zig").fromSyntax(a, entry.exported);
+        try public_keys.append(a, decoded.text);
+        const quoted = try std.json.Stringify.valueAlloc(a, decoded.text, .{});
+        const read = try synchronousExportRead(a, l, module, entry.exported, environment.final_name, dependencies);
+        if (i != 0) try prefix.append(a, ',');
+        try prefix.print(a, "[{s},function(){{return {s};}}]", .{ quoted, read });
+    }
+    try prefix.appendSlice(a, "]);\n");
+    // Registry key nodes are typed producer slots in the Source AST. Mirror
+    // ordinary PM emission's exact physical-path projection without AST edits.
+    var compiler_literals: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    if (module.legacy_lexical_writes.len != 0) {
+        try @import("../graph/legacy_initialization_registry.zig").validate(graph, module);
+        for (module.legacy_lexical_writes) |receipt|
+            try appendLexicalRegistryModulePath(a, graph, chunk_graph, chunk, options, module, module, receipt.key, &compiler_literals);
+    }
+    if (module.legacy_lexical_reads.len != 0) {
+        try @import("../graph/legacy_lexical_reads.zig").validate(graph, module);
+        for (module.legacy_lexical_reads) |receipt| if (receipt.registry_key) |key| {
+            try appendLexicalRegistryModulePath(a, graph, chunk_graph, chunk, options, module, receipt.plan.module, key, &compiler_literals);
+        };
+    }
+    var module_options = options.*;
+    if (compiler_literals.count() != 0) module_options.compiler_literal_overrides = &compiler_literals;
+    module_options.synchronous_module_environment = .{ .environment_name = environment.final_name, .dependencies = dependencies, .prefix = prefix.items };
+    var body_mappings: ?[]const SourceMap.Mapping = null;
+    var body_names: []const []const u8 = &.{};
+    const body = try parent.emitModuleWithHolderReservations(a, module, &module_options, l, true, null, l.tree_shaker, null, if (options.sourcemap.enable) &body_mappings else null, if (options.sourcemap.enable) &body_names else null, null, null, null, null, &holders) orelse return error.InvalidSynchronousModuleChunk;
+    var emission: ?@import("../../codegen/compiler_statement_insertions.zig").Emission = null;
+    const frame = try wrapper.emitValueTracked(a, body, options.minify_whitespace, &emission);
+    const own_key = try helperRelativeArtifactKey(a, chunk_graph, helper.module, chunk, options);
+    const quoted_own_key = try std.json.Stringify.valueAlloc(a, own_key, .{});
+    try output.print(a, "{s}({s},", .{ runtime_name, quoted_own_key });
+    const frame_line: u32 = @intCast(std.mem.count(u8, output.items, "\n"));
+    const frame_column = @import("../../codegen/writer.zig").trailingColumn(output.items);
+    try output.appendSlice(a, frame);
+    try output.appendSlice(a, ",[");
+    const hole = emission orelse return error.InvalidSynchronousModuleChunk;
+    var artifact_mappings: std.ArrayList(SourceMap.Mapping) = .empty;
+    if (body_mappings) |mappings| {
+        const translated = try a.dupe(SourceMap.Mapping, mappings);
+        for (translated) |*point| {
+            if (point.generated_line == 0) point.generated_column += hole.column;
+            point.generated_line += hole.line;
+            if (point.generated_line == 0) point.generated_column += frame_column;
+            point.generated_line += frame_line;
+        }
+        try artifact_mappings.appendSlice(a, translated);
+    }
+    for (dependencies, 0..) |dependency, i| {
+        const target_index = chunk_graph.getModuleChunk(dependency);
+        if (target_index.isNone()) return error.InvalidSynchronousModuleChunk;
+        const target = chunk_graph.getChunk(target_index);
+        const key = try helperRelativeArtifactKey(a, chunk_graph, helper.module, target, options);
+        const quoted_key = try std.json.Stringify.valueAlloc(a, key, .{});
+        const path = try relativeChunkImportPath(a, chunk, target, options);
+        const quoted_path = try quoteChunkPath(a, path);
+        if (i != 0) try output.append(a, ',');
+        try output.print(a, "{{key:{s},load:function(){{return require({s});}}}}", .{ quoted_key, quoted_path });
+        try physical_imports.record(allocator, target_index);
+    }
+    try output.print(a, "],function({s},{s}){{", .{ namespace_name, done_name });
+    const scalar = public_keys.items.len == 1 and std.mem.eql(u8, public_keys.items[0], "default") and (options.output_exports == .auto or options.output_exports == .default_);
+    if (options.output_exports == .default_ and !scalar) return error.OutputExportsDefaultRequiresSingleDefault;
+    if (options.output_exports != .none) {
+        if (scalar) {
+            try output.print(a, "if({s})module.exports={s}.default;", .{ done_name, namespace_name });
+        } else if (public_keys.items.len != 0) {
+            const define = try l.esmInteropRuntimeHelperName(.def_prop);
+            try output.print(a, "if(!{s}){{", .{done_name});
+            if (!containsName(public_keys.items, "__esModule")) try output.print(a, "{s}(exports,\"__esModule\",{{value:true}});", .{define});
+            for (public_keys.items) |key| {
+                const quoted = try std.json.Stringify.valueAlloc(a, key, .{});
+                try output.print(a, "{s}(exports,{s},{{enumerable:true{s},get:function(){{return {s}[{s}];}}}});", .{ define, quoted, if (options.configurable_exports) ",configurable:true" else "", namespace_name, quoted });
+            }
+            try output.append(a, '}');
+        }
+    }
+    try output.appendSlice(a, "});\n");
+    var path: std.ArrayListUnmanaged(u8) = .empty;
+    try appendChunkOutputPath(chunk, &path, a, options);
+    var final_mappings: []const SourceMap.Mapping = artifact_mappings.items;
+    const contents = if (options.transform_options_base.unsupported.generator or options.transform_options_base.unsupported.block_scoping) lowered: {
+        const lowered = try @import("synchronous_module_lowering.zig").lower(a, output.items, path.items, .{
+            .source_maps = options.sourcemap.enable,
+            .minify_whitespace = options.minify_whitespace,
+            .input_mappings = artifact_mappings.items,
+            .platform = options.platform,
+        });
+        final_mappings = lowered.mappings;
+        break :lowered lowered.code;
+    } else output.items;
+    var final_contents: std.ArrayList(u8) = .empty;
+    try final_contents.appendSlice(a, contents);
+    // Node's CJS lexer cannot infer named exports through the descriptor
+    // callback. Emit hints after final lowering so its DCE cannot erase them.
+    if (options.output_exports != .none and !scalar) for (public_keys.items) |key| {
+        const quoted = try std.json.Stringify.valueAlloc(a, key, .{});
+        try final_contents.print(a, "0&&(exports[{s}]=0);\n", .{quoted});
+    };
+    var source_map: ?SourceMap.SourceMapBuilder = if (options.sourcemap.enable) SourceMap.SourceMapBuilder.init(allocator) else null;
+    var source_map_moved = false;
+    defer if (!source_map_moved) if (source_map) |*builder| builder.deinit();
+    if (source_map) |*builder| {
+        builder.source_root = options.sourcemap.source_root orelse "";
+        builder.sources_content = options.sourcemap.sources_content;
+        try @import("dev.zig").addModuleMappingPoints(.{
+            .sm = builder,
+            .module_id = parent.sourcemapSourcePath(module.path, options),
+            .source = module.source,
+            .maps = final_mappings,
+            .module_names = body_names,
+            .base_line = 0,
+            .preamble_lines = 0,
+            .sources_content = options.sourcemap.sources_content,
+            .indent_offset = false,
+            .pre_lines = 0,
+            .total_code_lines = 0,
+            .post_lines = 0,
+            .plugin_source_maps = module.plugin_source_maps,
+        });
+        if (options.sourcemap.mode == .linked) try SourceMap.appendSourceMappingURLComment(&final_contents, a, .{
+            .mode = .linked,
+            .output_filename = std.fs.path.basename(path.items),
+        }, null);
+    }
+    const final_path = try allocator.dupe(u8, path.items);
+    errdefer allocator.free(final_path);
+    const final_code = try allocator.dupe(u8, final_contents.items);
+    errdefer allocator.free(final_code);
+    const module_ids = try allocator.alloc([]const u8, 1);
+    errdefer allocator.free(module_ids);
+    module_ids[0] = try allocator.dupe(u8, module.path);
+    errdefer allocator.free(module_ids[0]);
+    const export_names = try allocator.alloc([]const u8, if (options.output_exports == .none) 0 else public_keys.items.len);
+    var exports_filled: usize = 0;
+    errdefer {
+        for (export_names[0..exports_filled]) |name| allocator.free(name);
+        allocator.free(export_names);
+    }
+    for (export_names, 0..) |*name, i| {
+        name.* = try allocator.dupe(u8, public_keys.items[i]);
+        exports_filled += 1;
+    }
+    std.mem.sort([]const u8, export_names, {}, types.stringLessThan);
+    const builder = if (source_map) |*value| try value.moveToHeap(allocator) else null;
+    source_map_moved = builder != null;
+    return .{ .path = final_path, .contents = final_code, .module_ids = module_ids, .exports = export_names, .sourcemap_builder = builder };
+}
+
+fn initializationHelperChunk(graph: *const ModuleGraph, chunk_graph: *const ChunkGraph, dependency: ChunkIndex) !bool {
+    const candidates = [_]@TypeOf(graph.lexical_tdz_builtin){ graph.lexical_tdz_builtin, graph.legacy_name_builtin };
+    for (candidates, 0..) |candidate, index| {
+        const known = candidate orelse continue;
+        if (chunk_graph.getModuleChunk(known.module_index) != dependency) continue;
+        const actual = if (index == 0) try @import("../lexical_initialization_builtin.zig").exact(graph) else try @import("../lexical_initialization_builtin.zig").exactNames(graph);
+        const provider = graph.getModule(actual.module) orelse return error.InvalidCallsiteTarget;
+        if (provider.dependencies.items.len != 0 or provider.uses_top_level_await) return error.InvalidCallsiteTarget;
+        return true;
+    }
+    if (graph.pm_default_builtin) |known| {
+        if (chunk_graph.getModuleChunk(known.module_index) == dependency) {
+            _ = try @import("../pm_default_builtin.zig").exact(graph);
+            return true;
+        }
+    }
+    return false;
+}
+
 /// The key's path slot is compiler-owned AST. Resolve it from the same
 /// physical chunk paths used by native import emission, after chunk naming.
 /// Source identifiers, export keys, and graph-local indexes are never URLs.
@@ -409,6 +809,41 @@ fn snapshotConsumerLocals(allocator: std.mem.Allocator, used_locals: *const std.
 /// 게이트라 splitting 은 write 도 생략(낭비 방지·gate 를 write 와 co-locate).
 /// symbol-level import 블록과 #4580 default 전체바인딩 두 site 공용.
 fn exactInitializationHelperCrossExport(linker: *const Linker, sym: chunk_mod.CrossChunkSym) !bool {
+    if (linker.graph.entry_guard_ast_provider) |known| {
+        if (known.module_index.toU32() == sym.canonical_module) {
+            const actual = try @import("../runtime_entry_guard_ast.zig").exactBinding(linker.graph);
+            const provider = linker.graph.getModule(actual.module) orelse return error.InvalidCallsiteTarget;
+            if (provider.export_bindings.len != 1 or actual.inner != known.binding_id)
+                return error.InvalidCallsiteTarget;
+            const binding = provider.export_bindings[0];
+            if (std.mem.eql(u8, binding.exported_name, sym.name)) {
+                if (provider.exportBindingLocalNodeSemanticIndex(binding) != @as(?u32, @backingInt(actual.inner)))
+                    return error.InvalidCallsiteTarget;
+                return true;
+            }
+        }
+    }
+    if (linker.graph.tla_readiness_all) |known| {
+        if (known.module_index.toU32() == sym.canonical_module) {
+            const provider = linker.graph.getModule(known.module_index) orelse return error.InvalidCallsiteTarget;
+            const semantic = provider.semantic orelse return error.InvalidCallsiteTarget;
+            if (known.owner_token == .unassigned or semantic.owner_token != known.owner_token or
+                known.export_index >= provider.export_bindings.len) return error.InvalidCallsiteTarget;
+            const binding = provider.export_bindings[known.export_index];
+            if (std.mem.eql(u8, binding.exported_name, sym.name)) {
+                const target: @import("../binding_scanner.zig").CallsiteTarget = .{
+                    .role = .readiness_all,
+                    .symbol = @import("../symbol.zig").SymbolID.make(known.module_index, @backingInt(known.symbol_id)),
+                    .owner = known.owner_token,
+                    .declaration = .none,
+                };
+                try @import("../runtime_callsite_targets.zig").validateTargetRole(linker.graph, target);
+                if (provider.exportBindingLocalNodeSemanticIndex(binding) != @as(?u32, @backingInt(known.symbol_id)))
+                    return error.InvalidCallsiteTarget;
+                return true;
+            }
+        }
+    }
     const known_helpers = [_]@TypeOf(linker.graph.lexical_tdz_builtin){ linker.graph.lexical_tdz_builtin, linker.graph.legacy_name_builtin };
     for (known_helpers, 0..) |candidate, index| {
         const known = candidate orelse continue;
@@ -561,7 +996,60 @@ fn emitPmCjsLiveImport(
     async_import_depth: *usize,
     require_callee: []const u8,
     assign_host: bool,
+    holders: *@import("../namespace_holder_reservations.zig").NamespaceHolderReservations,
+    importer: []const u8,
 ) !void {
+    if (!await_namespace) {
+        const quoted_path = try quoteChunkPath(allocator, bind_arg);
+        defer allocator.free(quoted_path);
+        const provider = graph.getModule(dep_module) orelse return error.InvalidCrossChunkExport;
+        // Allocation-only reservations include nested Source bindings, globals,
+        // eval names and selected Phase B names without renaming those inputs.
+        var existing_names = used_locals.keyIterator();
+        while (existing_names.next()) |name| try holders.reserve(name.*);
+        var natural_names = natural_bindings.keyIterator();
+        while (natural_names.next()) |name| try holders.reserve(name.*);
+        const namespace = try holders.allocate(allocator, importer, provider.path);
+        alias_strs.append(allocator, namespace) catch |err| {
+            allocator.free(namespace);
+            return err;
+        };
+        try used_locals.put(allocator, namespace, {});
+        const accessor = try holders.allocate(allocator, importer, provider.path);
+        alias_strs.append(allocator, accessor) catch |err| {
+            allocator.free(accessor);
+            return err;
+        };
+        try used_locals.put(allocator, accessor, {});
+        // The host require is lexically outside all Source function scopes.
+        // This declaration is callable even while its namespace assignment pauses.
+        try chunk_output.print(allocator, "function {s}(){{return {s}({s});}}\n", .{ accessor, require_callee, quoted_path });
+        // A var holder exists during reentry; only the paused assignment uses
+        // reference-time require. Normal hot reads keep the namespace fastpath.
+        // Do not eagerly access public getters before Source InitializeBinding.
+        try chunk_output.print(allocator, "var {s}={s}();\n", .{ namespace, accessor });
+        for (syms) |sym| {
+            const binding = try crossChunkBindingName(linker, sym);
+            const has_global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
+            const key = if (lazy_local_keys or has_global) binding else sym.name;
+            const local = try deconflictedConsumerLocal(linker, sym, binding, lazy_local_keys or has_global, null, allocator, used_locals, natural_bindings, alias_strs);
+            const property = try ordinaryConsumerPropertyKey(allocator, linker, sym, key, if (lazy_local_keys or has_global) .binding_spelling else .module_export_name);
+            defer property.deinit(allocator);
+            if (linker) |l| {
+                if (try exactInitializationHelperCrossExport(l, sym)) {
+                    const quoted_key = try std.json.Stringify.valueAlloc(allocator, property.text, .{});
+                    defer allocator.free(quoted_key);
+                    try chunk_output.print(allocator, "var {s}={s}[{s}];\n", .{ local, namespace, quoted_key });
+                    continue;
+                }
+                try l.putConsumerImportRequireMember(sym.canonical_module, sym.name, accessor, property.text, namespace);
+            }
+            // Keep a physical lexical slot for existing namespace bookkeeping;
+            // value reads use the exact published require expression above.
+            try chunk_output.print(allocator, "var {s};\n", .{local});
+        }
+        return;
+    }
     // ns holder: `const ns_x = require("<bind_arg>");`
     const dep_mod = graph.getModule(dep_module) orelse return;
     const ns_base = try types.makeNsVarName(allocator, dep_mod.path);
@@ -1444,6 +1932,13 @@ fn emitChunksWithoutFacades(
         outputs.deinit(allocator);
     }
 
+    var physical_imports_by_chunk: PhysicalImportsByChunk = .empty;
+    defer {
+        var values = physical_imports_by_chunk.valueIterator();
+        while (values.next()) |imports| allocator.free(imports.*);
+        physical_imports_by_chunk.deinit(allocator);
+    }
+
     // 통합(non-split) 경로와 동일하게 statement-level export DCE 를 splitting 경로에도
     // 적용한다. `generateChunks` 는 shaker 로 *모듈 단위* 포함 여부만 거르므로,
     // 포함된 모듈 안의 미사용 export(예: 사용 안 한 `export function`) 와 그 종속
@@ -1547,6 +2042,23 @@ fn emitChunksWithoutFacades(
         // 아니면 정상 skip predicate(emit 루프 ↔ resolveContentHashes 동일해야 outputs↔
         // sorted_indices 정렬 유지). 비워진 청크 + PR-3a-ii lazy seed 제외.
         if (chunkRestrictSkip(chunk, ci, options.restrict_to_chunk)) continue;
+        if (synchronousChunkEmitEligible(options) and chunk.modules.items.len == 1) if (linker) |active| {
+            const source = graph.getModule(chunk.modules.items[0]) orelse return error.InvalidSynchronousModuleChunk;
+            if (try @import("../pm_cjs_module_plan.zig").contains(graph, source)) {
+                var physical_imports: PhysicalChunkImports = .{};
+                defer physical_imports.deinit(allocator);
+                var file = try emitSynchronousPmChunk(allocator, graph, chunk_graph, chunk, options, active, &physical_imports);
+                errdefer file.deinit(allocator);
+                try outputs.ensureUnusedCapacity(allocator, 1);
+                const imports = try physical_imports.order.toOwnedSlice(allocator);
+                errdefer allocator.free(imports);
+                try physical_imports_by_chunk.put(allocator, ci, imports);
+                // The map owns imports and outputs owns file. No fallible work
+                // follows either transfer inside this construction scope.
+                outputs.appendAssumeCapacity(file);
+                continue;
+            }
+        };
         const provider_edges = try allocator.dupe(chunk_mod.CrossChunkSym, chunk.exports_to_bindings.items);
         defer allocator.free(provider_edges);
         std.mem.sort(chunk_mod.CrossChunkSym, provider_edges, {}, struct {
@@ -1819,6 +2331,9 @@ fn emitChunksWithoutFacades(
         //     의 자연명을 침범하지 않도록 skip 판정에 쓴다([0]).
         //   · used_locals: 이 청크에 실제 선언된 로컬명. has_global(전역명 고정)/lazy 는 이름을 못 바꾸니
         //     **먼저** 예약해, 비-global 로컬이 그 이름과 충돌하면 deconflict 되게 한다([1] 순서-의존).
+        var holder_reservations = @import("../namespace_holder_reservations.zig").NamespaceHolderReservations.init(allocator);
+        defer holder_reservations.deinit();
+        if (linker) |l| try holder_reservations.seed(l);
         var natural_bindings: std.StringHashMapUnmanaged(void) = .empty;
         defer natural_bindings.deinit(allocator);
         var used_locals: std.StringHashMapUnmanaged(void) = .empty;
@@ -1848,6 +2363,10 @@ fn emitChunksWithoutFacades(
         // - cjs_split (P3-B): cjs+splitting, resolved_path=청크 stem
         //   (둘 다 Node 네이티브 require 가 정적 string 으로 해석).
         const pm_cjs = options.preserve_modules and options.format == .cjs;
+        const importer_identity = if (chunk.modules.items.len != 0)
+            (graph.getModule(chunk.modules.items[0]) orelse return error.InvalidCrossChunkExport).path
+        else
+            options.output_filename;
         var pm_async_import_depth: usize = 0;
         const pm_protocol_owner: ?ModuleIndex = if (pm_cjs and chunk.modules.items.len == 1) blk: {
             const owner = graph.getModule(chunk.modules.items[0]) orelse break :blk null;
@@ -1891,11 +2410,9 @@ fn emitChunksWithoutFacades(
 
         // (#4532 증상4) unwrapped pm-cjs 순환에서 function-decl export 를 require 블록 **앞**에 hoist 할
         // 위치·대상 모듈. require 뒤(모듈 본문 끝)에 두면 순환 소비자가 로드 중 undefined 를 집는다.
-        // pm-cjs & 비-wrap & entry 청크 & **named export 를 내는 모드(auto/named)** 만 — output_exports
-        // `.none`(export 억제)/`.default_`(default 만)에선 hoist 하면 안 된다(#4532 증상4 리뷰 [0]).
-        // 실제 삽입은 computeRenamesForModules 후(리네임명 확정).
+        // Prefix policy is selected per actual provider after renaming. Source
+        // output.none remains a publisher no-op; private runtime ABI stays named.
         const fn_hoist_entry: ?u32 = if (pm_cjs and
-            (options.output_exports == .auto or options.output_exports == .named) and
             preserveModulesWrapperChunk(chunk, graph, options) == null)
             (switch (chunk.kind) {
                 .entry_point => |info| @backingInt(info.module),
@@ -1905,7 +2422,19 @@ fn emitChunksWithoutFacades(
             null;
         var fn_hoist_pos: ?usize = if (fn_hoist_entry != null) chunk_output.items.len else null;
 
-        for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
+        var ordered_imports: std.ArrayList(ChunkIndex) = .empty;
+        defer ordered_imports.deinit(allocator);
+        const import_order = if (pm_cjs and linker != null) ordered: {
+            try ordered_imports.ensureTotalCapacity(allocator, chunk.cross_chunk_imports.items.len);
+            inline for (.{ true, false }) |helpers_first| {
+                for (chunk.cross_chunk_imports.items) |dependency| {
+                    if ((try initializationHelperChunk(graph, chunk_graph, dependency)) == helpers_first)
+                        ordered_imports.appendAssumeCapacity(dependency);
+                }
+            }
+            break :ordered ordered_imports.items;
+        } else chunk.cross_chunk_imports.items;
+        for (import_order) |dep_chunk_idx| {
             const dep_chunk = chunk_graph.getChunk(dep_chunk_idx);
             try chunkPlaceholderStem(dep_chunk, &dep_buf, allocator, options);
             const dep_stem = dep_buf.items;
@@ -2304,11 +2833,32 @@ fn emitChunksWithoutFacades(
                 else
                     null;
                 const local = try deconflictedConsumerLocal(linker, sym, binding, has_global, consumer_module_index, allocator, &used_locals, &natural_bindings, &alias_strs);
-                try chunk_output.appendSlice(allocator, "const ");
-                try chunk_output.appendSlice(allocator, local);
-                try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "=require(\"" else " = require(\"");
-                try chunk_output.appendSlice(allocator, bind_arg);
-                try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "\");" else "\");\n");
+                const quoted_path = try quoteChunkPath(allocator, bind_arg);
+                defer allocator.free(quoted_path);
+                try chunk_output.print(allocator, "require({s});\nvar {s};\n", .{ quoted_path, local });
+                if (linker) |l| {
+                    const bridge = try pmDefaultHelperExpression(allocator, graph, chunk_graph, chunk, options, l);
+                    defer allocator.free(bridge);
+                    const provider = graph.getModule(depChunkModuleIndex(dep_chunk) orelse return error.InvalidCrossChunkExport) orelse return error.InvalidCrossChunkExport;
+                    const accessor = try holder_reservations.allocate(allocator, importer_identity, provider.path);
+                    alias_strs.append(allocator, accessor) catch |err| {
+                        allocator.free(accessor);
+                        return err;
+                    };
+                    try used_locals.put(allocator, accessor, {});
+                    const reader = try holder_reservations.allocate(allocator, importer_identity, provider.path);
+                    alias_strs.append(allocator, reader) catch |err| {
+                        allocator.free(reader);
+                        return err;
+                    };
+                    try used_locals.put(allocator, reader, {});
+                    const artifact_key = try pmDefaultArtifactKey(allocator, graph, chunk_graph, dep_chunk, options);
+                    defer allocator.free(artifact_key);
+                    const quoted_key = try std.json.Stringify.valueAlloc(allocator, artifact_key, .{});
+                    defer allocator.free(quoted_key);
+                    try chunk_output.print(allocator, "var {s};function {s}(){{return({s}||({s}=({s})(require({s}),0,{s},0)))();}}\n", .{ reader, accessor, reader, reader, bridge, quoted_path, quoted_key });
+                    try l.putConsumerImportRequireDefault(sym.canonical_module, sym.name, accessor);
+                }
             } else if (!pm_cjs_dep and pm_esm_wrap_dep_syms == null and symbols != null and symbols.?.items.len > 0) {
                 // 심볼 수준 import: import { a, b } from './chunk-xxx.js';
                 // 결정론적 출력을 위해 심볼명(export 키) 정렬
@@ -2345,7 +2895,7 @@ fn emitChunksWithoutFacades(
 
                 if (!options.preserve_modules and options.format != .esm) {
                     if (firstAsyncChunkModule(dep_chunk, graph)) |async_provider| {
-                        try emitPmCjsLiveImport(allocator, &chunk_output, linker, graph, async_provider, import_symbols, bind_arg, lazy_local_keys, options.minify_whitespace, options.transform_options_base.unsupported.block_scoping or options.transform_options_base.unsupported.destructuring, &used_locals, &natural_bindings, &alias_strs, true, &split_async_import_depth, if (reg_split) "__zntc_require" else "require", split_assign_host);
+                        try emitPmCjsLiveImport(allocator, &chunk_output, linker, graph, async_provider, import_symbols, bind_arg, lazy_local_keys, options.minify_whitespace, options.transform_options_base.unsupported.block_scoping or options.transform_options_base.unsupported.destructuring, &used_locals, &natural_bindings, &alias_strs, true, &split_async_import_depth, if (reg_split) "__zntc_require" else "require", split_assign_host, &holder_reservations, importer_identity);
                         continue;
                     }
                 }
@@ -2363,16 +2913,7 @@ fn emitChunksWithoutFacades(
                     if (graph.getModule(dmi)) |provider| provider.in_async_cone else false
                 else
                     false;
-                var has_reassigned = false;
-                if (dep_mod_idx) |dmi| {
-                    for (symbols.?.items) |sym| {
-                        if (isExportReassigned(graph, dmi, sym.name)) {
-                            has_reassigned = true;
-                            break;
-                        }
-                    }
-                }
-                if (has_reassigned or await_pm_namespace) {
+                if (dep_mod_idx != null) {
                     try emitPmCjsLiveImport(
                         allocator,
                         &chunk_output,
@@ -2391,6 +2932,8 @@ fn emitChunksWithoutFacades(
                         &pm_async_import_depth,
                         "require",
                         true,
+                        &holder_reservations,
+                        importer_identity,
                     );
                     continue;
                 }
@@ -2587,8 +3130,6 @@ fn emitChunksWithoutFacades(
             try l.computeRenamesForModules(sorted_mods, occupied.items);
         }
 
-        var holder_reservations = @import("../namespace_holder_reservations.zig").NamespaceHolderReservations.init(allocator);
-        defer holder_reservations.deinit();
         if (linker) |l| try holder_reservations.seed(l);
         for (occupied.items) |name| try holder_reservations.reserve(name);
 
@@ -2627,7 +3168,15 @@ fn emitChunksWithoutFacades(
         if (fn_hoist_pos) |pos| if (fn_hoist_entry) |emi| if (linker) |l| {
             var fn_exports: std.ArrayList(u8) = .empty;
             defer fn_exports.deinit(allocator);
-            try emitHoistedFnExports(l, graph, emi, &fn_exports, allocator);
+            const provider = graph.getModule(ModuleIndex.fromUsize(emi)) orelse return error.InvalidCrossChunkExport;
+            const bridge = if (graph.pm_default_builtin != null) try pmDefaultHelperExpression(allocator, graph, chunk_graph, chunk, options, l) else null;
+            defer if (bridge) |value| allocator.free(value);
+            var provider_options = options.*;
+            if (try @import("runtime_helpers.zig").pmInternalNamedProvider(graph, provider))
+                provider_options.output_exports = .named;
+            const own_key = if (bridge != null) try pmDefaultArtifactKey(allocator, graph, chunk_graph, chunk, options) else null;
+            defer if (own_key) |value| allocator.free(value);
+            try @import("pm_cjs_exports.zig").append(l, provider, &fn_exports, allocator, &provider_options, bridge, own_key);
             if (fn_exports.items.len > 0) {
                 try chunk_output.insertSlice(allocator, pos, fn_exports.items);
             }
@@ -3888,7 +4437,7 @@ fn emitChunksWithoutFacades(
     // 2패스: content hash 계산 및 placeholder 치환.
     // 각 청크의 content에서 placeholder를 찾아 content hash로 교체한다.
     // esbuild도 동일한 2패스 접근을 사용 (placeholder → content hash).
-    try resolveContentHashes(allocator, outputs.items, sorted_indices, chunk_graph, options.restrict_to_chunk);
+    try resolveContentHashes(allocator, outputs.items, sorted_indices, chunk_graph, options.restrict_to_chunk, &physical_imports_by_chunk);
 
     // sourcemap finalize: hash 치환 후 final filename 으로 builder generate.
     // mode 별 분기 (lazy / eager / inline_) 는 finalize 안에서 처리.
@@ -5179,6 +5728,7 @@ fn resolveContentHashes(
     sorted_indices: []const usize,
     chunk_graph: *const ChunkGraph,
     restrict_to_chunk: ?usize,
+    physical_imports: *const PhysicalImportsByChunk,
 ) !void {
     if (outputs.len == 0) return;
 
@@ -5244,14 +5794,17 @@ fn resolveContentHashes(
 
     for (chunks_to_outputs[0..out_idx], 0..) |ci, oi| {
         const chunk = &chunk_graph.chunks.items[ci];
-        if (chunk.cross_chunk_imports.items.len == 0) continue;
+        // Environment chunks explicitly record emitted require sites. Other
+        // writers keep the existing graph-edge metadata convention unchanged.
+        const imports = physical_imports.get(ci) orelse chunk.cross_chunk_imports.items;
+        if (imports.len == 0) continue;
 
         var imps: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (imps.items) |p| allocator.free(p);
             imps.deinit(allocator);
         }
-        for (chunk.cross_chunk_imports.items) |dep_ci| {
+        for (imports) |dep_ci| {
             const dep_out = chunk_to_out[@backingInt(dep_ci)] orelse continue;
             try imps.append(allocator, try allocator.dupe(u8, outputs[dep_out].path));
         }
@@ -7009,6 +7562,10 @@ test "PM barrel import target actual source canonical selected export tuple" {
     try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), corrupt));
     try linker.putConsumerImportMember(sym.canonical_module, sym.name, "holder", "read");
     try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), valid_pair));
+    try linker.putConsumerImportRequireMember(sym.canonical_module, sym.name, "readProvider", "default", "holder");
+    try std.testing.expectEqualStrings("(0,(holder||readProvider())[\"default\"])", (try linker.selectedFinalImportLocal(barrel.index.toU32(), valid_pair)).?);
+    try linker.putConsumerImportRequireDefault(sym.canonical_module, sym.name, "readDefault");
+    try std.testing.expectEqualStrings("readDefault()", (try linker.selectedFinalImportLocal(barrel.index.toU32(), valid_pair)).?);
     try linker.putConsumerImportLocal(sym.canonical_module, sym.name, "invalid.member");
     try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), valid_pair));
     try linker.putConsumerImportLocal(sym.canonical_module, sym.name, selected);

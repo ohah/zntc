@@ -160,12 +160,53 @@ fn sharedNamespaceEmittedNameLocked(self: *const Linker, reference: @import("../
 /// canonical→cross-chunk-global 매핑**을 한다(이미 resolved 된 `rb.canonical` 로 시작하는 점만 다름).
 /// 게이트/전역명 키/synthetic 형식을 바꾸면 **양쪽 같이** 고쳐야 namespace-멤버와 named-import 가
 /// 어긋나지 않는다(#4101/#4492/#4502 계열 드리프트). 통합 헬퍼화는 후속.
+fn sortNamespaceExports(allocator: std.mem.Allocator, exports: []NsExportPair) std.mem.Allocator.Error!void {
+    const Entry = struct { pair: NsExportPair, key: []u16 };
+    const entries = try allocator.alloc(Entry, exports.len);
+    defer allocator.free(entries);
+    var initialized: usize = 0;
+    defer for (entries[0..initialized]) |entry| allocator.free(entry.key);
+    for (exports, entries) |pair, *entry| {
+        const decoded = @import("../public_export_key.zig").fromSyntax(allocator, pair.exported) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.InvalidPublicExportName => unreachable, // validated export syntax
+        };
+        defer decoded.deinit(allocator);
+        const key = std.unicode.utf8ToUtf16LeAlloc(allocator, decoded.text) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.InvalidUtf8 => unreachable,
+        };
+        entry.* = .{ .pair = pair, .key = key };
+        initialized += 1;
+    }
+    std.mem.sort(Entry, entries, {}, struct {
+        fn lessThan(_: void, a: Entry, b: Entry) bool {
+            return std.mem.lessThan(u16, a.key, b.key);
+        }
+    }.lessThan);
+    for (exports, entries) |*pair, entry| pair.* = entry.pair;
+}
+
 fn selectedPmNamespaceGetter(self: *const Linker, importer: u32, source: u32, exp: NsExportPair) std.mem.Allocator.Error!?[]const u8 {
     if (!self.graph.preserve_modules or exp.owned or exp.cjs_interop != null or exp.ns_target_mod != null) return null;
     const canonical = self.resolveExportChainUncached(@fromBackingInt(source), exp.exported) orelse return null;
-    const actual = self.ordinaryCanonicalImportTarget(canonical) orelse return null;
-    if (!actual.provider_symbol.isValid() or actual.provider_symbol.semanticIndex() == null or
-        actual.provider_symbol.moduleIndex() != canonical.module_index or
+    const provider_symbol = if (self.ordinaryCanonicalImportTarget(canonical)) |actual| actual.provider_symbol else blk: {
+        const provider = self.graph.getModule(canonical.module_index) orelse return null;
+        const binding = provider.findExportBinding(canonical.export_name) orelse return null;
+        if (!binding.hasSyntheticDefault(provider.semanticSymbols()) or !std.mem.eql(u8, binding.exported_name, "default")) return null;
+        const witness = @import("../cross_chunk_export.zig").Provider.captureLocal(self, provider, binding) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return null,
+        };
+        witness.validate(self) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return null,
+        };
+        if (witness.role != .semantic) return null;
+        break :blk binding.symbol;
+    };
+    if (!provider_symbol.isValid() or provider_symbol.semanticIndex() == null or
+        provider_symbol.moduleIndex() != canonical.module_index or
         !self.isCrossChunkConsumer(importer, canonical.module_index.toU32())) return null;
     const target = self.getConsumerImportTarget(canonical.module_index.toU32(), canonical.export_name) orelse return null;
     switch (target.role) {
@@ -255,11 +296,7 @@ pub fn registerNamespaceRewrites(
         try self.collectExportsRecursive(&exports, &seen, &visited, @fromBackingInt(@intCast(target_mod_idx)), 0);
         // Module namespace keys are sorted by code unit (ModuleNamespaceCreate);
         // the getter object's key order is what `Object.keys(ns)` returns (#5633).
-        std.mem.sort(NsExportPair, exports.items, {}, struct {
-            fn lessThan(_: void, a: NsExportPair, b: NsExportPair) bool {
-                return std.mem.lessThan(u8, a.exported, b.exported);
-            }
-        }.lessThan);
+        try sortNamespaceExports(self.allocator, exports.items);
 
         mutable_self.ns_cache_mutex.lock();
         defer mutable_self.ns_cache_mutex.unlock();
@@ -426,7 +463,16 @@ pub fn registerNamespaceRewrites(
         // 되면 이 멤버 재작성(`ns.k`→local)이 잘못된 const 를 가리킨다. cross-chunk 전역명(emit 前
         // 글로벌 패스로 확정)을 써 provider·consumer 양쪽 일치. 배럴 재-export·renamed re-export·
         // synthetic 는 crossChunkNsMemberName 이 canonical 해석으로 커버. 없으면 exp.local (#4564).
-        const member_name = (try crossChunkNsMemberName(self, importer_mod_idx, target_mod_idx, exp.exported, owned_rewrite_values)) orelse exp.local;
+        const selected_pm = try selectedPmNamespaceGetter(self, importer_mod_idx, target_mod_idx, exp);
+        const member_name = if (selected_pm) |selected| owned_pm: {
+            // Metadata outlives the current consumer ledger's emission window.
+            const owned = try self.allocator.dupe(u8, selected);
+            owned_rewrite_values.append(self.allocator, owned) catch |err| {
+                self.allocator.free(owned);
+                return err;
+            };
+            break :owned_pm owned;
+        } else (try crossChunkNsMemberName(self, importer_mod_idx, target_mod_idx, exp.exported, owned_rewrite_values)) orelse exp.local;
         // init 식이 필요한 경로(dev/force_target_init/ESM source)는 그 식에 member_name 을 embed.
         if (try allocNamespaceMemberRewriteValue(self, target_init, target_mod_idx, exp, member_name, &source_init_cache)) |rewrite_value| {
             var owned_by_list = false;
@@ -1202,11 +1248,7 @@ pub fn buildInlineObjectStr(
     try self.collectExportsRecursive(&exports, &seen, &visited, @fromBackingInt(@intCast(target_mod_idx)), 0);
     // Module namespace keys are sorted by code unit (ModuleNamespaceCreate);
     // the getter object's key order is what `Object.keys(ns)` returns (#5633).
-    std.mem.sort(NsExportPair, exports.items, {}, struct {
-        fn lessThan(_: void, a: NsExportPair, b: NsExportPair) bool {
-            return std.mem.lessThan(u8, a.exported, b.exported);
-        }
-    }.lessThan);
+    try sortNamespaceExports(self.allocator, exports.items);
 
     // export * as ns 패턴 수집 (별도 처리 — 재귀 인라인 필요)
     const target = target_any;

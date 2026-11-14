@@ -220,6 +220,16 @@ const MODULES = [_]HelperModule{
         .body = .{ .plain = rt.DERIVED_CONSTRUCTOR_RUNTIME, .min = rt.DERIVED_CONSTRUCTOR_RUNTIME_MIN },
     },
     .{
+        .short = "pm-default",
+        .helpers = &.{"__pmDefault"},
+        .body = .{ .plain = rt.PM_DEFAULT_RUNTIME, .min = rt.PM_DEFAULT_RUNTIME_MIN },
+    },
+    .{
+        .short = "pm-module",
+        .helpers = &.{"__pmModule"},
+        .body = .{ .plain = rt.PM_MODULE_RUNTIME, .min = rt.PM_MODULE_RUNTIME },
+    },
+    .{
         .short = "tdz",
         .helpers = &.{"__tdz"},
         .body = .{ .plain = rt.TDZ_RUNTIME, .min = rt.TDZ_RUNTIME_MIN },
@@ -528,6 +538,12 @@ fn loadHook(
     else
         &default_opts;
     const contents = try buildSource(allocator, m, opts.*);
+    hook_context.runtime_helper_constructor = .{
+        .descriptor = @ptrCast(m),
+        .requested = opts.*,
+        .contents = contents,
+        .contents_hash = @import("util/wyhash.zig").hashU64(contents),
+    };
     if (catalogFor(m)) |catalog| hook_context.runtime_helper_source = .{
         .catalog = catalog,
         .catalog_descriptor = @ptrCast(m),
@@ -586,6 +602,8 @@ fn catalogFor(m: *const HelperModule) ?source_origin.Catalog {
         .{ .short = "suspension-invoke", .catalog = .suspension_invoke },
         .{ .short = "native-async-module", .catalog = .native_async_module },
         .{ .short = "tdz", .catalog = .tdz },
+        .{ .short = "pm-default", .catalog = .pm_default },
+        .{ .short = "pm-module", .catalog = .pm_module },
     };
     for (known) |entry| if (m == findModule(entry.short).?) return entry.catalog;
     return null;
@@ -602,6 +620,8 @@ fn moduleForCatalog(catalog: source_origin.Catalog) *const HelperModule {
         .suspension_invoke => "suspension-invoke",
         .native_async_module => "native-async-module",
         .tdz => "tdz",
+        .pm_default => "pm-default",
+        .pm_module => "pm-module",
     }).?;
 }
 
@@ -1104,4 +1124,68 @@ test "commonjs exposes only its factory while private function names keep exact 
         }
         try std.testing.expectEqual(@as(usize, if (options.minify) 0 else 1), private_names);
     }
+}
+
+/// Category policy never recovers a callable SymbolId by path or spelling.
+pub fn matchesModuleConstructor(witness: source_origin.ModuleConstructor, options: SourceOptions, contents: []const u8) bool {
+    var registered = false;
+    for (&MODULES) |*descriptor| {
+        if (witness.descriptor == @as(*const anyopaque, @ptrCast(descriptor))) {
+            registered = true;
+            break;
+        }
+    }
+    return registered and std.meta.eql(witness.requested, options) and
+        witness.contents.ptr == contents.ptr and witness.contents.len == contents.len and
+        witness.contents_hash == @import("util/wyhash.zig").hashU64(contents);
+}
+
+pub fn acceptWinningModuleConstructor(outcome: plugin_mod.PluginRunner.LoadOutcome, options: *const SourceOptions) ?source_origin.ModuleConstructor {
+    const witness = outcome.runtime_helper_constructor orelse return null;
+    if (outcome.winning_plugin.load != loadHook or
+        outcome.winning_plugin.context != @as(?*anyopaque, @ptrCast(@constCast(options))) or
+        !matchesModuleConstructor(witness, options.*, outcome.result.contents)) return null;
+    return witness;
+}
+
+// Private loadHook participates in this ownership check; exercising the real
+// runner here also verifies that a null producer cannot lend a later witness.
+test "PM helper module policy follows the winning producer including uncataloged helpers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const options: SourceOptions = .{ .es5 = true };
+    const builtin = makePlugin(&options);
+    var context: plugin_mod.HookContext = .{};
+    const original = (try (plugin_mod.PluginRunner{ .plugins = &.{builtin} }).runLoadWithOrigin(ID_PREFIX ++ "generator", allocator, &context)).?;
+    const witness = acceptWinningModuleConstructor(original, &options) orelse return error.MissingExpectedConstructor;
+    try std.testing.expect(original.runtime_helper_source == null);
+    try std.testing.expect(matchesModuleConstructor(witness, options, original.result.contents));
+    const copied = try allocator.dupe(u8, original.result.contents);
+    try std.testing.expect(!matchesModuleConstructor(witness, options, copied));
+
+    const User = struct {
+        witness: source_origin.ModuleConstructor,
+        fn replace(raw: ?*anyopaque, _: []const u8, _: std.mem.Allocator, hook: *plugin_mod.HookContext) plugin_mod.PluginError!?plugin_mod.LoadResult {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            hook.runtime_helper_constructor = self.witness;
+            return .{ .contents = self.witness.contents };
+        }
+        fn pass(raw: ?*anyopaque, _: []const u8, _: std.mem.Allocator, hook: *plugin_mod.HookContext) plugin_mod.PluginError!?plugin_mod.LoadResult {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            hook.runtime_helper_constructor = self.witness;
+            return null;
+        }
+    };
+    var user: User = .{ .witness = witness };
+    const replacement: plugin_mod.Plugin = .{ .name = "equal-byte user replacement", .context = &user, .load = User.replace };
+    const replaced = (try (plugin_mod.PluginRunner{ .plugins = &.{ replacement, builtin } }).runLoadWithOrigin(ID_PREFIX ++ "generator", allocator, &context)).?;
+    try std.testing.expectEqualStrings(original.result.contents, replaced.result.contents);
+    try std.testing.expect(acceptWinningModuleConstructor(replaced, &options) == null);
+    const passing: plugin_mod.Plugin = .{ .name = "null user producer", .context = &user, .load = User.pass };
+    const actual = (try (plugin_mod.PluginRunner{ .plugins = &.{ passing, builtin } }).runLoadWithOrigin(ID_PREFIX ++ "generator", allocator, &context)).?;
+    try std.testing.expect(acceptWinningModuleConstructor(actual, &options) != null);
+    const other_options = try allocator.create(SourceOptions);
+    other_options.* = options;
+    try std.testing.expect(acceptWinningModuleConstructor(actual, other_options) == null);
 }

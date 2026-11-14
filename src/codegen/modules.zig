@@ -559,11 +559,17 @@ pub fn emitExportDefault(self: anytype, node_index: NodeIndex, node: Node) !void
                     // (mangler/linker 가 그 이름을 쓰면 오판). metadata 없으면(비-bundle) 합성 간주.
                     const is_synthetic_default = if (self.options.linking_metadata) |md| md.default_export_is_synthetic else true;
                     if (is_synthetic_default) {
+                        if (self.options.pm_cjs_early_default_name and inner_node.tag == .function_declaration) {
+                            // A synchronous module frame instantiates an anonymous
+                            // default declaration before its dependency bodies.
+                            try emitDefaultFunctionDeclaration(self, def_name, inner, inner_node);
+                            return;
+                        }
                         // Preserve namespace-import lowering while giving the snapshot
                         // its own facade binding (`_default = X_ns`).
                         if (!(try tryEmitNsVarAssignment(self, def_name, inner))) {
                             // 합성 변수 (_default, _default$1 등): var 선언 + 할당 필요.
-                            if (!self.options.esm_var_assign_only) try self.write("var ");
+                            if (!self.options.esm_var_assign_only) try self.write(if (self.options.pm_cjs_native_default) "const " else "var ");
                             try self.write(def_name);
                             try self.writeByte('=');
                             // sequence(comma) inner 는 괄호 wrap 필요 — `=a,b` 가 `(=a),b` 로 깨짐 (#4289).
@@ -692,7 +698,7 @@ pub fn tryEmitNsVarAssignment(self: anytype, def_name: []const u8, inner: NodeIn
     const inline_name = md.renames.get(sid) orelse return error.MissingNamespaceInlineObjectRename;
     if (!std.mem.eql(u8, inline_name, entry.var_name)) return error.InvalidNamespaceInlineObjectRename;
 
-    if (!self.options.esm_var_assign_only) try self.write("var ");
+    if (!self.options.esm_var_assign_only) try self.write(if (self.options.pm_cjs_native_default) "const " else "var ");
     try self.write(def_name);
     if (self.options.minify_whitespace) {
         try self.writeByte('=');
@@ -713,7 +719,7 @@ fn emitDefaultFunctionDeclaration(self: anytype, name: []const u8, inner: NodeIn
     defer self.default_function_name = saved;
     try self.emitNode(inner);
     _ = inner_node;
-    if (keep_names.defaultExportHint(self, inner)) |hint| {
+    if (!self.options.pm_cjs_early_default_name) if (keep_names.defaultExportHint(self, inner)) |hint| {
         try self.writeNewline();
         try self.write(keep_names.helperName(self));
         try self.writeByte('(');
@@ -723,16 +729,16 @@ fn emitDefaultFunctionDeclaration(self: anytype, name: []const u8, inner: NodeIn
         try keep_names.writeQuoted(self, hint);
         try self.write(");");
         self.keep_names_used = true;
-    }
+    };
 }
 
 pub fn emitDefaultVarAssignment(self: anytype, name: []const u8, inner: NodeIndex) !void {
     if (self.options.minify_whitespace) {
-        try self.write("var ");
+        try self.write(if (self.options.pm_cjs_native_default) "const " else "var ");
         try self.write(name);
         try self.writeByte('=');
     } else {
-        try self.write("var ");
+        try self.write(if (self.options.pm_cjs_native_default) "const " else "var ");
         try self.write(name);
         try self.write(" = ");
     }
