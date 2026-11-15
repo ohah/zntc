@@ -112,6 +112,9 @@ pub const ModuleGraph = struct {
     pm_cjs_module_environments: bool = false,
     pm_cjs_module_environment_admitted: bool = false,
     pm_module_builtin: ?TlaReadinessAll = null,
+    /// Generator callable selected before artifact lowering, never by its output spelling.
+    pm_generator_builtin: ?TlaReadinessAll = null,
+    pm_generator_demanded: bool = false,
     pm_default_builtin: ?TlaReadinessAll = null,
     /// Actual installed runtime/source domains; refreshed only at graph
     /// handoff or prepared same-graph publication, never by witness capture.

@@ -22,7 +22,7 @@ const profile = @import("../../profile.zig");
 /// 대조/진단용). fast-path 는 self-verifying 이라 정상 동작엔 영향 없음.
 const renumber_identity_fastpath_disabled = @import("../../env_flag.zig").Once("ZNTC_NO_RENUMBER_FASTPATH");
 
-pub const RenumberError = error{ RenumberIncomplete, OutOfMemory };
+pub const RenumberError = error{ RenumberIncomplete, InvalidQuotedExportOrigin, OutOfMemory };
 
 pub fn renumberModulesDeterministically(
     self: *ModuleGraph,
@@ -103,6 +103,21 @@ pub fn renumberModulesDeterministically(
         if (identity) return;
     }
 
+    // A full renumber moves embedded AST headers even when their backing
+    // allocations and all Source node identities stay unchanged. Authenticate
+    // the old owner before copying; a foreign same-backing header is never
+    // repaired merely because its bytes happen to match.
+    for (0..old_count) |old_i| {
+        const module = self.modules.at(old_i);
+        for (module.export_bindings) |binding| {
+            if (binding.public_key_origin) |origin| {
+                const ast = if (module.ast) |*actual| actual else return error.InvalidQuotedExportOrigin;
+                if (origin.ast != ast) return error.InvalidQuotedExportOrigin;
+                _ = try module.quotedExportOrigin(binding);
+            }
+        }
+    }
+
     var new_list: ModuleList = .{};
     errdefer new_list.deinit(allocator);
     for (0..old_count) |new_i| {
@@ -110,6 +125,16 @@ pub fn renumberModulesDeterministically(
         var m = self.modules.at(old_u32).*;
         m.index = ModuleIndex.fromUsize(new_i);
         try new_list.append(allocator, m);
+    }
+
+    // Finish allocations before changing any shared module backing or source
+    // origin carrier. Publication below is a no-fail ownership handoff.
+    var new_req: std.AutoHashMapUnmanaged(u32, RequestedExports) = .empty;
+    errdefer new_req.deinit(allocator);
+    try new_req.ensureTotalCapacity(allocator, @intCast(self.requested_exports.count()));
+    var r_it = self.requested_exports.iterator();
+    while (r_it.next()) |entry| {
+        try new_req.put(allocator, old_to_new[entry.key_ptr.*], entry.value_ptr.*);
     }
 
     var nlit = new_list.iterator(0);
@@ -143,18 +168,26 @@ pub fn renumberModulesDeterministically(
         entry.value_ptr.* = @fromBackingInt(@intCast(old_to_new[entry.value_ptr.toU32()]));
     }
 
-    var new_req: std.AutoHashMapUnmanaged(u32, RequestedExports) = .empty;
-    errdefer new_req.deinit(allocator);
-    try new_req.ensureTotalCapacity(allocator, @intCast(self.requested_exports.count()));
-    var r_it = self.requested_exports.iterator();
-    while (r_it.next()) |entry| {
-        try new_req.put(allocator, old_to_new[entry.key_ptr.*], entry.value_ptr.*);
-    }
     self.requested_exports.deinit(allocator);
     self.requested_exports = new_req;
 
     for (self.worker_entries.items) |*we| {
         we.source_module = @fromBackingInt(@intCast(old_to_new[we.source_module.toU32()]));
+    }
+
+    // Only the exact previously authenticated old->new header move may
+    // relocate an origin. Node/SID values and backing allocations are shared
+    // unchanged; this does not manufacture a new Source AST identity.
+    for (0..old_count) |new_i| {
+        const old_module = self.modules.at(new_to_old[new_i]);
+        const moved = new_list.at(new_i);
+        if (moved.ast) |*new_ast| {
+            const old_ast = &old_module.ast.?;
+            for (moved.export_bindings) |*binding| if (binding.public_key_origin) |*origin| {
+                std.debug.assert(origin.ast == old_ast);
+                origin.ast = new_ast;
+            };
+        }
     }
 
     // StableSegmentedList.deinit 은 Module.deinit 을 호출하지 않으므로 새 list 의 얕은 복사

@@ -701,6 +701,8 @@ fn demandPmDefault(self: *ModuleGraph, io: std.Io, runtime_indices: *std.ArrayLi
 
 fn demandPmModule(self: *ModuleGraph, io: std.Io, runtime_indices: *std.ArrayList(ModuleIndex)) !void {
     self.pm_module_builtin = null;
+    self.pm_generator_builtin = null;
+    self.pm_generator_demanded = false;
     self.pm_cjs_module_environment_admitted = false;
     if (!try @import("../pm_cjs_module_plan.zig").admitted(self)) return;
     const start = self.modules.count();
@@ -708,6 +710,18 @@ fn demandPmModule(self: *ModuleGraph, io: std.Io, runtime_indices: *std.ArrayLis
     _ = try graph_requested_exports.requestAll(self, helper);
     try runtime_indices.append(self.allocator, helper);
     try discoverPendingModulesSequential(self, io, start);
+    // Every compiler-owned synchronous frame is a generator. Its requirement
+    // is known before lowering; no artifact symbols or discovered helper IDs
+    // flow back into the Source graph.
+    const unsupported = self.transform_options_base.unsupported;
+    if (unsupported.generator or unsupported.block_scoping) {
+        self.pm_generator_demanded = true;
+        const generator_start = self.modules.count();
+        const generator = try self.addModule(io, @import("../pm_generator_builtin.zig").id);
+        _ = try graph_requested_exports.requestAll(self, generator);
+        try runtime_indices.append(self.allocator, generator);
+        try discoverPendingModulesSequential(self, io, generator_start);
+    }
 }
 
 fn demandTlaReadinessAll(self: *ModuleGraph, io: std.Io, runtime_indices: *std.ArrayList(ModuleIndex)) !void {
@@ -1007,6 +1021,7 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
     try keepTlaReadinessAllSynchronous(self);
     try @import("../pm_default_builtin.zig").keepSynchronous(self);
     try @import("../pm_module_builtin.zig").keepSynchronous(self);
+    try @import("../pm_generator_builtin.zig").keepSynchronous(self);
     try keepNativeAsyncModuleFactorySynchronous(self);
     try keepLexicalTdzSynchronous(self);
     try keepLegacyNameSynchronous(self);
@@ -1014,6 +1029,7 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
     try captureTlaReadinessAll(self);
     self.pm_default_builtin = try @import("../pm_default_builtin.zig").capture(self);
     self.pm_module_builtin = try @import("../pm_module_builtin.zig").capture(self);
+    self.pm_generator_builtin = try @import("../pm_generator_builtin.zig").capture(self);
     self.pm_cjs_module_environment_admitted = self.pm_module_builtin != null and
         try @import("../pm_cjs_module_plan.zig").admitted(self);
     try captureNativeAsyncModuleFactory(self);

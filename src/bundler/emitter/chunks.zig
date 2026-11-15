@@ -445,11 +445,27 @@ fn emitSynchronousPmChunk(allocator: std.mem.Allocator, graph: *const ModuleGrap
     try appendChunkOutputPath(chunk, &path, a, options);
     var final_mappings: []const SourceMap.Mapping = artifact_mappings.items;
     const contents = if (options.transform_options_base.unsupported.generator or options.transform_options_base.unsupported.block_scoping) lowered: {
+        // The Source-owned provider is planned before artifact lowering. Pass
+        // only its physical specifier/public key, never its semantic identity.
+        const generator = try @import("../pm_generator_builtin.zig").exact(graph);
+        const generator_module = graph.getModule(generator.module) orelse return error.InvalidPmGeneratorBuiltin;
+        const generator_index = chunk_graph.getModuleChunk(generator.module);
+        if (generator_index.isNone() or generator_index == chunk.index) return error.InvalidPmGeneratorBuiltin;
+        const generator_chunk = chunk_graph.getChunk(generator_index);
+        var generator_key: ?[]const u8 = null;
+        for (generator_module.export_bindings) |binding| if (generator_module.exportBindingLocalNodeSemanticIndex(binding) == @as(?u32, @backingInt(generator.inner))) {
+            if (generator_key != null) return error.InvalidPmGeneratorBuiltin;
+            generator_key = binding.exported_name;
+        };
+        const decoded_generator_key = try @import("../public_export_key.zig").fromSyntax(a, generator_key orelse return error.InvalidPmGeneratorBuiltin);
+        const generator_path = try relativeChunkImportPath(a, chunk, generator_chunk, options);
+        try physical_imports.record(allocator, generator_index);
         const lowered = try @import("synchronous_module_lowering.zig").lower(a, output.items, path.items, .{
             .source_maps = options.sourcemap.enable,
             .minify_whitespace = options.minify_whitespace,
             .input_mappings = artifact_mappings.items,
             .platform = options.platform,
+            .generator_runtime = .{ .module_specifier = generator_path, .public_key = decoded_generator_key.text },
         });
         final_mappings = lowered.mappings;
         break :lowered lowered.code;
@@ -1717,6 +1733,163 @@ pub fn needsPreservedDefaultFacadeGuard(graph: *const ModuleGraph, linker: *Link
     return false;
 }
 
+const PlannedPmGeneratorPath = struct {
+    chunk_index: ChunkIndex,
+    path: []const u8,
+};
+
+/// Fold aliases of the generated ASCII helper name, including Unicode simple
+/// folds such as long s and Kelvin. This is an output-path reservation key,
+/// not a Source spelling or a general filesystem Unicode canonicalization.
+fn physicalPathKey(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const key = try std.fs.path.resolve(allocator, &.{path});
+    errdefer allocator.free(key);
+    var equivalents: std.ArrayList(u32) = .empty;
+    defer equivalents.deinit(allocator);
+    var read: usize = 0;
+    var written: usize = 0;
+    while (read < key.len) {
+        if (key[read] < 0x80) {
+            key[written] = std.ascii.toLower(key[read]);
+            read += 1;
+            written += 1;
+            continue;
+        }
+        const decoded = @import("../../lexer/unicode.zig").decodeUtf8(key[read..]);
+        equivalents.clearRetainingCapacity();
+        try @import("../../regexp/iu_case_fold.zig").appendEquivalents(decoded.codepoint, &equivalents, allocator);
+        var ascii: ?u8 = null;
+        for (equivalents.items) |equivalent| if (equivalent < 0x80) {
+            const lower = std.ascii.toLower(@as(u8, @intCast(equivalent)));
+            if (ascii == null or lower < ascii.?) ascii = lower;
+        };
+        if (ascii) |folded| {
+            key[written] = folded;
+            written += 1;
+        } else {
+            // Preserve other UTF-8 and even an invalid filename byte rather
+            // than inventing a new path or rejecting a previously valid one.
+            std.mem.copyForwards(u8, key[written..][0..decoded.len], key[read..][0..decoded.len]);
+            written += decoded.len;
+        }
+        read += decoded.len;
+    }
+    return if (written == key.len) key else try allocator.realloc(key, written);
+}
+
+fn physicalPathReserved(allocator: std.mem.Allocator, paths: *const std.StringHashMapUnmanaged(void), path: []const u8) !bool {
+    const key = try physicalPathKey(allocator, path);
+    defer allocator.free(key);
+    return paths.contains(key);
+}
+
+fn reservePhysicalPath(allocator: std.mem.Allocator, paths: *std.StringHashMapUnmanaged(void), path: []const u8) !void {
+    const key = try physicalPathKey(allocator, path);
+    defer allocator.free(key);
+    var part: []const u8 = key;
+    while (true) {
+        if (!paths.contains(part)) {
+            const owned = try allocator.dupe(u8, part);
+            errdefer allocator.free(owned);
+            try paths.put(allocator, owned, {});
+        }
+        // A helper file cannot replace a Source output's parent directory,
+        // including one which happens to end with the output extension.
+        const parent_dir = std.fs.path.dirname(part) orelse break;
+        if (parent_dir.len == 0 or std.mem.eql(u8, parent_dir, part)) break;
+        part = parent_dir;
+    }
+}
+
+fn reservePhysicalModulePath(allocator: std.mem.Allocator, paths: *std.StringHashMapUnmanaged(void), path: []const u8, source_maps: bool) !void {
+    try reservePhysicalPath(allocator, paths, path);
+    if (source_maps) {
+        const map = try std.fmt.allocPrint(allocator, "{s}.map", .{path});
+        defer allocator.free(map);
+        try reservePhysicalPath(allocator, paths, map);
+    }
+}
+
+/// Only the actual shared-generator producer may relocate its physical file.
+/// Source filenames and graph identities remain unchanged. The same chunk view
+/// then owns the path used by imports, maps, metadata and final artifact output.
+fn planPmGeneratorPath(
+    allocator: std.mem.Allocator,
+    graph: *const ModuleGraph,
+    chunk_graph: *const ChunkGraph,
+    options: *const EmitOptions,
+    facades: []const PublicEntryFacade,
+) !?PlannedPmGeneratorPath {
+    if (!options.preserve_modules or options.format != .cjs or graph.pm_generator_builtin == null) return null;
+    const identity = try @import("../pm_generator_builtin.zig").exact(graph);
+    const index = chunk_graph.getModuleChunk(identity.module);
+    // An unused helper can disappear when final admission retains the existing
+    // backend. There is then no emitted helper path to reserve or relocate.
+    if (index.isNone()) return null;
+    const helper = chunk_graph.getChunk(index);
+    if (helper.index != index or helper.modules.items.len != 1 or helper.modules.items[0] != identity.module)
+        return error.InvalidPmGeneratorChunk;
+
+    var reserved: std.StringHashMapUnmanaged(void) = .empty;
+    defer {
+        var names = reserved.keyIterator();
+        while (names.next()) |name| allocator.free(name.*);
+        reserved.deinit(allocator);
+    }
+    var current: std.ArrayListUnmanaged(u8) = .empty;
+    defer current.deinit(allocator);
+    for (chunk_graph.chunks.items) |*chunk| {
+        if (chunk.index == index or chunk.modules.items.len == 0) continue;
+        try appendChunkOutputPath(chunk, &current, allocator, options);
+        try reservePhysicalModulePath(allocator, &reserved, current.items, options.sourcemap.enable);
+    }
+    for (facades) |facade| {
+        try reservePhysicalModulePath(allocator, &reserved, facade.public_path, options.sourcemap.enable);
+        try reservePhysicalModulePath(allocator, &reserved, facade.implementation_path, options.sourcemap.enable);
+    }
+    try appendChunkOutputPath(helper, &current, allocator, options);
+    const helper_map = if (options.sourcemap.enable) try std.fmt.allocPrint(allocator, "{s}.map", .{current.items}) else null;
+    defer if (helper_map) |map| allocator.free(map);
+    if (!try physicalPathReserved(allocator, &reserved, current.items) and
+        (helper_map == null or !try physicalPathReserved(allocator, &reserved, helper_map.?))) return null;
+
+    // Reserve literal paths, rather than hash placeholders whose final value
+    // might collide with a real Source filename. Each occupied candidate has
+    // at least one reserved path, so reserved.count()+1 candidates suffice.
+    const requested_ext = options.out_extension_js orelse ".js";
+    const ext = if (std.mem.endsWith(u8, current.items, requested_ext)) requested_ext else std.fs.path.extension(current.items);
+    const stem = current.items[0 .. current.items.len - ext.len];
+    var ordinal: usize = 1;
+    while (ordinal <= reserved.count() + 1) : (ordinal += 1) {
+        const candidate = try std.fmt.allocPrint(allocator, "{s}-{d}{s}", .{ stem, ordinal, ext });
+        errdefer allocator.free(candidate);
+        const candidate_map = if (options.sourcemap.enable) try std.fmt.allocPrint(allocator, "{s}.map", .{candidate}) else null;
+        defer if (candidate_map) |map| allocator.free(map);
+        if (!try physicalPathReserved(allocator, &reserved, candidate) and
+            (candidate_map == null or !try physicalPathReserved(allocator, &reserved, candidate_map.?)))
+            return .{ .chunk_index = index, .path = candidate };
+        allocator.free(candidate);
+    }
+    return error.PmGeneratorPathReservationFailed;
+}
+
+test "PM shared generator output reservations keep Unicode ASCII aliases and directories distinct" {
+    const a = std.testing.allocator;
+    var reserved: std.StringHashMapUnmanaged(void) = .empty;
+    defer {
+        var names = reserved.keyIterator();
+        while (names.next()) |name| a.free(name.*);
+        reserved.deinit(a);
+    }
+    try reservePhysicalModulePath(a, &reserved, "./nested/../runtime-generator.cj\u{17f}/user.cjs", true);
+    try std.testing.expect(try physicalPathReserved(a, &reserved, "RUNTIME-GENERATOR.CJS"));
+    try std.testing.expect(try physicalPathReserved(a, &reserved, "runtime-generator.cjs/user.cjs.map"));
+    try std.testing.expect(!try physicalPathReserved(a, &reserved, "runtime-generator-1.cjs"));
+    try reservePhysicalModulePath(a, &reserved, "runtime-generator.\u{212a}js/user.kjs", false);
+    try std.testing.expect(try physicalPathReserved(a, &reserved, "runtime-generator.kjs"));
+    try std.testing.expect(!try physicalPathReserved(a, &reserved, "runtime-generator-1.kjs"));
+}
+
 fn emitChunksImpl(
     io: ?std.Io,
     allocator: std.mem.Allocator,
@@ -1805,7 +1978,9 @@ fn emitChunksImpl(
             });
         }
     }
-    if (facades.items.len == 0)
+    const generator_path = try planPmGeneratorPath(allocator, graph, chunk_graph, options, facades.items);
+    defer if (generator_path) |planned| allocator.free(planned.path);
+    if (facades.items.len == 0 and generator_path == null)
         return emitChunksWithoutFacades(io, allocator, graph, chunk_graph, options, linker, &.{});
 
     const chunks = try allocator.dupe(Chunk, chunk_graph.chunks.items);
@@ -1818,6 +1993,11 @@ fn emitChunksImpl(
         const index = @backingInt(facade.chunk_index);
         if (index >= chunks.len or chunks[index].index != facade.chunk_index) return error.InvalidPublicEntryFacadeOwner;
         chunks[index].explicit_file_name = facade.implementation_path;
+    }
+    if (generator_path) |planned| {
+        const index = @backingInt(planned.chunk_index);
+        if (index >= chunks.len or chunks[index].index != planned.chunk_index) return error.InvalidPmGeneratorChunk;
+        chunks[index].explicit_file_name = planned.path;
     }
     const body_outputs = try emitChunksWithoutFacades(io, allocator, graph, &view, options, linker, facades.items);
     var outputs: std.ArrayList(OutputFile) = .empty;
@@ -4370,7 +4550,12 @@ fn emitChunksWithoutFacades(
             }
             break :blk try ids.toOwnedSlice(allocator);
         };
-        // 이 chunk 가 export 하는 심볼 이름 목록 — 이미 chunk.exports_to 로 수집됨.
+        errdefer {
+            for (module_ids) |id| allocator.free(id);
+            allocator.free(module_ids);
+        }
+        // Source edges populate exports_to. Compiler-artifact imports also
+        // consume raw PM helper exports without adding Source import edges.
         const export_names = blk: {
             var names: std.ArrayList([]const u8) = .empty;
             errdefer {
@@ -4379,18 +4564,46 @@ fn emitChunksWithoutFacades(
             }
             var eit = chunk.exports_to.iterator();
             while (eit.next()) |entry| {
-                try names.append(allocator, try allocator.dupe(u8, entry.key_ptr.*));
+                try appendOwnedUniqueExportName(allocator, &names, entry.key_ptr.*);
             }
+            if (options.preserve_modules and options.format == .cjs) if (linker) |l| {
+                for (sorted_mods) |mod_idx| {
+                    const provider = graph.getModule(mod_idx) orelse continue;
+                    if (provider.wrap_kind != .none or
+                        !try @import("runtime_helpers.zig").pmInternalNamedProvider(graph, provider)) continue;
+                    // This is the same final public ledger used by the PM CJS
+                    // writer after its internal helper policy selects named ABI.
+                    var owned: std.ArrayListUnmanaged([]const u8) = .empty;
+                    defer {
+                        for (owned.items) |value| l.allocator.free(value);
+                        owned.deinit(l.allocator);
+                    }
+                    const entries = (try l.buildFinalExports(true, provider.index.toU32(), provider.export_bindings, &owned)) orelse continue;
+                    defer l.allocator.free(entries);
+                    for (entries) |entry| {
+                        const keys = @import("../public_export_key.zig");
+                        const key = if (entry.public_key_literal) |literal|
+                            try keys.fromLiteralSyntax(allocator, literal)
+                        else
+                            try keys.fromSyntax(allocator, entry.exported);
+                        defer key.deinit(allocator);
+                        try appendOwnedUniqueExportName(allocator, &names, key.text);
+                    }
+                }
+            };
             if (!options.preserve_modules) {
                 for (rbm_export_names.items) |name| {
-                    if (containsName(names.items, name)) continue;
-                    try names.append(allocator, try allocator.dupe(u8, name));
+                    try appendOwnedUniqueExportName(allocator, &names, name);
                 }
             }
             // hashmap 순회는 비결정 — 출력 결정성 위해 사전순 정렬 (line 654 와 일관).
             std.mem.sort([]const u8, names.items, {}, types.stringLessThan);
             break :blk try names.toOwnedSlice(allocator);
         };
+        errdefer {
+            for (export_names) |name| allocator.free(name);
+            allocator.free(export_names);
+        }
 
         // sourcemap builder 를 heap 으로 보관. JSON generate 와 mode 분기
         // (eager / lazy / inline_) 는 모두 finalizeChunkSourceMaps 가 hash 치환
@@ -4621,6 +4834,34 @@ fn runBeforeMainCallName(allocator: std.mem.Allocator, module: *const Module, re
 fn appendUniqueName(list: *std.ArrayList([]const u8), allocator: std.mem.Allocator, name: []const u8) !void {
     if (containsName(list.items, name)) return;
     try list.append(allocator, name);
+}
+
+fn appendOwnedUniqueExportName(allocator: std.mem.Allocator, names: *std.ArrayList([]const u8), name: []const u8) !void {
+    if (containsName(names.items, name)) return;
+    const owned = try allocator.dupe(u8, name);
+    errdefer allocator.free(owned);
+    try names.append(allocator, owned);
+}
+
+test "PM helper export metadata owns decoded names through allocation failures" {
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var names: std.ArrayList([]const u8) = .empty;
+            defer {
+                for (names.items) |name| allocator.free(name);
+                names.deinit(allocator);
+            }
+            var source_name = "__generator".*;
+            try appendOwnedUniqueExportName(allocator, &names, &source_name);
+            source_name[0] = 'x';
+            try appendOwnedUniqueExportName(allocator, &names, "__generator");
+            try appendOwnedUniqueExportName(allocator, &names, "__tdz");
+            try std.testing.expectEqual(@as(usize, 2), names.items.len);
+            try std.testing.expectEqualStrings("__generator", names.items[0]);
+            try std.testing.expectEqualStrings("__tdz", names.items[1]);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
 }
 
 fn containsName(names: []const []const u8, name: []const u8) bool {

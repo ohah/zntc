@@ -13,6 +13,8 @@ pub const Options = struct {
     /// offsets. Name/source indexes remain in the caller's original tables.
     input_mappings: []const Mapping = &.{},
     platform: @import("../../codegen/options.zig").Platform = .node,
+    /// Only output path/public-key data crosses into this independent domain.
+    generator_runtime: ?@import("../../transpile/options.zig").ArtifactGeneratorRuntime = null,
 };
 
 pub const Result = struct {
@@ -41,6 +43,7 @@ pub fn lower(allocator: std.mem.Allocator, code: []const u8, filename: []const u
         .sourcemap = options.source_maps,
         // No footer: the owning chunk chooses its physical map filename later.
         .sourcemap_output_filename = "",
+        .artifact_generator_runtime = options.generator_runtime,
     });
     defer compiled.deinit(allocator);
     // Public transpile can return semantic diagnostics together with bytes.

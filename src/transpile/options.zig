@@ -30,6 +30,13 @@ pub const StopAfter = enum {
     }
 };
 
+/// A compiler-artifact-only CommonJS runtime ABI. Both strings are output
+/// data selected by the owning writer; no foreign semantic identity is accepted.
+pub const ArtifactGeneratorRuntime = struct {
+    module_specifier: []const u8,
+    public_key: []const u8,
+};
+
 pub const TranspileOptions = struct {
     // --- 파싱 ---
     flow: bool = false,
@@ -81,6 +88,11 @@ pub const TranspileOptions = struct {
     source_root: []const u8 = "",
     sources_content: bool = true,
     platform: codegen.Platform = .browser,
+
+    /// Share the generator runtime when lowering a complete CommonJS compiler
+    /// artifact. The artifact's own helper SID still selects its local alias.
+    /// This internal policy is deliberately absent from the JSON/JS DTO.
+    artifact_generator_runtime: ?ArtifactGeneratorRuntime = null,
 
     // --- JSX ---
     jsx_runtime: codegen.JsxRuntime = .classic,

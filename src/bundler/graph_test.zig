@@ -2654,3 +2654,57 @@ test "worker failure retries a created file with an unchanged importer and persi
     for (second.worker_entries.items) |edge| try std.testing.expectEqualStrings(worker, edge.resolved_path);
     try std.testing.expectEqual(@as(usize, 0), second.diagnostics.items.len);
 }
+
+test "quoted ordinary export origin survives deterministic module header relocation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "quoted.mjs", "const value=7;export{value as \"public-key\"};");
+    try writeFile(tmp.dir, "other.mjs", "export const other=42;");
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const quoted = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "quoted.mjs" });
+    defer std.testing.allocator.free(quoted);
+    const other = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "other.mjs" });
+    defer std.testing.allocator.free(other);
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{ quoted, other });
+    const original_module = graph.modules.at(graph.path_to_module.get(quoted).?.toU32());
+    const original = original_module.export_bindings[0];
+    const original_header = @intFromPtr(&original_module.ast.?);
+    const original_nodes = original_module.ast.?.nodes.items.ptr;
+    const original_ids = original_module.semantic.?.symbol_ids.ptr;
+    const original_sid = original_module.exportBindingSemanticIndex(original).?;
+    const original_owner = original_module.semantic.?.owner_token;
+    try std.testing.expect((try original_module.ordinaryQuotedExportLiteral(original)) != null);
+
+    // Same Source backing in a different header is still foreign authority.
+    // Reject it before publishing index/edge/origin changes.
+    var foreign_ast = original_module.ast.?;
+    original_module.export_bindings[0].public_key_origin.?.ast = &foreign_ast;
+    try std.testing.expectError(error.InvalidQuotedExportOrigin, renumber_mod.renumberModulesDeterministically(&graph, &.{ other, quoted }));
+    try std.testing.expectEqual(@as(u32, 0), graph.path_to_module.get(quoted).?.toU32());
+    try std.testing.expect(original_module.export_bindings[0].public_key_origin.?.ast == &foreign_ast);
+    original_module.export_bindings[0] = original;
+
+    // Reversing the two roots forces a real storage move, independent of the
+    // identity-fastpath flag or discovery scheduling.
+    try renumber_mod.renumberModulesDeterministically(&graph, &.{ other, quoted });
+    const moved = graph.getModule(graph.path_to_module.get(quoted).?).?;
+    try std.testing.expectEqual(@as(u32, 1), moved.index.toU32());
+    try std.testing.expect(@intFromPtr(&moved.ast.?) != original_header);
+    try std.testing.expect(moved.export_bindings[0].public_key_origin.?.ast == &moved.ast.?);
+    try std.testing.expect(moved.ast.?.nodes.items.ptr == original_nodes);
+    try std.testing.expect(moved.semantic.?.symbol_ids.ptr == original_ids);
+    try std.testing.expectEqual(original_sid, moved.exportBindingSemanticIndex(moved.export_bindings[0]).?);
+    try std.testing.expectEqual(original_owner, moved.semantic.?.owner_token);
+    try std.testing.expectEqual(original.public_key_origin.?.specifier, moved.export_bindings[0].public_key_origin.?.specifier);
+    try std.testing.expectEqual(original.public_key_origin.?.literal, moved.export_bindings[0].public_key_origin.?.literal);
+    const verified = (try moved.ordinaryQuotedExportLiteral(moved.export_bindings[0])).?;
+    try std.testing.expectEqualStrings("\"public-key\"", verified.literal_syntax);
+    var foreign = moved.export_bindings[0];
+    foreign.public_key_origin.?.ast = &foreign_ast;
+    try std.testing.expectError(error.InvalidQuotedExportOrigin, moved.ordinaryQuotedExportLiteral(foreign));
+}

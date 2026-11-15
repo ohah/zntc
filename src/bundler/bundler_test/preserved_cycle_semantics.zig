@@ -5,6 +5,89 @@ const compat = @import("../../transformer/transformer.zig").TransformOptions.com
 const File = struct { path: []const u8, source: []const u8 };
 const Case = struct { name: []const u8, files: []const File, expected: []const u8, weak_map_unavailable: bool = false, source_maps: bool = false, expected_entry_exports: ?[]const []const u8 = null, required_entry_imports: ?[]const []const u8 = null, named_entry_consumer: bool = false, generator_only_target: bool = false };
 
+test "preserved cycles share one generator implementation across legacy frames" {
+    const a = std.testing.allocator;
+    for ([_]usize{ 12, 48 }) |count| for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "main.mjs", "import './setup.mjs';import{read}from'./m0.mjs';console.log(JSON.stringify([globalThis.__ringCount,read()]));");
+        try helpers.writeFile(tmp.dir, "setup.mjs", "globalThis.__ringCount=0;");
+        for (0..count) |i| {
+            const name = try std.fmt.allocPrint(a, "m{d}.mjs", .{i});
+            defer a.free(name);
+            const text = try std.fmt.allocPrint(a, "import './m{d}.mjs';globalThis.__ringCount++;{s}", .{ (i + 1) % count, if (i == 0) "export function read(){return 42}" else "" });
+            defer a.free(text);
+            try helpers.writeFile(tmp.dir, name, text);
+        }
+        const entry = try helpers.absPath(&tmp, "main.mjs");
+        defer a.free(entry);
+        var bundler = Bundler.init(a, .{
+            .entry_points = &.{entry},
+            .format = .cjs,
+            .platform = .node,
+            .preserve_modules = true,
+            .preserve_modules_root = std.fs.path.dirname(entry),
+            .out_extension_js = ".cjs",
+            .unsupported = compat.fromESTarget(.es5),
+            // Match the measured ring cohort. Observable names have separate
+            // Native controls below, with keep_names explicitly enabled.
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+            .minify_whitespace = minify,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(a);
+        try std.testing.expect(!result.hasErrors());
+        const outputs = result.outputs orelse return error.MissingPreservedCycleOutputs;
+        var shared: ?[]const u8 = null;
+        var total_bytes: usize = 0;
+        for (outputs) |file| {
+            total_bytes += file.contents.len;
+            for (file.module_ids) |id| if (std.mem.eql(u8, id, @import("../pm_generator_builtin.zig").id)) {
+                try std.testing.expect(shared == null);
+                shared = file.path;
+                try std.testing.expectEqual(@as(usize, 1), file.exports.len);
+                try std.testing.expectEqualStrings(@import("../../runtime_helper_modules.zig").catalogExports(.generator)[0], file.exports[0]);
+            };
+            try helpers.writeFile(tmp.dir, file.path, file.contents);
+        }
+        const shared_path = shared orelse return error.MissingSharedGeneratorOutput;
+        var consumers: usize = 0;
+        for (outputs) |file| {
+            var source_frame = false;
+            for (file.module_ids) |id| if (std.mem.endsWith(u8, id, ".mjs")) {
+                source_frame = true;
+            };
+            if (!source_frame) continue;
+            var matches: usize = 0;
+            for (file.imports) |import_path| {
+                const resolved = try std.fs.path.resolve(a, &.{ std.fs.path.dirname(file.path) orelse ".", import_path });
+                defer a.free(resolved);
+                const expected = try std.fs.path.resolve(a, &.{shared_path});
+                defer a.free(expected);
+                if (std.mem.eql(u8, resolved, expected)) matches += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), matches);
+            consumers += 1;
+        }
+        try std.testing.expectEqual(count + 2, consumers);
+        // A broad output budget catches the original per-file 2KB helper
+        // duplication (44KB/138KB), without pinning compiler formatting.
+        try std.testing.expect(total_bytes < if (count == 12) @as(usize, 20_000) else @as(usize, 60_000));
+        const output_entry = try helpers.absPath(&tmp, "main.cjs");
+        defer a.free(output_entry);
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output_entry } });
+        defer a.free(actual.stdout);
+        defer a.free(actual.stderr);
+        const expected = try std.fmt.allocPrint(a, "[{d},42]\n", .{count});
+        defer a.free(expected);
+        if (actual.term != .exited or actual.term.exited != 0) std.debug.print("shared generator stderr={s}\n", .{actual.stderr});
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(expected, actual.stdout);
+    };
+}
+
 // Execute the same source graph as native ESM and as preserved CJS. The source
 // catches expected early TDZ errors; the output must still perform later live
 // reads. CJS cycle warnings are retained in failure diagnostics, not mistaken
@@ -596,5 +679,125 @@ test "preserved cycles hoisted-function-private-class-before-body" {
             .{ .path = "b.mjs", .source = "import{f}from'./a.mjs';export let early;try{early=f();}catch(e){early=e.name;}\n" },
         },
         .expected = "[\"ReferenceError\",42]\n",
+    });
+}
+
+test "preserved cycles shared generator keeps a same-basename source module" {
+    try runCase(.{
+        .name = "shared-generator-source-basename",
+        .files = &.{
+            .{ .path = "main.mjs", .source = "import{read}from'./runtime-generator.mjs';console.log(read());\n" },
+            .{ .path = "runtime-generator.mjs", .source = "import'./main.mjs';import'./runtime-generator-1.mjs';export function read(){return 42;}\n" },
+            .{ .path = "runtime-generator-1.mjs", .source = "globalThis.generatorSourceKept=true;\n" },
+        },
+        .expected = "42\n",
+    });
+}
+
+test "preserved cycles shared generator reserves case variants of source paths" {
+    try runCase(.{
+        .name = "shared-generator-casefold-source",
+        .files = &.{
+            .{ .path = "main.mjs", .source = "import{read}from'./Runtime-Generator.mjs';console.log(read());\n" },
+            .{ .path = "Runtime-Generator.mjs", .source = "import'./main.mjs';import'./RUNTIME-GENERATOR-1.mjs';export function read(){return 41+globalThis.generatorSuffix;}\n" },
+            .{ .path = "RUNTIME-GENERATOR-1.mjs", .source = "globalThis.generatorSuffix=1;\n" },
+        },
+        .expected = "42\n",
+    });
+}
+
+test "preserved cycles shared generator reserves source output directories" {
+    try runCase(.{
+        .name = "shared-generator-source-directory",
+        .files = &.{
+            .{ .path = "main.mjs", .source = "import{read}from'./runtime-generator.cjs/user.mjs';console.log(read());\n" },
+            .{ .path = "runtime-generator.cjs/user.mjs", .source = "import'../main.mjs';import'../runtime-generator-1.cjs/user.mjs';export function read(){return 41+globalThis.generatorSuffix;}\n" },
+            .{ .path = "runtime-generator-1.cjs/user.mjs", .source = "globalThis.generatorSuffix=1;\n" },
+        },
+        .expected = "42\n",
+    });
+}
+
+test "preserved cycles shared generator isolates later frames from source iterator prototypes" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "early.mjs", "import './side.mjs';function* userGenerator(){yield 1;}const proto=Object.getPrototypeOf(Object.getPrototypeOf(userGenerator()));const saved=Object.getOwnPropertyDescriptor(proto,'next');globalThis.intercepts=0;Object.defineProperty(proto,'next',{get:function(){return function(){throw Error('poison-next')}},set:function(value){globalThis.intercepts++},configurable:true});globalThis.restore=function(){if(saved)Object.defineProperty(proto,'next',saved);else delete proto.next};");
+    try helpers.writeFile(tmp.dir, "side.mjs", "import './early.mjs';");
+    try helpers.writeFile(tmp.dir, "later.mjs", "import './later-side.mjs';export const value=42;");
+    try helpers.writeFile(tmp.dir, "later-side.mjs", "import './later.mjs';");
+    const early = try helpers.absPath(&tmp, "early.mjs");
+    defer a.free(early);
+    const later = try helpers.absPath(&tmp, "later.mjs");
+    defer a.free(later);
+    const source_url = try std.fmt.allocPrint(a, "file://{s}", .{early});
+    defer a.free(source_url);
+    const source_uri = try std.json.Stringify.valueAlloc(a, source_url, .{});
+    defer a.free(source_uri);
+    const later_url = try std.fmt.allocPrint(a, "file://{s}", .{later});
+    defer a.free(later_url);
+    const later_uri = try std.json.Stringify.valueAlloc(a, later_url, .{});
+    defer a.free(later_uri);
+    const native_script = try std.fmt.allocPrint(a, "await import({s});try{{const m=await import({s});console.log(JSON.stringify([m.value,globalThis.intercepts]))}}finally{{globalThis.restore()}}", .{ source_uri, later_uri });
+    defer a.free(native_script);
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", native_script } });
+    defer a.free(native.stdout);
+    defer a.free(native.stderr);
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("[42,0]\n", native.stdout);
+    for ([_]bool{ false, true }) |legacy| for ([_]bool{ false, true }) |minify| {
+        var bundler = Bundler.init(a, .{
+            .entry_points = &.{ early, later },
+            .format = .cjs,
+            .platform = .node,
+            .preserve_modules = true,
+            .preserve_modules_root = std.fs.path.dirname(early),
+            .out_extension_js = ".cjs",
+            .unsupported = if (legacy) compat.fromESTarget(.es5) else .{},
+            .keep_names = true,
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+            .minify_whitespace = minify,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(a);
+        try std.testing.expect(!result.hasErrors());
+        const directory = try std.fmt.allocPrint(a, "shared-proto-{any}-{any}", .{ legacy, minify });
+        defer a.free(directory);
+        for (result.outputs.?) |file| {
+            const path = try std.fs.path.join(a, &.{ directory, file.path });
+            defer a.free(path);
+            try helpers.writeFile(tmp.dir, path, file.contents);
+        }
+        const output_early = try std.fs.path.join(a, &.{ std.fs.path.dirname(early).?, directory, "early.cjs" });
+        defer a.free(output_early);
+        const output_later = try std.fs.path.join(a, &.{ std.fs.path.dirname(early).?, directory, "later.cjs" });
+        defer a.free(output_later);
+        const quoted_early = try std.json.Stringify.valueAlloc(a, output_early, .{});
+        defer a.free(quoted_early);
+        const quoted_later = try std.json.Stringify.valueAlloc(a, output_later, .{});
+        defer a.free(quoted_later);
+        const script = try std.fmt.allocPrint(a, "require({s});try{{const m=require({s});console.log(JSON.stringify([m.value,globalThis.intercepts]))}}finally{{globalThis.restore()}}", .{ quoted_early, quoted_later });
+        defer a.free(script);
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", script } });
+        defer a.free(actual.stdout);
+        defer a.free(actual.stderr);
+        if (actual.term != .exited or actual.term.exited != 0) std.debug.print("shared generator prototype stderr={s}\n", .{actual.stderr});
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    };
+}
+
+test "preserved cycles shared generator reserves Unicode aliases of ASCII helper paths" {
+    try runCase(.{
+        .name = "shared-generator-unicode-path-alias",
+        .source_maps = true,
+        .files = &.{
+            .{ .path = "main.mjs", .source = "import{read}from'./runtime-generator.cj\u{17f}/user.mjs';console.log(JSON.stringify([read(),Object.getPrototypeOf(read)===Function.prototype,read.prototype.constructor===read]));\n" },
+            .{ .path = "runtime-generator.cj\u{17f}/user.mjs", .source = "import'../main.mjs';import'../runtime-generator-1.cj\u{17f}/user.mjs';export function read(){return 41+globalThis.generatorSuffix;}\n" },
+            .{ .path = "runtime-generator-1.cj\u{17f}/user.mjs", .source = "globalThis.generatorSuffix=1;\n" },
+        },
+        .expected = "[42,true,true]\n",
     });
 }
