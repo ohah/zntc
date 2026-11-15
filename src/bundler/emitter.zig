@@ -413,6 +413,14 @@ pub const EmitOptions = struct {
     preserve_modules: bool = false,
     /// preserve-modules-root: 출력 디렉토리 구조의 기준 경로
     preserve_modules_root: ?[]const u8 = null,
+    /// The chunk writer owns the actual path of this single native ESM file.
+    /// A self import can materialize a local alias for its implicit default
+    /// binding without replacing the engine's instantiation-time declaration.
+    native_self_default_import: ?struct {
+        owner: *const Module,
+        quoted_specifier: []const u8,
+        emitted: ?*bool = null,
+    } = null,
 
     /// Compiled output cache (HMR/watch 전용, in-memory).
     /// 주입되면 변경 안 된 모듈의 emit 을 스킵하고 cache 의 결과를 재사용.
@@ -2507,8 +2515,15 @@ pub fn emitModuleWithHolderReservations(
     // Linker 메타데이터 생성 (있으면) — ast 기준으로 구축
     var metadata: ?LinkingMetadata = null;
     defer if (metadata) |*m| m.deinit();
+    var native_default_self_preamble: []const u8 = "";
 
     if (linker) |l| {
+        const native_self_owner: ?*const Module = if (options.native_self_default_import) |capability| blk: {
+            if (!options.preserve_modules or options.format != .esm or module.wrap_kind != .none or
+                capability.owner != module or capability.emitted == null or capability.quoted_specifier.len < 2)
+                return error.InvalidDefaultNameProducer;
+            break :blk module;
+        } else null;
         // transformer가 생성한 symbol_ids (있으면 우선 사용)
         const override_syms: ?[]const ?u32 = if (transformer.symbol_ids.items.len > 0)
             transformer.symbol_ids.items
@@ -2526,6 +2541,7 @@ pub fn emitModuleWithHolderReservations(
             (options.output_exports == .auto or options.output_exports == .named) and
                 !(options.preserve_modules and options.format == .cjs),
             holder_reservations,
+            native_self_owner,
         );
         errdefer md.deinit();
         // transformer가 전파한 symbol_ids를 메타데이터에 설정
@@ -2533,6 +2549,19 @@ pub fn emitModuleWithHolderReservations(
             md.symbol_ids = syms;
         }
         try @import("../transformer/module_lexical_initialization.zig").projectNativeDefaultFunction(&transformer, &md);
+        if (md.native_default_function) |native| if (native.needs_local_binding) {
+            const capability = options.native_self_default_import orelse return error.InvalidDefaultNameProducer;
+            const existing = l.getConsumerImportTarget(module.index.toU32(), "default");
+            const already_imported = if (existing) |target|
+                target.role == .binding and std.mem.eql(u8, target.text, md.default_export_name)
+            else
+                false;
+            if (!already_imported) {
+                if (!try @import("linker/identifier_name.zig").isBindingName(arena_alloc, md.default_export_name, Linker.isReservedName))
+                    return error.InvalidDefaultNameProducer;
+                native_default_self_preamble = try std.fmt.allocPrint(arena_alloc, "import{{default as {s}}}from{s};\n", .{ md.default_export_name, capability.quoted_specifier });
+            }
+        };
         // #1791 IIFE unresolved build-time diag 를 linker 의 공용 `fatal_diagnostics`
         // 로 소유권 이전. mutex 는 공용 리스트의 append 만 보호 — `md.pending_diagnostics`
         // 자체는 per-module 이라 경쟁 없음. `@constCast` 는 `ns_cache_mutex` (linker.zig:1877)
@@ -3064,6 +3093,7 @@ pub fn emitModuleWithHolderReservations(
         }
     }
     var cg = Codegen.initWithOptions(arena_alloc, transformer.ast, .{
+        .program_preamble = native_default_self_preamble,
         .compiler_literal_overrides = options.compiler_literal_overrides,
         .minify_whitespace = options.minify_whitespace,
         .cjs_exports_name = cjs_ex_name,
@@ -3147,6 +3177,7 @@ pub fn emitModuleWithHolderReservations(
         try cg.write(environment.prefix);
     }
     var code = try cg.generate(root);
+    if (native_default_self_preamble.len != 0) options.native_self_default_import.?.emitted.?.* = true;
 
     // React Fast Refresh: 컴포넌트가 있는 모듈에 hot.accept() 자동 삽입.
     // accept() 없으면 __zntc_apply_update가 full reload로 fallback.

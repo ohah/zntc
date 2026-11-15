@@ -700,7 +700,7 @@ pub fn buildMetadataForAst(
     /// codegen `.pm_cjs_storage`·끝-skip·소비자 ns-access 게이트와 **동일** 값이어야 정합.
     output_produces_named: bool,
 ) !LinkingMetadata {
-    return buildMetadataForAstWithHolderReservations(self, ast, module_index, is_entry, override_symbol_ids, format, output_produces_named, null);
+    return buildMetadataForAstWithHolderReservations(self, ast, module_index, is_entry, override_symbol_ids, format, output_produces_named, null, null);
 }
 
 pub fn buildMetadataForAstWithHolderReservations(
@@ -715,6 +715,7 @@ pub fn buildMetadataForAstWithHolderReservations(
     /// codegen `.pm_cjs_storage`·끝-skip·소비자 ns-access 게이트와 **동일** 값이어야 정합.
     output_produces_named: bool,
     reservations: ?*@import("../namespace_holder_reservations.zig").NamespaceHolderReservations,
+    native_self_default_owner: ?*const Module,
 ) !LinkingMetadata {
     _ = output_produces_named; // Retained caller ABI; storage lowering is no longer used.
     var local_reservations = @import("../namespace_holder_reservations.zig").NamespaceHolderReservations.init(self.allocator);
@@ -725,6 +726,9 @@ pub fn buildMetadataForAstWithHolderReservations(
     defer scope.end();
 
     const m_opt = self.getModule(module_index);
+    if (native_self_default_owner) |owner| {
+        if (m_opt == null or owner != m_opt.?) return error.InvalidDefaultNameProducer;
+    }
     if (m_opt == null) {
         return .{
             .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
@@ -2084,12 +2088,19 @@ pub fn buildMetadataForAstWithHolderReservations(
                 symbol.lexical_initialization.state != .native or !symbol.lexical_initialization.flag.isNone()) return error.InvalidDefaultNameProducer;
             // An implicit native default binding has no emitted local spelling.
             // Preserve the ordinary producer if a real file-local use needs one.
-            for (sem.references) |reference| if (@backingInt(reference.symbol_id) == sid and reference.isValueUse()) break :native_default;
+            var needs_local_binding = false;
+            for (sem.references) |reference| if (@backingInt(reference.symbol_id) == sid and reference.isValueUse()) {
+                if (native_self_default_owner == null) break :native_default;
+                needs_local_binding = true;
+            };
             for (m.import_bindings) |imported| {
                 const resolved = self.getResolvedBinding(module_index, imported.local_span) orelse continue;
-                if (resolved.canonical.module_index == m.index and resolved.canonical.synthetic_member == null and std.mem.eql(u8, resolved.canonical.export_name, binding.exported_name)) break :native_default;
+                if (resolved.canonical.module_index == m.index and resolved.canonical.synthetic_member == null and std.mem.eql(u8, resolved.canonical.export_name, binding.exported_name)) {
+                    if (native_self_default_owner == null) break :native_default;
+                    needs_local_binding = true;
+                }
             }
-            native_default_function = .{ .source = source, .function = function, .symbol = sid };
+            native_default_function = .{ .source = source, .function = function, .symbol = sid, .needs_local_binding = needs_local_binding };
             break;
         }
     }
