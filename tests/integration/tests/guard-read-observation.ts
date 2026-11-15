@@ -17,6 +17,47 @@ function walk(node: any, visit: (node: Node) => void): void {
   for (const [key, value] of Object.entries(node)) if (key !== 'span') walk(value, visit);
 }
 
+// SWC resolver contexts distinguish the free host binding from same-spelling
+// nested locals. Conservatively reject any write to the actual require binding,
+// without attempting to predict whether a nested function/class will execute.
+function writtenBindingKeys(program: Node): Set<string> {
+  const keys = new Set<string>();
+  const target = (node: Node | null | undefined): void => {
+    if (!node) return;
+    switch (node.type) {
+      case 'Identifier':
+        keys.add(bindingKey(node));
+        break;
+      case 'ArrayPattern':
+        for (const item of node.elements) target(item);
+        break;
+      case 'ObjectPattern':
+        for (const property of node.properties) {
+          if (property.type === 'KeyValuePatternProperty') target(property.value);
+          else if (property.type === 'AssignmentPatternProperty') target(property.key);
+          else if (property.type === 'RestElement') target(property.argument);
+        }
+        break;
+      case 'RestElement':
+        target(node.argument);
+        break;
+      case 'AssignmentPattern':
+        target(node.left);
+        break;
+    }
+  };
+  walk(program, (node) => {
+    if (node.type === 'AssignmentExpression') target(node.left);
+    if (node.type === 'UpdateExpression') target(node.argument);
+    if (
+      (node.type === 'ForOfStatement' || node.type === 'ForInStatement') &&
+      node.left.type !== 'VariableDeclaration'
+    )
+      target(node.left);
+  });
+  return keys;
+}
+
 // CommonJS forwarders require a free host `require`. Collect only bindings
 // owned by the Program execution frame; never inspect nested function/class
 // execution frames. Hoisted var/function declarations under control flow count.
@@ -240,6 +281,7 @@ export function helperGuardSites(outputs: readonly Output[], outputDirectory: st
     const ast = parseSync(source, { syntax: 'ecmascript', target: 'esnext' });
     const bindings = new Set<string>();
     const rootNames = rootBindingNames(ast);
+    const writtenBindings = writtenBindingKeys(ast);
     const declarations = new Map<string, Node>();
     const directForwarders = new Set<Node>();
     for (const statement of ast.body)
@@ -322,7 +364,8 @@ export function helperGuardSites(outputs: readonly Output[], outputDirectory: st
         owner.value === 'require' ||
         owner.value === 'arguments' ||
         !actualRequire(required.init) ||
-        rootNames.has('require')
+        rootNames.has('require') ||
+        writtenBindings.has(bindingKey(required.init.callee))
       )
         reject();
       const propertyName = (property: Node) =>
@@ -614,6 +657,13 @@ test('eager imports use actual source Scope0 callers oracle authenticates CJS in
     'if(false){var require=foreign}',
     'for(var require of foreign){}',
     'try{}finally{var require}',
+    'function other(){require=foreign}',
+    'var other=function(){require++}',
+    'class Other{method(){require=foreign}}',
+    'var other={method(){require=foreign}}',
+    'function other(){for(require of foreign){}}',
+    'function other(){({x:require}=foreign)}',
+    'function other(x=(require=foreign)){var require}',
     'require=foreign;',
     'require++;',
     'for(require of foreign){}',
@@ -630,6 +680,13 @@ test('eager imports use actual source Scope0 callers oracle authenticates CJS in
     );
   // A different execution frame's bindings do not shadow CommonJS require.
   for (const nested of [
+    'function other(require){require=foreign}',
+    'function other(){var require;require=foreign}',
+    'function other(){let require;require++}',
+    'function other(){try{}catch(require){require=other}}',
+    'class Other{method(require){require=other}}',
+    'class Other{method(){let require;require=other}}',
+    'var Other=class require{method(){require=other}}',
     'function other(){function require(){}}',
     'var other=function(require){}',
     'class Other{method(require){}}',
@@ -640,10 +697,6 @@ test('eager imports use actual source Scope0 callers oracle authenticates CJS in
     'for(let require=foreign;condition;require++){require=other}',
     'try{}catch(require){require=other}',
     'switch(value){case 1:let require;require=other}',
-    'var other={method(){require=foreign}}',
-    'function other(){require=foreign}',
-    'var other=function(){require++}',
-    'class Other{method(){require=foreign}}',
   ])
     expect(helperGuardSites(fixture(`${nested};${valid}`), '/output')).toHaveLength(1);
   const sloppy = fixture(`if(true){function require(){}};${valid}`);
@@ -667,4 +720,62 @@ test('eager imports use actual source Scope0 callers oracle authenticates CJS in
   expect(() => helperGuardSites(escapedDirective, '/output')).toThrow(
     'unverified helper initializer forwarder',
   );
+});
+
+test('eager imports use actual source Scope0 callers oracle rejects invoked ambient require replacement', () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
+  const { tmpdir } = require('node:os');
+  const { join } = require('node:path');
+  const { spawnSync } = require('node:child_process');
+  const dir = mkdtempSync(join(tmpdir(), 'zntc-observer-invoked-'));
+  const out = join(dir, 'out');
+  mkdirSync(out);
+  const entryCode = [
+    'function getGuard(){return require("./guard.js")}',
+    'var guardNamespace=getGuard();var guard=guardNamespace.guard;',
+    'function poisonRequire(){require=function(){return{init:{apply(){return globalThis.ErrorUtils}}}}}',
+    'poisonRequire();',
+    'var init=function(){var m=require("./helper.js");var r=m.init.apply(this,arguments);return r};',
+    'guard(init);',
+  ].join('\n');
+  const outputs = observerFixture('');
+  outputs[0] = {
+    path: 'helper.js',
+    moduleIds: ['\0zntc:runtime/keep-names'],
+    contents: Buffer.from('var init=wrap({body(){}});exports.init=init;'),
+    exports: ['init'],
+  };
+  outputs[1] = {
+    path: 'guard.js',
+    moduleIds: ['\0zntc:runtime/split-entry-guard'],
+    contents: Buffer.from('function guard(fn){return fn()}exports.guard=guard;'),
+    exports: ['guard'],
+  };
+  outputs[2] = {
+    path: 'entry.cjs',
+    moduleIds: ['/source/entry.mjs'],
+    contents: Buffer.from(entryCode),
+  };
+  try {
+    expect(() => helperGuardSites(outputs, out)).toThrow('unverified helper initializer forwarder');
+    writeFileSync(
+      join(out, 'helper.js'),
+      'globalThis.realHelperLoaded=true;exports.init=function(){};',
+    );
+    writeFileSync(join(out, 'guard.js'), 'exports.guard=function(fn){return fn()};');
+    writeFileSync(join(out, 'entry.cjs'), entryCode);
+    const actual = spawnSync(
+      'node',
+      [
+        '-e',
+        `${observeGuardReads}require(${JSON.stringify(join(out, 'entry.cjs'))});console.log(JSON.stringify({reads:guardStacks.length,realHelperLoaded:!!globalThis.realHelperLoaded}));`,
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(actual.status).toBe(0);
+    expect(actual.stderr).toBe('');
+    expect(actual.stdout).toBe('{"reads":1,"realHelperLoaded":false}\n');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
