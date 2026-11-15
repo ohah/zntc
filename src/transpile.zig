@@ -41,6 +41,7 @@ const transpile_options = @import("transpile/options.zig");
 
 pub const StopAfter = transpile_options.StopAfter;
 pub const TranspileOptions = transpile_options.TranspileOptions;
+pub const ArtifactGeneratorRuntime = transpile_options.ArtifactGeneratorRuntime;
 pub const ConfigOptionsDto = transpile_options.ConfigOptionsDto;
 pub const TranspileOptionsDto = transpile_options.TranspileOptionsDto;
 pub const AliasDto = transpile_options.AliasDto;
@@ -118,6 +119,7 @@ const AstFacts = struct {
 };
 
 pub const TranspileError = error{
+    InvalidArtifactGeneratorRuntime,
     StaticInitializerDynamicScope,
     GeneratorNativeLexicalResume,
     GeneratorNativeLexicalNesting,
@@ -780,7 +782,8 @@ fn scanForUnsupportedBindingLiteShadow(
 }
 
 fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
-    return options.minify_identifiers or
+    return options.artifact_generator_runtime != null or
+        options.minify_identifiers or
         options.keep_names or
         options.minify_syntax or
         options.minify_whitespace or
@@ -4930,6 +4933,14 @@ fn transpileWithCallbackInternal(
     on_error: ?ErrorCallback,
     fast_path_disabled: bool,
 ) TranspileError!TranspileResult {
+    if (options.artifact_generator_runtime) |runtime| {
+        if (runtime.module_specifier.len == 0 or runtime.public_key.len == 0 or
+            !std.unicode.utf8ValidateSlice(runtime.module_specifier) or
+            !std.unicode.utf8ValidateSlice(runtime.public_key) or
+            isDeclarationFile(file_path) or
+            (options.stop_after != null and options.stop_after != .codegen))
+            return error.InvalidArtifactGeneratorRuntime;
+    }
     // `.d.ts` declaration 파일: 전체 type-only → 빈 출력 (D12.5).
     if (isDeclarationFile(file_path)) return .{ .code = try allocator.dupe(u8, "") };
 
@@ -5945,10 +5956,25 @@ fn transpileWithCallbackInternal(
         }
         if (transformer.runtime_helpers.tagged_template_literal)
             local_names.tagged_template_literal = try helper_name_resolver.resolve("__taggedTemplateLiteral", options.minify_whitespace);
+        var inline_helpers = transformer.runtime_helpers;
+        if (options.artifact_generator_runtime) |runtime| {
+            // The import declaration must use the producer-owned artifact
+            // helper binding, never a recovered output spelling or Source SID.
+            if (!transformer.semantic_edit_enabled or transformer.options.emit_runtime_helper_imports or
+                !transformer.runtime_helpers.generator or analyzer_storage == null or
+                analyzer_storage.?.scope_maps.items.len == 0 or
+                analyzer_storage.?.scope_maps.items[0].contains("require"))
+                return error.InvalidArtifactGeneratorRuntime;
+            const local = local_names.generator orelse return error.InvalidArtifactGeneratorRuntime;
+            const specifier = try std.json.Stringify.valueAlloc(arena_alloc, runtime.module_specifier, .{ .escape_unicode = true });
+            const key = try std.json.Stringify.valueAlloc(arena_alloc, runtime.public_key, .{ .escape_unicode = true });
+            try buf.print(arena_alloc, "var {s}=require({s})[{s}];\n", .{ local, specifier, key });
+            inline_helpers.generator = false;
+        }
         rt.appendRuntimeHelpersWithStandaloneLocalNames(
             &buf,
             arena_alloc,
-            transformer.runtime_helpers,
+            inline_helpers,
             options.minify_whitespace,
             transformer.runtime_es5_compat,
             local_names,
@@ -5956,7 +5982,7 @@ fn transpileWithCallbackInternal(
             return error.OutOfMemory;
         // Helper declarations and cross-helper references carry their selected local names.
         break :blk buf.items;
-    } else "";
+    } else if (options.artifact_generator_runtime != null) return error.InvalidArtifactGeneratorRuntime else "";
     // CJS codegen removes module strictness, and TypeScript sources are also
     // parsed as strict scripts. Preserve either source mode before generated
     // helpers and user statements unless the emitted directive already exists.
@@ -6009,6 +6035,8 @@ fn transpileWithCallbackInternal(
         // directive/hashbang boundaries use the final preamble from the start.
         // No parser/analyzer or semantic edit is repeated.
         var with_name: std.ArrayList(u8) = .empty;
+        // Retain the already selected generator import policy when this late
+        // name demand requires another codegen pass. No helper is re-inlined.
         try with_name.appendSlice(arena_alloc, program_preamble);
         rt.appendRuntimeHelpersWithStandaloneLocalNames(&with_name, arena_alloc, .{ .keep_names = true }, options.minify_whitespace, transformer.runtime_es5_compat, .{ .keep_names = keep_names_helper_name orelse return error.TransformError }) catch return error.OutOfMemory;
         var final_options = cg.options;
@@ -17072,4 +17100,93 @@ test "lazy iterator generated branch receipt rejects foreign graph tuples and su
     const stale: u32 = 52;
     @memcpy(old[4..8], std.mem.asBytes(&stale));
     try std.testing.expectError(error.UnsupportedVersion, codec.deserialize(old, a));
+}
+
+test "artifact generator runtime shares its producer binding while preserving names and lexical cells" {
+    const a = std.testing.allocator;
+    const helpers = @import("bundler/test_helpers.zig");
+    const source =
+        "var __generator=7;" ++
+        "function* frame(){yield {read:function(){return value},snapshot:function(){return snapshot},advance:function(){value++}};let value=1;const snapshot=value}" ++
+        "var iterator=frame(),ns=iterator.next().value;" ++
+        "function attempt(fn){try{return fn()}catch(e){return e.name}}" ++
+        "var result=[__generator,frame.name,attempt(ns.read),attempt(ns.snapshot)];" ++
+        "iterator.next();result.push(ns.read(),ns.snapshot());ns.advance();result.push(ns.read(),ns.snapshot());console.log(JSON.stringify(result));";
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    defer a.free(native.stdout);
+    defer a.free(native.stderr);
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("[7,\"frame\",\"ReferenceError\",\"ReferenceError\",1,1,2,1]\n", native.stdout);
+    for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const public_key = "generator\"\\\u{2028}";
+        const encoded_key = try std.json.Stringify.valueAlloc(a, public_key, .{ .escape_unicode = true });
+        defer a.free(encoded_key);
+        const runtime = try std.fmt.allocPrint(a, "{s}\nexports[{s}]=function(){{globalThis.generatorCalls=(globalThis.generatorCalls||0)+1;return __generator.apply(this,arguments);}};", .{ rt.GENERATOR_RUNTIME, encoded_key });
+        defer a.free(runtime);
+        try helpers.writeFile(tmp.dir, "shared runtime.cjs", runtime);
+        const options: TranspileOptions = .{
+            .unsupported = TransformOptions.compat.fromESTarget(.es5),
+            .module_format = .cjs,
+            .platform = .node,
+            .minify_whitespace = minify,
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+            .keep_names = true,
+            .sourcemap = true,
+            .artifact_generator_runtime = .{ .module_specifier = "./shared runtime.cjs", .public_key = public_key },
+        };
+        var compiled = try transpile(a, source, "artifact-frame.cjs", options);
+        defer compiled.deinit(a);
+        try std.testing.expectEqual(@as(usize, 0), compiled.diagnostics.len);
+        try std.testing.expect(compiled.sourcemap != null);
+        // The bug was a complete 2KB helper body per artifact. The imported
+        // implementation owns this diagnostic text; consumers must not copy it.
+        try std.testing.expect(std.mem.indexOf(u8, compiled.code, "Generator is already executing.") == null);
+        try std.testing.expect(std.mem.indexOf(u8, compiled.code, "shared runtime.cjs") != null);
+        try helpers.writeFile(tmp.dir, "compiled.cjs", compiled.code);
+        const output = try helpers.absPath(&tmp, "compiled.cjs");
+        defer a.free(output);
+        const quoted = try std.json.Stringify.valueAlloc(a, output, .{});
+        defer a.free(quoted);
+        const host = try std.fmt.allocPrint(a, "require({s});console.log(globalThis.generatorCalls);", .{quoted});
+        defer a.free(host);
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", host } });
+        defer a.free(actual.stdout);
+        defer a.free(actual.stderr);
+        if (actual.term != .exited or actual.term.exited != 0)
+            std.debug.print("artifact shared generator stderr={s}\ncode={s}\n", .{ actual.stderr, compiled.code });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        const expected = try std.fmt.allocPrint(a, "{s}1\n", .{native.stdout});
+        defer a.free(expected);
+        try std.testing.expectEqualStrings(expected, actual.stdout);
+        try std.testing.expectEqualStrings("", actual.stderr);
+
+        var inline_options = options;
+        inline_options.artifact_generator_runtime = null;
+        inline_options.sourcemap = false;
+        var standalone = try transpile(a, source, "standalone-frame.cjs", inline_options);
+        defer standalone.deinit(a);
+        try std.testing.expect(std.mem.indexOf(u8, standalone.code, "Generator is already executing.") != null);
+        try std.testing.expect(std.mem.indexOf(u8, standalone.code, "shared runtime.cjs") == null);
+        const control = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", standalone.code } });
+        defer a.free(control.stdout);
+        defer a.free(control.stderr);
+        try std.testing.expect(control.term == .exited and control.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, control.stdout);
+    }
+}
+
+test "artifact generator runtime rejects absent demand and invalid host capture" {
+    const a = std.testing.allocator;
+    const runtime: ArtifactGeneratorRuntime = .{ .module_specifier = "./shared.cjs", .public_key = "generator" };
+    const legacy = TransformOptions.compat.fromESTarget(.es5);
+    try std.testing.expectError(error.InvalidArtifactGeneratorRuntime, transpile(a, "console.log(42)", "artifact.ts", .{ .unsupported = legacy, .artifact_generator_runtime = runtime }));
+    try std.testing.expectError(error.InvalidArtifactGeneratorRuntime, transpile(a, "function* frame(){yield 42}", "artifact.cjs", .{ .artifact_generator_runtime = runtime }));
+    try std.testing.expectError(error.InvalidArtifactGeneratorRuntime, transpile(a, "var require=function(){throw Error('source capture')};function* frame(){yield 42}", "artifact.cjs", .{ .unsupported = legacy, .artifact_generator_runtime = runtime }));
+    try std.testing.expectError(error.InvalidArtifactGeneratorRuntime, transpile(a, "function* frame(){yield 42}", "artifact.cjs", .{ .unsupported = legacy, .stop_after = .parse, .artifact_generator_runtime = runtime }));
+    try std.testing.expectError(error.InvalidArtifactGeneratorRuntime, transpile(a, "function* frame(){yield 42}", "artifact.cjs", .{ .unsupported = legacy, .artifact_generator_runtime = .{ .module_specifier = "", .public_key = "generator" } }));
+    try std.testing.expectError(error.InvalidArtifactGeneratorRuntime, transpile(a, "function* frame(){yield 42}", "artifact.cjs", .{ .unsupported = legacy, .artifact_generator_runtime = .{ .module_specifier = "./shared.cjs", .public_key = "" } }));
+    try std.testing.expectError(error.InvalidArtifactGeneratorRuntime, transpile(a, "function* frame(){yield 42}", "artifact.cjs", .{ .unsupported = legacy, .artifact_generator_runtime = .{ .module_specifier = "./shared.cjs", .public_key = "\xff" } }));
 }

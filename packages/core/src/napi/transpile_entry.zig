@@ -76,7 +76,7 @@ pub fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c
         const msg: [*:0]const u8 = switch (err) {
             error.ParseError => "ParseError",
             error.SemanticError => "SemanticError",
-            error.TransformError => "TransformError",
+            error.TransformError, error.InvalidArtifactGeneratorRuntime => "TransformError",
             error.StaticInitializerDynamicScope => "ZNTC1505: class initializer or extracted private method cannot preserve its dynamic class lexical environment",
             error.ClassHeritageEval => "ZNTC1512: class heritage direct eval cannot preserve strictness in a sloppy lowered evaluation context",
             error.LoopDynamicScope => "ZNTC1509: direct eval observes a loop lexical environment requiring lowering",

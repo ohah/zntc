@@ -604,6 +604,7 @@ fn catalogFor(m: *const HelperModule) ?source_origin.Catalog {
         .{ .short = "tdz", .catalog = .tdz },
         .{ .short = "pm-default", .catalog = .pm_default },
         .{ .short = "pm-module", .catalog = .pm_module },
+        .{ .short = "generator", .catalog = .generator },
     };
     for (known) |entry| if (m == findModule(entry.short).?) return entry.catalog;
     return null;
@@ -622,6 +623,7 @@ fn moduleForCatalog(catalog: source_origin.Catalog) *const HelperModule {
         .tdz => "tdz",
         .pm_default => "pm-default",
         .pm_module => "pm-module",
+        .generator => "generator",
     }).?;
 }
 
@@ -1157,7 +1159,7 @@ test "PM helper module policy follows the winning producer including uncataloged
     const options: SourceOptions = .{ .es5 = true };
     const builtin = makePlugin(&options);
     var context: plugin_mod.HookContext = .{};
-    const original = (try (plugin_mod.PluginRunner{ .plugins = &.{builtin} }).runLoadWithOrigin(ID_PREFIX ++ "generator", allocator, &context)).?;
+    const original = (try (plugin_mod.PluginRunner{ .plugins = &.{builtin} }).runLoadWithOrigin(ID_PREFIX ++ "extends", allocator, &context)).?;
     const witness = acceptWinningModuleConstructor(original, &options) orelse return error.MissingExpectedConstructor;
     try std.testing.expect(original.runtime_helper_source == null);
     try std.testing.expect(matchesModuleConstructor(witness, options, original.result.contents));
@@ -1179,13 +1181,47 @@ test "PM helper module policy follows the winning producer including uncataloged
     };
     var user: User = .{ .witness = witness };
     const replacement: plugin_mod.Plugin = .{ .name = "equal-byte user replacement", .context = &user, .load = User.replace };
-    const replaced = (try (plugin_mod.PluginRunner{ .plugins = &.{ replacement, builtin } }).runLoadWithOrigin(ID_PREFIX ++ "generator", allocator, &context)).?;
+    const replaced = (try (plugin_mod.PluginRunner{ .plugins = &.{ replacement, builtin } }).runLoadWithOrigin(ID_PREFIX ++ "extends", allocator, &context)).?;
     try std.testing.expectEqualStrings(original.result.contents, replaced.result.contents);
     try std.testing.expect(acceptWinningModuleConstructor(replaced, &options) == null);
     const passing: plugin_mod.Plugin = .{ .name = "null user producer", .context = &user, .load = User.pass };
-    const actual = (try (plugin_mod.PluginRunner{ .plugins = &.{ passing, builtin } }).runLoadWithOrigin(ID_PREFIX ++ "generator", allocator, &context)).?;
+    const actual = (try (plugin_mod.PluginRunner{ .plugins = &.{ passing, builtin } }).runLoadWithOrigin(ID_PREFIX ++ "extends", allocator, &context)).?;
     try std.testing.expect(acceptWinningModuleConstructor(actual, &options) != null);
     const other_options = try allocator.create(SourceOptions);
     other_options.* = options;
     try std.testing.expect(acceptWinningModuleConstructor(actual, other_options) == null);
+}
+
+test "generator callable catalog requires its actual winning constructor" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const options: SourceOptions = .{ .es5 = true };
+    const builtin = makePlugin(&options);
+    var context: plugin_mod.HookContext = .{};
+    const loaded = (try (plugin_mod.PluginRunner{ .plugins = &.{builtin} }).runLoadWithOrigin(ID_PREFIX ++ "generator", a, &context)).?;
+    const origin = acceptWinningLoad(loaded, &options) orelse return error.MissingExpectedGenerator;
+    try std.testing.expectEqual(source_origin.Catalog.generator, origin.catalog);
+    try std.testing.expectEqual(@as(usize, 1), catalogExports(origin.catalog).len);
+    try std.testing.expectEqualStrings("__generator", catalogExports(origin.catalog)[0]);
+    try std.testing.expect(matchesConstructedSource(origin, options, loaded.result.contents));
+    const copy = try a.dupe(u8, loaded.result.contents);
+    try std.testing.expect(!matchesConstructedSource(origin, options, copy));
+    var other = origin;
+    other.catalog = .tdz;
+    try std.testing.expect(!matchesConstructedSource(other, options, loaded.result.contents));
+
+    const User = struct {
+        origin: source_origin.Origin,
+        fn load(raw: ?*anyopaque, _: []const u8, _: std.mem.Allocator, hook: *plugin_mod.HookContext) plugin_mod.PluginError!?plugin_mod.LoadResult {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            hook.runtime_helper_source = self.origin;
+            return .{ .contents = self.origin.contents };
+        }
+    };
+    var user: User = .{ .origin = origin };
+    const replacement: plugin_mod.Plugin = .{ .name = "equal generator source", .context = &user, .load = User.load };
+    const replaced = (try (plugin_mod.PluginRunner{ .plugins = &.{ replacement, builtin } }).runLoadWithOrigin(ID_PREFIX ++ "generator", a, &context)).?;
+    try std.testing.expectEqualStrings(loaded.result.contents, replaced.result.contents);
+    try std.testing.expect(acceptWinningLoad(replaced, &options) == null);
 }
