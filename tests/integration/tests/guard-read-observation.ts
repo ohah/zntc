@@ -17,6 +17,89 @@ function walk(node: any, visit: (node: Node) => void): void {
   for (const [key, value] of Object.entries(node)) if (key !== 'span') walk(value, visit);
 }
 
+// CommonJS forwarders require a free host `require`. Collect only bindings
+// owned by the Program execution frame; never inspect nested function/class
+// execution frames. Hoisted var/function declarations under control flow count.
+function rootBindingNames(program: Node): Set<string> {
+  const names = new Set<string>();
+  const pattern = (node: Node | null | undefined): void => {
+    if (!node) return;
+    switch (node.type) {
+      case 'Identifier':
+        names.add(node.value);
+        break;
+      case 'ArrayPattern':
+        for (const item of node.elements) pattern(item);
+        break;
+      case 'ObjectPattern':
+        for (const property of node.properties) {
+          if (property.type === 'KeyValuePatternProperty') pattern(property.value);
+          else if (property.type === 'AssignmentPatternProperty') pattern(property.key);
+          else if (property.type === 'RestElement') pattern(property.argument);
+        }
+        break;
+      case 'RestElement':
+        pattern(node.argument);
+        break;
+      case 'AssignmentPattern':
+        pattern(node.left);
+        break;
+    }
+  };
+  const scan = (node: any, direct: boolean): void => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const child of node) scan(child, direct);
+      return;
+    }
+    if (node.type === 'FunctionDeclaration') {
+      pattern(node.identifier);
+      return;
+    }
+    if (node.type === 'ClassDeclaration') {
+      if (direct) pattern(node.identifier);
+      return;
+    }
+    if (
+      node.type === 'FunctionExpression' ||
+      node.type === 'ArrowFunctionExpression' ||
+      node.type === 'ClassExpression'
+    )
+      return;
+    if (node.type === 'ImportDeclaration') {
+      for (const specifier of node.specifiers) pattern(specifier.local);
+      return;
+    }
+    if (node.type === 'ExportDeclaration') {
+      scan(node.declaration, direct);
+      return;
+    }
+    if (node.type === 'ExportDefaultDeclaration') {
+      pattern(node.decl.identifier);
+      return;
+    }
+    if (node.type === 'VariableDeclaration') {
+      for (const declaration of node.declarations) {
+        if (direct || node.kind === 'var') pattern(declaration.id);
+        // Initializers and pattern defaults execute in this Root frame too.
+        scan(declaration.id, false);
+        scan(declaration.init, false);
+      }
+      return;
+    }
+    if (node.type === 'AssignmentExpression') pattern(node.left);
+    if (node.type === 'UpdateExpression') pattern(node.argument);
+    if (
+      (node.type === 'ForOfStatement' || node.type === 'ForInStatement') &&
+      node.left.type !== 'VariableDeclaration'
+    )
+      pattern(node.left);
+    for (const [key, value] of Object.entries(node)) if (key !== 'span') scan(value, false);
+  };
+  for (const statement of program.body) scan(statement, true);
+  return names;
+}
+
 // Resolve the compiler provider by output provenance, not a generated filename
 // or local spelling. Parse actual import/forwarder bindings before observing it.
 export function helperGuardSites(outputs: readonly Output[], outputDirectory: string): string[][] {
@@ -33,6 +116,7 @@ export function helperGuardSites(outputs: readonly Output[], outputDirectory: st
   });
   const initializerLocals = new Set<string>();
   const initializerExports = new Set<string>();
+  const providerExports = new Set(provider.exports);
   walk(providerAst, (node) => {
     if (
       node.type === 'VariableDeclarator' &&
@@ -47,6 +131,25 @@ export function helperGuardSites(outputs: readonly Output[], outputDirectory: st
       initializerLocals.add(node.id.value);
   });
   walk(providerAst, (node) => {
+    if (node.type === 'ExportNamedDeclaration')
+      for (const specifier of node.specifiers)
+        if (specifier.type === 'ExportSpecifier')
+          providerExports.add(specifier.exported?.value ?? specifier.orig.value);
+    if (
+      node.type === 'AssignmentExpression' &&
+      node.left.type === 'MemberExpression' &&
+      node.left.object.type === 'Identifier' &&
+      node.left.object.value === 'exports' &&
+      node.left.property.type === 'Identifier'
+    )
+      providerExports.add(node.left.property.value);
+    if (
+      node.type === 'CallExpression' &&
+      node.arguments[0]?.expression.type === 'Identifier' &&
+      node.arguments[0].expression.value === 'exports' &&
+      node.arguments[1]?.expression.type === 'StringLiteral'
+    )
+      providerExports.add(node.arguments[1].expression.value);
     if (node.type === 'ExportNamedDeclaration')
       for (const specifier of node.specifiers) {
         if (specifier.type === 'ExportSpecifier' && initializerLocals.has(specifier.orig.value))
@@ -78,6 +181,17 @@ export function helperGuardSites(outputs: readonly Output[], outputDirectory: st
     const source = Buffer.from(output.contents).toString('utf8');
     const ast = parseSync(source, { syntax: 'ecmascript', target: 'esnext' });
     const bindings = new Set<string>();
+    const rootNames = rootBindingNames(ast);
+    const declarations = new Map<string, Node>();
+    const directForwarders = new Set<Node>();
+    for (const statement of ast.body)
+      if (statement.type === 'VariableDeclaration')
+        for (const declaration of statement.declarations) {
+          if (declaration.id.type === 'Identifier')
+            declarations.set(bindingKey(declaration.id), declaration);
+          if (declaration.init?.type === 'FunctionExpression') directForwarders.add(declaration);
+        }
+
     const resolvesProvider = (text: string) => resolve(dirname(outputPath), text) === providerPath;
     walk(ast, (node) => {
       if (node.type === 'ImportDeclaration' && resolvesProvider(node.source.value)) {
@@ -120,77 +234,104 @@ export function helperGuardSites(outputs: readonly Output[], outputDirectory: st
         )
           mentionsInitializer = true;
       });
-      if (!mentionsRequire || !mentionsInitializer) return;
-      // Authenticate the generated forwarder's actual dataflow, not two
-      // unrelated descendants. Its first local owns require(provider), its
-      // exported initializer is called through that exact binding, and the
-      // call's result is what the forwarder returns.
-      const first = fn.body?.stmts[0];
-      const required =
-        first?.type === 'VariableDeclaration' && first.declarations.length === 1
-          ? first.declarations[0]
+      if (!mentionsRequire) return;
+      if (!mentionsInitializer) throw new Error('unverified helper initializer forwarder');
+      // This is a closed grammar for the actual chunk writer, not a general
+      // dataflow analysis: require; [namespace refresh]; init; [value refresh];
+      // terminal return. Every statement must be consumed in that order.
+      const reject = () => {
+        throw new Error('unverified helper initializer forwarder');
+      };
+      if (
+        !directForwarders.has(node) ||
+        fn.identifier ||
+        fn.async ||
+        fn.generator ||
+        fn.params.length !== 0
+      )
+        reject();
+      const statements: Node[] = fn.body?.stmts ?? [];
+      const singleDeclaration = (statement: Node) =>
+        statement?.type === 'VariableDeclaration' &&
+        statement.declarations.length === 1 &&
+        statement.declarations[0].id.type === 'Identifier'
+          ? statement.declarations[0]
           : undefined;
+      const required = singleDeclaration(statements[0]);
       const owner = required?.id;
-      let valid =
-        fn.params.length === 0 && owner?.type === 'Identifier' && actualRequire(required.init);
-      let ownerDeclarations = 0;
-      let ownerWritten = false;
-      walk(fn, (child) => {
-        if (child.type === 'VariableDeclarator' && sameIdentifier(child.id, owner))
-          ownerDeclarations++;
-        if (
-          (child.type === 'AssignmentExpression' && sameIdentifier(child.left, owner)) ||
-          (child.type === 'UpdateExpression' && sameIdentifier(child.argument, owner))
-        )
-          ownerWritten = true;
-        if (
-          child.type === 'VariableDeclarator' &&
-          child.id.type === 'Identifier' &&
-          (child.id.value === 'arguments' || child.id.value === 'require')
-        )
-          valid = false;
-      });
+      if (
+        !owner ||
+        owner.value === 'require' ||
+        owner.value === 'arguments' ||
+        !actualRequire(required.init) ||
+        rootNames.has('require')
+      )
+        reject();
+      const propertyName = (property: Node) =>
+        property.type === 'Identifier'
+          ? property.value
+          : property.type === 'Computed' && property.expression.type === 'StringLiteral'
+            ? property.expression.value
+            : undefined;
+      const providerMember = (value: Node) =>
+        value?.type === 'MemberExpression' &&
+        sameIdentifier(value.object, owner) &&
+        providerExports.has(propertyName(value.property));
       const initializerCall = (call: Node) =>
         call?.type === 'CallExpression' &&
         call.callee.type === 'MemberExpression' &&
-        call.callee.property.type === 'Identifier' &&
-        call.callee.property.value === 'apply' &&
-        call.callee.object.type === 'MemberExpression' &&
-        sameIdentifier(call.callee.object.object, owner) &&
-        call.callee.object.property.type === 'Identifier' &&
-        initializerExports.has(call.callee.object.property.value) &&
+        propertyName(call.callee.property) === 'apply' &&
+        providerMember(call.callee.object) &&
+        initializerExports.has(propertyName(call.callee.object.property)) &&
         call.arguments.length === 2 &&
         call.arguments[0].expression.type === 'ThisExpression' &&
         call.arguments[1].expression.type === 'Identifier' &&
         call.arguments[1].expression.value === 'arguments';
-      let returnedCall = false;
-      const results: Node[] = [];
-      for (const statement of fn.body?.stmts ?? []) {
-        if (statement.type === 'VariableDeclaration')
-          for (const declaration of statement.declarations) {
-            if (initializerCall(declaration.init)) results.push(declaration.id);
-          }
+      const refreshed = new Set<string>();
+      const refresh = (statement: Node, beforeInitialization: boolean) => {
         if (
-          statement.type === 'ReturnStatement' &&
-          (initializerCall(statement.argument) ||
-            results.some((result) => sameIdentifier(result, statement.argument)))
+          statement?.type !== 'ExpressionStatement' ||
+          statement.expression.type !== 'AssignmentExpression'
         )
-          returnedCall = true;
+          return false;
+        const assignment = statement.expression;
+        if (
+          assignment.operator !== '=' ||
+          assignment.left.type !== 'Identifier' ||
+          !providerMember(assignment.right)
+        )
+          return false;
+        const key = bindingKey(assignment.left);
+        const alias = declarations.get(key);
+        if (!alias || refreshed.has(key)) return false;
+        if (beforeInitialization) {
+          // The namespace refresh updates the exact Program binding which was
+          // initialized from this physical provider's same exported property.
+          if (
+            alias.init?.type !== 'MemberExpression' ||
+            !actualRequire(alias.init.object) ||
+            propertyName(alias.init.property) !== propertyName(assignment.right.property)
+          )
+            return false;
+        } else if (alias.init != null) return false;
+        refreshed.add(key);
+        return true;
+      };
+      let cursor = 1;
+      if (refresh(statements[cursor], true)) cursor++;
+      const terminal = statements.at(-1);
+      if (terminal?.type !== 'ReturnStatement') reject();
+      if (statements[cursor] === terminal && initializerCall(terminal.argument)) cursor++;
+      else {
+        const result = singleDeclaration(statements[cursor]);
+        if (!result || !initializerCall(result.init) || sameIdentifier(result.id, owner)) reject();
+        cursor++;
+        while (cursor < statements.length - 1 && refresh(statements[cursor], false)) cursor++;
+        if (statements[cursor] !== terminal || !sameIdentifier(terminal.argument, result.id))
+          reject();
+        cursor++;
       }
-      walk(fn, (child) => {
-        if (
-          child.type === 'AssignmentExpression' &&
-          results.some((result) => sameIdentifier(result, child.left))
-        )
-          returnedCall = false;
-        if (
-          child.type === 'UpdateExpression' &&
-          results.some((result) => sameIdentifier(result, child.argument))
-        )
-          returnedCall = false;
-      });
-      if (!valid || ownerDeclarations !== 1 || ownerWritten || !returnedCall)
-        throw new Error('unverified helper initializer forwarder');
+      if (cursor !== statements.length) reject();
       bindings.add(bindingKey(node.id));
     });
     const guards = new Set<string>();
@@ -356,7 +497,35 @@ test('eager imports use actual source Scope0 callers oracle authenticates CJS in
   const valid =
     'var init=function(){var m=require("./helper.js");var r=m.init.apply(this,arguments);return r}';
   expect(helperGuardSites(fixture(valid), '/output')).toHaveLength(1);
+  expect(
+    helperGuardSites(
+      fixture(
+        'var init=function(){var m=require("./helper.js");return m.init.apply(this,arguments)}',
+      ),
+      '/output',
+    ),
+  ).toHaveLength(1);
+  const refreshFixture = fixture(
+    'var ns=require("./helper.js").ns;var value;var init=function(){var m=require("./helper.js");ns=m.ns;var r=m.init.apply(this,arguments);value=m.value;return r}',
+  );
+  refreshFixture[0].contents = Buffer.from(
+    'var init=wrap({body(){}}),ns={},value;export{init,ns,value};',
+  );
+  expect(helperGuardSites(refreshFixture, '/output')).toHaveLength(1);
   for (const decoy of [
+    'var init=function(){var m=require("./helper.js");if(skip)return other.init.apply(this,arguments);return m.init.apply(this,arguments)}',
+    'var init=function(){var m=require("./helper.js");if(skip)return m.init.apply(this,arguments);else return m.init.apply(this,arguments)}',
+    'var init=function(){var m=require("./helper.js");while(skip){}return m.init.apply(this,arguments)}',
+    'var init=function(){var m=require("./helper.js");try{return m.init.apply(this,arguments)}catch(e){throw e}}',
+    'var init=function(){var m=require("./helper.js");{return m.init.apply(this,arguments)}}',
+    'var init=function(){var m=require("./helper.js");return m.init.apply(this,arguments);other()}',
+    'var init=function(){var m=require("./helper.js");other();return m.init.apply(this,arguments)}',
+    'var init=function(){var m=require("./helper.js");var unused=1;return m.init.apply(this,arguments)}',
+    'var init=function(){var unused=require("./helper.js");return other()}',
+    'var init=function named(){var m=require("./helper.js");return m.init.apply(this,arguments)}',
+    'var init=async function(){var m=require("./helper.js");return m.init.apply(this,arguments)}',
+    'var init=function*(){var m=require("./helper.js");return m.init.apply(this,arguments)}',
+    'var outer=function(){var init=function(){var m=require("./helper.js");return m.init.apply(this,arguments)};guard(init)}',
     'var init=function(){var unused=require("./helper.js");return other.init.apply(this,arguments)}',
     'var init=function(){var m=require("./helper.js");var other={init(){}};return other.init.apply(this,arguments)}',
     'var init=function(){var m=require("./helper.js");{let m=other;return m.init.apply(this,arguments)}}',
@@ -367,4 +536,50 @@ test('eager imports use actual source Scope0 callers oracle authenticates CJS in
     expect(() => helperGuardSites(fixture(decoy), '/output')).toThrow(
       'unverified helper initializer forwarder',
     );
+  for (const shadow of [
+    'function require(path){return{init(){}}}',
+    'class require{}',
+    'import require from "foreign";',
+    'import * as require from "foreign";',
+    'import {x as require} from "foreign";',
+    'export function require(){}',
+    'export class require{}',
+    'export default function require(){}',
+    'export default class require{}',
+    'export const require=foreign;',
+    'const [require]=foreign;',
+    'const [,require=foreign]=foreign;',
+    'const {x:require}=foreign;',
+    'const {require=foreign}=foreign;',
+    'const {...require}=foreign;',
+    'const {x:[...require]}=foreign;',
+    'if(false){var require=foreign}',
+    'if(false){function require(){}}',
+    'for(var require of foreign){}',
+    'try{}finally{var require}',
+    'require=foreign;',
+    'require++;',
+    'for(require of foreign){}',
+    'for(require in foreign){}',
+    'var x=(require=foreign);',
+    'var x=(require++);',
+    'var [x=(require=foreign)]=foreign;',
+    '({x:require}=foreign);',
+    '[require]=foreign;',
+    '({x:[...require]}=foreign);',
+  ])
+    expect(() => helperGuardSites(fixture(`${shadow};${valid}`), '/output')).toThrow(
+      'unverified helper initializer forwarder',
+    );
+  // A different execution frame's bindings do not shadow CommonJS require.
+  for (const nested of [
+    'function other(){function require(){}}',
+    'var other=function(require){}',
+    'class Other{method(require){}}',
+    'if(false){class require{}}',
+    'function other(){require=foreign}',
+    'var other=function(){require++}',
+    'class Other{method(){require=foreign}}',
+  ])
+    expect(helperGuardSites(fixture(`${nested};${valid}`), '/output')).toHaveLength(1);
 });
