@@ -7090,10 +7090,18 @@ pub const Linker = struct {
         const provider = self.graph.getModule(canonical.module_index) orelse return null;
         if (provider.wrap_kind == .cjs) return null;
         const binding = provider.findExportBinding(canonical.export_name) orelse return null;
-        if (binding.kind != .local or provider.exportBindingSemanticIndex(binding.*) == null or binding.hasSyntheticDefault(provider.semanticSymbols())) return null;
+        if (binding.kind != .local or provider.exportBindingSemanticIndex(binding.*) == null) return null;
         const sid = provider.exportBindingSemanticIndex(binding.*) orelse return null;
         if (provider.semantic.?.symbols.items[sid].decl_flags.is_namespace_import) return null;
-        const witness = @import("cross_chunk_export.zig").Provider.capture(self, provider.index.toU32(), binding.exported_name, .ordinary_export) catch return null;
+        const synthetic_default = binding.hasSyntheticDefault(provider.semanticSymbols());
+        const witness = if (synthetic_default) facade: {
+            if (!self.graph.preserve_modules or !binding.has_default_export_facade or binding.default_export_node == null) return null;
+            // Local output publication accepts the actual Source facade, not
+            // the namespace-storage admission of an ordinary export.
+            const actual = @import("cross_chunk_export.zig").Provider.captureLocal(self, provider, binding) catch return null;
+            actual.validate(self) catch return null;
+            break :facade actual;
+        } else @import("cross_chunk_export.zig").Provider.capture(self, provider.index.toU32(), binding.exported_name, .ordinary_export) catch return null;
         if (witness.role != .semantic and witness.role != .entry_guard) return null;
         return .{ .canonical = canonical, .provider_symbol = binding.symbol, .provider = witness };
     }
@@ -7204,6 +7212,26 @@ pub const Linker = struct {
                 }
                 break :blk eb_local;
             } else blk: {
+                // `import local; export {local}` owns an import SymbolId, not
+                // the provider's output spelling. Carry its exact direct edge.
+                if (self.graph.preserve_modules and eb.kind == .local) {
+                    if (m.exportBindingSemanticIndex(eb)) |local_sid| {
+                        const sem = m.semantic orelse return error.MissingWrapperSymbol;
+                        if (sem.symbols.items[local_sid].kind == .import_binding) {
+                            for (m.import_bindings) |imported| {
+                                if (!imported.local_symbol.eql(eb.symbol) or imported.kind == .namespace) continue;
+                                const tree = if (m.ast) |*value| value else return error.MissingWrapperSymbol;
+                                if (!m.importBindingOwnsSource(imported, tree) or imported.import_record_index >= m.import_records.len)
+                                    return error.MissingWrapperSymbol;
+                                const record = m.import_records[imported.import_record_index];
+                                if (record.is_external or record.resolved.isNone()) continue;
+                                const canonical = self.resolveExportChain(record.resolved, imported.imported_name, 0) orelse continue;
+                                canonical_import = self.ordinaryCanonicalImportTarget(canonical);
+                                break;
+                            }
+                        }
+                    }
+                }
                 ns_target_mod = resolvedRecordModule(m.import_records, ns_imports.get(eb_local));
                 if (ns_target_mod == null) break :blk self.getCanonicalByRef(eb.symbol) orelse eb_local;
                 break :blk eb_local;

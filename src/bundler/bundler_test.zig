@@ -69,3 +69,7 @@ test {
 test {
     _ = @import("bundler_test/preserved_cycle_cache.zig");
 }
+
+test {
+    _ = @import("bundler_test/preserved_native_default.zig");
+}

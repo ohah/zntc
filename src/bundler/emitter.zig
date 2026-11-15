@@ -2527,10 +2527,12 @@ pub fn emitModuleWithHolderReservations(
                 !(options.preserve_modules and options.format == .cjs),
             holder_reservations,
         );
+        errdefer md.deinit();
         // transformer가 전파한 symbol_ids를 메타데이터에 설정
         if (override_syms) |syms| {
             md.symbol_ids = syms;
         }
+        try @import("../transformer/module_lexical_initialization.zig").projectNativeDefaultFunction(&transformer, &md);
         // #1791 IIFE unresolved build-time diag 를 linker 의 공용 `fatal_diagnostics`
         // 로 소유권 이전. mutex 는 공용 리스트의 append 만 보호 — `md.pending_diagnostics`
         // 자체는 per-module 이라 경쟁 없음. `@constCast` 는 `ns_cache_mutex` (linker.zig:1877)
