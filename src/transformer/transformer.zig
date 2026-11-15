@@ -656,6 +656,8 @@ pub const Transformer = struct {
     /// The operand of the `export default` being visited: an anonymous class
     /// there is named "default" (#5669).
     default_export_operand: NodeIndex = .none,
+    /// Ephemeral producer edges for emit-local native default declarations.
+    default_export_copies: std.ArrayListUnmanaged(@import("module_lexical_initialization.zig").DefaultExportCopy) = .empty,
     /// Source initializer NodeIndex -> original inferred function/class name.
     parameter_inferred_names: std.AutoHashMapUnmanaged(u32, Span) = .empty,
     /// Anonymous source class NodeIndex -> the name its NamedEvaluation would

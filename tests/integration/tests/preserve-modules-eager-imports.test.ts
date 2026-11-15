@@ -4,6 +4,11 @@ import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { build, close, init } from '../../../packages/core/index';
 import { createFixture } from './helpers';
+import {
+  helperGuardSites,
+  observeGuardReads,
+  printSourceGuardReads,
+} from './guard-read-observation';
 
 // Original ten-source corpus: SHA-256 0cd1b1bc1020ba3f05e97c6fb9bd39c7dc1ae655daa8161e69f1c5b9e4e3c5ef.
 const cases = [
@@ -134,13 +139,14 @@ describe('preserved eager imports use actual source Scope0 callers', () => {
           ...entry.files,
         });
         try {
+          let helperSites: string[][] = [];
           const execute = (file: string, guarded: boolean) =>
             spawnSync(
               'node',
               [
                 '--input-type=module',
                 '-e',
-                `${guarded ? "let reads=0;Object.defineProperty(globalThis,'ErrorUtils',{configurable:true,get(){reads++;return undefined}});" : ''}const ns=await import(${JSON.stringify(pathToFileURL(file).href)});console.log(JSON.stringify(${entry.read}));${guarded ? 'console.log(reads);' : ''}`,
+                `${guarded ? observeGuardReads : ''}const ns=await import(${JSON.stringify(pathToFileURL(file).href)});console.log(JSON.stringify(${entry.read}));${guarded ? printSourceGuardReads(helperSites) : ''}`,
               ],
               { encoding: 'utf8' },
             );
@@ -162,6 +168,7 @@ describe('preserved eager imports use actual source Scope0 callers', () => {
               minify,
             });
             expect(result.errors).toEqual([]);
+            helperSites = helperGuardSites(result.outputFiles ?? [], join(dir, 'out'));
           } finally {
             close();
           }

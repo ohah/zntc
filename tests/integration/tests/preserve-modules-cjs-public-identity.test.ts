@@ -4,6 +4,11 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build, close, init } from '../../../packages/core/index';
 import { createFixture } from './helpers';
+import {
+  helperGuardSites,
+  observeGuardReads,
+  printSourceGuardReads,
+} from './guard-read-observation';
 
 async function spawnCaptured(command: string, args: string[]) {
   const proc = spawn({ cmd: [command, ...args], stdout: 'pipe', stderr: 'pipe' });
@@ -197,11 +202,12 @@ describe('preserved CJS eager imports use actual source Scope0 callers', () => {
           ...entry.files,
         });
         try {
+          let helperSites: string[][] = [];
           const execute = (file: string, guarded: boolean) =>
             spawnCaptured('node', [
               '--input-type=module',
               '-e',
-              `${guarded ? "let reads=0;Object.defineProperty(globalThis,'ErrorUtils',{configurable:true,get(){reads++;return undefined}});" : ''}const ns=${JSON.stringify(file)}.endsWith('.mjs')?await import(${JSON.stringify(pathToFileURL(file).href)}):(await import('node:module')).createRequire(import.meta.url)(${JSON.stringify(file)});${guarded ? "const descriptor=Object.getOwnPropertyDescriptor(ns,'default');if(!descriptor||!descriptor.enumerable||typeof descriptor.get!=='function')throw new Error('missing public getter');const marker=Object.getOwnPropertyDescriptor(ns,'__esModule');if(!marker||marker.value!==true||marker.enumerable)throw new Error('missing interop marker');const babel=ns&&ns.__esModule?ns:{default:ns};if(babel.default!==ns.default)throw new Error('wrong interop default');" : ''}console.log(JSON.stringify(${entry.read}));${guarded ? 'console.log(reads);' : ''}`,
+              `${guarded ? observeGuardReads : ''}const ns=${JSON.stringify(file)}.endsWith('.mjs')?await import(${JSON.stringify(pathToFileURL(file).href)}):(await import('node:module')).createRequire(import.meta.url)(${JSON.stringify(file)});${guarded ? "const descriptor=Object.getOwnPropertyDescriptor(ns,'default');if(!descriptor||!descriptor.enumerable||typeof descriptor.get!=='function')throw new Error('missing public getter');const marker=Object.getOwnPropertyDescriptor(ns,'__esModule');if(!marker||marker.value!==true||marker.enumerable)throw new Error('missing interop marker');const babel=ns&&ns.__esModule?ns:{default:ns};if(babel.default!==ns.default)throw new Error('wrong interop default');" : ''}console.log(JSON.stringify(${entry.read}));${guarded ? printSourceGuardReads(helperSites) : ''}`,
             ]);
           const native = await execute(join(dir, 'entry.mjs'), false);
           expect(native.status).toBe(0);
@@ -222,6 +228,7 @@ describe('preserved CJS eager imports use actual source Scope0 callers', () => {
               minify,
             });
             expect(result.errors).toEqual([]);
+            helperSites = helperGuardSites(result.outputFiles ?? [], join(dir, 'out'));
           } finally {
             close();
           }

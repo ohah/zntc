@@ -218,6 +218,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.entry_graph_imports.deinit(self.allocator);
     self.native_noop_copy_index.deinit(self.allocator);
     self.native_noop_copies.deinit(self.allocator);
+    self.default_export_copies.deinit(self.allocator);
     self.optional_nullish_applications.deinit(self.allocator);
     self.class_initializer_frames.deinit(self.allocator);
     self.legacy_assignment_field_applications.deinit(self.allocator);

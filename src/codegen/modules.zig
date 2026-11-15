@@ -527,6 +527,9 @@ pub fn emitCJSExportBinding(self: anytype, decl_idx: NodeIndex) !void {
 pub fn emitExportDefault(self: anytype, node_index: NodeIndex, node: Node) !void {
     try self.addSourceMapping(node.span);
     if (self.options.linking_metadata) |metadata| if (metadata.native_default_function) |native| {
+        // The final default alias was removed for this exact declaration.
+        // A stale projection must fail rather than silently lose the export.
+        if (native.source != node_index) return error.InvalidDefaultNameProducer;
         if (native.source == node_index) {
             if (self.options.module_format != .esm or node.data.unary.operand != native.function or
                 @backingInt(node_index) >= metadata.symbol_ids.len or metadata.symbol_ids[@backingInt(node_index)] != native.symbol or

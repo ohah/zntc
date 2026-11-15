@@ -5,6 +5,49 @@ const helpers = @import("es_helpers.zig");
 const NodeIndex = ast.NodeIndex;
 const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 
+pub const DefaultExportCopy = struct {
+    domain: *const ast.Ast,
+    source: NodeIndex,
+    source_value: NodeIndex,
+    output: NodeIndex,
+    output_value: NodeIndex,
+};
+
+/// Native-export metadata starts with the Source facade. An uncached emit
+/// visits a private AST and copies its containers; only that exact producer
+/// edge may project the metadata onto the emitted wrapper/function pair.
+pub fn projectNativeDefaultFunction(self: anytype, metadata: anytype) !void {
+    const native = if (metadata.native_default_function) |*value| value else return;
+    var selected: ?DefaultExportCopy = null;
+    for (self.default_export_copies.items) |copy| {
+        if (copy.source != native.source) continue;
+        if (selected != null) return error.InvalidDefaultNameProducer;
+        selected = copy;
+    }
+    const copy = selected orelse return; // Cached/native identity path.
+    if (copy.domain != self.ast or copy.source_value != native.function or
+        copy.source.isNone() or copy.output.isNone() or copy.output_value.isNone() or
+        @backingInt(copy.source) >= self.ast.nodes.items.len or
+        @backingInt(copy.output) >= self.ast.nodes.items.len or
+        @backingInt(copy.output_value) >= self.ast.nodes.items.len or
+        @backingInt(copy.source) >= metadata.symbol_ids.len or
+        @backingInt(copy.output) >= metadata.symbol_ids.len or
+        metadata.symbol_ids[@backingInt(copy.source)] != native.symbol or
+        metadata.symbol_ids[@backingInt(copy.output)] != native.symbol)
+        return error.InvalidDefaultNameProducer;
+    const source = self.ast.getNode(copy.source);
+    const output = self.ast.getNode(copy.output);
+    const function = self.ast.getNode(copy.output_value);
+    if (source.tag != .export_default_declaration or source.data.unary.operand != copy.source_value or
+        output.tag != .export_default_declaration or output.data.unary.operand != copy.output_value or
+        source.data.unary.flags != output.data.unary.flags or
+        function.tag != .function_declaration or !self.ast.hasExtra(function.data.extra, ast.FunctionExtra.flags) or
+        !self.ast.readExtraNode(function.data.extra, ast.FunctionExtra.name).isNone())
+        return error.InvalidDefaultNameProducer;
+    native.source = copy.output;
+    native.function = copy.output_value;
+}
+
 // TS `export = Foo` publishes a CommonJS value snapshot. Its analyzer export
 // bit does not create a live ESM binding. On that source-only path inspect the
 // actual ESM declarations/specifiers, preserving any genuinely mixed live edge.
@@ -162,11 +205,24 @@ pub fn facadeValue(self: anytype, source: NodeIndex, value: NodeIndex) !NodeInde
 pub fn exportDefault(self: anytype, source: NodeIndex, original: ast.Node, value: NodeIndex) !NodeIndex {
     const sid = self.getSymbolIdAt(source);
     const materialized = if (self.lexical_tdz_plan) |plan| if (sid) |id| plan.module_flags.contains(id) else false else false;
-    if (!materialized) return self.ast.addNode(.{
-        .tag = original.tag,
-        .span = original.span,
-        .data = .{ .unary = .{ .operand = value, .flags = original.data.unary.flags } },
-    });
+    if (!materialized) {
+        const output = try self.ast.addNode(.{
+            .tag = original.tag,
+            .span = original.span,
+            .data = .{ .unary = .{ .operand = value, .flags = original.data.unary.flags } },
+        });
+        const source_value = self.ast.getNode(original.data.unary.operand);
+        if (source_value.tag == .function_declaration and
+            self.ast.readExtraNode(source_value.data.extra, ast.FunctionExtra.name).isNone())
+            try self.default_export_copies.append(self.allocator, .{
+                .domain = self.ast,
+                .source = source,
+                .source_value = original.data.unary.operand,
+                .output = output,
+                .output_value = value,
+            });
+        return output;
+    }
     const read = try facadeValue(self, source, value);
     // Materialized facades are physical locals. Publish an exact alias instead
     // of asking the scanner to invent a second anonymous default facade.
@@ -532,5 +588,71 @@ test "legacy lexical TDZ TS export equals class snapshot keeps its actual Common
         defer std.testing.allocator.free(observed.stderr);
         try std.testing.expect(observed.term == .exited and observed.term.exited == 0);
         try std.testing.expectEqualStrings("hi\n", observed.stdout);
+    }
+}
+
+test "native default function projection consumes only its exact producer copy" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, "export default function(){return 42}");
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".mjs");
+    const source_root = try parser.parse();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const source = parser.ast.readExtraNode(parser.ast.getNode(source_root).data.list.start, 0);
+    const source_value = parser.ast.getNode(source).data.unary.operand;
+    const sid = analyzer.symbol_ids.items[@backingInt(source)].?;
+    const Transformer = @import("transformer.zig").Transformer;
+    var transformer = try Transformer.init(a, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    const output_root = try transformer.transform();
+    try std.testing.expectEqual(@as(usize, 1), transformer.default_export_copies.items.len);
+    const copy = transformer.default_export_copies.items[0];
+    try std.testing.expect(copy.source == source and copy.source_value == source_value);
+    try std.testing.expect(copy.output != source and copy.output_value != source_value);
+    try std.testing.expectEqual(source_value, parser.ast.getNode(source).data.unary.operand);
+    const Metadata = @import("../bundler/linker/metadata_types.zig").LinkingMetadata;
+    var metadata: Metadata = .{
+        .skip_nodes = try std.DynamicBitSet.initEmpty(a, transformer.ast.nodes.items.len),
+        .final_exports = null,
+        .symbol_ids = transformer.symbol_ids.items,
+        .native_default_function = .{ .source = source, .function = source_value, .symbol = sid },
+        .allocator = a,
+    };
+    const original = metadata.native_default_function;
+    const Codegen = @import("../codegen/codegen.zig").Codegen;
+    var rejected = Codegen.initWithOptions(a, transformer.ast, .{ .module_format = .esm, .linking_metadata = &metadata });
+    try std.testing.expectError(error.InvalidDefaultNameProducer, rejected.generate(output_root));
+    try projectNativeDefaultFunction(&transformer, &metadata);
+    try std.testing.expectEqual(copy.output, metadata.native_default_function.?.source);
+    try std.testing.expectEqual(copy.output_value, metadata.native_default_function.?.function);
+    var accepted = Codegen.initWithOptions(a, transformer.ast, .{ .module_format = .esm, .linking_metadata = &metadata });
+    try std.testing.expect(std.mem.indexOf(u8, try accepted.generate(output_root), "export default function") != null);
+    for (0..5) |poison| {
+        metadata.native_default_function = original;
+        transformer.default_export_copies.items[0] = copy;
+        const saved_sid = transformer.symbol_ids.items[@backingInt(copy.output)];
+        switch (poison) {
+            0 => transformer.default_export_copies.items[0].domain = &parser.ast,
+            1 => transformer.default_export_copies.items[0].source_value = copy.output_value,
+            2 => transformer.default_export_copies.items[0].output_value = copy.source,
+            3 => transformer.symbol_ids.items[@backingInt(copy.output)] = null,
+            4 => try transformer.default_export_copies.append(a, copy),
+            else => unreachable,
+        }
+        try std.testing.expectError(error.InvalidDefaultNameProducer, projectNativeDefaultFunction(&transformer, &metadata));
+        try std.testing.expectEqualDeep(original, metadata.native_default_function);
+        transformer.symbol_ids.items[@backingInt(copy.output)] = saved_sid;
+        transformer.default_export_copies.items.len = 1;
     }
 }
