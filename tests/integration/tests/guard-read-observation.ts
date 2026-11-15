@@ -4,6 +4,9 @@ import { pathToFileURL } from 'node:url';
 
 type Output = { path: string; contents: Uint8Array; moduleIds?: string[]; exports?: string[] };
 type Node = Record<string, any>;
+function bindingKey(node: Node): string {
+  return `${node.ctxt}:${node.value}`;
+}
 function walk(node: any, visit: (node: Node) => void): void {
   if (!node || typeof node !== 'object') return;
   if (Array.isArray(node)) {
@@ -83,7 +86,7 @@ export function helperGuardSites(outputs: readonly Output[], outputDirectory: st
             specifier.type === 'ImportSpecifier' &&
             initializerExports.has(specifier.imported?.value ?? specifier.local.value)
           )
-            bindings.add(specifier.local.value);
+            bindings.add(bindingKey(specifier.local));
         }
       }
       // CJS forwarding functions preserve the provider's exported initializer.
@@ -93,25 +96,102 @@ export function helperGuardSites(outputs: readonly Output[], outputDirectory: st
         node.init?.type !== 'FunctionExpression'
       )
         return;
-      let actualRequire = false;
-      let exportedCall = false;
-      walk(node.init, (child) => {
-        if (
-          child.type === 'CallExpression' &&
-          child.callee.type === 'Identifier' &&
-          child.callee.value === 'require' &&
-          child.arguments[0]?.expression.type === 'StringLiteral' &&
-          resolvesProvider(child.arguments[0].expression.value)
-        )
-          actualRequire = true;
+      const fn = node.init;
+      const actualRequire = (value: Node) =>
+        value?.type === 'CallExpression' &&
+        value.callee.type === 'Identifier' &&
+        value.callee.value === 'require' &&
+        value.arguments.length === 1 &&
+        value.arguments[0].expression.type === 'StringLiteral' &&
+        resolvesProvider(value.arguments[0].expression.value);
+      const sameIdentifier = (left: Node, right: Node) =>
+        left?.type === 'Identifier' &&
+        right?.type === 'Identifier' &&
+        left.value === right.value &&
+        left.ctxt === right.ctxt;
+      let mentionsRequire = false;
+      let mentionsInitializer = false;
+      walk(fn, (child) => {
+        if (actualRequire(child)) mentionsRequire = true;
         if (
           child.type === 'MemberExpression' &&
           child.property.type === 'Identifier' &&
           initializerExports.has(child.property.value)
         )
-          exportedCall = true;
+          mentionsInitializer = true;
       });
-      if (actualRequire && exportedCall) bindings.add(node.id.value);
+      if (!mentionsRequire || !mentionsInitializer) return;
+      // Authenticate the generated forwarder's actual dataflow, not two
+      // unrelated descendants. Its first local owns require(provider), its
+      // exported initializer is called through that exact binding, and the
+      // call's result is what the forwarder returns.
+      const first = fn.body?.stmts[0];
+      const required =
+        first?.type === 'VariableDeclaration' && first.declarations.length === 1
+          ? first.declarations[0]
+          : undefined;
+      const owner = required?.id;
+      let valid =
+        fn.params.length === 0 && owner?.type === 'Identifier' && actualRequire(required.init);
+      let ownerDeclarations = 0;
+      let ownerWritten = false;
+      walk(fn, (child) => {
+        if (child.type === 'VariableDeclarator' && sameIdentifier(child.id, owner))
+          ownerDeclarations++;
+        if (
+          (child.type === 'AssignmentExpression' && sameIdentifier(child.left, owner)) ||
+          (child.type === 'UpdateExpression' && sameIdentifier(child.argument, owner))
+        )
+          ownerWritten = true;
+        if (
+          child.type === 'VariableDeclarator' &&
+          child.id.type === 'Identifier' &&
+          (child.id.value === 'arguments' || child.id.value === 'require')
+        )
+          valid = false;
+      });
+      const initializerCall = (call: Node) =>
+        call?.type === 'CallExpression' &&
+        call.callee.type === 'MemberExpression' &&
+        call.callee.property.type === 'Identifier' &&
+        call.callee.property.value === 'apply' &&
+        call.callee.object.type === 'MemberExpression' &&
+        sameIdentifier(call.callee.object.object, owner) &&
+        call.callee.object.property.type === 'Identifier' &&
+        initializerExports.has(call.callee.object.property.value) &&
+        call.arguments.length === 2 &&
+        call.arguments[0].expression.type === 'ThisExpression' &&
+        call.arguments[1].expression.type === 'Identifier' &&
+        call.arguments[1].expression.value === 'arguments';
+      let returnedCall = false;
+      const results: Node[] = [];
+      for (const statement of fn.body?.stmts ?? []) {
+        if (statement.type === 'VariableDeclaration')
+          for (const declaration of statement.declarations) {
+            if (initializerCall(declaration.init)) results.push(declaration.id);
+          }
+        if (
+          statement.type === 'ReturnStatement' &&
+          (initializerCall(statement.argument) ||
+            results.some((result) => sameIdentifier(result, statement.argument)))
+        )
+          returnedCall = true;
+      }
+      walk(fn, (child) => {
+        if (
+          child.type === 'AssignmentExpression' &&
+          results.some((result) => sameIdentifier(result, child.left))
+        )
+          returnedCall = false;
+        if (
+          child.type === 'UpdateExpression' &&
+          results.some((result) => sameIdentifier(result, child.argument))
+        )
+          returnedCall = false;
+      });
+      if (!valid || ownerDeclarations !== 1 || ownerWritten || !returnedCall)
+        throw new Error('unverified helper initializer forwarder');
+      bindings.add(bindingKey(node.id));
     });
     const guards = new Set<string>();
     const accessors = new Set<string>();
@@ -138,12 +218,12 @@ export function helperGuardSites(outputs: readonly Output[], outputDirectory: st
             specifier.type === 'ImportSpecifier' &&
             guardExports.has(specifier.imported?.value ?? specifier.local.value)
           )
-            guards.add(specifier.local.value);
+            guards.add(bindingKey(specifier.local));
         }
       if (node.type === 'FunctionDeclaration')
         walk(node.body, (child) => {
           if (child.type === 'ReturnStatement' && guardRequire(child.argument))
-            accessors.add(node.identifier.value);
+            accessors.add(bindingKey(node.identifier));
         });
     });
     walk(ast, (node) => {
@@ -152,9 +232,9 @@ export function helperGuardSites(outputs: readonly Output[], outputDirectory: st
         node.id.type === 'Identifier' &&
         node.init?.type === 'CallExpression' &&
         node.init.callee.type === 'Identifier' &&
-        accessors.has(node.init.callee.value)
+        accessors.has(bindingKey(node.init.callee))
       )
-        namespaces.add(node.id.value);
+        namespaces.add(bindingKey(node.id));
     });
     walk(ast, (node) => {
       if (
@@ -163,22 +243,22 @@ export function helperGuardSites(outputs: readonly Output[], outputDirectory: st
         node.init?.type === 'MemberExpression' &&
         guardExports.has(memberKey(node.init.property)) &&
         (guardRequire(node.init.object) ||
-          (node.init.object.type === 'Identifier' && namespaces.has(node.init.object.value)))
+          (node.init.object.type === 'Identifier' && namespaces.has(bindingKey(node.init.object))))
       )
-        guards.add(node.id.value);
+        guards.add(bindingKey(node.id));
     });
     const guardedBindings = new Map<string, number>();
     walk(ast, (node) => {
       if (
         node.type !== 'CallExpression' ||
         node.callee.type !== 'Identifier' ||
-        !guards.has(node.callee.value) ||
+        !guards.has(bindingKey(node.callee)) ||
         node.arguments.length !== 1 ||
         node.arguments[0].expression.type !== 'Identifier' ||
-        !bindings.has(node.arguments[0].expression.value)
+        !bindings.has(bindingKey(node.arguments[0].expression))
       )
         return;
-      const binding = node.arguments[0].expression.value;
+      const binding = bindingKey(node.arguments[0].expression);
       guardedBindings.set(binding, (guardedBindings.get(binding) ?? 0) + 1);
       // SWC spans are UTF-8 byte offsets; V8 stack columns are UTF-16 units.
       const prefix = Buffer.from(source)
@@ -263,4 +343,28 @@ test('eager imports use actual source Scope0 callers oracle rejects repeated hel
     'helper initializer guard was not observed exactly once',
   );
   expect(() => observe([helperStack], 1)).toThrow('Source caller count changed');
+});
+
+test('eager imports use actual source Scope0 callers oracle authenticates CJS initializer dataflow', () => {
+  const fixture = (forwarder: string) => {
+    const outputs = observerFixture(`${forwarder};guard(init);`);
+    outputs[2].contents = Buffer.from(
+      Buffer.from(outputs[2].contents).toString().replace("import{init}from'./helper.js';", ''),
+    );
+    return outputs;
+  };
+  const valid =
+    'var init=function(){var m=require("./helper.js");var r=m.init.apply(this,arguments);return r}';
+  expect(helperGuardSites(fixture(valid), '/output')).toHaveLength(1);
+  for (const decoy of [
+    'var init=function(){var unused=require("./helper.js");return other.init.apply(this,arguments)}',
+    'var init=function(){var m=require("./helper.js");var other={init(){}};return other.init.apply(this,arguments)}',
+    'var init=function(){var m=require("./helper.js");{let m=other;return m.init.apply(this,arguments)}}',
+    'var init=function(m){var unused=require("./helper.js");return m.init.apply(this,arguments)}',
+    'var init=function(){var m=require("./helper.js");m=other;return m.init.apply(this,arguments)}',
+    'var init=function(){var m=require("./helper.js");var r=m.init.apply(this,arguments);r=other;return r}',
+  ])
+    expect(() => helperGuardSites(fixture(decoy), '/output')).toThrow(
+      'unverified helper initializer forwarder',
+    );
 });
