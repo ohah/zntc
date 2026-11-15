@@ -41,6 +41,7 @@ pub const LinkingMetadata = struct {
         source: @import("../../parser/ast.zig").NodeIndex,
         function: @import("../../parser/ast.zig").NodeIndex,
         symbol: u32,
+        needs_local_binding: bool = false,
     } = null,
     /// Output spelling of the `__toESM` helper (borrowed from the linker): a
     /// user binding of that name moves the helper to `__toESM$1` (#5664).

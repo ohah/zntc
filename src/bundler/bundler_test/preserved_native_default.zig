@@ -106,3 +106,27 @@ test "preserved native default named and class expression snapshot controls" {
         .expected = "[42,\"Original\",\"First\",true,true]\n",
     });
 }
+
+test "preserved native default self import observes hoisted name without overwriting source mutation" {
+    try check(.{
+        .name = "self import early name",
+        .files = &.{
+            .{ .path = "main.mjs", .source = "import{default as self}from './main.mjs';export const early=self();export const earlyName=self.name;Object.defineProperty(self,'name',{value:'changed',configurable:true});export default function(){return 42}" },
+        },
+        .observe = "import f,{early,earlyName}from './main.mjs';console.log(JSON.stringify([f(),early,earlyName,f.name,f.prototype.constructor===f]));",
+        .expected = "[42,42,\"default\",\"changed\",true]\n",
+    });
+}
+
+test "preserved native default cross cycle observes instantiation name and preserves early mutation" {
+    try check(.{
+        .name = "cross cycle early name",
+        .files = &.{
+            .{ .path = "main.mjs", .source = "import f,{after}from './a.mjs';import{before}from './b.mjs';export{f,after,before}" },
+            .{ .path = "a.mjs", .source = "import{default as self}from './a.mjs';import './b.mjs';export const after=self.name;export default function(){return 42}" },
+            .{ .path = "b.mjs", .source = "import f from './a.mjs';export const before=f.name;Object.defineProperty(f,'name',{value:'changed',configurable:true})" },
+        },
+        .observe = "import{f,after,before}from './main.mjs';console.log(JSON.stringify([f(),before,after,f.name,f.prototype.constructor===f]));",
+        .expected = "[42,\"default\",\"changed\",\"changed\",true]\n",
+    });
+}

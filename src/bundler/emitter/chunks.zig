@@ -640,6 +640,7 @@ const ChunkModuleEmitResult = struct {
     mappings: ?[]const SourceMap.Mapping = null,
     names: []const []const u8 = &.{},
     preamble_lines: u32 = 0,
+    native_self_import: bool = false,
     err: ?anyerror = null,
 
     fn deinit(self: *ChunkModuleEmitResult, allocator: std.mem.Allocator) void {
@@ -681,6 +682,8 @@ fn emitChunkModuleRange(
         else
             null;
         var module_options = options.*;
+        if (module_options.native_self_default_import) |*capability|
+            capability.emitted = &results[i].native_self_import;
         module_options.preinitialized_esm_namespace = null;
         if (module.exports_symbol) |symbol| {
             const namespace = SymbolID{ .module = module.index, .inner = symbol };
@@ -3546,6 +3549,20 @@ fn emitChunksWithoutFacades(
             }
         }
         var literal_emit_options = base_module_emit_options.*;
+        var native_self_specifier: ?[]const u8 = null;
+        defer if (native_self_specifier) |specifier| allocator.free(specifier);
+        if (options.preserve_modules and options.format == .esm and chunk.modules.items.len == 1) {
+            const owner = graph.getModule(chunk.modules.items[0]) orelse return error.InvalidDefaultNameProducer;
+            if (owner.wrap_kind == .none and @import("../graph/legacy_default_names.zig").hasDemand(owner)) {
+                const path = try relativeChunkImportPath(allocator, chunk, chunk, options);
+                defer allocator.free(path);
+                native_self_specifier = try quoteChunkPath(allocator, path);
+                literal_emit_options.native_self_default_import = .{
+                    .owner = owner,
+                    .quoted_specifier = native_self_specifier.?,
+                };
+            }
+        }
         if (compiler_literals.count() != 0) literal_emit_options.compiler_literal_overrides = &compiler_literals;
         const module_emit_options = &literal_emit_options;
         const parallelism: usize = @max(1, if (graph.max_threads != 0)
@@ -3631,6 +3648,16 @@ fn emitChunksWithoutFacades(
                 const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
                 const module_result = &module_results[batch_pos];
                 const raw_code = module_result.code orelse continue;
+                if (module_result.native_self_import) {
+                    if (physical_imports_by_chunk.contains(ci)) return error.InvalidDefaultNameProducer;
+                    var physical: PhysicalChunkImports = .{};
+                    defer physical.deinit(allocator);
+                    for (chunk.cross_chunk_imports.items) |dependency| try physical.record(allocator, dependency);
+                    try physical.record(allocator, chunk.index);
+                    const imports = try physical.order.toOwnedSlice(allocator);
+                    errdefer allocator.free(imports);
+                    try physical_imports_by_chunk.put(allocator, ci, imports);
+                }
                 const module_mappings = module_result.mappings;
                 const module_names = module_result.names;
                 const module_preamble_lines = module_result.preamble_lines;
