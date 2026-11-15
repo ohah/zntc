@@ -22,38 +22,66 @@ function walk(node: any, visit: (node: Node) => void): void {
 // execution frames. Hoisted var/function declarations under control flow count.
 function rootBindingNames(program: Node): Set<string> {
   const names = new Set<string>();
-  const pattern = (node: Node | null | undefined): void => {
+  const pattern = (node: Node | null | undefined, target = names): void => {
     if (!node) return;
     switch (node.type) {
       case 'Identifier':
-        names.add(node.value);
+        target.add(node.value);
         break;
       case 'ArrayPattern':
-        for (const item of node.elements) pattern(item);
+        for (const item of node.elements) pattern(item, target);
         break;
       case 'ObjectPattern':
         for (const property of node.properties) {
-          if (property.type === 'KeyValuePatternProperty') pattern(property.value);
-          else if (property.type === 'AssignmentPatternProperty') pattern(property.key);
-          else if (property.type === 'RestElement') pattern(property.argument);
+          if (property.type === 'KeyValuePatternProperty') pattern(property.value, target);
+          else if (property.type === 'AssignmentPatternProperty') pattern(property.key, target);
+          else if (property.type === 'RestElement') pattern(property.argument, target);
         }
         break;
       case 'RestElement':
-        pattern(node.argument);
+        pattern(node.argument, target);
         break;
       case 'AssignmentPattern':
-        pattern(node.left);
+        pattern(node.left, target);
         break;
     }
   };
-  const scan = (node: any, direct: boolean): void => {
+  const moduleSyntax = program.body.some(
+    (node: Node) => node.type === 'ImportDeclaration' || node.type.startsWith('Export'),
+  );
+  let strict = moduleSyntax;
+  for (const statement of program.body) {
+    if (statement.type !== 'ExpressionStatement' || statement.expression.type !== 'StringLiteral')
+      break;
+    if (statement.expression.raw === '"use strict"' || statement.expression.raw === "'use strict'")
+      strict = true;
+  }
+  const lexicalNames = (statements: Node[]): Set<string> => {
+    const local = new Set<string>();
+    for (const statement of statements) {
+      if (statement.type === 'VariableDeclaration' && statement.kind !== 'var')
+        for (const declaration of statement.declarations) pattern(declaration.id, local);
+      if (
+        statement.type === 'ClassDeclaration' ||
+        (strict && statement.type === 'FunctionDeclaration')
+      )
+        pattern(statement.identifier, local);
+    }
+    return local;
+  };
+  const write = (target: Node, shadows: readonly Set<string>[]) => {
+    const targets = new Set<string>();
+    pattern(target, targets);
+    for (const name of targets) if (!shadows.some((scope) => scope.has(name))) names.add(name);
+  };
+  const scan = (node: any, direct: boolean, shadows: readonly Set<string>[]): void => {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) {
-      for (const child of node) scan(child, direct);
+      for (const child of node) scan(child, direct, shadows);
       return;
     }
     if (node.type === 'FunctionDeclaration') {
-      pattern(node.identifier);
+      if (direct || !strict) pattern(node.identifier);
       return;
     }
     if (node.type === 'ClassDeclaration') {
@@ -61,9 +89,14 @@ function rootBindingNames(program: Node): Set<string> {
       return;
     }
     if (
-      node.type === 'FunctionExpression' ||
-      node.type === 'ArrowFunctionExpression' ||
-      node.type === 'ClassExpression'
+      [
+        'FunctionExpression',
+        'ArrowFunctionExpression',
+        'ClassExpression',
+        'MethodProperty',
+        'GetterProperty',
+        'SetterProperty',
+      ].includes(node.type)
     )
       return;
     if (node.type === 'ImportDeclaration') {
@@ -71,32 +104,57 @@ function rootBindingNames(program: Node): Set<string> {
       return;
     }
     if (node.type === 'ExportDeclaration') {
-      scan(node.declaration, direct);
+      scan(node.declaration, direct, shadows);
       return;
     }
     if (node.type === 'ExportDefaultDeclaration') {
-      pattern(node.decl.identifier);
+      if (direct) pattern(node.decl.identifier);
+      return;
+    }
+    if (node.type === 'BlockStatement') {
+      scan(node.stmts, false, [...shadows, lexicalNames(node.stmts)]);
+      return;
+    }
+    if (node.type === 'CatchClause') {
+      const local = new Set<string>();
+      pattern(node.param, local);
+      scan(node.body, false, [...shadows, local]);
+      return;
+    }
+    if (['ForStatement', 'ForOfStatement', 'ForInStatement'].includes(node.type)) {
+      const declaration = node.type === 'ForStatement' ? node.init : node.left;
+      const local =
+        declaration?.type === 'VariableDeclaration' && declaration.kind !== 'var'
+          ? lexicalNames([declaration])
+          : new Set<string>();
+      const loopShadows = [...shadows, local];
+      if (node.type !== 'ForStatement' && node.left.type !== 'VariableDeclaration')
+        write(node.left, loopShadows);
+      for (const [key, value] of Object.entries(node))
+        if (key !== 'span') scan(value, false, loopShadows);
+      return;
+    }
+    if (node.type === 'SwitchStatement') {
+      scan(node.discriminant, false, shadows);
+      const local = lexicalNames(node.cases.flatMap((item: Node) => item.consequent));
+      scan(node.cases, false, [...shadows, local]);
       return;
     }
     if (node.type === 'VariableDeclaration') {
       for (const declaration of node.declarations) {
         if (direct || node.kind === 'var') pattern(declaration.id);
-        // Initializers and pattern defaults execute in this Root frame too.
-        scan(declaration.id, false);
-        scan(declaration.init, false);
+        scan(declaration.id, false, shadows);
+        scan(declaration.init, false, shadows);
       }
       return;
     }
-    if (node.type === 'AssignmentExpression') pattern(node.left);
-    if (node.type === 'UpdateExpression') pattern(node.argument);
-    if (
-      (node.type === 'ForOfStatement' || node.type === 'ForInStatement') &&
-      node.left.type !== 'VariableDeclaration'
-    )
-      pattern(node.left);
-    for (const [key, value] of Object.entries(node)) if (key !== 'span') scan(value, false);
+    if (node.type === 'AssignmentExpression') write(node.left, shadows);
+    if (node.type === 'UpdateExpression') write(node.argument, shadows);
+    for (const [key, value] of Object.entries(node))
+      if (key !== 'span') scan(value, false, shadows);
   };
-  for (const statement of program.body) scan(statement, true);
+  for (const statement of program.body) scan(statement, true, []);
+
   return names;
 }
 
@@ -554,7 +612,6 @@ test('eager imports use actual source Scope0 callers oracle authenticates CJS in
     'const {...require}=foreign;',
     'const {x:[...require]}=foreign;',
     'if(false){var require=foreign}',
-    'if(false){function require(){}}',
     'for(var require of foreign){}',
     'try{}finally{var require}',
     'require=foreign;',
@@ -577,9 +634,37 @@ test('eager imports use actual source Scope0 callers oracle authenticates CJS in
     'var other=function(require){}',
     'class Other{method(require){}}',
     'if(false){class require{}}',
+    "'use strict';if(false){function require(){}}",
+    '{let require=foreign;require=other}',
+    'for(let require of foreign){require=other}',
+    'for(let require=foreign;condition;require++){require=other}',
+    'try{}catch(require){require=other}',
+    'switch(value){case 1:let require;require=other}',
+    'var other={method(){require=foreign}}',
     'function other(){require=foreign}',
     'var other=function(){require++}',
     'class Other{method(){require=foreign}}',
   ])
     expect(helperGuardSites(fixture(`${nested};${valid}`), '/output')).toHaveLength(1);
+  const sloppy = fixture(`if(true){function require(){}};${valid}`);
+  sloppy[2].contents = Buffer.from(
+    Buffer.from(sloppy[2].contents)
+      .toString()
+      .replace("import{guard}from'./guard.js';", "var guard=require('./guard.js').guard;"),
+  );
+  expect(() => helperGuardSites(sloppy, '/output')).toThrow(
+    'unverified helper initializer forwarder',
+  );
+  const strictCjs = fixture(valid);
+  strictCjs[2].contents = Buffer.from(
+    `"use strict";var guard=require('./guard.js').guard;if(false){function require(){}};${valid};guard(init);`,
+  );
+  expect(helperGuardSites(strictCjs, '/output')).toHaveLength(1);
+  const escapedDirective = fixture(valid);
+  escapedDirective[2].contents = Buffer.from(
+    String.raw`"use\x20strict";var guard=require('./guard.js').guard;if(true){function require(){}};${valid};guard(init);`,
+  );
+  expect(() => helperGuardSites(escapedDirective, '/output')).toThrow(
+    'unverified helper initializer forwarder',
+  );
 });
