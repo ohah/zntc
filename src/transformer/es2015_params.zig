@@ -503,7 +503,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             } else null;
             errdefer if (prefix_rows) |rows| self.allocator.free(rows);
             var result = try lowerParamsImpl(self, params, span, true, null, if (plan) |value| value.prefix.parameter_scope else null, null, null);
-            errdefer result.body_stmts.deinit(self.allocator);
+            errdefer result.deinit(self.allocator);
             result.native_arrow_formals = plan;
             if (prefix_rows) |rows| result.native_arrow_statements = statements.capture(self, plan.?, result.new_params, rows) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -915,6 +915,8 @@ pub fn ES2015Params(comptime Transformer: type) type {
             // ES5 has no default-formal syntax to tell the engine where
             // Function.length stops. Preserve the native prefix and move the
             // remaining input slots into body storage at this producer.
+            var arity_inputs: std.ArrayList(@import("native_arguments.zig").ArityOwnerInput) = .empty;
+            errdefer arity_inputs.deinit(self.allocator);
             var arity_cutoff: ?u32 = null;
             var arity_arguments: ?NodeIndex = null;
             if (self.options.unsupported.default_params) if (function_owner) |owner| {
@@ -931,6 +933,10 @@ pub fn ES2015Params(comptime Transformer: type) type {
                     break;
                 };
             };
+            const capture_arity_owner = if (arity_cutoff == 0 and function_owner != null) capture: {
+                const function = self.ast.getNode(function_owner.?.function_node);
+                break :capture function.tag == .function_expression and !self.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.name).isNone();
+            } else false;
             const unlinked_engine = if (self.unlinked_parameter_bindings != null and function_owner != null)
                 unlinkedArgumentsOwner(self, params, function_owner.?) catch @panic("unlinked parameter lost its native arguments handoff")
             else
@@ -1275,6 +1281,9 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 defer snapshots.deinit(self.allocator);
                 for (slots[cutoff..], cutoff..) |formal, index| {
                     var binding = try loweredInputSlotBinding(self, formal);
+                    const input_binding = binding;
+                    const input_symbol = self.getSymbolIdAt(binding).?;
+                    const before_storage = self.semantic_editor.?.symbols.items[input_symbol];
                     const owner = function_owner.?;
                     const count_engine = arity_arguments orelse
                         (try arityArgumentsReference(self, owner, span)).?;
@@ -1303,14 +1312,29 @@ pub fn ES2015Params(comptime Transformer: type) type {
                             binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, try self.ast.addString(output_name));
                             try self.setGeneratedSymbolId(binding, id);
                         }
+                        const worklet_move = @import("worklet_class_clone.zig").prepareArityParameterStorageMove(self, owner.function_node, owner.params_node, binding, @fromBackingInt(id), self.current_scope) catch |err| switch (err) {
+                            error.OutOfMemory => return error.OutOfMemory,
+                            else => @panic("lowered arity lost its exact worklet parameter origin"),
+                        };
+                        defer if (worklet_move) |move| self.allocator.free(move.origins);
                         self.semantic_editor.?.relocateSymbolAsPreservingAnchors(@fromBackingInt(id), self.current_scope, binding) catch |err| switch (err) {
                             error.OutOfMemory => return error.OutOfMemory,
                             else => @panic("lowered arity slot cannot enter its actual body storage"),
                         };
                         self.semantic_editor.?.symbols.items[id].kind = .variable_var;
                         self.semantic_editor.?.symbols.items[id].decl_flags = SymbolKind.variable_var.declFlags();
+                        if (worklet_move) |move| @import("worklet_class_clone.zig").completeArityParameterStorageMove(self, move) catch
+                            @panic("lowered arity cannot publish its worklet parameter storage");
                     }
-                    try snapshots.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, input, span)}, .@"var", span));
+                    const snapshot = try es_helpers.makeDeclarator(self, binding, input, span);
+                    try snapshots.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{snapshot}, .@"var", span));
+                    if (capture_arity_owner) try arity_inputs.append(self.allocator, .{
+                        .binding = input_binding,
+                        .symbol = @fromBackingInt(input_symbol),
+                        .before = before_storage,
+                        .output_binding = binding,
+                        .snapshot = snapshot,
+                    });
                 }
                 // Capture every input before any source default can mutate
                 // arguments or arguments.length. No source expression moves.
@@ -1331,6 +1355,15 @@ pub fn ES2015Params(comptime Transformer: type) type {
             return .{
                 .new_params = new_params,
                 .body_stmts = body_stmts,
+                .arity_owner_inputs = arity_inputs,
+                .arity_owner_completion = if (capture_arity_owner) .{
+                    .ast_owner = self.ast,
+                    .function_owner = function_owner.?.function_node,
+                    .params = function_owner.?.params_node,
+                    .body_scope = function_owner.?.body_scope,
+                    .cutoff = arity_cutoff.?,
+                    .inputs = arity_inputs.items,
+                } else null,
                 .native_formal_scope = native_formal_scope,
                 .argument_shadow = argument_shadow,
                 .retained_prefix = if (argument_shape) |shape| shape.prefix_proof else null,
@@ -1398,12 +1431,21 @@ pub fn ES2015Params(comptime Transformer: type) type {
         pub const LowerResult = struct {
             new_params: NodeList,
             body_stmts: std.ArrayList(NodeIndex),
+            arity_owner_inputs: std.ArrayList(@import("native_arguments.zig").ArityOwnerInput) = .empty,
+            arity_owner_completion: ?@import("native_arguments.zig").ArityOwnerCompletion = null,
+
             /// Existing split parameter environment selected before binding birth.
             native_formal_scope: ?ScopeId = null,
             argument_shadow: ?NativeArgumentShadow = null,
             retained_prefix: ?RetainedPrefixProof = null,
             native_arrow_formals: ?NativeArrowFormalPlan = null,
             native_arrow_statements: ?@import("native_arrow_statement_publication.zig").Plan = null,
+            pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
+                var statements = self.body_stmts;
+                statements.deinit(allocator);
+                var inputs = self.arity_owner_inputs;
+                inputs.deinit(allocator);
+            }
         };
 
         /// destructuring + default parameter → temp 변수 경유.
@@ -2042,7 +2084,7 @@ test "native arrow formal birth preserves optional source anchors and mandatory 
         const old_params = t.ast.readExtraNode(extra, ast_mod.ArrowExtra.params);
         t.current_scope = body_scope;
         var result = try Traits.lowerParamsPass2ForNativeArrow(&t, t.ast.getNode(old_params).data.list, t.ast.getNode(actual_arrow).span, .{ .ast_owner = t.ast, .function_node = actual_arrow, .params_node = old_params, .body_scope = body_scope });
-        defer result.body_stmts.deinit(a);
+        defer result.deinit(a);
         const plan = result.native_arrow_formals.?;
         try std.testing.expectEqual(@as(usize, 1), plan.source_prefix_anchors.len);
         try std.testing.expectEqual(source_anchors, plan.source_prefix_anchors[0]);

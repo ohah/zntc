@@ -1014,7 +1014,7 @@ fn lowerParameterPatternAndCheckCreation(
         transformer.ast.functionParamsList(function),
         function.span,
     );
-    defer lowered.body_stmts.deinit(allocator);
+    defer lowered.deinit(allocator);
 
     var root_temp_id: ?u32 = null;
     if (expect_rest_pattern) {
@@ -1245,7 +1245,7 @@ fn lowerDestructuringParametersWithoutSemanticEditing(source: []const u8) !void 
         transformer.ast.functionParamsList(function),
         function.span,
     );
-    defer lowered.body_stmts.deinit(allocator);
+    defer lowered.deinit(allocator);
 }
 
 test "#4819 semantic-disabled low-level parameter lowering remains a no-op for temp ownership" {

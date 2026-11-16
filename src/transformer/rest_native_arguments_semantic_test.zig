@@ -96,7 +96,7 @@ test "owned rest arguments are born at ten actual ordinary owners before output 
         const list = t.ast.getNode(owner.params_node).data.list;
         try std.testing.expect(try Params.restArgumentsOwner(&t, list, owner) != null);
         var lowered = try Params.lowerParamsPass2ForFunction(&t, list, t.ast.getNode(owner.function_node).span, owner);
-        defer lowered.body_stmts.deinit(a);
+        defer lowered.deinit(a);
         try std.testing.expect(lowered.body_stmts.items.len > 0);
         try std.testing.expectEqual(@as(usize, 1), t.native_arguments_declaration_origins.count());
         const editor = &t.semantic_editor.?;
@@ -314,7 +314,7 @@ test "owned rest arguments retain source collisions split parameters and native 
         try std.testing.expectEqual(@as(usize, 0), t.native_arguments_declaration_origins.count());
         if (index == 5) {
             var lowered = try Params.lowerParamsPass2(&t, list, t.ast.getNode(owner.function_node).span);
-            defer lowered.body_stmts.deinit(a);
+            defer lowered.deinit(a);
             try std.testing.expect(t.ast.nodeListSplitRest(lowered.new_params).rest_operand != null);
             try std.testing.expectEqual(@as(usize, 0), t.native_arguments_declaration_origins.count());
         }
@@ -341,7 +341,7 @@ test "owned rest arguments graphless wrapper keeps the legacy parameter API boun
             try Params.lowerParamsPass2ForFunction(&t, t.ast.getNode(params).data.list, node.span, .{ .ast_owner = t.ast, .function_node = function.?, .params_node = params, .body_scope = .none })
         else
             try Params.lowerParamsPass2(&t, t.ast.getNode(params).data.list, node.span);
-        defer lowered.body_stmts.deinit(a);
+        defer lowered.deinit(a);
         try std.testing.expectEqual(@as(usize, 1), lowered.body_stmts.items.len);
         try std.testing.expectEqual(@as(usize, 0), t.native_arguments_declaration_origins.count());
         try std.testing.expect(t.semantic_editor == null);
