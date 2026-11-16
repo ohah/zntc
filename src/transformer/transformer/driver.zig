@@ -1044,11 +1044,15 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 if (body_wrapper_scope) |scope| try moveParameterShadowFunctions(self, params_idx, source_body_idx, self.current_scope, scope);
 
                 // A non-simple parameter list gives a sloppy function unmapped
-                // `arguments`; lowered parameters would be mapped again (#5668).
+                // arguments. Prefix slots must stay unlinked even when only
+                // a default initializer (or its closure) observes arguments.
                 var unlinked_parameters: std.ArrayList(NodeIndex) = .empty;
                 defer unlinked_parameters.deinit(self.allocator);
+                const parameter_scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
                 if (self.options.unsupported.default_params and
-                    try sloppyBodyReadsArguments(self, self.current_scope, source_body_idx))
+                    (try sloppyBodyReadsArguments(self, self.current_scope, source_body_idx) or
+                        (!parameter_scopes[self.current_scope.toIndex()].is_strict and
+                            es2015_params.ES2015Params(Self).hasDefaultParameter(self, params_list))))
                     self.unlinked_parameter_bindings = &unlinked_parameters;
                 var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2ForFunction(self, params_list, node.span, .{
                     .ast_owner = self.ast,

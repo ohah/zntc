@@ -34,16 +34,35 @@ const METHOD_FLAG_SETTER = ast_mod.MethodFlags.is_setter;
 
 pub fn ES2015Computed(comptime Transformer: type) type {
     return struct {
-        /// object_expression에 computed key를 가진 member가 있는지 확인한다.
-        /// object_property뿐 아니라 method_definition (computed getter/setter/method)도 포함.
+        /// Whether this object needs ordered property-definition lowering.
+        /// Besides computed/proto shorthand keys, ES5 default setters need an
+        /// ordinary descriptor function so their source arity can be preserved
+        /// without violating native setter syntax's one-formal requirement.
         pub fn hasComputedProperty(self: *const Transformer, node: Node) bool {
             const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
             for (members) |raw_idx| {
-                const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
-                const key_idx = memberKeyIdx(self, member);
-                if (key_idx.isNone()) continue;
-                const key = self.ast.getNode(key_idx);
-                if (key.tag == .computed_property_key or isProtoShorthand(self, member)) return true;
+                if (needsPropertyDefinitionLowering(self, self.ast.getNode(@fromBackingInt(raw_idx)))) return true;
+            }
+            return false;
+        }
+
+        pub fn needsPropertyDefinitionLowering(self: *const Transformer, member: Node) bool {
+            const key_idx = memberKeyIdx(self, member);
+            if (key_idx.isNone()) return false;
+            if (self.ast.getNode(key_idx).tag == .computed_property_key or isProtoShorthand(self, member)) return true;
+            return needsNativeSetter(self, member);
+        }
+
+        fn needsNativeSetter(self: *const Transformer, member: Node) bool {
+            if (!self.options.unsupported.default_params or member.tag != .method_definition) return false;
+            const me = member.data.extra;
+            if (self.ast.readExtra(me, ast_mod.MethodExtra.flags) & METHOD_FLAG_SETTER == 0) return false;
+            const params_idx = self.ast.readExtraNode(me, ast_mod.MethodExtra.params);
+            const params = self.ast.getNode(params_idx).data.list;
+            for (self.ast.extra_data.items[params.start .. params.start + params.len]) |raw| {
+                const param = self.ast.getNode(@fromBackingInt(raw));
+                if (param.tag == .assignment_pattern) return true;
+                if (param.tag == .formal_parameter and !self.ast.readExtraNode(param.data.extra, ast_mod.FormalParameterExtra.default).isNone()) return true;
             }
             return false;
         }
@@ -102,17 +121,15 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            // Phase 1: 첫 computed key 이전의 member를 일반 object로 수집
+            // Phase 1: collect the prefix before the first member requiring
+            // ordered property definition (including ES5 default setters).
             // 이 루프는 읽기만 하므로 슬라이스 안전.
             var first_computed: usize = members_len;
             {
                 const members = self.ast.extra_data.items[members_start .. members_start + members_len];
                 for (members, 0..) |raw_idx, idx| {
                     const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
-                    const key_idx = memberKeyIdx(self, member);
-                    if (key_idx.isNone()) continue;
-                    const key = self.ast.getNode(key_idx);
-                    if (key.tag == .computed_property_key or isProtoShorthand(self, member)) {
+                    if (needsPropertyDefinitionLowering(self, member)) {
                         first_computed = idx;
                         break;
                     }
@@ -324,6 +341,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             const me = member.data.extra;
             const key_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me + ast_mod.MethodExtra.key]));
 
+            const native_setter = needsNativeSetter(self, member);
             const pe = @import("parameter_environment.zig");
             var func_expr = try pe.nameLoweredMember(
                 self,
@@ -342,6 +360,13 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 const captured = try pe.captureRuntimeKey(self, if (visited) key_node.data.unary.operand else try self.visitNode(key_node.data.unary.operand), span);
                 captured_key = captured.key;
                 func_expr = try pe.nameByTemp(self, func_expr, captured.temp, if (is_getter) "get" else "set", span);
+            }
+
+            if (native_setter) {
+                self.native_setter_used = true;
+                const helper = try es_helpers.makeRuntimeHelperRef(self, "__nativeSetter");
+                const arity = try es_helpers.makeNumericLiteral(self, 0);
+                func_expr = try es_helpers.makeCallExpr(self, helper, &.{ func_expr, arity }, span);
             }
 
             const accessor_kind_span = try self.ast.addString(if (is_getter) "get" else "set");

@@ -349,6 +349,12 @@ const MODULES = [_]HelperModule{
         .body = .{ .plain = rt.SPREAD_ARRAY_RUNTIME, .min = rt.SPREAD_ARRAY_RUNTIME_MIN },
     },
 
+    .{
+        .short = "native-setter",
+        .helpers = &.{"__nativeSetter"},
+        .body = .{ .plain = rt.NATIVE_SETTER_RUNTIME, .min = rt.NATIVE_SETTER_RUNTIME_MIN },
+    },
+
     // --keep-names + binary loader
     .{
         .short = "keep-names",

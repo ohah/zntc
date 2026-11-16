@@ -325,6 +325,103 @@ pub fn existingParameterEngine(self: anytype, params: ast.NodeIndex, body_scope:
     return @fromBackingInt(@as(u32, @intCast(id)));
 }
 
+/// A lowered-arity snapshot reads the actual ordinary function's argument
+/// list before Source initializers run. Unlike the unused-engine handoff this
+/// producer can retain an already observed parameter engine in its existing
+/// parameter carrier; it never creates a second engine in the body scope.
+/// Null means an explicit Source binding prevents this output contract.
+pub fn loweredArityEngineReference(
+    self: anytype,
+    function_owner: ast.NodeIndex,
+    old_params: ast.NodeIndex,
+    body_scope: ScopeId,
+    span: @import("../lexer/token.zig").Span,
+) !?ast.NodeIndex {
+    if (!self.semantic_edit_enabled or !self.options.unsupported.default_params) return null;
+    if (function_owner.isNone() or old_params.isNone() or
+        @backingInt(function_owner) >= self.ast.nodes.items.len or @backingInt(old_params) >= self.ast.nodes.items.len)
+        @panic("lowered arity arguments lost its actual function/parameter owner");
+    const function = self.ast.getNode(function_owner);
+    switch (function.tag) {
+        .function, .function_expression, .function_declaration, .method_definition => {},
+        else => return null,
+    }
+    if (self.ast.readExtraNode(function.data.extra, ast.FunctionExtra.params) != old_params or
+        self.ast.getNode(old_params).tag != .formal_parameters or self.outputOwnedScope(function_owner) != body_scope)
+        @panic("lowered arity arguments changed its actual formal/body edge");
+    const parameter_scope = self.outputOwnedScope(old_params) orelse body_scope;
+    const editor = if (self.semantic_editor) |*value| value else @panic("lowered arity arguments has no editor");
+    if (body_scope.isNone() or parameter_scope.isNone() or
+        body_scope.toIndex() >= editor.scopes.items.len or parameter_scope.toIndex() >= editor.scopes.items.len or
+        body_scope.toIndex() >= editor.scope_maps.items.len or parameter_scope.toIndex() >= editor.scope_maps.items.len or
+        editor.scopes.items[body_scope.toIndex()].kind != .function or editor.scopes.items[parameter_scope.toIndex()].kind != .function)
+        @panic("lowered arity arguments has no actual ordinary function scope");
+    // A Source parameter called arguments owns its own cell, not the engine.
+    // Only an actual formal binding can release that spelling; dynamic name
+    // lookup and arbitrary body shadows remain outside this producer.
+    if (editor.scope_maps.items[parameter_scope.toIndex()].get("arguments")) |source_id| {
+        if (source_id >= editor.symbols.items.len) @panic("lowered arity parameter is outside its symbol table");
+        const source = editor.symbols.items[source_id];
+        if (source.kind == .parameter and source.synthetic_kind == null and source.scope_id == parameter_scope) {
+            if (editor.scopes.items[parameter_scope.toIndex()].blocksMangling() or editor.scopes.items[body_scope.toIndex()].blocksMangling()) return null;
+            if (parameter_scope != body_scope and editor.scope_maps.items[body_scope.toIndex()].get("arguments") != null) return null;
+            var actual_formal = false;
+            const list = self.ast.getNode(old_params).data.list;
+            for (0..list.len) |offset| {
+                var bindings = try @import("../parser/ast_walk.zig").bindingIdentifiers(self.allocator, self.ast, self.ast.readExtraNode(list.start, @intCast(offset)), .{});
+                defer bindings.deinit();
+                while (try bindings.next()) |binding| {
+                    if (self.ast.getNode(binding).tag == .binding_identifier and self.getSymbolIdAt(binding) == @as(?u32, @intCast(source_id))) actual_formal = true;
+                }
+            }
+            if (!actual_formal) return null;
+            const output = try @import("es_helpers.zig").resolveSyntheticNameAvoidingDynamicEval(self, "_arityArguments", parameter_scope);
+            try editor.renameParameterEnvironmentBinding(@fromBackingInt(@as(u32, @intCast(source_id))), output);
+            return try self.makeNativeArgumentsRef(body_scope, body_scope, span);
+        }
+    }
+    if (parameter_scope == body_scope) {
+        if (!hasAvailableEngineSlot(self, body_scope)) return null;
+        return try self.makeNativeArgumentsRef(body_scope, body_scope, span);
+    }
+    if (editor.scopes.items[body_scope.toIndex()].parent != parameter_scope)
+        @panic("lowered arity arguments changed its actual parameter/body scope pair");
+    if (editor.scope_maps.items[body_scope.toIndex()].get("arguments")) |body_id| {
+        // Repeated snapshot uses share only this producer's actual body engine.
+        // An unrelated Source binding cannot acquire native-engine authority.
+        if (body_id < editor.symbols.items.len and hasAvailableEngineSlot(self, body_scope) and
+            self.native_arguments_declaration_origins.get(@intCast(body_id)) == body_scope)
+            return try self.makeNativeArgumentsRef(body_scope, body_scope, span);
+        return null;
+    }
+    const id = editor.scope_maps.items[parameter_scope.toIndex()].get("arguments") orelse {
+        // A lowered arrow has a real ordinary output function but no Source
+        // implicit engine. Its lexical arguments references already retain
+        // their outer identity; the new input snapshot owns this output engine.
+        return try self.makeNativeArgumentsRef(body_scope, body_scope, span);
+    };
+    if (id >= editor.symbols.items.len) @panic("lowered arity arguments engine is outside its symbol table");
+    const selected = editor.symbols.items[id];
+    if (selected.scope_id != parameter_scope or selected.kind != .parameter or selected.synthetic_kind != .implicit_arguments or selected.write_count != 0) return null;
+    for (editor.symbols.items, 0..) |symbol, other| {
+        if (other != id and symbol.synthetic_kind == .implicit_arguments and
+            (symbol.scope_id == parameter_scope or symbol.scope_id == body_scope)) return null;
+    }
+    const symbol_id: SymbolId = @fromBackingInt(@as(u32, @intCast(id)));
+    const reference = try self.makeSyntheticRefForSymbol(symbol_id, body_scope, .{ .read = true });
+    if (self.native_arguments_declaration_origins.get(@intCast(id))) |owner| {
+        if (owner != parameter_scope) @panic("lowered arity arguments changed its existing engine owner");
+        const handoff = self.native_arguments_parameter_handoffs.get(@intCast(id)) orelse
+            @panic("lowered arity arguments produced engine has no exact parameter handoff");
+        if (handoff.params != old_params or handoff.source_scope != parameter_scope or handoff.body_scope != body_scope)
+            @panic("lowered arity arguments changed its existing handoff edge");
+        try recordReference(self, reference, symbol_id, parameter_scope, body_scope);
+    } else {
+        try recordParameterReference(self, reference, symbol_id, parameter_scope, body_scope);
+    }
+    return reference;
+}
+
 pub fn record(self: anytype, id: SymbolId, scope: ScopeId) !void {
     const slot = try self.native_arguments_declaration_origins.getOrPut(self.allocator, @backingInt(id));
     if (slot.found_existing and slot.value_ptr.* != scope)

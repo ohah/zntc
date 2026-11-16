@@ -5814,7 +5814,7 @@ fn transpileWithCallbackInternal(
     // All output consumers share the producer's live map, with or without
     // identifier/syntax minification. Graphless callers retain their empty map.
     const codegen_symbol_ids = transformer.symbol_ids.items;
-    var has_helpers = transformer.runtime_helpers.hasAny() or transformer.spread_props_used;
+    var has_helpers = transformer.runtime_helpers.hasAny() or transformer.spread_props_used or transformer.native_setter_used;
     var helper_final_renames: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null;
     if (mangle_result) |*mr| helper_final_renames = &mr.renames;
     const helper_name_resolver: StandaloneRuntimeHelperNameResolver = .{
@@ -5888,6 +5888,8 @@ fn transpileWithCallbackInternal(
             local_names.spread_intrinsics_isolated = transformer.spread_intrinsics_isolated;
             local_names.spread_values = try helper_name_resolver.resolve("__spreadValues", options.minify_whitespace);
         }
+        if (transformer.native_setter_used)
+            local_names.native_setter = try helper_name_resolver.resolve("__nativeSetter", options.minify_whitespace);
         if (transformer.suspension_invoke_used)
             local_names.suspension_invoke = try helper_name_resolver.resolve("__suspensionInvoke", options.minify_whitespace);
         if (transformer.class_define_property_used)

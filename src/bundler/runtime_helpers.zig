@@ -71,6 +71,7 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     public_field: ?[]const u8 = null,
     to_property_key: ?[]const u8 = null,
     native_parameter_named_property: ?[]const u8 = null,
+    native_setter: ?[]const u8 = null,
     wrap_regex: ?[]const u8 = null,
     yield_star: ?[]const u8 = null,
     keep_names: ?[]const u8 = null,
@@ -1433,6 +1434,28 @@ pub const KEEP_NAMES_RUNTIME =
 pub const KEEP_NAMES_RUNTIME_MIN =
     "var " ++ NAMES.NAME_MIN ++ "=(function(O){var c=O.create,d=O.defineProperty,e=O.getOwnPropertyDescriptor,p=O.getPrototypeOf,s=O.getOwnPropertySymbols,r=p?p(/./):null,k=r&&s?s(r):[],P=k.length&&p?p(k[0]):null,D=P?e(P,\"description\"):null,G=D&&D.get,Q=G&&G.call.bind(G);return function(t,v,p){var y=typeof v;if(y==\"symbol\"){var s=Q?Q(v):v.description;v=s===void 0?\"\":\"[\"+s+\"]\"}else if(v!==null&&(y==\"object\"||y==\"function\"))return t;var x=c(null);x.value=p?p+\" \"+v:\"\"+v;x.configurable=true;return d(t,\"name\",x)}})(({}).constructor);";
 
+/// A genuine ES5 setter stays non-constructible and has no own prototype.
+/// Invoke the lowered source body without exposing its ordinary-function ABI.
+pub const NATIVE_SETTER_RUNTIME =
+    \\var __nativeSetter = (function(O) {
+    \\  var create = O.create, define = O.defineProperty, desc = O.getOwnPropertyDescriptor;
+    \\  var invoke = (function() {}).call.bind((function() {}).apply);
+    \\  return function(target, arity) {
+    \\    var setter = desc({ set value(v) { "use strict"; return invoke(target, this, arguments); } }, "value").set;
+    \\    var lengthDescriptor = create(null);
+    \\    lengthDescriptor.value = arity;
+    \\    lengthDescriptor.configurable = true;
+    \\    define(setter, "length", lengthDescriptor);
+    \\    var nameDescriptor = create(null);
+    \\    nameDescriptor.value = target.name;
+    \\    nameDescriptor.configurable = true;
+    \\    return define(setter, "name", nameDescriptor);
+    \\  };
+    \\})(({}).constructor);
+    \\
+;
+pub const NATIVE_SETTER_RUNTIME_MIN = "var " ++ NAMES.NATIVE_SETTER_MIN ++ "=(function(O){var c=O.create,d=O.defineProperty,e=O.getOwnPropertyDescriptor,i=(function(){}).call.bind((function(){}).apply);return function(t,a){var f=e({set value(v){\"use strict\";return i(t,this,arguments)}},\"value\").set,l=c(null);l.value=a;l.configurable=true;d(f,\"length\",l);var n=c(null);n.value=t.name;n.configurable=true;return d(f,\"name\",n)}})(({}).constructor);";
+
 /// Carry a converted computed key across its property's value evaluation so an
 /// immediately created captured arrow can receive the name inferred by the
 /// original object-literal property without introducing object spread syntax.
@@ -2431,6 +2454,9 @@ fn appendRuntimeHelpersInternal(
             default_name,
             local_names.keep_names orelse default_name,
         );
+    }
+    if (local_names.native_setter) |local| {
+        try appendRuntimeTemplateWithLocalName(buf, allocator, if (minify) NATIVE_SETTER_RUNTIME_MIN else NATIVE_SETTER_RUNTIME, helperName("__nativeSetter", minify), local);
     }
     if (helpers.native_parameter_named_property) {
         const default_name = helperName("__namedProperty", minify);

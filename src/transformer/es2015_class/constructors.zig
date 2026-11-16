@@ -166,7 +166,12 @@ pub fn Constructors(comptime Transformer: type) type {
             const param_needs_new_target = self.hasLexicalCaptureSince(param_capture_use_start, self.capture_frame, .new_target_value);
             var param_lowering: ?es2015_params.ES2015Params(Transformer).LowerResult = null;
             if (es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, pp.new_params)) {
-                param_lowering = try es2015_params.ES2015Params(Transformer).lowerParamsPass2(self, pp.new_params, span);
+                param_lowering = try es2015_params.ES2015Params(Transformer).lowerConstructorParams(self, pp.new_params, span, .{
+                    .ast_owner = self.ast,
+                    .function_node = ctor_idx,
+                    .params_node = self.readNodeIdx(me, MethodExtra.params),
+                    .body_scope = self.current_scope,
+                });
             }
             defer if (param_lowering) |*lr| lr.body_stmts.deinit(self.allocator);
 

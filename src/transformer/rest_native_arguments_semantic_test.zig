@@ -652,6 +652,8 @@ test "unlinked arguments creator registers reads before parameter fragment movem
         }
     }
     var reads: usize = 0;
+    var length_reads: usize = 0;
+    var index_reads: usize = 0;
     for (f.t.semantic_editor.?.references.items[before..]) |row| {
         if (row.symbol_id != id or row.flags.declare) continue;
         try std.testing.expectEqual(f.owner.body_scope, row.scope_id);
@@ -664,7 +666,20 @@ test "unlinked arguments creator registers reads before parameter fragment movem
         try std.testing.expectEqual(f.owner.body_scope, origin.scope);
         var cursor = @backingInt(row.node_index);
         const member = parents.get(cursor).?;
-        try std.testing.expectEqual(ast_mod.Node.Tag.computed_member_expression, f.t.ast.nodes.items[member].tag);
+        const member_node = f.t.ast.nodes.items[member];
+        switch (member_node.tag) {
+            .static_member_expression => {
+                const key = f.t.ast.readExtraNode(member_node.data.extra, 1);
+                try std.testing.expectEqualStrings("length", f.t.ast.getText(f.t.ast.getNode(key).data.string_ref));
+                length_reads += 1;
+            },
+            .computed_member_expression => {
+                try std.testing.expectEqual(ast_mod.Node.Tag.numeric_literal, f.t.ast.getNode(f.t.ast.readExtraNode(member_node.data.extra, 1)).tag);
+                index_reads += 1;
+            },
+            else => return error.UnexpectedArgumentsSnapshotAccess,
+        }
+        try std.testing.expectEqual(row.node_index, f.t.ast.readExtraNode(member_node.data.extra, 0));
         while (parents.get(cursor)) |parent| {
             cursor = parent;
             if (f.t.ast.nodes.items[cursor].tag == .variable_declarator) break;
@@ -673,11 +688,13 @@ test "unlinked arguments creator registers reads before parameter fragment movem
         try std.testing.expectEqual(ast_mod.Node.Tag.variable_declarator, declarator.tag);
         try std.testing.expectEqual(@as(?u32, binding_id), f.t.getSymbolIdAt(f.t.ast.readExtraNode(declarator.data.extra, 0)));
         try std.testing.expectEqual(ast_mod.Node.Tag.variable_declaration, f.t.ast.nodes.items[parents.get(cursor).?].tag);
-        try std.testing.expectEqual(@as(?usize, 1), statements.get(@backingInt(row.node_index)));
+        try std.testing.expectEqual(@as(?usize, 0), statements.get(@backingInt(row.node_index)));
         _ = (try @import("native_arguments.zig").publication(f.t, @backingInt(row.node_index))).?;
         reads += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), reads);
+    try std.testing.expectEqual(@as(usize, 1), length_reads);
+    try std.testing.expectEqual(@as(usize, 1), index_reads);
     try std.testing.expectEqual(engines_before, f.t.native_arguments_declaration_origins.count());
-    std.debug.print("UNLINKED ARGUMENTS CREATOR reads=2 actual-declarator=1 pre-fragment-move=1\n", .{});
+    std.debug.print("UNLINKED ARGUMENTS CREATOR reads=2 length=1 index=1 snapshot-statement=0 pre-fragment-move=1\n", .{});
 }
