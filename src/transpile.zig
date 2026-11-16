@@ -16315,16 +16315,38 @@ test "function name elision scope boundary rejects overstatement with journal hi
     try live_parameter.importScopeHistory(editor.scopeHistoryView());
     try live_parameter.importNodeScopeProvenance(editor.node_scope_provenance);
     try live_parameter.importSourceOwnedRetirements(editor.source_owned_retirements);
-    const actual_formal = original.witness.formals[0];
-    try live_parameter.relocateSymbol(actual_formal.symbol_id, original.witness.parameter_scope);
-    try std.testing.expectEqual(original.witness.parameter_scope, live_parameter.symbols.items[@backingInt(actual_formal.symbol_id)].scope_id);
+    // The zero-cutoff output has no formal. The producer's exact completed
+    // old-header event identifies the real input cell now stored in G.
+    try std.testing.expectEqual(@as(usize, 0), original.witness.formals.len);
+    var actual_parameter: ?@import("semantic/symbol.zig").SymbolId = null;
+    for (editor.scopeHistoryView().events) |event| {
+        if (event.kind != .owner or event.scope != original.witness.parameter_scope or event.owner_after != null) continue;
+        const old_owner = event.owner_before orelse continue;
+        if (old_owner.tag != .formal_parameters) continue;
+        const old_header = t.ast.getNode(old_owner.node);
+        try std.testing.expectEqual(@as(u32, 1), old_header.data.list.len);
+        const parameter = t.ast.getNode(t.ast.readExtraNode(old_header.data.list.start, 0));
+        const binding = switch (parameter.tag) {
+            .assignment_pattern => parameter.data.binary.left,
+            .formal_parameter => t.ast.readExtraNode(parameter.data.extra, @import("parser/ast.zig").FormalParameterExtra.pattern),
+            else => return error.MissingActualLoweredParameter,
+        };
+        const input_sid = editor.symbol_ids.items[@backingInt(binding)] orelse return error.MissingActualLoweredParameter;
+        try std.testing.expect(actual_parameter == null);
+        try std.testing.expectEqual(original.witness.body_scope, editor.symbols.items[input_sid].scope_id);
+        try std.testing.expectEqual(@import("semantic/symbol.zig").SymbolKind.variable_var, editor.symbols.items[input_sid].kind);
+        actual_parameter = @fromBackingInt(input_sid);
+    }
+    const actual_parameter_id = actual_parameter orelse return error.MissingActualLoweredParameter;
+    try live_parameter.relocateSymbol(actual_parameter_id, original.witness.parameter_scope);
+    try std.testing.expectEqual(original.witness.parameter_scope, live_parameter.symbols.items[@backingInt(actual_parameter_id)].scope_id);
     try std.testing.expect(live_parameter.scope_maps.items[original.witness.parameter_scope.toIndex()].count() > 0);
     const live_rejected: ?usize = live_parameter.retireFunctionNameEnvironments(captures, receipt, .{ .node_scope_provenance = &live_parameter.node_scope_provenance }) catch |err| blk: {
         try std.testing.expect(err != error.OutOfMemory);
         break :blk null;
     };
     try std.testing.expectEqual(@as(?usize, null), live_rejected);
-    try std.testing.expectEqual(original.witness.parameter_scope, live_parameter.symbols.items[@backingInt(actual_formal.symbol_id)].scope_id);
+    try std.testing.expectEqual(original.witness.parameter_scope, live_parameter.symbols.items[@backingInt(actual_parameter_id)].scope_id);
     try std.testing.expectEqual(@as(usize, 0), live_parameter.source_owned_retirements.count());
     const AllocationCase = struct {
         fn run(heap: std.mem.Allocator, template: *const Editor, sources: []const Names.Source, actual_receipt: @import("semantic/function_retirement_receipt.zig").ApplicationReceipt) !void {
@@ -16358,7 +16380,7 @@ test "function name elision scope boundary rejects overstatement with journal hi
     try std.testing.expectEqual(original.witness.parameter_scope, engine_row.origin_scope);
     try std.testing.expectEqual(original.witness.body_scope, engine_row.scope_id);
     try std.testing.expect(Retirement.hasHistoricalArgumentsOrigin(&editor.source_owned_retirements, engine_sid, engine_row));
-    try std.testing.expect(!Retirement.hasHistoricalArgumentsOrigin(&editor.source_owned_retirements, @backingInt(actual_formal.symbol_id), editor.symbols.items[@backingInt(actual_formal.symbol_id)]));
+    try std.testing.expect(!Retirement.hasHistoricalArgumentsOrigin(&editor.source_owned_retirements, @backingInt(actual_parameter_id), editor.symbols.items[@backingInt(actual_parameter_id)]));
     var foreign_engine = engine_row;
     foreign_engine.scope_id = original.witness.outer_scope;
     try std.testing.expect(!Retirement.hasHistoricalArgumentsOrigin(&editor.source_owned_retirements, engine_sid, foreign_engine));

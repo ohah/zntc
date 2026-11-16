@@ -1051,7 +1051,9 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 const parameter_scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
                 if (self.options.unsupported.default_params and
                     (try sloppyBodyReadsArguments(self, self.current_scope, source_body_idx) or
-                        (!parameter_scopes[self.current_scope.toIndex()].is_strict and
+                        (self.semantic_edit_enabled and !self.current_scope.isNone() and
+                            self.current_scope.toIndex() < parameter_scopes.len and
+                            !parameter_scopes[self.current_scope.toIndex()].is_strict and
                             es2015_params.ES2015Params(Self).hasDefaultParameter(self, params_list))))
                     self.unlinked_parameter_bindings = &unlinked_parameters;
                 var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2ForFunction(self, params_list, node.span, .{
@@ -1061,7 +1063,7 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                     .body_scope = self.current_scope,
                 });
                 self.unlinked_parameter_bindings = null;
-                defer lr.body_stmts.deinit(self.allocator);
+                defer lr.deinit(self.allocator);
                 const parameter_execution_scope = if (lr.argument_shadow) |plan| plan.scope else self.current_scope;
                 if (lr.argument_shadow) |plan| if (!plan.block.isNone()) {
                     const wrapper_scope = body_wrapper_scope orelse @panic("native lexical shadow requires its planned body wrapper");
@@ -1138,6 +1140,17 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                         }
                     }
                 }
+                if (!retained_carrier) {
+                    _ = @import("../native_arguments.zig").completeErasedArityOwner(self, .{
+                        .ast_owner = self.ast,
+                        .function_node = @fromBackingInt(@as(u32, @intCast(i))),
+                        .params_node = params_idx,
+                        .body_scope = self.current_scope,
+                    }, new_params_node, lr.body_stmts.items, root, lr.arity_owner_completion) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => @panic("lowered arity cannot retire its completed parameter header"),
+                    };
+                }
                 if (lr.retained_prefix) |proof| if (!try es2015_params.ES2015Params(Self).validRetainedPrefix(self, proof, new_params_node))
                     @panic("retained native prefix lost its exact binding or storage owner");
             },
@@ -1170,7 +1183,7 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                     .params_node = params_idx,
                     .body_scope = self.current_scope,
                 });
-                defer lr.body_stmts.deinit(self.allocator);
+                defer lr.deinit(self.allocator);
                 // The result owns these slices until batch append succeeds.
                 // Cover every allocation/error edge during body assembly too.
                 defer if (lr.native_arrow_statements) |unregistered| {
@@ -1302,7 +1315,7 @@ test "lowered parameter import provenance moves before generic output validation
     }
 }
 
-test "lowered unused native arguments keeps its SID at the actual function owner" {
+test "lowered initially unused native arguments keeps its SID for actual arity snapshot reads" {
     const Scanner = @import("../../lexer/scanner.zig").Scanner;
     const Parser = @import("../../parser/parser.zig").Parser;
     const Analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
@@ -1364,12 +1377,13 @@ test "lowered unused native arguments keeps its SID at the actual function owner
                 else => continue,
             }
             const params = t.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.params);
-            try std.testing.expect(t.outputOwnedScope(params) == null);
+            try std.testing.expectEqual(@as(?ScopeId, source_scope), t.outputOwnedScope(params));
+            try std.testing.expectEqual(@as(u32, 0), t.ast.getNode(params).data.list.len);
             actual_owners += 1;
             actual_owner = raw;
         }
         try std.testing.expectEqual(@as(usize, 1), actual_owners);
-        try std.testing.expectEqual(@as(?ScopeId, body_scope), t.native_arguments_declaration_origins.get(id));
+        try std.testing.expectEqual(@as(?ScopeId, null), t.native_arguments_declaration_origins.get(id));
         // Final program assembly changes positions, never the engine identity.
         const empty = try t.ast.addNode(.{ .tag = .empty_statement, .span = .{ .start = 0, .end = 0 }, .data = .{ .none = 0 } });
         const old_list = t.ast.getNode(output).data.list;
@@ -1381,19 +1395,42 @@ test "lowered unused native arguments keeps its SID at the actual function owner
         const contexts = try @import("../../semantic/statement_coordinates.zig").collect(a, t.ast, output);
         const expected_context = contexts[actual_owner.?].?;
         try std.testing.expectEqual(@as(u32, 1), expected_context.stmt_idx);
-        try std.testing.expectEqual(body_scope, editor.symbols.items[id].scope_id);
-        try std.testing.expectEqual(@as(?usize, id), editor.scope_maps.items[body_scope.toIndex()].get("arguments"));
-        try std.testing.expect(editor.scope_maps.items[source_scope.toIndex()].get("arguments") == null);
+        try std.testing.expectEqual(source_scope, editor.symbols.items[id].scope_id);
+        try std.testing.expectEqual(source_scope, editor.scopes.items[body_scope.toIndex()].parent);
+        try std.testing.expectEqual(@as(?usize, id), editor.scope_maps.items[source_scope.toIndex()].get("arguments"));
+        try std.testing.expect(editor.scope_maps.items[body_scope.toIndex()].get("arguments") == null);
         var declarations: usize = 0;
+        var reads: usize = 0;
         for (editor.references.items) |row| {
             if (@backingInt(row.symbol_id) != id) continue;
-            try std.testing.expect(row.flags.declare and row.node_index.isNone() and row.declaration_node_index.isNone());
-            try std.testing.expectEqual(body_scope, row.scope_id);
-            try std.testing.expectEqual(expected_context.stmt_idx, row.stmt_idx);
-            try std.testing.expectEqual(expected_context.scope_stmt_idx, row.scope_stmt_idx);
-            declarations += 1;
+            if (row.flags.declare) {
+                try std.testing.expect(row.node_index.isNone() and row.declaration_node_index.isNone());
+                try std.testing.expectEqual(source_scope, row.scope_id);
+                var original: ?@import("../../semantic/symbol.zig").Reference = null;
+                for (analyzer.references.items) |source_row| if (@backingInt(source_row.symbol_id) == id and source_row.flags.declare) {
+                    try std.testing.expect(original == null);
+                    original = source_row;
+                };
+                try std.testing.expectEqualDeep(original.?, row);
+                declarations += 1;
+            } else {
+                try std.testing.expectEqualDeep(@as(@import("../../semantic/symbol.zig").ReferenceFlags, .{ .read = true }), row.flags);
+                try std.testing.expectEqual(body_scope, row.scope_id);
+                try std.testing.expectEqual(@as(?u32, id), t.getSymbolIdAt(row.node_index));
+                const context = contexts[@backingInt(row.node_index)].?;
+                try std.testing.expectEqual(context.stmt_idx, row.stmt_idx);
+                try std.testing.expectEqual(context.scope_stmt_idx, row.scope_stmt_idx);
+                const origin = t.native_arguments_reference_origins.get(@backingInt(row.node_index)).?;
+                try std.testing.expect(origin.source_parameter_engine);
+                try std.testing.expectEqual(source_scope, origin.owner_scope);
+                try std.testing.expectEqual(body_scope, origin.scope);
+                _ = (try @import("../native_arguments.zig").publication(&t, @backingInt(row.node_index))).?;
+                reads += 1;
+            }
         }
         try std.testing.expectEqual(@as(usize, 1), declarations);
+        try std.testing.expectEqual(@as(usize, 2), reads);
+        try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[id].reference_count);
     }
 }
 
@@ -3064,7 +3101,7 @@ test "native arrow formal birth creates raw reads before assembly relocation" {
             .params_node = params,
             .body_scope = body_scopes[index],
         });
-        defer lowered.body_stmts.deinit(a);
+        defer lowered.deinit(a);
         try std.testing.expect(lowered.native_arrow_formals != null);
         // Inspect the creator result before driver.moveSourceReferences can
         // relocate a wrongly born P read to its eventual body B.

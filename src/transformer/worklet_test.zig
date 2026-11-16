@@ -2409,6 +2409,10 @@ test "worklet class clone downlevel direct field initializers" {
     try checkWorkletSourceBirth("const outside='answer';class Clazz{__workletClass=true;static [outside]=42;method(){return Clazz[outside]}}", false, compat.fromESTarget(.es5));
 }
 
+test "worklet class clone default tail storage preserves exact parameter origins" {
+    try checkWorkletSourceBirthMode("const outside=42;class Clazz{__workletClass=true;method(head,tail=outside,last=tail){const local=last;return [head,tail,local]}}", false, compat.fromESTarget(.es5), true, false);
+}
+
 test "worklet class clone lowered fragments remain exact after real Pass2" {
     try checkWorkletSourceBirthMode(worklet_class_birth_sources[1], false, compat.fromESTarget(.es5), true, false);
     try checkWorkletSourceBirthMode("const outside=42;class Clazz{__workletClass=true;value=outside;method(){return this.value}}", false, compat.fromESTarget(.es5), true, false);

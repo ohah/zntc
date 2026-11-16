@@ -173,7 +173,7 @@ pub fn Constructors(comptime Transformer: type) type {
                     .body_scope = self.current_scope,
                 });
             }
-            defer if (param_lowering) |*lr| lr.body_stmts.deinit(self.allocator);
+            defer if (param_lowering) |*lr| lr.deinit(self.allocator);
 
             // Lowered default closures execute in the constructor body. Move
             // their exact lexical roots now, alongside the parameter storage,

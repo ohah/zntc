@@ -422,6 +422,185 @@ pub fn loweredArityEngineReference(
     return reference;
 }
 
+pub const ArityOwnerInput = struct {
+    binding: ast.NodeIndex,
+    symbol: SymbolId,
+    before: @import("../semantic/symbol.zig").Symbol,
+    output_binding: ast.NodeIndex,
+    snapshot: ast.NodeIndex,
+};
+
+/// Captured by the actual slot producer before changing parameter storage.
+/// Inputs are emitter-arena owned and must outlive this completion call.
+pub const ArityOwnerCompletion = struct {
+    ast_owner: *const ast.Ast,
+    function_owner: ast.NodeIndex,
+    params: ast.NodeIndex,
+    body_scope: ScopeId,
+    cutoff: u32,
+    inputs: []const ArityOwnerInput,
+};
+
+/// Complete only a zero-cutoff arity replacement whose actual input cells
+/// already entered body storage. Retire the obsolete header owner, not its
+/// lexical frame: later name-elision still owns that independent transaction.
+pub fn completeErasedArityOwner(
+    self: anytype,
+    owner: @import("es2015_params.zig").RestArgumentsOwner,
+    new_params: ast.NodeIndex,
+    pending_statements: []const ast.NodeIndex,
+    output_root: ast.NodeIndex,
+    completion: ?ArityOwnerCompletion,
+) !bool {
+    if (!self.semantic_edit_enabled or !self.options.unsupported.default_params) return false;
+    if (owner.ast_owner != self.ast or owner.function_node.isNone() or owner.params_node.isNone() or new_params.isNone() or output_root.isNone()) return error.InvalidNode;
+    for ([_]ast.NodeIndex{ owner.function_node, owner.params_node, new_params, output_root }) |node|
+        if (@backingInt(node) >= self.ast.nodes.items.len) return error.InvalidNode;
+    const function = self.ast.getNode(owner.function_node);
+    switch (function.tag) {
+        .function, .function_expression, .function_declaration, .method_definition => {},
+        else => return error.InvalidNode,
+    }
+    if (self.outputOwnedScope(owner.function_node) != owner.body_scope or
+        self.ast.readExtraNode(function.data.extra, ast.FunctionExtra.params) != new_params) return error.InvalidScope;
+    const proof = completion orelse return false;
+    if (proof.ast_owner != self.ast or proof.function_owner != owner.function_node or proof.params != owner.params_node or proof.body_scope != owner.body_scope or proof.cutoff != 0) return error.InvalidNode;
+    const old = self.ast.getNode(owner.params_node);
+    const replacement = self.ast.getNode(new_params);
+    if (old.tag != .formal_parameters or replacement.tag != .formal_parameters) return error.InvalidNode;
+    if (replacement.data.list.len != 0 or old.data.list.len == 0) return false;
+    if (proof.inputs.len != old.data.list.len) return error.InvalidNode;
+    const p = self.outputOwnedScope(owner.params_node) orelse return false;
+    const editor = if (self.semantic_editor) |*value| value else return false;
+    if (p == owner.body_scope or p.isNone() or p.toIndex() >= editor.scopes.items.len or
+        owner.body_scope.toIndex() >= editor.scopes.items.len) return false;
+    if (editor.scopes.items[p.toIndex()].kind != .function or
+        editor.scopes.items[owner.body_scope.toIndex()].kind != .function or
+        editor.scopes.items[owner.body_scope.toIndex()].parent != p or
+        editor.scopes.items[p.toIndex()].symbol_count != 0 or editor.scope_maps.items[p.toIndex()].count() != 0) return false;
+    if (self.outputOwnedScope(new_params) != null) return false;
+    var carrier = owner.params_node;
+    var remaining = self.ast.nodes.items.len;
+    while (self.scope_owner_origins.get(@backingInt(carrier))) |origin| {
+        if (origin == @backingInt(carrier)) break;
+        if (origin >= self.ast.nodes.items.len or remaining == 0) return error.InvalidNode;
+        remaining -= 1;
+        carrier = @fromBackingInt(origin);
+    }
+    if (editor.scope_owner_map.get(@backingInt(carrier)) != @as(?u32, @backingInt(p))) return false;
+    const source_header = self.ast.getNode(carrier);
+    if (source_header.tag != .formal_parameters or source_header.data.list.len != old.data.list.len) return error.InvalidNode;
+    // This completion exists only for the named-function environment whose
+    // later retirement needs its exact obsolete header alias accounted for.
+    const function_name = self.ast.readExtraNode(function.data.extra, ast.FunctionExtra.name);
+    if (function.tag != .function_expression or function_name.isNone()) return false;
+    const name_sid = self.getSymbolIdAt(function_name) orelse return error.InvalidSymbol;
+    if (name_sid >= editor.symbols.items.len) return error.InvalidSymbol;
+    const name_symbol = editor.symbols.items[name_sid];
+    if (name_symbol.reference_count != 0 or name_symbol.write_count != 0) {
+        return false;
+    }
+    const name_scope = name_symbol.scope_id;
+    if (editor.scopes.items[p.toIndex()].parent != name_scope or name_scope.isNone() or
+        name_scope.toIndex() >= editor.scopes.items.len or editor.scopes.items[name_scope.toIndex()].kind != .block) return false;
+    const live = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(self.allocator, self.ast, output_root);
+    defer self.allocator.free(live);
+    for (live) |raw| {
+        const candidate = self.ast.nodes.items[raw];
+        switch (candidate.tag) {
+            .function, .function_expression, .function_declaration, .method_definition => {},
+            else => continue,
+        }
+        if (@as(ast.NodeIndex, @fromBackingInt(raw)) == owner.function_node) continue;
+        const params = self.ast.readExtraNode(candidate.data.extra, ast.FunctionExtra.params);
+        if (params == owner.params_node or params == carrier) return false;
+    }
+    for (live) |raw| if (raw == @backingInt(carrier)) return false;
+    var pending: std.ArrayList(u32) = .empty;
+    defer pending.deinit(self.allocator);
+    for (pending_statements) |statement| {
+        const nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(self.allocator, self.ast, statement);
+        defer self.allocator.free(nodes);
+        try pending.appendSlice(self.allocator, nodes);
+    }
+    for (0..old.data.list.len) |offset| {
+        const formal_index = self.ast.readExtraNode(old.data.list.start, @intCast(offset));
+        const formal = self.ast.getNode(formal_index);
+        const binding = switch (formal.tag) {
+            .binding_identifier => formal_index,
+            .assignment_pattern => formal.data.binary.left,
+            .formal_parameter => self.ast.readExtraNode(formal.data.extra, ast.FormalParameterExtra.pattern),
+            else => return false,
+        };
+        if (binding.isNone() or self.ast.getNode(binding).tag != .binding_identifier) return false;
+        const source_formal_index = self.ast.readExtraNode(source_header.data.list.start, @intCast(offset));
+        const source_formal = self.ast.getNode(source_formal_index);
+        const source_binding = switch (source_formal.tag) {
+            .binding_identifier => source_formal_index,
+            .assignment_pattern => source_formal.data.binary.left,
+            .formal_parameter => self.ast.readExtraNode(source_formal.data.extra, ast.FormalParameterExtra.pattern),
+            else => return error.InvalidNode,
+        };
+        if (self.getSymbolIdAt(source_binding) != self.getSymbolIdAt(binding)) return error.InvalidSymbol;
+        const sid = self.getSymbolIdAt(binding) orelse return error.InvalidSymbol;
+        if (sid >= editor.symbols.items.len) return error.InvalidSymbol;
+        const symbol = editor.symbols.items[sid];
+        const input_proof = proof.inputs[offset];
+        if (input_proof.binding != binding or @backingInt(input_proof.symbol) != sid or
+            input_proof.before.kind != .parameter or input_proof.before.synthetic_kind == .implicit_arguments or
+            (input_proof.before.scope_id != p and input_proof.before.scope_id != owner.body_scope) or
+            input_proof.before.scope_id.isNone() or symbol.scope_id != owner.body_scope or symbol.kind != .variable_var or
+            self.getSymbolIdAt(input_proof.output_binding) != @as(?u32, sid)) return error.InvalidScope;
+        const before_map = editor.scope_maps.items[owner.body_scope.toIndex()];
+        const output_symbol_name = if (symbol.synthetic_name.len != 0) symbol.synthetic_name else self.ast.getText(symbol.name);
+        if (before_map.get(output_symbol_name) != @as(?usize, sid)) return error.InvalidSymbol;
+        var snapshots: usize = 0;
+        for (pending.items) |raw| {
+            const declaration = self.ast.nodes.items[raw];
+            if (declaration.tag != .variable_declarator or @as(ast.NodeIndex, @fromBackingInt(raw)) != input_proof.snapshot) continue;
+            const target = self.ast.readExtraNode(declaration.data.extra, 0);
+            if (target != input_proof.output_binding) return error.InvalidNode;
+            if (self.getSymbolIdAt(target) != @as(?u32, sid)) continue;
+            const value = self.ast.readExtraNode(declaration.data.extra, 2);
+            if (value.isNone() or self.ast.getNode(value).tag != .conditional_expression) continue;
+            const input = self.ast.getNode(value).data.ternary;
+            const condition = self.ast.getNode(input.a);
+            if (condition.tag != .binary_expression or condition.data.binary.flags != @backingInt(@import("../lexer/token.zig").Kind.r_angle)) continue;
+            const length = self.ast.getNode(condition.data.binary.left);
+            const slot = self.ast.getNode(input.b);
+            if (length.tag != .static_member_expression or slot.tag != .computed_member_expression) continue;
+            const key = self.ast.readExtraNode(length.data.extra, 1);
+            if (!std.mem.eql(u8, self.ast.getText(self.ast.getNode(key).data.string_ref), "length")) continue;
+            const bound = self.ast.getNode(condition.data.binary.right);
+            const index = self.ast.getNode(self.ast.readExtraNode(slot.data.extra, 1));
+            if (bound.tag != .numeric_literal or index.tag != .numeric_literal or
+                (std.fmt.parseInt(usize, self.ast.getText(bound.span), 10) catch continue) != offset or
+                (std.fmt.parseInt(usize, self.ast.getText(index.span), 10) catch continue) != offset) continue;
+            const count_ref = self.ast.readExtraNode(length.data.extra, 0);
+            const value_ref = self.ast.readExtraNode(slot.data.extra, 0);
+            if (count_ref == value_ref) return error.InvalidNode;
+            const engine = self.getSymbolIdAt(count_ref) orelse return error.InvalidSymbol;
+            if (self.getSymbolIdAt(value_ref) != @as(?u32, engine) or engine >= editor.symbols.items.len or
+                editor.symbols.items[engine].synthetic_kind != .implicit_arguments or editor.symbols.items[engine].scope_id != owner.body_scope or
+                self.native_arguments_declaration_origins.get(engine) != owner.body_scope) return error.InvalidSymbol;
+            for ([_]ast.NodeIndex{ count_ref, value_ref }) |reference| {
+                const origin = self.native_arguments_reference_origins.get(@backingInt(reference)) orelse return error.InvalidNode;
+                if (@backingInt(origin.symbol_id) != engine or origin.owner_scope != owner.body_scope or origin.scope != owner.body_scope) return error.InvalidScope;
+                _ = (try publication(self, @backingInt(reference))) orelse return error.InvalidNode;
+            }
+            snapshots += 1;
+        }
+        if (snapshots != 1) return error.InvalidNode;
+    }
+    // The exact old carrier has no remaining live function consumer. Preserve
+    // its immutable Source node and record only completion of its owner role.
+    try self.scope_owner_removed.put(self.allocator, @backingInt(carrier), {});
+    _ = self.scope_owner_remaps.remove(@backingInt(carrier));
+    _ = self.transformed_scope_owner_map.remove(@backingInt(carrier));
+    if (!try editor.removeScopeOwner(carrier)) return error.InvalidScope;
+    return true;
+}
+
 pub fn record(self: anytype, id: SymbolId, scope: ScopeId) !void {
     const slot = try self.native_arguments_declaration_origins.getOrPut(self.allocator, @backingInt(id));
     if (slot.found_existing and slot.value_ptr.* != scope)

@@ -555,6 +555,102 @@ pub fn handoffSimpleParameterDeclarations(self: anytype, function: ast.NodeIndex
     }
 }
 
+pub const ArityParameterStorageMove = struct {
+    ast_owner: *ast.Ast,
+    function: ast.NodeIndex,
+    params: ast.NodeIndex,
+    binding: ast.NodeIndex,
+    symbol_id: symbol.SymbolId,
+    before: @import("../semantic/scope.zig").ScopeId,
+    target: @import("../semantic/scope.zig").ScopeId,
+    origins: []const Origin,
+    const Origin = struct { node: u32, birth: state.WorkletClassReferenceOrigin };
+};
+
+/// The arity producer moves only an actual tail formal's storage. Preserve
+/// each clone declaration anchor and its creator; reads keep execution scopes.
+pub fn prepareArityParameterStorageMove(self: anytype, function: ast.NodeIndex, params: ast.NodeIndex, binding: ast.NodeIndex, id: symbol.SymbolId, target: @import("../semantic/scope.zig").ScopeId) !?ArityParameterStorageMove {
+    if (!self.semantic_edit_enabled or self.plugins.worklet.class_reference_origins.count() == 0) return null;
+    const editor = &self.semantic_editor.?;
+    var origins: std.ArrayList(ArityParameterStorageMove.Origin) = .empty;
+    errdefer origins.deinit(self.allocator);
+    const raw_id = @backingInt(id);
+    if (raw_id >= editor.symbols.items.len) return error.InvalidWorkletCloneOrigin;
+    const before = editor.symbols.items[raw_id].scope_id;
+    var entries = self.plugins.worklet.class_reference_origins.iterator();
+    while (entries.next()) |entry| {
+        const birth = entry.value_ptr.*;
+        if (birth.symbol != id or !birth.flags.declare) continue;
+        if (birth.scope != before or birth.factory >= self.plugins.worklet.class_factories.items.len or
+            entry.key_ptr.* >= editor.symbol_ids.items.len or editor.symbol_ids.items[entry.key_ptr.*] != raw_id)
+            return error.InvalidWorkletCloneOrigin;
+        try origins.append(self.allocator, .{ .node = entry.key_ptr.*, .birth = birth });
+    }
+    if (origins.items.len == 0) return null;
+    if (self.getSymbolIdAt(binding) != @as(?u32, raw_id) or
+        self.outputOwnedScope(function) != target or self.current_scope != target or
+        self.ast.readExtraNode(self.ast.getNode(function).data.extra, ast.FunctionExtra.params) != params or
+        self.ast.getNode(params).tag != .formal_parameters or target.isNone() or before.isNone() or
+        target.toIndex() >= editor.scopes.items.len or before.toIndex() >= editor.scopes.items.len or
+        editor.scopes.items[target.toIndex()].kind != .function or
+        (before != target and (self.outputOwnedScope(params) != before or editor.scopes.items[target.toIndex()].parent != before)) or
+        editor.symbols.items[raw_id].kind != .parameter) return error.InvalidWorkletCloneOrigin;
+    for (origins.items) |origin| {
+        var actual_formal = false;
+        const list = self.ast.getNode(params).data.list;
+        for (0..list.len) |offset| {
+            var leaves = try @import("../parser/ast_walk.zig").bindingIdentifiers(self.allocator, self.ast, self.ast.readExtraNode(list.start, @intCast(offset)), .{});
+            defer leaves.deinit();
+            while (try leaves.next()) |leaf| if (@backingInt(leaf) == origin.node and self.getSymbolIdAt(leaf) == @as(?u32, raw_id)) {
+                actual_formal = true;
+            };
+        }
+        if (!actual_formal) return error.InvalidWorkletCloneOrigin;
+        const factory = self.plugins.worklet.class_factories.items[origin.birth.factory];
+        if (factory.ast_owner != self.ast) return error.InvalidWorkletFactoryOwner;
+        var scope = target;
+        var fuel = editor.scopes.items.len + 1;
+        while (scope != factory.scope and !scope.isNone() and fuel != 0) : (fuel -= 1) scope = editor.scopes.items[scope.toIndex()].parent;
+        if (scope != factory.scope or fuel == 0) return error.InvalidWorkletCloneOrigin;
+        var count: usize = 0;
+        for (editor.references.items) |row| {
+            if (row.symbol_id != id or !row.flags.declare) continue;
+            if (@backingInt(row.declaration_node_index) != origin.node or row.scope_id != before or !std.meta.eql(row.flags, origin.birth.flags))
+                return error.InvalidWorkletCloneOrigin;
+            count += 1;
+        }
+        if (count != 1) return error.InvalidWorkletCloneOrigin;
+    }
+    return .{ .ast_owner = self.ast, .function = function, .params = params, .binding = binding, .symbol_id = id, .before = before, .target = target, .origins = try origins.toOwnedSlice(self.allocator) };
+}
+
+pub fn completeArityParameterStorageMove(self: anytype, move: ArityParameterStorageMove) !void {
+    const editor = &self.semantic_editor.?;
+    if (move.ast_owner != self.ast or self.outputOwnedScope(move.function) != move.target or
+        self.getSymbolIdAt(move.binding) != @as(?u32, @backingInt(move.symbol_id)) or
+        @backingInt(move.symbol_id) >= editor.symbols.items.len or
+        editor.symbols.items[@backingInt(move.symbol_id)].scope_id != move.target or
+        editor.symbols.items[@backingInt(move.symbol_id)].kind != .variable_var or move.origins.len == 0)
+        return error.InvalidWorkletCloneOrigin;
+    // Validate every participant before changing any ledger row.
+    for (move.origins) |origin| {
+        const current = self.plugins.worklet.class_reference_origins.get(origin.node) orelse return error.MissingWorkletCloneOrigin;
+        if (!std.meta.eql(current, origin.birth) or current.scope != move.before or current.symbol != move.symbol_id or
+            current.factory >= self.plugins.worklet.class_factories.items.len or
+            self.plugins.worklet.class_factories.items[current.factory].ast_owner != self.ast)
+            return error.InvalidWorkletCloneOrigin;
+        var count: usize = 0;
+        for (editor.references.items) |row| {
+            if (!row.flags.declare or row.symbol_id != move.symbol_id) continue;
+            if (@backingInt(row.declaration_node_index) != origin.node or row.scope_id != move.target or !std.meta.eql(row.flags, origin.birth.flags))
+                return error.InvalidWorkletCloneOrigin;
+            count += 1;
+        }
+        if (count != 1) return error.InvalidWorkletCloneOrigin;
+    }
+    for (move.origins) |origin| self.plugins.worklet.class_reference_origins.getPtr(origin.node).?.scope = move.target;
+}
+
 pub const ClassSelfStorageMove = struct {
     ast_owner: *ast.Ast,
     factory: usize,
