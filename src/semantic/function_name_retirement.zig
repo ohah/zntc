@@ -135,10 +135,20 @@ fn ownerAliases(a: std.mem.Allocator, editor: anytype, root_live: *const std.Dyn
         }) orelse return error.InvalidNode;
         if (scope == n) {
             if (index != name or owner.tag != .binding_identifier) return error.InvalidScope;
-        } else if (index == params or entry.key_ptr.* >= root_live.capacity() or root_live.isSet(entry.key_ptr.*) or !oldCarrierMatches(editor.ast, owner, formals)) return error.InvalidScope;
+        } else if (index == params) {
+            // An erased-arity producer may retain its empty parameter frame
+            // on the actual replacement header. Elision consumes that owner.
+            if (formals.len != 0 or entry.key_ptr.* >= root_live.capacity() or !root_live.isSet(entry.key_ptr.*) or !oldCarrierMatches(editor.ast, owner, formals)) return error.InvalidScope;
+        } else if (entry.key_ptr.* >= root_live.capacity() or root_live.isSet(entry.key_ptr.*) or !oldCarrierMatches(editor.ast, owner, formals)) return error.InvalidScope;
         try result.append(a, .{ .scope = scope, .owner = owner });
     }
     return try result.toOwnedSlice(a);
+}
+
+pub fn hasCurrentEmptyParameterOwner(w: Witness) bool {
+    if (!w.retire_parameters or w.parameter_scope.isNone() or w.formals.len != 0) return false;
+    for (w.owners) |alias| if (alias.scope == w.parameter_scope and alias.owner.node == w.event.parameters and alias.owner.tag == .formal_parameters) return true;
+    return false;
 }
 
 pub fn validateOwnerAliases(w: Witness, ast: *const ast_mod.Ast, live: *const std.DynamicBitSet, owners: *const std.AutoHashMapUnmanaged(u32, u32), published: bool) bool {
@@ -150,7 +160,9 @@ pub fn validateOwnerAliases(w: Witness, ast: *const ast_mod.Ast, live: *const st
         if (current == null or !std.meta.eql(current.?, alias.owner)) return false;
         if (alias.scope == w.name_scope) {
             if (alias.owner.node != w.event.name or alias.owner.tag != .binding_identifier) return false;
-        } else if (alias.owner.node == w.event.parameters or live.isSet(raw) or !oldCarrierMatches(ast, alias.owner, w.formals)) return false;
+        } else if (alias.owner.node == w.event.parameters) {
+            if (w.formals.len != 0 or !live.isSet(raw) or !oldCarrierMatches(ast, alias.owner, w.formals)) return false;
+        } else if (live.isSet(raw) or !oldCarrierMatches(ast, alias.owner, w.formals)) return false;
         if (published) {
             if (owners.contains(raw)) return false;
         } else if (owners.get(raw) != @as(?u32, @backingInt(alias.scope))) return false;
@@ -376,7 +388,8 @@ pub fn captureAll(a: std.mem.Allocator, editor: anytype, root: NodeIndex, origin
         };
         if (declaration == null) return error.ReferenceNotFound;
         const formal_scope = if (!p.isNone() and !retire_parameters) p else g;
-        const formals = (try actualFormals(a, editor, params, formal_scope, !p.isNone() and !retire_parameters)) orelse continue;
+        const header_scope = if (retire_parameters and editor.scope_owner_map.get(@backingInt(params)) == @as(?u32, @backingInt(p))) p else formal_scope;
+        const formals = (try actualFormals(a, editor, params, header_scope, !p.isNone() and !retire_parameters)) orelse continue;
         errdefer a.free(formals);
         const engine = try actualEngine(editor, formal_scope, origins, if (p.isNone()) @fromBackingInt(raw) else .none, n);
         const owner_rows = try ownerAliases(a, editor, &live, n, if (retire_parameters) p else .none, name, params, formals);

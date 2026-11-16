@@ -16265,6 +16265,10 @@ test "function name elision scope boundary rejects overstatement with journal hi
         cloned_source = capture;
     };
     const original = cloned_source orelse return error.MissingActualClonedFunctionName;
+    try std.testing.expect(Names.hasCurrentEmptyParameterOwner(original.witness));
+    try std.testing.expectEqual(@as(?u32, @backingInt(original.witness.parameter_scope)), editor.scope_owner_map.get(@backingInt(original.witness.event.parameters)));
+    try std.testing.expectEqual(@as(u32, 0), t.ast.getNode(original.witness.event.parameters).data.list.len);
+    try std.testing.expectEqual(original.witness.parameter_scope, editor.scopes.items[original.witness.body_scope.toIndex()].parent);
     const sid = @backingInt(original.witness.event.symbol_id);
     try std.testing.expect(!original.witness.parameter_scope.isNone());
     const old_count = editor.scopes.items[original.before.scope_id.toIndex()].symbol_count;
@@ -16278,7 +16282,7 @@ test "function name elision scope boundary rejects overstatement with journal hi
     std.debug.print("NAME_ELISION source_count={d} actual_events={d} selected_clone_owner={d} nameSID={d} N={d} P={d} G={d} outer={d}\n", .{ captures.len, receipt.function_name_elisions.len, @backingInt(original.witness.event.owner), sid, @backingInt(original.witness.name_scope), @backingInt(original.witness.parameter_scope), @backingInt(original.witness.body_scope), @backingInt(original.witness.outer_scope) });
     const before_rows = try a.dupe(SemanticReference, editor.references.items);
     const before_ids = try a.dupe(?u32, editor.symbol_ids.items);
-    for (0..8) |poison| {
+    for (0..9) |poison| {
         var wrong = original;
         var forged = receipt;
         const events = try a.dupe(Names.Elision, receipt.function_name_elisions);
@@ -16297,6 +16301,7 @@ test "function name elision scope boundary rejects overstatement with journal hi
                 forged.function_name_elisions = events;
             },
             7 => wrong.witness.outer_scope = wrong.witness.name_scope,
+            8 => editor.scope_owner_map.getPtr(@backingInt(original.witness.event.parameters)).?.* = @backingInt(original.witness.body_scope),
             else => unreachable,
         }
         const rejected: ?usize = editor.retireFunctionNameEnvironments(&.{wrong}, forged, .{ .node_scope_provenance = &editor.node_scope_provenance }) catch |err| blk: {
@@ -16304,6 +16309,10 @@ test "function name elision scope boundary rejects overstatement with journal hi
             break :blk null;
         };
         try std.testing.expectEqual(@as(?usize, null), rejected);
+        if (poison == 8) {
+            try std.testing.expectEqual(@as(?u32, @backingInt(original.witness.body_scope)), editor.scope_owner_map.get(@backingInt(original.witness.event.parameters)));
+            editor.scope_owner_map.getPtr(@backingInt(original.witness.event.parameters)).?.* = @backingInt(original.witness.parameter_scope);
+        }
         try std.testing.expectEqualSlices(?u32, before_ids, editor.symbol_ids.items);
         try std.testing.expectEqualDeep(before_rows, editor.references.items);
         try std.testing.expectEqual(old_count, editor.scopes.items[original.before.scope_id.toIndex()].symbol_count);
@@ -16324,6 +16333,10 @@ test "function name elision scope boundary rejects overstatement with journal hi
         const old_owner = event.owner_before orelse continue;
         if (old_owner.tag != .formal_parameters) continue;
         const old_header = t.ast.getNode(old_owner.node);
+        if (old_owner.node == original.witness.event.parameters) {
+            try std.testing.expectEqual(@as(u32, 0), old_header.data.list.len);
+            continue;
+        }
         try std.testing.expectEqual(@as(u32, 1), old_header.data.list.len);
         const parameter = t.ast.getNode(t.ast.readExtraNode(old_header.data.list.start, 0));
         const binding = switch (parameter.tag) {
