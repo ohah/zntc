@@ -950,6 +950,7 @@ pub const Transformer = struct {
     runtime_helpers: RuntimeHelpers = .{},
     /// A real pinned class-descriptor callsite requires this standalone helper.
     class_define_property_used: bool = false,
+    native_setter_used: bool = false,
     spread_props_used: bool = false,
     spread_intrinsics_isolated: bool = false,
     suspension_invoke_used: bool = false,
@@ -1393,6 +1394,7 @@ pub const Transformer = struct {
     pub const hasLexicalCaptureSince = @import("transformer/semantic_edit.zig").hasLexicalCaptureSince;
     pub const shouldCaptureArguments = @import("transformer/semantic_edit.zig").shouldCaptureArguments;
     pub const makeNativeArgumentsRef = @import("transformer/semantic_edit.zig").makeNativeArgumentsRef;
+    pub const makeLoweredArityArgumentsRef = @import("transformer/semantic_edit.zig").makeLoweredArityArgumentsRef;
     pub const makeCapturedArgumentsInit = @import("transformer/semantic_edit.zig").makeCapturedArgumentsInit;
     pub const makeSyntheticRefForSymbol = @import("transformer/semantic_edit.zig").makeSyntheticRefForSymbol;
     pub const addSyntheticRefInScope = @import("transformer/semantic_edit.zig").addSyntheticRefInScope;

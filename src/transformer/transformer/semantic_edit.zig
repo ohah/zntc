@@ -3453,6 +3453,15 @@ pub fn makeNativeArgumentsRef(self: *Transformer, owner_scope: ScopeId, use_scop
     return reference;
 }
 
+pub fn makeLoweredArityArgumentsRef(self: *Transformer, owner: @import("../es2015_params.zig").RestArgumentsOwner, span: Span) Transformer.Error!?NodeIndex {
+    if (owner.ast_owner != self.ast) @panic("lowered arity arguments has a foreign AST owner");
+    if (self.semantic_edit_enabled) _ = try editorFor(self);
+    return @import("../native_arguments.zig").loweredArityEngineReference(self, owner.function_node, owner.params_node, owner.body_scope, span) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => @panic("lowered arity lost its exact arguments producer"),
+    };
+}
+
 /// Create the implicit arguments engine for a generated ordinary function
 /// without adding a reference node. Some body captures must rebind existing
 /// source references to this exact output owner instead of emitting a throwaway

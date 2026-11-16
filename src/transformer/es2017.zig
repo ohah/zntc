@@ -488,7 +488,30 @@ pub fn ES2017(comptime Transformer: type) type {
                 arguments_plan.existingParameterEngine(self, params_idx, state_parent_scope)
             else
                 null;
-            const args_ref = if ((native_owner == state_parent_scope and arguments_plan.hasAvailableEngineSlot(self, native_owner)) or
+            // A Source formal called arguments is not this wrapper's native
+            // input list. Establish its exact output engine before the arity
+            // pass can add snapshot reads to that same physical function.
+            var source_arguments_parameter = false;
+            if (!native_params_retained and self.options.unsupported.default_params and self.semantic_edit_enabled) {
+                const editor = &self.semantic_editor.?;
+                for (0..params_list.len) |offset| {
+                    var bindings = try ast_walk.bindingIdentifiers(self.allocator, self.ast, self.ast.readExtraNode(params_list.start, @intCast(offset)), .{});
+                    defer bindings.deinit();
+                    while (try bindings.next()) |binding| {
+                        const id = self.getSymbolIdAt(binding) orelse continue;
+                        if (id >= editor.symbols.items.len) continue;
+                        const parameter = editor.symbols.items[id];
+                        if (parameter.kind == .parameter and parameter.synthetic_kind == null and
+                            parameter.scope_id == native_owner and
+                            @import("../lexer/scanner.zig").Scanner.identifierValueEquals(self.ast.getText(parameter.name), "arguments")) source_arguments_parameter = true;
+                    }
+                }
+            }
+            const source_arguments_engine = if (source_arguments_parameter)
+                try self.makeLoweredArityArgumentsRef(.{ .ast_owner = self.ast, .function_node = source_owner, .params_node = params_idx, .body_scope = state_parent_scope }, span)
+            else
+                null;
+            const args_ref = if (source_arguments_engine) |reference| reference else if ((native_owner == state_parent_scope and arguments_plan.hasAvailableEngineSlot(self, native_owner)) or
                 arguments_plan.hasRetainedParameterEngine(self, params_idx, state_parent_scope) or parameter_handoff)
                 try self.makeNativeArgumentsRef(native_owner, state_parent_scope, span)
             else if (existing_parameter_engine) |id| blk: {

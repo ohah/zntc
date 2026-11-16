@@ -272,7 +272,17 @@ pub fn ES2015Params(comptime Transformer: type) type {
             return false;
         }
 
-        /// 파라미터 목록에서 default/rest 파라미터가 있는지 검사한다.
+        /// Whether the actual input list has a top-level default boundary.
+        pub fn hasDefaultParameter(self: *const Transformer, params: NodeList) bool {
+            for (0..params.len) |offset| {
+                const parameter = self.ast.getNode(self.ast.readExtraNode(params.start, @intCast(offset)));
+                if (parameter.tag == .assignment_pattern or
+                    (parameter.tag == .formal_parameter and !self.ast.readExtraNode(parameter.data.extra, ast_mod.FormalParameterExtra.default).isNone())) return true;
+            }
+            return false;
+        }
+
+        /// Whether the input list needs default/rest/destructuring lowering.
         pub fn hasDefaultOrRest(self: *const Transformer, params: ast_mod.NodeList) bool {
             const old_params = self.ast.extra_data.items[params.start .. params.start + params.len];
             for (old_params) |raw_idx| {
@@ -321,6 +331,12 @@ pub fn ES2015Params(comptime Transformer: type) type {
             span: Span,
         ) Transformer.Error!LowerResult {
             return lowerParamsImpl(self, params, span, true, null, null, null, null);
+        }
+
+        /// The class producer has already visited these parameters, while its
+        /// exact source constructor still owns the parameter/body edge.
+        pub fn lowerConstructorParams(self: *Transformer, params: NodeList, span: Span, owner: RestArgumentsOwner) Transformer.Error!LowerResult {
+            return lowerParamsImpl(self, params, span, true, null, null, null, owner);
         }
 
         /// Structural mistakes are not an invitation to create a global.
@@ -858,6 +874,28 @@ pub fn ES2015Params(comptime Transformer: type) type {
             return reference;
         }
 
+        fn loweredInputSlotBinding(self: *Transformer, formal: NodeIndex) Transformer.Error!NodeIndex {
+            if (@import("native_constructor_timing.zig").simpleFormalBinding(self, formal)) |binding| return binding;
+            const node = self.ast.getNode(formal);
+            // Cover-grammar arrow formals retain their exact parameter SID on
+            // an identifier-reference payload. Publish a real output binding,
+            // never infer its identity from the spelling or source position.
+            if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier)
+                @panic("lowered arity requires an actual simple input slot");
+            const id = self.getSymbolIdAt(formal) orelse @panic("lowered arrow input has no source identity");
+            const symbol = self.semantic_editor.?.symbols.items[id];
+            if (symbol.kind != .parameter or !symbol.decl_flags.is_parameter)
+                @panic("lowered arrow input is not an actual parameter");
+            const name = if (symbol.synthetic_name.len != 0) try self.ast.addString(symbol.synthetic_name) else node.data.string_ref;
+            const binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, name);
+            try self.setGeneratedSymbolId(binding, id);
+            return binding;
+        }
+
+        fn arityArgumentsReference(self: *Transformer, owner: RestArgumentsOwner, span: Span) Transformer.Error!?NodeIndex {
+            return self.makeLoweredArityArgumentsRef(owner, span);
+        }
+
         fn lowerParamsImpl(
             self: *Transformer,
             params: ast_mod.NodeList,
@@ -872,6 +910,27 @@ pub fn ES2015Params(comptime Transformer: type) type {
             defer self.scratch.shrinkRetainingCapacity(param_scratch_top);
 
             var body_stmts: std.ArrayList(NodeIndex) = .empty;
+            var rest_snapshots: std.ArrayList(NodeIndex) = .empty;
+            defer rest_snapshots.deinit(self.allocator);
+            // ES5 has no default-formal syntax to tell the engine where
+            // Function.length stops. Preserve the native prefix and move the
+            // remaining input slots into body storage at this producer.
+            var arity_cutoff: ?u32 = null;
+            var arity_arguments: ?NodeIndex = null;
+            if (self.options.unsupported.default_params) if (function_owner) |owner| {
+                const function = self.ast.getNode(owner.function_node);
+                const native_setter = function.tag == .method_definition and
+                    self.ast.readExtra(function.data.extra, ast_mod.MethodExtra.flags) & ast_mod.MethodFlags.is_setter != 0;
+                if (!native_setter) for (0..params.len) |offset| {
+                    const parameter = self.ast.getNode(self.ast.readExtraNode(params.start, @intCast(offset)));
+                    const has_default = parameter.tag == .assignment_pattern or
+                        (parameter.tag == .formal_parameter and !self.ast.readExtraNode(parameter.data.extra, ast_mod.FormalParameterExtra.default).isNone());
+                    if (!has_default) continue;
+                    arity_arguments = try arityArgumentsReference(self, owner, span);
+                    if (arity_arguments != null) arity_cutoff = @intCast(offset);
+                    break;
+                };
+            };
             const unlinked_engine = if (self.unlinked_parameter_bindings != null and function_owner != null)
                 unlinkedArgumentsOwner(self, params, function_owner.?) catch @panic("unlinked parameter lost its native arguments handoff")
             else
@@ -946,16 +1005,25 @@ pub fn ES2015Params(comptime Transformer: type) type {
                         // `...[c, d = c]`: the slice goes to a temp and the pattern
                         // reads it, like a destructured parameter. A pattern left on
                         // the `var` stayed ES2015 syntax (#5668).
-                        try buildRestPatternParam(self, rest_binding, param_index, &body_stmts, span, rest_owner, unlinked_engine);
+                        try buildRestPatternParam(self, rest_binding, param_index, &body_stmts, span, rest_owner, unlinked_engine, if (arity_cutoff != null) function_owner else null, if (arity_cutoff != null) &rest_snapshots else null);
                         continue;
                     }
-                    const rest_stmt = try buildRestSlice(self, rest_binding, param_index, span, rest_owner, unlinked_engine);
+                    const rest_stmt = if (arity_cutoff != null) snapshot: {
+                        const temp_span = try es_helpers.makeTempVarSpan(self);
+                        const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
+                        const identity = try registerDestructuringTempIdentityAtCreation(self, temp_binding, temp_span, span, .variable_var);
+                        es_helpers.consumeTempVarSpan(self, temp_span);
+                        try rest_snapshots.append(self.allocator, try buildRestSlice(self, temp_binding, param_index, span, rest_owner, unlinked_engine, function_owner));
+                        const input = try es_helpers.makeTempRefFromIdentity(self, identity, span, .{ .read = true });
+                        break :snapshot try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, rest_binding, input, span)}, .@"var", span);
+                    } else try buildRestSlice(self, rest_binding, param_index, span, rest_owner, unlinked_engine, null);
                     try body_stmts.append(self.allocator, rest_stmt);
                     // rest를 params에 넣지 않음
                     continue;
                 }
 
-                if (self.unlinked_parameter_bindings) |unlinked| {
+                if (self.unlinked_parameter_bindings != null and (arity_cutoff == null or i_loop < arity_cutoff.?)) {
+                    const unlinked = self.unlinked_parameter_bindings.?;
                     if (unlinkableParameter(self, param, @fromBackingInt(@intCast(raw_idx)))) |parts| {
                         // Before the first default: formal `_x`, body `var x = _x`.
                         // From it on (outside `length`, like native): body
@@ -1198,6 +1266,57 @@ pub fn ES2015Params(comptime Transformer: type) type {
                         try self.ast.addNode(.{ .tag = .rest_element, .span = span, .data = .{ .unary = .{ .operand = binding, .flags = 0 } } });
                     try self.scratch.append(self.allocator, formal);
                 }
+            }
+            if (arity_cutoff) |cutoff| {
+                const slots = try self.allocator.dupe(NodeIndex, self.scratch.items[param_scratch_top..]);
+                defer self.allocator.free(slots);
+                if (slots.len < cutoff) @panic("lowered arity lost its actual input prefix");
+                var snapshots: std.ArrayList(NodeIndex) = .empty;
+                defer snapshots.deinit(self.allocator);
+                for (slots[cutoff..], cutoff..) |formal, index| {
+                    var binding = try loweredInputSlotBinding(self, formal);
+                    const owner = function_owner.?;
+                    const count_engine = arity_arguments orelse
+                        (try arityArgumentsReference(self, owner, span)).?;
+                    arity_arguments = null;
+                    const count = try es_helpers.makeStaticMember(self, count_engine, try es_helpers.makePropertyName(self, "length"), span);
+                    const present = try self.ast.addNode(.{ .tag = .binary_expression, .span = span, .data = .{ .binary = .{
+                        .left = count,
+                        .right = try es_helpers.makeNumericLiteral(self, @intCast(index)),
+                        .flags = @backingInt(token_mod.Kind.r_angle),
+                    } } });
+                    const value_engine = (try arityArgumentsReference(self, owner, span)).?;
+                    const value = try es_helpers.makeComputedMember(self, value_engine, try es_helpers.makeNumericLiteral(self, @intCast(index)), span);
+                    const input = try self.ast.addNode(.{ .tag = .conditional_expression, .span = span, .data = .{ .ternary = .{
+                        .a = present,
+                        .b = value,
+                        .c = try es_helpers.makeVoidZero(self, span),
+                    } } });
+                    if (self.semantic_edit_enabled) {
+                        const id = self.getSymbolIdAt(binding) orelse @panic("lowered arity slot lost its creation identity");
+                        const output_name = self.semantic_editor.?.symbols.items[id].synthetic_name;
+                        if (output_name.len != 0 and !std.mem.eql(u8, output_name, self.ast.getText(self.ast.getNode(binding).data.string_ref))) {
+                            // The argument-engine producer may have separated
+                            // an actual Source parameter named arguments. Keep
+                            // its exact SID and creation anchor on the emitted
+                            // alias rather than rekeying it to the old spelling.
+                            binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, try self.ast.addString(output_name));
+                            try self.setGeneratedSymbolId(binding, id);
+                        }
+                        self.semantic_editor.?.relocateSymbolAsPreservingAnchors(@fromBackingInt(id), self.current_scope, binding) catch |err| switch (err) {
+                            error.OutOfMemory => return error.OutOfMemory,
+                            else => @panic("lowered arity slot cannot enter its actual body storage"),
+                        };
+                        self.semantic_editor.?.symbols.items[id].kind = .variable_var;
+                        self.semantic_editor.?.symbols.items[id].decl_flags = SymbolKind.variable_var.declFlags();
+                    }
+                    try snapshots.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, input, span)}, .@"var", span));
+                }
+                // Capture every input before any source default can mutate
+                // arguments or arguments.length. No source expression moves.
+                try snapshots.appendSlice(self.allocator, rest_snapshots.items);
+                try body_stmts.insertSlice(self.allocator, 0, snapshots.items);
+                self.scratch.shrinkRetainingCapacity(param_scratch_top + cutoff);
             }
             const new_params = try self.ast.addNodeList(self.scratch.items[param_scratch_top..]);
 
@@ -1507,6 +1626,8 @@ pub fn ES2015Params(comptime Transformer: type) type {
             span: Span,
             rest_owner: ?RestArgumentsOwner,
             unlinked_engine: ?@import("../semantic/symbol.zig").SymbolId,
+            arity_owner: ?RestArgumentsOwner,
+            rest_snapshots: ?*std.ArrayList(NodeIndex),
         ) Transformer.Error!void {
             const temp_span = try es_helpers.makeTempVarSpan(self);
             const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
@@ -1518,7 +1639,8 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 .variable_var,
             );
             es_helpers.consumeTempVarSpan(self, temp_span);
-            try body_stmts.append(self.allocator, try buildRestSlice(self, temp_binding, start_index, span, rest_owner, unlinked_engine));
+            const input_target = rest_snapshots orelse body_stmts;
+            try input_target.append(self.allocator, try buildRestSlice(self, temp_binding, start_index, span, rest_owner, unlinked_engine, arity_owner));
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -1553,6 +1675,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             span: Span,
             rest_owner: ?RestArgumentsOwner,
             unlinked_engine: ?@import("../semantic/symbol.zig").SymbolId,
+            arity_owner: ?RestArgumentsOwner,
         ) Transformer.Error!NodeIndex {
             // [] (empty array)
             const empty_arr_list = try self.ast.addNodeList(&.{});
@@ -1571,7 +1694,9 @@ pub fn ES2015Params(comptime Transformer: type) type {
             const slice_call = try es_helpers.makeStaticMember(self, slice_member, call_prop, span);
 
             // arguments
-            const args_ref = if (rest_owner) |owner|
+            const args_ref = if (arity_owner) |owner|
+                (try arityArgumentsReference(self, owner, span)).?
+            else if (rest_owner) |owner|
                 try self.makeNativeArgumentsRef(owner.body_scope, owner.body_scope, span)
             else if (unlinked_engine) |id|
                 try makeArgumentsEngineReference(self, id)

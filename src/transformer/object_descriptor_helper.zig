@@ -31,7 +31,7 @@ pub fn makePinnedEvalCallee(self: *Transformer, context: builtin.Context) builti
 }
 
 /// Reuse the existing dynamic-native object boundary only for an actual
-/// computed accessor that needs lowering. No generated helper can be named
+/// accessor that needs ordered property-definition lowering. No generated helper can be named
 /// safely through the surrounding with environment.
 pub const NativeReason = enum { with_scope, opaque_eval };
 
@@ -76,8 +76,7 @@ pub fn retainsNativeAccessor(self: *Transformer, object: NodeIndex) builtin.Erro
         if (member.tag != .method_definition or !self.ast.hasExtra(member.data.extra, ast.MethodExtra.flags)) continue;
         const flags = self.ast.readExtra(member.data.extra, ast.MethodExtra.flags);
         if (flags & (ast.MethodFlags.is_getter | ast.MethodFlags.is_setter) == 0) continue;
-        const key = self.ast.readExtraNode(member.data.extra, ast.MethodExtra.key);
-        if (key.isNone() or @backingInt(key) >= self.ast.nodes.items.len or self.ast.getNode(key).tag != .computed_property_key) continue;
+        if (!@import("es2015_computed.zig").ES2015Computed(Transformer).needsPropertyDefinitionLowering(self, member)) continue;
         const context = try builtin.captureAccessor(self, object, @fromBackingInt(raw));
         if (self.with_statement_depth != 0) return .with_scope;
         // At object entry, the output visitor can still be between frames.

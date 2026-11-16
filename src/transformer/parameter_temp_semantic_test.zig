@@ -759,7 +759,8 @@ test "#4819 nullish-assignment parameter temp uses exact emitted storage scope" 
     );
 }
 
-fn checkDestructuringParameterTempSymbols(source: []const u8) !void {
+fn checkDestructuringParameterTempSymbols(source: []const u8, observe: []const u8) !void {
+    const ast_mod = @import("../parser/ast.zig");
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -771,10 +772,21 @@ fn checkDestructuringParameterTempSymbols(source: []const u8) !void {
     try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
 
     var function_scope: ?u32 = null;
+    var first_default = false;
+    var source_params_scope: ?u32 = null;
     var owners = analyzer.scope_owner_map.iterator();
     while (owners.next()) |owner| {
         switch (parser.ast.nodes.items[owner.key_ptr.*].tag) {
-            .function_declaration, .function_expression, .function, .method_definition, .arrow_function_expression => function_scope = owner.value_ptr.*,
+            .function_declaration, .function_expression, .function, .method_definition, .arrow_function_expression => {
+                function_scope = owner.value_ptr.*;
+                const source_function = parser.ast.nodes.items[owner.key_ptr.*];
+                const source_params = parser.ast.readExtraNode(source_function.data.extra, ast_mod.FunctionExtra.params);
+                source_params_scope = analyzer.scope_owner_map.get(@backingInt(source_params));
+                const formals = parser.ast.functionParamsList(source_function);
+                const first = parser.ast.getNode(parser.ast.readExtraNode(formals.start, 0));
+                first_default = first.tag == .assignment_pattern or
+                    (first.tag == .formal_parameter and !parser.ast.readExtraNode(first.data.extra, ast_mod.FormalParameterExtra.default).isNone());
+            },
             else => {},
         }
     }
@@ -802,6 +814,7 @@ fn checkDestructuringParameterTempSymbols(source: []const u8) !void {
 
     var parameter_temps: usize = 0;
     var function_var_temps: usize = 0;
+    var snapshot_temps: usize = 0;
     for (edited.symbols.items[original_symbol_count..], original_symbol_count..) |symbol, symbol_index| {
         if (symbol.synthetic_name.len < 2 or symbol.synthetic_name[0] != '_' or symbol.synthetic_name[1] == '_') continue;
         if (symbol.kind == .parameter) {
@@ -809,6 +822,56 @@ fn checkDestructuringParameterTempSymbols(source: []const u8) !void {
             try std.testing.expectEqual(expected_function_scope, @backingInt(symbol.scope_id));
         } else if (symbol.kind == .variable_var and @backingInt(symbol.scope_id) == expected_function_scope) {
             function_var_temps += 1;
+            for (reachable) |raw| {
+                const declaration = transformer.ast.nodes.items[raw];
+                if (declaration.tag != .variable_declarator) continue;
+                const binding = transformer.ast.readExtraNode(declaration.data.extra, 0);
+                if (transformer.getSymbolIdAt(binding) != @as(?u32, @intCast(symbol_index))) continue;
+                const value = transformer.ast.readExtraNode(declaration.data.extra, 2);
+                if (value.isNone() or transformer.ast.getNode(value).tag != .conditional_expression) continue;
+                const input = transformer.ast.getNode(value).data.ternary;
+                const test_node = transformer.ast.getNode(input.a);
+                if (test_node.tag != .binary_expression) continue;
+                const length = transformer.ast.getNode(test_node.data.binary.left);
+                if (length.tag != .static_member_expression) continue;
+                const engine_ref = transformer.ast.readExtraNode(length.data.extra, 0);
+                const engine = transformer.getSymbolIdAt(engine_ref) orelse continue;
+                const engine_scope = edited.symbols.items[engine].scope_id;
+                try std.testing.expectEqual(@as(?@import("../semantic/symbol.zig").SyntheticKind, .implicit_arguments), edited.symbols.items[engine].synthetic_kind);
+                try std.testing.expectEqual(ScopeKind.function, edited.scopes[engine_scope.toIndex()].kind);
+                try std.testing.expectEqual(engine_scope, edited.scopes[expected_function_scope].parent);
+                try std.testing.expectEqual(@as(?u32, @backingInt(engine_scope)), source_params_scope);
+                var actual_owners: usize = 0;
+                for (reachable) |owner_raw| {
+                    switch (transformer.ast.nodes.items[owner_raw].tag) {
+                        .function, .function_declaration, .function_expression, .method_definition => {},
+                        else => continue,
+                    }
+                    if (transformer.outputOwnedScope(@fromBackingInt(owner_raw)) != @as(?ScopeId, @fromBackingInt(expected_function_scope))) continue;
+                    const parameters = transformer.ast.readExtraNode(transformer.ast.nodes.items[owner_raw].data.extra, ast_mod.FunctionExtra.params);
+                    try std.testing.expectEqual(ast_mod.Node.Tag.formal_parameters, transformer.ast.getNode(parameters).tag);
+                    // A zero-formal output header needs no separate owner map.
+                    // The engine's Source carrier is proved above from the
+                    // original exact function→params edge and B.parent=P.
+                    try std.testing.expectEqual(@as(u32, 0), transformer.ast.getNode(parameters).data.list.len);
+                    actual_owners += 1;
+                }
+                try std.testing.expectEqual(@as(usize, 1), actual_owners);
+                const origin = transformer.native_arguments_reference_origins.get(@backingInt(engine_ref)) orelse return error.MissingSnapshotEngineOrigin;
+                try std.testing.expectEqual(@as(u32, engine), @backingInt(origin.symbol_id));
+                try std.testing.expectEqual(engine_scope, origin.owner_scope);
+                try std.testing.expectEqual(expected_function_scope, @backingInt(origin.scope));
+                var engine_rows: usize = 0;
+                for (edited.references) |reference| {
+                    if (reference.node_index != engine_ref) continue;
+                    try std.testing.expectEqual(@as(u32, engine), @backingInt(reference.symbol_id));
+                    try std.testing.expectEqual(expected_function_scope, @backingInt(reference.scope_id));
+                    try std.testing.expectEqualDeep(@as(@import("../semantic/symbol.zig").ReferenceFlags, .{ .read = true }), reference.flags);
+                    engine_rows += 1;
+                }
+                try std.testing.expectEqual(@as(usize, 1), engine_rows);
+                snapshot_temps += 1;
+            }
         } else if (symbol.kind == .variable_var) {
             try std.testing.expectEqual(expected_function_scope, @backingInt(symbol.scope_id));
         }
@@ -833,8 +896,22 @@ fn checkDestructuringParameterTempSymbols(source: []const u8) !void {
         try std.testing.expectEqual(symbol.reference_count, live_references);
     }
 
-    try std.testing.expectEqual(@as(usize, 1), parameter_temps);
+    try std.testing.expectEqual(@as(usize, if (first_default) 0 else 1), parameter_temps);
+    if (first_default) try std.testing.expectEqual(@as(usize, 1), snapshot_temps);
     try std.testing.expect(function_var_temps > 0);
+
+    // Observe the actual lowered callable, including an explicitly supplied
+    // argument after the first-default boundary. Keep temp ownership checks
+    // above independent from public transpile/runtime behavior.
+    const observed = try std.fmt.allocPrint(allocator, "{s}\nconsole.log(JSON.stringify({s}));", .{ source, observe });
+    const native_code = try std.fmt.allocPrint(allocator, "globalThis.key=()=> 'first';{s}", .{observed});
+    const native = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", native_code } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    const output = try @import("../transpile.zig").transpile(allocator, observed, "input.cjs", .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    const actual_code = try std.fmt.allocPrint(allocator, "globalThis.key=()=> 'first';{s}", .{output.code});
+    const actual = try std.process.run(allocator, std.testing.io, .{ .argv = &.{ "node", "-e", actual_code } });
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    try std.testing.expectEqualStrings(native.stdout, actual.stdout);
 }
 
 fn expectRegisteredParameterTemp(
@@ -1181,14 +1258,14 @@ test "#4819 semantic-disabled low-level parameter lowering remains a no-op for t
 }
 
 test "#4819 destructuring parameter temps stay in their emitted function scope" {
-    const fixtures = [_][]const u8{
-        "function run({ first: { seed } }) { return seed; }",
-        "function run({ first: { seed } } = {}) { return seed; }",
-        "function run([{ first: { seed } }]) { return seed; }",
-        "function run([{ first: { seed } } = {}] = []) { return seed; }",
-        "function run({ [key()]: { seed }, ...rest } = {}) { return [seed, rest]; }",
-        "class Host { run({ first: { seed } }) { return seed; } }",
-        "const run = ({ first: { seed } }) => seed;",
+    const fixtures = [_]struct { source: []const u8, observe: []const u8 }{
+        .{ .source = "function run({ first: { seed } }) { return seed; }", .observe = "run({first:{seed:42}})" },
+        .{ .source = "function run({ first: { seed } } = {}) { return seed; }", .observe = "run({first:{seed:42}})" },
+        .{ .source = "function run([{ first: { seed } }]) { return seed; }", .observe = "run([{first:{seed:42}}])" },
+        .{ .source = "function run([{ first: { seed } } = {}] = []) { return seed; }", .observe = "run([{first:{seed:42}}])" },
+        .{ .source = "function run({ [key()]: { seed }, ...rest } = {}) { return [seed, rest]; }", .observe = "run({first:{seed:42}})" },
+        .{ .source = "class Host { run({ first: { seed } }) { return seed; } }", .observe = "new Host().run({first:{seed:42}})" },
+        .{ .source = "const run = ({ first: { seed } }) => seed;", .observe = "run({first:{seed:42}})" },
     };
-    for (fixtures) |source| try checkDestructuringParameterTempSymbols(source);
+    for (fixtures) |fixture| try checkDestructuringParameterTempSymbols(fixture.source, fixture.observe);
 }
