@@ -592,12 +592,21 @@ pub fn completeErasedArityOwner(
         }
         if (snapshots != 1) return error.InvalidNode;
     }
+    // Reserve every fallible publication before changing either owner edge.
+    try self.scope_owner_removed.ensureUnusedCapacity(self.allocator, 1);
+    try self.transformed_scope_owner_map.ensureUnusedCapacity(self.allocator, 1);
+    try editor.scope_owner_map.ensureUnusedCapacity(self.allocator, 1);
+    try editor.scope_history.events.ensureUnusedCapacity(self.allocator, 2);
     // The exact old carrier has no remaining live function consumer. Preserve
     // its immutable Source node and record only completion of its owner role.
     try self.scope_owner_removed.put(self.allocator, @backingInt(carrier), {});
     _ = self.scope_owner_remaps.remove(@backingInt(carrier));
     _ = self.transformed_scope_owner_map.remove(@backingInt(carrier));
     if (!try editor.removeScopeOwner(carrier)) return error.InvalidScope;
+    // P remains a real lexical frame even when no name-elision pass follows.
+    // Its actual replacement header owns it until that separate transaction.
+    try editor.putScopeOwner(new_params, p);
+    try self.transformed_scope_owner_map.put(self.allocator, @backingInt(new_params), @backingInt(p));
     return true;
 }
 

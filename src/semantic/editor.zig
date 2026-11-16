@@ -2807,7 +2807,8 @@ pub const SemanticEditor = struct {
                 candidate.scope_owner_map.get(@backingInt(e.owner)) != @as(?u32, @backingInt(w.body_scope)) or (candidate.scope_owner_map.get(@backingInt(e.body)) != null and candidate.scope_owner_map.get(@backingInt(e.body)) != @as(?u32, @backingInt(w.body_scope)))) return error.InvalidNode;
             if (!Names.validateFormals(w, self.ast, candidate.symbols.items, candidate.symbol_ids.items, candidate.references.items)) return error.InvalidSymbol;
             const formal_scope = if (!w.parameter_scope.isNone() and !w.retire_parameters) w.parameter_scope else w.body_scope;
-            if (candidate.scope_owner_map.get(@backingInt(e.parameters))) |parameter_owner| if (parameter_owner != @backingInt(formal_scope)) return error.InvalidScope;
+            const parameter_owner_scope = if (Names.hasCurrentEmptyParameterOwner(w)) w.parameter_scope else formal_scope;
+            if (candidate.scope_owner_map.get(@backingInt(e.parameters))) |parameter_owner| if (parameter_owner != @backingInt(parameter_owner_scope)) return error.InvalidScope;
             if (w.parameter_scope.isNone()) {
                 if (w.retire_parameters or w.body_frame.parent != w.name_scope) return error.InvalidScope;
             } else {
